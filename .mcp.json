@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "aruba-central-ssid": {
+      "command": "/Users/stephenchoate/Documents/API-Central/.venv/bin/python3",
+      "args": [
+        "/Users/stephenchoate/Documents/API-Central/mcp_server.py"
+      ],
+      "cwd": "/Users/stephenchoate/Documents/API-Central"
+    }
+  }
+}
