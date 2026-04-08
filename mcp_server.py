@@ -18,9 +18,9 @@ Exposes the following tools to Claude (or any MCP client):
 
   WRITE
   -----
-  build_underlay_ssid      Create + scope-map an underlay SSID (bridge mode)
-  build_overlay_ssid       Create + scope-map an overlay SSID (GRE tunnel via gateway)
-  list_gw_clusters         List available gateway clusters for overlay SSIDs
+  build_underlay_ssid      Create + scope-map an underlay SSID (bridge mode / non-tunneled)
+  build_overlay_ssid       Create + scope-map an overlay SSID (tunneled / GRE via gateway)
+  list_gw_clusters         List available gateway clusters for tunneled overlay SSIDs
   create_allow_all_role    Create a permit-all wireless role + scope-map it
   delete_underlay_ssid     Delete an underlay SSID
   get_ssid                 Fetch an existing SSID config
@@ -575,7 +575,10 @@ def build_underlay_ssid(
     dtim_period: int = 1,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create an underlay SSID in Aruba New Central and scope-map it to a device persona.
+    """Create a bridge mode (underlay) SSID in Aruba New Central and scope-map it to a device persona.
+
+    Also known as: underlay SSID, bridge mode SSID, non-tunneled SSID.
+
 
     BEFORE calling this tool, confirm ALL of the following with the user
     using plain language (not API terms):
@@ -632,7 +635,7 @@ def build_underlay_ssid(
 
 @mcp.tool()
 def list_gw_clusters() -> list[dict[str, Any]]:
-    """Return all gateway clusters available for overlay SSID tunneling."""
+    """Return all gateway clusters available for tunneled (overlay) SSIDs."""
     return _get_mcp_client().get_gw_clusters()
 
 
@@ -649,7 +652,10 @@ def build_overlay_ssid(
     wpa3_transition: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create an overlay SSID that tunnels client traffic through a Mobility Gateway.
+    """Create a tunneled (overlay) SSID that forwards client traffic through a Mobility Gateway.
+
+    Also known as: overlay SSID, tunneled SSID, GRE tunnel SSID.
+
 
     BEFORE calling this tool, confirm the following with the user:
 
