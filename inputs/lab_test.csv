@@ -1,0 +1,3 @@
+serial_number,source_type,hardware_series,target_account,target_site,target_group,persona,firmware_target,mac_address,notes
+CN26KNN2YQ,unmanaged,aos_cx,same,Home Lab,New Central Switches,access_switch,10.16.1006,,AOS-CX 6100 lab test
+SG05KMY0WQ,unmanaged,aos_cx,same,Home Lab,Home Lab,access_switch,10.16.1006,b8:d4:e7:a1:07:40,AOS-CX 6300 configure-only

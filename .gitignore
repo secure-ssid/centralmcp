@@ -1,0 +1,23 @@
+# Credentials — never commit
+.env
+config/credentials.yaml
+.token_cache_*.json
+
+# Runtime output
+state/
+outputs/
+!state/.gitkeep
+!outputs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
