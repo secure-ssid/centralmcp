@@ -14,39 +14,41 @@ see pipeline/config.py).  Set CREDS_PATH env var to override the path.
 
 --- HOW TO HANDLE USER REQUESTS ---
 
+Users speak in Central GUI terms, not API terms. Translate as follows:
+
+  "scope" in the API = where in the hierarchy the config is applied
+    - "everywhere" / "all APs" / "org-wide" → global scope (call get_global_scope_id())
+    - a site name (e.g. "Home Lab", "Dallas Office") → a site scope
+    - a group name (e.g. "New Central APs", "Branch APs") → a device group scope
+    - For site/group names: call list_scopes() and match by scope_name
+
+  "persona" in the API = device type in the Central UI
+    - "Access Points" / "APs" / "wireless" → CAMPUS_AP
+    - "Gateways" / "GW"                   → MOBILITY_GW
+    - "Access Switch" / "access layer"     → ACCESS_SWITCH
+    - "Aggregation Switch" / "agg switch"  → AGG_SWITCH
+    - "Core Switch"                        → CORE_SWITCH
+    Default to CAMPUS_AP for any SSID/wireless request unless told otherwise.
+
 Before calling build_underlay_ssid or create_allow_all_role, ALWAYS confirm
-these four things with the user if they haven't been specified:
+these four things with the user (in plain language) if not already provided:
 
-  1. WHERE to assign (scope):
-       - "Org-wide / global" → call get_global_scope_id() automatically
-       - "A specific site or device group" → call list_scopes() and present
-         the names so the user can pick; use the matching scope-id
-       Ask: "Where should this apply — org-wide, or a specific site/group?"
+  1. WHERE: "Where should this apply — everywhere (org-wide), or a specific
+     site or group? If a site or group, what's the name?"
 
-  2. WHAT type of device (persona):
-       CAMPUS_AP      — Access Points (most common for wireless SSIDs)
-       MOBILITY_GW    — Gateways
-       ACCESS_SWITCH  — CX Access switches
-       AGG_SWITCH     — CX Aggregation switches
-       CORE_SWITCH    — CX Core switches
-       Ask: "What device type? (Access Points / Gateways / Access Switch / etc.)"
-       Default to CAMPUS_AP if the user says "APs" or "wireless" or doesn't specify.
+  2. DEVICE TYPE: "Which devices should get this — Access Points, Gateways,
+     or a switch type?" (Default: Access Points, unless told otherwise.)
 
-  3. SECURITY (for build_underlay_ssid):
-       - Open/OWE → opmode=ENHANCED_OPEN (default)
-       - WPA3 with legacy client support → opmode=WPA3_SAE, wpa3_transition=True
-       - WPA3 only → opmode=WPA3_SAE, wpa3_transition=False
-       - WPA2 PSK → opmode=WPA2_PSK
-       Ask: "What security? Open, WPA3 (with or without legacy support), or WPA2-PSK?"
-       If WPA3_SAE or WPA2_PSK: ask for the passphrase if not provided.
+  3. SECURITY (build_underlay_ssid only):
+     "What security should this SSID use — open, WPA3 with support for older
+      devices, WPA3-only, or WPA2 with a pre-shared key?"
+     If WPA3 or WPA2-PSK: "What's the passphrase?"
 
-  4. VLAN(s) (for build_underlay_ssid):
-       Ask: "Which VLAN ID(s) should this SSID use?"
+  4. VLAN (build_underlay_ssid only): "Which VLAN ID(s) should this SSID use?"
 
   For create_allow_all_role:
-     - role_name defaults to the SSID name (Central auto-creates it, but this
-       explicitly scope-maps it). Confirm with user or use SSID name as default.
-     - Uses the same scope_id and persona as the SSID unless told otherwise.
+     - Role name defaults to the SSID name. Confirm or ask.
+     - Reuse the same WHERE and DEVICE TYPE answers from the SSID step.
 """
 
 from __future__ import annotations
@@ -101,13 +103,16 @@ def _get_client() -> CentralClient:
 
 @mcp.tool()
 def list_scopes() -> list[dict[str, Any]]:
-    """Return all scopes in this Central account — org, sites, and device groups.
+    """Return all scopes (locations/groups) in this Central account.
 
     Each entry has: scope_id, scope_name, scope_type.
 
-    Use this to look up the scope_id when a user specifies a site name or device
-    group name rather than a numeric scope-id. Present the results to the user
-    as a readable list so they can choose where to apply the SSID or role.
+    scope_type will be one of: org (the whole organisation), site (a physical
+    location like "Dallas Office"), or group (a device group like "Branch APs").
+
+    Use this to resolve a user's plain-language answer ("apply it to the Home Lab
+    site" or "put it in the Branch APs group") to a numeric scope_id. Present the
+    results as a simple list of names so the user can confirm which one to use.
     """
     client = _get_client()
     try:
@@ -158,43 +163,50 @@ def build_underlay_ssid(
 ) -> dict[str, Any]:
     """Create an underlay SSID in Aruba New Central and scope-map it to a device persona.
 
-    BEFORE calling this tool, confirm ALL of the following with the user:
+    BEFORE calling this tool, confirm ALL of the following with the user
+    using plain language (not API terms):
 
     1. ssid_name — the SSID name to broadcast. (Required, no default.)
 
-    2. vlan_ids — VLAN ID(s) as a list of strings, e.g. ["200"] or ["200","201"].
+    2. vlan_ids — list of VLAN ID strings, e.g. ["200"] or ["200","201"].
        Ask: "Which VLAN ID(s) should this SSID use?"
 
-    3. scope_id — numeric scope-id string for where to apply this SSID.
-       Ask: "Should this apply org-wide, or to a specific site or device group?"
-       - Org-wide / global → call get_global_scope_id() and use the result.
-       - Named site or group → call list_scopes(), show the user the names, let
-         them pick, then use the matching scope_id.
+    3. scope_id — resolved from the user's answer to "where should this apply":
+       - "Everywhere" / "org-wide" / "all APs" → call get_global_scope_id()
+       - A site name or group name → call list_scopes(), find the matching
+         scope_name, use its scope_id.
+       Ask: "Should this apply everywhere, or to a specific site or group?"
 
-    4. persona — device type this SSID applies to.
-       Ask: "What type of device? Access Points (CAMPUS_AP), Gateways (MOBILITY_GW),
-             or a switch type (ACCESS_SWITCH / AGG_SWITCH / CORE_SWITCH)?"
-       Default: CAMPUS_AP (use this if user says "APs", "wireless", or doesn't specify).
+    4. persona — resolved from "which devices":
+       - "Access Points" / "APs" / unspecified → CAMPUS_AP (default)
+       - "Gateways"                            → MOBILITY_GW
+       - "Access Switch"                       → ACCESS_SWITCH
+       - "Aggregation Switch"                  → AGG_SWITCH
+       - "Core Switch"                         → CORE_SWITCH
+       Ask: "Which devices should get this SSID — Access Points, Gateways,
+             or a switch type?"
 
-    5. opmode — security mode.
-       Ask: "What security? Open, WPA3 (with legacy support), WPA3-only, or WPA2-PSK?"
-       - Open/OWE           → ENHANCED_OPEN (default)
-       - WPA3 + legacy      → WPA3_SAE with wpa3_transition=True
-       - WPA3 only          → WPA3_SAE with wpa3_transition=False
-       - WPA2-PSK           → WPA2_PSK
-       If WPA3_SAE or WPA2_PSK: ask for wpa_passphrase if not already provided.
+    5. opmode — resolved from "what security":
+       - "Open" / none specified               → ENHANCED_OPEN (default)
+       - "WPA3 with support for older devices" → WPA3_SAE, wpa3_transition=True
+       - "WPA3 only"                           → WPA3_SAE, wpa3_transition=False
+       - "WPA2" / "pre-shared key" / "PSK"    → WPA2_PSK
+       Ask: "What security — open, WPA3 (with or without support for older
+             devices), or WPA2 with a pre-shared key?"
+       If WPA3_SAE or WPA2_PSK: ask for wpa_passphrase if not provided.
 
     Other optional settings (only ask if user brings them up):
-      rf_band:               24GHZ_5GHZ (default) | 24GHZ_ONLY | 5GHZ_ONLY | 6GHZ_ONLY
-      hide_ssid:             Suppress SSID broadcast (default False).
-      max_clients:           Max clients per AP radio (default 1024).
-      client_isolation:      Client-to-client isolation (default False).
+      rf_band:               Radio band — 2.4+5GHz (default) | 2.4GHz only |
+                             5GHz only | 6GHz only
+      hide_ssid:             Hide SSID from broadcast (default False).
+      max_clients:           Max clients per radio (default 1024).
+      client_isolation:      Prevent clients talking to each other (default False).
       dmo_enable:            Dynamic Multicast Optimization (default True).
-      dmo_channel_threshold: DMO channel utilization threshold % (default 90).
+      dmo_channel_threshold: DMO channel utilization % threshold (default 90).
       dmo_clients_threshold: DMO clients threshold (default 6).
-      inactivity_timeout:    Client inactivity timeout seconds (default 1000).
+      inactivity_timeout:    Client inactivity timeout in seconds (default 1000).
       dtim_period:           DTIM period (default 1).
-      dry_run:               Log actions without writing to the API (default False).
+      dry_run:               Preview actions without writing to Central (default False).
 
     Returns:
         Dict with keys: ssid_name, vlan_ids, scope_id, persona, created, scope_mapped, errors.
@@ -235,21 +247,22 @@ def create_allow_all_role(
     when an SSID is created. This tool explicitly creates/confirms that role with
     permit-all behaviour and ensures the scope-map is in place.
 
-    When a user asks to "create a role with all access" alongside an SSID:
-      - role_name defaults to the SSID name. Confirm or ask.
-      - scope_id should match the SSID scope (reuse what was used for the SSID).
-      - persona should match the SSID persona (reuse it).
+    When a user asks to "create a role with all access" alongside an SSID,
+    reuse the answers already given for WHERE and DEVICE TYPE from the SSID step.
 
-    If role_name, scope_id, or persona are unknown, ask:
-      "Should the role name match the SSID name? Where should it apply, and for
-       which device type?"
+    If creating a role standalone (not after an SSID), ask:
+      - "What should the role be named?" (default: same as the SSID name)
+      - "Where should it apply — everywhere, or a specific site or group?"
+        Resolve to scope_id using get_global_scope_id() or list_scopes().
+      - "Which devices — Access Points, Gateways, or a switch type?"
+        Resolve to persona using the same mapping as build_underlay_ssid.
 
     Args:
         role_name: Name of the role (typically matches the SSID name).
-        scope_id:  Scope-id to map the role to.
-        persona:   Device-function persona: CAMPUS_AP (default) | MOBILITY_GW |
+        scope_id:  Numeric scope-id — resolved from site/group name or global.
+        persona:   Device type — CAMPUS_AP (default) | MOBILITY_GW |
                    ACCESS_SWITCH | AGG_SWITCH | CORE_SWITCH.
-        dry_run:   Log actions without writing to the API.
+        dry_run:   Preview actions without writing to Central.
 
     Returns:
         Dict with keys: role_name, created, scope_mapped, errors.
