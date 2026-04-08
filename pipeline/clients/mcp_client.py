@@ -145,3 +145,46 @@ class MCPClient:
         except Exception as exc:
             logger.warning("MCPClient.get_events(%s) failed: %s", serial_number, exc)
             return []
+
+    # ------------------------------------------------------------------
+    # Clients
+    # ------------------------------------------------------------------
+
+    def get_clients(
+        self,
+        site_id: Optional[str] = None,
+        serial_number: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Return connected clients, optionally filtered by site or device serial."""
+        params: dict[str, Any] = {"limit": 100}
+        if site_id:
+            params["siteId"] = site_id
+        if serial_number:
+            params["serial"] = serial_number
+        try:
+            result = self._client.get("/network-monitoring/v1/clients", params=params)
+            return result.get("clients", result.get("items", []))
+        except Exception as exc:
+            logger.warning("MCPClient.get_clients failed: %s", exc)
+            return []
+
+    def find_client(self, mac_or_ip: str) -> Optional[dict[str, Any]]:
+        """Find a single client by MAC address or IP address, or None if not found."""
+        try:
+            result = self._client.get(
+                "/network-monitoring/v1/clients",
+                params={"macAddress": mac_or_ip, "limit": 1},
+            )
+            items = result.get("clients", result.get("items", []))
+            if items:
+                return items[0]
+            # Retry with IP if MAC lookup returned nothing
+            result = self._client.get(
+                "/network-monitoring/v1/clients",
+                params={"ipAddress": mac_or_ip, "limit": 1},
+            )
+            items = result.get("clients", result.get("items", []))
+            return items[0] if items else None
+        except Exception as exc:
+            logger.warning("MCPClient.find_client(%s) failed: %s", mac_or_ip, exc)
+            return None

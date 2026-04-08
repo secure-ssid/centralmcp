@@ -1,16 +1,49 @@
-"""MCP server — Aruba New Central Underlay SSID tools.
+"""MCP server — Aruba New Central tools.
 
 Exposes the following tools to Claude (or any MCP client):
-  - build_underlay_ssid    Create + scope-map an underlay SSID
-  - create_allow_all_role  Create a permit-all wireless role + scope-map it
-  - delete_underlay_ssid   Delete an underlay SSID
-  - get_underlay_ssid      Fetch an existing SSID config
-  - list_underlay_ssids    List all SSID objects
-  - list_scopes            List all scopes (org, sites, device groups) with names + IDs
-  - get_global_scope_id    Discover the org-level global scope-id
+
+  READ
+  ----
+  list_sites               List all sites with IDs
+  get_site                 Find a site by name
+  list_devices             List devices (optionally filtered)
+  find_device              Find a device by serial number
+  list_clients             List connected clients (optionally by site or device)
+  find_client              Find a client by MAC or IP address
+  list_alerts              List active alerts (optionally by site or severity)
+  list_events              List events for a device
+  get_events_count         Count events for a device
+  list_scopes              List all scopes (org, sites, device groups)
+  get_global_scope_id      Discover the org-level global scope-id
+
+  WRITE
+  -----
+  build_underlay_ssid      Create + scope-map an underlay SSID
+  create_allow_all_role    Create a permit-all wireless role + scope-map it
+  delete_underlay_ssid     Delete an underlay SSID
+  get_underlay_ssid        Fetch an existing SSID config
+  list_underlay_ssids      List all SSID objects
+  create_vlan              Create an L2 VLAN and scope-map it globally
+  create_vlan_interface    Create an L3 VLAN interface (SVI) at device scope
+  set_hostname             Set the hostname alias on a device
+  push_aruba_device_profiles  Ensure Aruba LLDP device profiles exist at library level
 
 Credentials are loaded from config/credentials.yaml (or env vars —
 see pipeline/config.py).  Set CREDS_PATH env var to override the path.
+
+--- NAMING CONVENTIONS ---
+
+Tool names follow verb_noun with no prefix:
+  list_*   — return multiple items
+  get_*    — return one item or a specific value
+  find_*   — search/lookup (returns None if not found)
+  create_* — create a resource (idempotent where possible)
+  set_*    — update a single attribute
+  push_*   — bulk create/upsert
+  delete_* — remove a resource
+
+All new tools MUST follow this pattern. Do not add prefixes like
+"central_" or "aruba_" — the server name already provides that context.
 
 --- HOW TO HANDLE USER REQUESTS ---
 
@@ -60,6 +93,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from pipeline.clients.central_client import CentralClient
+from pipeline.clients.mcp_client import MCPClient
 from pipeline.clients.token_manager import TokenManager
 from pipeline.config import build_account_contexts
 from pipeline.ssid_underlay import (
@@ -69,17 +103,24 @@ from pipeline.ssid_underlay import (
     get_underlay_ssid as _get,
     list_underlay_ssids as _list,
 )
-from pipeline.stages.s6_configure import _fetch_global_scope_id
+from pipeline.stages.s6_configure import (
+    ARUBA_DEVICE_PROFILES,
+    _ensure_device_profiles,
+    _fetch_global_scope_id,
+    _post_scope_map,
+    _push_vlan_interface,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-mcp = FastMCP("aruba-central-ssid")
+mcp = FastMCP("aruba-central")
 
 # ---------------------------------------------------------------------------
-# Shared client (lazy-initialised once per process)
+# Shared clients (lazy-initialised once per process)
 # ---------------------------------------------------------------------------
 
 _central_client: CentralClient | None = None
+_mcp_client: MCPClient | None = None
 
 
 def _get_client() -> CentralClient:
@@ -96,8 +137,142 @@ def _get_client() -> CentralClient:
     return _central_client
 
 
+def _get_mcp_client() -> MCPClient:
+    global _mcp_client
+    if _mcp_client is None:
+        _mcp_client = MCPClient(_get_client())
+    return _mcp_client
+
+
 # ---------------------------------------------------------------------------
-# Tools
+# READ — Sites
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_sites() -> list[dict[str, Any]]:
+    """Return all sites in this Central account with their IDs and names.
+
+    Each entry has: siteId (or id), siteName (or name), and any location fields.
+    Use this to find a site_id for filtering alerts, clients, or events by location.
+    """
+    return _get_mcp_client().get_sites()
+
+
+@mcp.tool()
+def get_site(name: str) -> dict[str, Any] | None:
+    """Find a site by name (case-insensitive). Returns the site record or None.
+
+    Use this to resolve a user's plain-language site name to a site ID before
+    filtering other queries by site.
+    """
+    return _get_mcp_client().get_site_by_name(name)
+
+
+# ---------------------------------------------------------------------------
+# READ — Devices
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_devices(
+    device_type: str | None = None,
+    site_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return device inventory records from New Central.
+
+    Args:
+        device_type: Optional filter — e.g. "SWITCH", "AP", "GATEWAY".
+        site_id:     Optional site ID to filter by location.
+    """
+    filters: dict[str, Any] = {}
+    if device_type:
+        filters["deviceType"] = device_type
+    if site_id:
+        filters["siteId"] = site_id
+    return _get_mcp_client().get_devices(filters or None)
+
+
+@mcp.tool()
+def find_device(serial_number: str) -> dict[str, Any] | None:
+    """Find a single device by serial number. Returns the device record or None."""
+    return _get_mcp_client().get_device_by_serial(serial_number)
+
+
+# ---------------------------------------------------------------------------
+# READ — Clients
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_clients(
+    site_id: str | None = None,
+    serial_number: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return connected clients, optionally filtered by site or device serial.
+
+    Args:
+        site_id:       Only return clients at this site.
+        serial_number: Only return clients connected to this device.
+    """
+    return _get_mcp_client().get_clients(site_id=site_id, serial_number=serial_number)
+
+
+@mcp.tool()
+def find_client(mac_or_ip: str) -> dict[str, Any] | None:
+    """Find a single connected client by MAC address or IP address. Returns None if not found."""
+    return _get_mcp_client().find_client(mac_or_ip)
+
+
+# ---------------------------------------------------------------------------
+# READ — Alerts
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_alerts(
+    site_id: str | None = None,
+    severity: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return active alerts from New Central.
+
+    Args:
+        site_id:  Only return alerts for this site.
+        severity: Filter by severity — e.g. "CRITICAL", "MAJOR", "MINOR", "WARNING".
+    """
+    return _get_mcp_client().get_alerts(site_id=site_id, severity=severity)
+
+
+# ---------------------------------------------------------------------------
+# READ — Events
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_events(serial_number: str, hours: int = 24) -> list[dict[str, Any]]:
+    """Return events for a device within the last N hours (default 24).
+
+    Args:
+        serial_number: The device serial number.
+        hours:         Look-back window — 24 or less uses last_24h; more uses last_7d.
+    """
+    return _get_mcp_client().get_events(serial_number=serial_number, hours=hours)
+
+
+@mcp.tool()
+def get_events_count(serial_number: str, hours: int = 24) -> dict[str, Any]:
+    """Return the count of events for a device within the last N hours.
+
+    Args:
+        serial_number: The device serial number.
+        hours:         Look-back window — 24 or less uses last_24h; more uses last_7d.
+    """
+    events = _get_mcp_client().get_events(serial_number=serial_number, hours=hours)
+    return {"serial_number": serial_number, "hours": hours, "count": len(events)}
+
+
+# ---------------------------------------------------------------------------
+# READ — Scopes
 # ---------------------------------------------------------------------------
 
 
@@ -136,9 +311,197 @@ def get_global_scope_id() -> dict[str, Any]:
     Call this automatically when the user says "org-wide", "global", or doesn't
     specify a particular site or device group.
     """
-    client = _get_client()
-    scope_id = _fetch_global_scope_id(client)
+    scope_id = _fetch_global_scope_id(_get_client())
     return {"scope_id": scope_id}
+
+
+# ---------------------------------------------------------------------------
+# WRITE — VLANs
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def create_vlan(
+    vlan_id: int,
+    vlan_name: str | None = None,
+    scope_id: str | None = None,
+    persona: str = "ACCESS_SWITCH",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create an L2 VLAN in New Central and scope-map it.
+
+    If scope_id is omitted, the VLAN is mapped at the global (org-wide) scope.
+
+    Args:
+        vlan_id:   VLAN ID (1–4094).
+        vlan_name: Human-readable name (defaults to the VLAN ID as a string).
+        scope_id:  Scope to map the VLAN to. Omit for org-wide.
+        persona:   Device type for the scope-map (default ACCESS_SWITCH).
+        dry_run:   Preview without writing to Central.
+    """
+    if dry_run:
+        return {"vlan_id": vlan_id, "dry_run": True, "created": False}
+
+    client = _get_client()
+    if scope_id is None:
+        scope_id = _fetch_global_scope_id(client)
+
+    name = vlan_name or str(vlan_id)
+    body = {"vlan": vlan_id, "name": name, "enable": True}
+    errors: list[str] = []
+
+    try:
+        client.post(f"/network-config/v1/layer2-vlan/{vlan_id}", data=body)
+    except Exception as exc:
+        resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
+        if "duplicate" in resp_text.lower():
+            try:
+                client.put(f"/network-config/v1/layer2-vlan/{vlan_id}", data=body)
+            except Exception as exc2:
+                errors.append(f"upsert: {exc2}")
+        else:
+            errors.append(f"create: {exc}")
+
+    try:
+        _post_scope_map(client, scope_id, persona, f"layer2-vlan/{vlan_id}")
+    except Exception as exc:
+        resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
+        if "already exists" not in resp_text.lower():
+            errors.append(f"scope_map: {exc}")
+
+    return {"vlan_id": vlan_id, "vlan_name": name, "scope_id": scope_id, "errors": errors}
+
+
+@mcp.tool()
+def create_vlan_interface(
+    vlan_id: int,
+    device_scope_id: str,
+    ip_address: str | None = None,
+    helper_address: str | None = None,
+    dhcp: bool = False,
+    persona: str = "ACCESS_SWITCH",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create an L3 VLAN interface (SVI) at device scope in New Central.
+
+    The global L2 VLAN shell is also created/confirmed automatically.
+
+    Args:
+        vlan_id:          VLAN ID for the SVI.
+        device_scope_id:  The device's numeric scope-id (use find_device or list_scopes).
+        ip_address:       IP address in CIDR notation, e.g. "10.1.200.1/24". Omit for DHCP.
+        helper_address:   DHCP relay/helper IP (optional).
+        dhcp:             Set True if the interface should use DHCP instead of a static IP.
+        persona:          Device type for scope-maps (default ACCESS_SWITCH).
+        dry_run:          Preview without writing to Central.
+    """
+    if dry_run:
+        return {"vlan_id": vlan_id, "device_scope_id": device_scope_id, "dry_run": True}
+
+    client = _get_client()
+    global_scope_id = _fetch_global_scope_id(client)
+
+    vi = {
+        "vlan": vlan_id,
+        "ip_address": ip_address,
+        "helper_address": helper_address,
+        "dhcp": dhcp,
+    }
+
+    try:
+        _push_vlan_interface(client, vi, device_scope_id, global_scope_id, persona)
+        return {"vlan_id": vlan_id, "device_scope_id": device_scope_id, "pushed": True, "errors": []}
+    except Exception as exc:
+        return {"vlan_id": vlan_id, "device_scope_id": device_scope_id, "pushed": False, "errors": [str(exc)]}
+
+
+# ---------------------------------------------------------------------------
+# WRITE — Hostname
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def set_hostname(
+    device_scope_id: str,
+    hostname: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Set the hostname alias on a device in New Central.
+
+    Args:
+        device_scope_id: The device's numeric scope-id (use find_device or list_scopes).
+        hostname:        The hostname to assign.
+        dry_run:         Preview without writing to Central.
+    """
+    if dry_run:
+        return {"device_scope_id": device_scope_id, "hostname": hostname, "dry_run": True}
+
+    client = _get_client()
+    try:
+        client.post(
+            "/network-config/v1/aliases/sys_host_name",
+            params={"view-type": "LOCAL", "scope-id": device_scope_id},
+            data={
+                "name": "sys_host_name",
+                "type": "ALIAS_HOSTNAME",
+                "default-value": {
+                    "hostname-value": {"hostname": hostname}
+                },
+            },
+        )
+        return {"device_scope_id": device_scope_id, "hostname": hostname, "set": True, "errors": []}
+    except Exception as exc:
+        return {"device_scope_id": device_scope_id, "hostname": hostname, "set": False, "errors": [str(exc)]}
+
+
+# ---------------------------------------------------------------------------
+# WRITE — Device profiles
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def push_aruba_device_profiles(dry_run: bool = False) -> dict[str, Any]:
+    """Ensure the four standard Aruba LLDP device profiles exist at the library level.
+
+    Creates (or updates) arubaAP, arubaGW, arubaSW, arubaAOS profiles with their
+    LLDP match rules, port profiles, and scope-maps. Safe to re-run — idempotent.
+
+    Args:
+        dry_run: Preview without writing to Central.
+    """
+    if dry_run:
+        return {"profiles": [p["name"] for p in ARUBA_DEVICE_PROFILES], "dry_run": True}
+
+    client = _get_client()
+    creds_path = os.environ.get("CREDS_PATH", "config/credentials.yaml")
+    _, target_ctx = build_account_contexts(creds_path)
+    target_ctx.central_client = client
+
+    _ensure_device_profiles(client, target_ctx)
+    return {
+        "profiles": [p["name"] for p in ARUBA_DEVICE_PROFILES],
+        "pushed": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# WRITE — SSIDs
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_underlay_ssids() -> list[dict[str, Any]]:
+    """Return all wlan-ssid objects from Aruba New Central."""
+    return _list(_get_client())
+
+
+@mcp.tool()
+def get_underlay_ssid(ssid_name: str) -> dict[str, Any] | None:
+    """Fetch the current configuration for a single underlay SSID.
+
+    Returns the SSID config dict, or None if not found.
+    """
+    return _get(_get_client(), ssid_name)
 
 
 @mcp.tool()
@@ -183,37 +546,19 @@ def build_underlay_ssid(
        - "Access Switch"                       → ACCESS_SWITCH
        - "Aggregation Switch"                  → AGG_SWITCH
        - "Core Switch"                         → CORE_SWITCH
-       Ask: "Which devices should get this SSID — Access Points, Gateways,
-             or a switch type?"
 
     5. opmode — resolved from "what security":
        - "Open" / none specified               → ENHANCED_OPEN (default)
        - "WPA3 with support for older devices" → WPA3_SAE, wpa3_transition=True
        - "WPA3 only"                           → WPA3_SAE, wpa3_transition=False
        - "WPA2" / "pre-shared key" / "PSK"    → WPA2_PSK
-       Ask: "What security — open, WPA3 (with or without support for older
-             devices), or WPA2 with a pre-shared key?"
        If WPA3_SAE or WPA2_PSK: ask for wpa_passphrase if not provided.
-
-    Other optional settings (only ask if user brings them up):
-      rf_band:               Radio band — 2.4+5GHz (default) | 2.4GHz only |
-                             5GHz only | 6GHz only
-      hide_ssid:             Hide SSID from broadcast (default False).
-      max_clients:           Max clients per radio (default 1024).
-      client_isolation:      Prevent clients talking to each other (default False).
-      dmo_enable:            Dynamic Multicast Optimization (default True).
-      dmo_channel_threshold: DMO channel utilization % threshold (default 90).
-      dmo_clients_threshold: DMO clients threshold (default 6).
-      inactivity_timeout:    Client inactivity timeout in seconds (default 1000).
-      dtim_period:           DTIM period (default 1).
-      dry_run:               Preview actions without writing to Central (default False).
 
     Returns:
         Dict with keys: ssid_name, vlan_ids, scope_id, persona, created, scope_mapped, errors.
     """
-    client = _get_client()
     return _build(
-        client,
+        _get_client(),
         ssid_name=ssid_name,
         vlan_ids=vlan_ids,
         scope_id=scope_id,
@@ -243,19 +588,8 @@ def create_allow_all_role(
 ) -> dict[str, Any]:
     """Create a wireless permit-all role in Aruba New Central and scope-map it.
 
-    Central automatically creates a default role with the same name as the SSID
-    when an SSID is created. This tool explicitly creates/confirms that role with
-    permit-all behaviour and ensures the scope-map is in place.
-
     When a user asks to "create a role with all access" alongside an SSID,
-    reuse the answers already given for WHERE and DEVICE TYPE from the SSID step.
-
-    If creating a role standalone (not after an SSID), ask:
-      - "What should the role be named?" (default: same as the SSID name)
-      - "Where should it apply — everywhere, or a specific site or group?"
-        Resolve to scope_id using get_global_scope_id() or list_scopes().
-      - "Which devices — Access Points, Gateways, or a switch type?"
-        Resolve to persona using the same mapping as build_underlay_ssid.
+    reuse the same WHERE and DEVICE TYPE answers from the SSID step.
 
     Args:
         role_name: Name of the role (typically matches the SSID name).
@@ -267,8 +601,7 @@ def create_allow_all_role(
     Returns:
         Dict with keys: role_name, created, scope_mapped, errors.
     """
-    client = _get_client()
-    return _create_role(client, role_name=role_name, scope_id=scope_id, persona=persona, dry_run=dry_run)
+    return _create_role(_get_client(), role_name=role_name, scope_id=scope_id, persona=persona, dry_run=dry_run)
 
 
 @mcp.tool()
@@ -278,8 +611,8 @@ def delete_underlay_ssid(
 ) -> dict[str, Any]:
     """Delete an underlay SSID from Aruba New Central.
 
-    NOTE: The auto-created default role with the same name is NOT removed by this
-    call — delete it separately if needed.
+    NOTE: The auto-created default role with the same name is NOT removed —
+    delete it separately if needed.
 
     Args:
         ssid_name: Name of the SSID to delete.
@@ -288,25 +621,7 @@ def delete_underlay_ssid(
     Returns:
         Dict with keys: ssid_name, deleted, errors.
     """
-    client = _get_client()
-    return _delete(client, ssid_name=ssid_name, dry_run=dry_run)
-
-
-@mcp.tool()
-def get_underlay_ssid(ssid_name: str) -> dict[str, Any] | None:
-    """Fetch the current configuration for a single underlay SSID.
-
-    Returns the SSID config dict, or None if not found.
-    """
-    client = _get_client()
-    return _get(client, ssid_name)
-
-
-@mcp.tool()
-def list_underlay_ssids() -> list[dict[str, Any]]:
-    """Return all wlan-ssid objects from Aruba New Central."""
-    client = _get_client()
-    return _list(client)
+    return _delete(_get_client(), ssid_name=ssid_name, dry_run=dry_run)
 
 
 if __name__ == "__main__":
