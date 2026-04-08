@@ -206,10 +206,21 @@ class MCPClient:
     # ------------------------------------------------------------------
 
     def get_gw_clusters(self) -> list[dict[str, Any]]:
-        """Return all gateway clusters from /network-config/v1/gw-clusters."""
+        """Return unique gateway clusters by scanning /network-config/v1/overlay-wlan."""
         try:
-            result = self._client.get("/network-config/v1/gw-clusters")
-            return result.get("items", result.get("gw-clusters", []))
+            result = self._client.get("/network-config/v1/overlay-wlan")
+            seen: dict[str, dict[str, Any]] = {}
+            for profile in result.get("ssid-cluster", []):
+                for entry in profile.get("gw-cluster-list", []):
+                    cluster_name = entry.get("cluster")
+                    if cluster_name and cluster_name not in seen:
+                        seen[cluster_name] = {
+                            "cluster": cluster_name,
+                            "cluster-scope-id": entry.get("cluster-scope-id"),
+                            "cluster-type": entry.get("cluster-type"),
+                            "tunnel-type": entry.get("tunnel-type"),
+                        }
+            return list(seen.values())
         except Exception as exc:
             logger.warning("MCPClient.get_gw_clusters failed: %s", exc)
             return []

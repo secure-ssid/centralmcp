@@ -305,6 +305,57 @@ def build_overlay_ssid(
         "errors": [],
     }
 
+    # ------------------------------------------------------------------
+    # Step 1: Create allow-all role first (must exist before SSID references it)
+    # ------------------------------------------------------------------
+    role_body = {
+        "name": ssid_name,
+        "utf8": True,
+    }
+    role_endpoint = f"/network-config/v1/roles/{url_name}"
+    if dry_run:
+        logger.info("[dry-run] Would POST %s (allow-all wireless role)", role_endpoint)
+    else:
+        try:
+            central_client.post(role_endpoint, data=role_body)
+            logger.info("Created allow-all wireless role '%s'", ssid_name)
+        except Exception as exc:
+            resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+            if "duplicate" in resp_text.lower() or "already exists" in resp_text.lower():
+                logger.warning("Role '%s' already exists — continuing", ssid_name)
+            else:
+                result["errors"].append(f"create_role: {exc}")
+                logger.error("Failed to create role '%s': %s", ssid_name, exc)
+
+    # Scope-map the role at global scope for both CAMPUS_AP and MOBILITY_GW
+    # (must be global so the API can resolve default-role references cross-scope)
+    from pipeline.stages.s6_configure import _fetch_global_scope_id
+    global_scope_id = _fetch_global_scope_id(central_client)
+    for persona in ("CAMPUS_AP", "MOBILITY_GW"):
+        role_scope_map = {
+            "scope-map": [
+                {
+                    "scope-name": global_scope_id,
+                    "scope-id": int(global_scope_id),
+                    "persona": persona,
+                    "resource": f"roles/{ssid_name}",
+                }
+            ]
+        }
+        if dry_run:
+            logger.info("[dry-run] Would scope-map roles/%s → %s scope=global", ssid_name, persona)
+        else:
+            try:
+                central_client.post("/network-config/v1/scope-maps", data=role_scope_map)
+                logger.info("Scope-mapped roles/%s → %s scope-id=%s", ssid_name, persona, global_scope_id)
+            except Exception as exc:
+                resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+                if "already exists" in resp_text.lower():
+                    logger.warning("Scope-map for role '%s' (%s) already exists — skipping", ssid_name, persona)
+                else:
+                    result["errors"].append(f"scope_map_role ({persona}): {exc}")
+                    logger.error("Failed to scope-map role '%s' (%s): %s", ssid_name, persona, exc)
+
     # Build WLAN body with overlay-specific overrides
     body = _build_ssid_body(
         ssid_name,
@@ -312,16 +363,17 @@ def build_overlay_ssid(
         opmode=opmode,
         rf_band=rf_band,
         wpa_passphrase=wpa_passphrase,
-        wpa3_transition=wpa3_transition,
+        wpa3_transition=wpa3_transition if opmode != "ENHANCED_OPEN" else False,
         dmo_enable=False,
     )
     body["forward-mode"] = "FORWARD_MODE_L2"
     body["out-of-service"] = "TUNNEL_DOWN"
     body["cluster-preemption"] = False
     body["type"] = "EMPLOYEE"
+    body["default-role"] = ssid_name
 
     # ------------------------------------------------------------------
-    # Step 1: Create wlan-ssid
+    # Step 2: Create wlan-ssid
     # ------------------------------------------------------------------
     endpoint = f"/network-config/v1/wlan-ssids/{url_name}"
     if dry_run:
@@ -342,8 +394,17 @@ def build_overlay_ssid(
                 logger.error("Failed to create overlay SSID '%s': %s", ssid_name, exc)
                 return result
 
+    # The API silently drops default-role on POST — patch it in after creation
+    if not dry_run and result["created"]:
+        try:
+            central_client.patch(endpoint, data={"default-role": ssid_name})
+            logger.info("Patched default-role='%s' on SSID '%s'", ssid_name, ssid_name)
+        except Exception as exc:
+            result["errors"].append(f"patch_default_role: {exc}")
+            logger.error("Failed to patch default-role on SSID '%s': %s", ssid_name, exc)
+
     # ------------------------------------------------------------------
-    # Step 2: Create overlay-wlan profile
+    # Step 4: Create overlay-wlan profile
     # ------------------------------------------------------------------
     overlay_body = {
         "profile": ssid_name,
@@ -379,14 +440,10 @@ def build_overlay_ssid(
                 return result
 
     # ------------------------------------------------------------------
-    # Steps 3-5: Three scope-maps
-    #   wlan-ssids/<name>   → CAMPUS_AP
-    #   roles/<name>        → MOBILITY_GW
-    #   overlay-wlan/<name> → CAMPUS_AP
+    # Steps 3-4: Scope-map wlan-ssid and overlay-wlan (role already mapped above)
     # ------------------------------------------------------------------
     scope_maps = [
         ("CAMPUS_AP", f"wlan-ssids/{ssid_name}"),
-        ("MOBILITY_GW", f"roles/{ssid_name}"),
         ("CAMPUS_AP", f"overlay-wlan/{ssid_name}"),
     ]
 
