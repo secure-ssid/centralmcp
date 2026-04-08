@@ -264,6 +264,163 @@ def build_underlay_ssid(
     return result
 
 
+def build_overlay_ssid(
+    central_client: Any,
+    ssid_name: str,
+    vlan_ids: list[str],
+    scope_id: str,
+    cluster_name: str,
+    cluster_scope_id: str,
+    *,
+    opmode: str = "ENHANCED_OPEN",
+    rf_band: str = "BAND_ALL",
+    wpa_passphrase: str | None = None,
+    wpa3_transition: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create an overlay SSID that tunnels client traffic through a Mobility Gateway.
+
+    Args:
+        central_client:   CentralClient instance with valid credentials.
+        ssid_name:        SSID name to broadcast.
+        vlan_ids:         List of VLAN IDs to assign (e.g. ["200"]).
+        scope_id:         Device Group scope-id (overlay WLANs cannot use global scope).
+        cluster_name:     Name of the gateway cluster to tunnel through.
+        cluster_scope_id: Scope-id of the gateway cluster.
+        dry_run:          If True, log actions but do not call any write APIs.
+
+    Returns:
+        Dict with keys: ssid_name, vlan_ids, scope_id, cluster_name,
+        created (bool), overlay_created (bool), scope_mapped (bool), errors (list[str]).
+    """
+    url_name = quote(ssid_name, safe="")
+    result: dict[str, Any] = {
+        "ssid_name": ssid_name,
+        "vlan_ids": vlan_ids,
+        "scope_id": scope_id,
+        "cluster_name": cluster_name,
+        "created": False,
+        "overlay_created": False,
+        "scope_mapped": False,
+        "errors": [],
+    }
+
+    # Build WLAN body with overlay-specific overrides
+    body = _build_ssid_body(
+        ssid_name,
+        vlan_ids,
+        opmode=opmode,
+        rf_band=rf_band,
+        wpa_passphrase=wpa_passphrase,
+        wpa3_transition=wpa3_transition,
+        dmo_enable=False,
+    )
+    body["forward-mode"] = "FORWARD_MODE_L2"
+    body["out-of-service"] = "TUNNEL_DOWN"
+    body["cluster-preemption"] = False
+    body["type"] = "EMPLOYEE"
+
+    # ------------------------------------------------------------------
+    # Step 1: Create wlan-ssid
+    # ------------------------------------------------------------------
+    endpoint = f"/network-config/v1/wlan-ssids/{url_name}"
+    if dry_run:
+        logger.info("[dry-run] Would POST %s (overlay, FORWARD_MODE_L2)", endpoint)
+        result["created"] = True
+    else:
+        try:
+            central_client.post(endpoint, data=body)
+            result["created"] = True
+            logger.info("Created overlay SSID '%s'", ssid_name)
+        except Exception as exc:
+            resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+            if "duplicate" in resp_text.lower() or "already exists" in resp_text.lower():
+                logger.warning("SSID '%s' already exists — continuing", ssid_name)
+                result["created"] = True
+            else:
+                result["errors"].append(f"create_ssid: {exc}")
+                logger.error("Failed to create overlay SSID '%s': %s", ssid_name, exc)
+                return result
+
+    # ------------------------------------------------------------------
+    # Step 2: Create overlay-wlan profile
+    # ------------------------------------------------------------------
+    overlay_body = {
+        "profile": ssid_name,
+        "overlay-profile-type": "WIRELESS_PROFILE",
+        "essid-name": ssid_name,
+        "gw-cluster-list": [
+            {
+                "cluster-redundancy-type": "PRIMARY",
+                "cluster": cluster_name,
+                "cluster-scope-id": cluster_scope_id,
+                "cluster-type": "CLUSTER_ID",
+                "tunnel-type": "GRE",
+            }
+        ],
+    }
+    overlay_endpoint = f"/network-config/v1/overlay-wlan/{url_name}"
+    if dry_run:
+        logger.info("[dry-run] Would POST %s with cluster=%s", overlay_endpoint, cluster_name)
+        result["overlay_created"] = True
+    else:
+        try:
+            central_client.post(overlay_endpoint, data=overlay_body)
+            result["overlay_created"] = True
+            logger.info("Created overlay-wlan profile '%s'", ssid_name)
+        except Exception as exc:
+            resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+            if "duplicate" in resp_text.lower() or "already exists" in resp_text.lower():
+                logger.warning("overlay-wlan '%s' already exists — continuing", ssid_name)
+                result["overlay_created"] = True
+            else:
+                result["errors"].append(f"create_overlay_wlan: {exc}")
+                logger.error("Failed to create overlay-wlan '%s': %s", ssid_name, exc)
+                return result
+
+    # ------------------------------------------------------------------
+    # Steps 3-5: Three scope-maps
+    #   wlan-ssids/<name>   → CAMPUS_AP
+    #   roles/<name>        → MOBILITY_GW
+    #   overlay-wlan/<name> → CAMPUS_AP
+    # ------------------------------------------------------------------
+    scope_maps = [
+        ("CAMPUS_AP", f"wlan-ssids/{ssid_name}"),
+        ("MOBILITY_GW", f"roles/{ssid_name}"),
+        ("CAMPUS_AP", f"overlay-wlan/{ssid_name}"),
+    ]
+
+    all_mapped = True
+    for persona, resource in scope_maps:
+        scope_map_body = {
+            "scope-map": [
+                {
+                    "scope-name": scope_id,
+                    "scope-id": int(scope_id),
+                    "persona": persona,
+                    "resource": resource,
+                }
+            ]
+        }
+        if dry_run:
+            logger.info("[dry-run] Would POST scope-maps — %s scope=%s resource=%s", persona, scope_id, resource)
+        else:
+            try:
+                central_client.post("/network-config/v1/scope-maps", data=scope_map_body)
+                logger.info("Scope-mapped %s → %s scope-id=%s", resource, persona, scope_id)
+            except Exception as exc:
+                resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+                if "already exists" in resp_text.lower():
+                    logger.warning("Scope-map for '%s' already exists — skipping", resource)
+                else:
+                    result["errors"].append(f"scope_map ({resource}): {exc}")
+                    logger.error("Failed to scope-map %s: %s", resource, exc)
+                    all_mapped = False
+
+    result["scope_mapped"] = all_mapped
+    return result
+
+
 def create_allow_all_role(
     central_client: Any,
     role_name: str,

@@ -200,3 +200,16 @@ class MCPClient:
         except Exception as exc:
             logger.warning("MCPClient.find_client(%s) failed: %s", mac_or_ip, exc)
             return None
+
+    # ------------------------------------------------------------------
+    # Gateway Clusters
+    # ------------------------------------------------------------------
+
+    def get_gw_clusters(self) -> list[dict[str, Any]]:
+        """Return all gateway clusters from /network-config/v1/gw-clusters."""
+        try:
+            result = self._client.get("/network-config/v1/gw-clusters")
+            return result.get("items", result.get("gw-clusters", []))
+        except Exception as exc:
+            logger.warning("MCPClient.get_gw_clusters failed: %s", exc)
+            return []

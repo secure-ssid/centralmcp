@@ -18,7 +18,9 @@ Exposes the following tools to Claude (or any MCP client):
 
   WRITE
   -----
-  build_underlay_ssid      Create + scope-map an underlay SSID
+  build_underlay_ssid      Create + scope-map an underlay SSID (bridge mode)
+  build_overlay_ssid       Create + scope-map an overlay SSID (GRE tunnel via gateway)
+  list_gw_clusters         List available gateway clusters for overlay SSIDs
   create_allow_all_role    Create a permit-all wireless role + scope-map it
   delete_underlay_ssid     Delete an underlay SSID
   get_ssid                 Fetch an existing SSID config
@@ -98,6 +100,7 @@ from pipeline.clients.mcp_client import MCPClient
 from pipeline.clients.token_manager import TokenManager
 from pipeline.config import build_account_contexts
 from pipeline.ssid_underlay import (
+    build_overlay_ssid as _build_overlay,
     build_underlay_ssid as _build,
     create_allow_all_role as _create_role,
     delete_underlay_ssid as _delete,
@@ -623,6 +626,60 @@ def build_underlay_ssid(
         dmo_clients_threshold=dmo_clients_threshold,
         inactivity_timeout=inactivity_timeout,
         dtim_period=dtim_period,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool()
+def list_gw_clusters() -> list[dict[str, Any]]:
+    """Return all gateway clusters available for overlay SSID tunneling."""
+    return _get_mcp_client().get_gw_clusters()
+
+
+@mcp.tool()
+def build_overlay_ssid(
+    ssid_name: str,
+    vlan_ids: list[str],
+    scope_id: str,
+    cluster_name: str,
+    cluster_scope_id: str,
+    opmode: str = "ENHANCED_OPEN",
+    rf_band: str = "BAND_ALL",
+    wpa_passphrase: str | None = None,
+    wpa3_transition: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create an overlay SSID that tunnels client traffic through a Mobility Gateway.
+
+    BEFORE calling this tool, confirm the following with the user:
+
+    1. ssid_name — the SSID name to broadcast.
+
+    2. vlan_ids — list of VLAN ID strings, e.g. ["200"].
+
+    3. scope_id — a Device Group scope-id (NOT global — overlay WLANs require device group scope).
+       Call list_scopes() to find available device groups.
+
+    4. cluster_name + cluster_scope_id — the gateway cluster to tunnel through.
+       Call list_gw_clusters() to discover available clusters.
+
+    5. opmode — security mode (same options as build_underlay_ssid).
+
+    Returns:
+        Dict with keys: ssid_name, vlan_ids, scope_id, cluster_name,
+        created, overlay_created, scope_mapped, errors.
+    """
+    return _build_overlay(
+        _get_client(),
+        ssid_name=ssid_name,
+        vlan_ids=vlan_ids,
+        scope_id=scope_id,
+        cluster_name=cluster_name,
+        cluster_scope_id=cluster_scope_id,
+        opmode=opmode,
+        rf_band=rf_band,
+        wpa_passphrase=wpa_passphrase,
+        wpa3_transition=wpa3_transition,
         dry_run=dry_run,
     )
 
