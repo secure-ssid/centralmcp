@@ -135,6 +135,7 @@ def build_underlay_ssid(
     vlan_ids: list[str],
     scope_id: str,
     *,
+    persona: str = "CAMPUS_AP",
     # Optional overrides
     enabled: bool = True,
     opmode: str = "ENHANCED_OPEN",
@@ -151,7 +152,7 @@ def build_underlay_ssid(
     dtim_period: int = 1,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create an underlay SSID and scope-map it to CAMPUS_AP persona.
+    """Create an underlay SSID and scope-map it to the specified persona.
 
     Args:
         central_client: CentralClient instance with valid credentials.
@@ -160,10 +161,13 @@ def build_underlay_ssid(
         scope_id:       Scope-id to map the SSID to. Pass the global scope-id
                         to apply org-wide, or a device-group scope-id for a
                         narrower scope.
+        persona:        Device-function persona for the scope-map. Default CAMPUS_AP.
+                        Valid values: CAMPUS_AP, MOBILITY_GW, ACCESS_SWITCH,
+                        AGG_SWITCH, CORE_SWITCH.
         dry_run:        If True, log actions but do not call any write APIs.
 
     Returns:
-        Dict with keys: ssid_name, vlan_ids, scope_id, created (bool),
+        Dict with keys: ssid_name, vlan_ids, scope_id, persona, created (bool),
         scope_mapped (bool), errors (list[str]).
     """
     url_name = quote(ssid_name, safe="")  # %20-encode spaces for URL path
@@ -171,6 +175,7 @@ def build_underlay_ssid(
         "ssid_name": ssid_name,
         "vlan_ids": vlan_ids,
         "scope_id": scope_id,
+        "persona": persona,
         "created": False,
         "scope_mapped": False,
         "errors": [],
@@ -218,14 +223,14 @@ def build_underlay_ssid(
                 return result
 
     # ------------------------------------------------------------------
-    # Step 3: Scope-map to CAMPUS_AP persona
+    # Step 3: Scope-map to persona
     # ------------------------------------------------------------------
     scope_map_body = {
         "scope-map": [
             {
                 "scope-name": scope_id,
                 "scope-id": int(scope_id),
-                "persona": "CAMPUS_AP",
+                "persona": persona,
                 "resource": f"wlan-ssids/{ssid_name}",
             }
         ]
@@ -233,15 +238,15 @@ def build_underlay_ssid(
 
     if dry_run:
         logger.info(
-            "[dry-run] Would POST /network-config/v1/scope-maps — CAMPUS_AP scope=%s resource=wlan-ssids/%s",
-            scope_id, ssid_name,
+            "[dry-run] Would POST /network-config/v1/scope-maps — %s scope=%s resource=wlan-ssids/%s",
+            persona, scope_id, ssid_name,
         )
         result["scope_mapped"] = True
     else:
         try:
             central_client.post("/network-config/v1/scope-maps", data=scope_map_body)
             result["scope_mapped"] = True
-            logger.info("Scope-mapped SSID '%s' → CAMPUS_AP scope-id=%s", ssid_name, scope_id)
+            logger.info("Scope-mapped SSID '%s' → %s scope-id=%s", ssid_name, persona, scope_id)
         except Exception as exc:
             resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
             if "already exists" in resp_text.lower():
@@ -259,9 +264,10 @@ def create_allow_all_role(
     role_name: str,
     scope_id: str,
     *,
+    persona: str = "CAMPUS_AP",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a wireless role that allows all traffic and scope-map it to CAMPUS_AP.
+    """Create a wireless role that allows all traffic and scope-map it to the specified persona.
 
     The role is created with:
       - No ACL/policy attached (open permit-all behaviour by default in Central)
@@ -310,7 +316,7 @@ def create_allow_all_role(
             {
                 "scope-name": scope_id,
                 "scope-id": int(scope_id),
-                "persona": "CAMPUS_AP",
+                "persona": persona,
                 "resource": f"roles/{role_name}",
             }
         ]
@@ -318,15 +324,15 @@ def create_allow_all_role(
 
     if dry_run:
         logger.info(
-            "[dry-run] Would POST /network-config/v1/scope-maps — CAMPUS_AP scope=%s resource=roles/%s",
-            scope_id, role_name,
+            "[dry-run] Would POST /network-config/v1/scope-maps — %s scope=%s resource=roles/%s",
+            persona, scope_id, role_name,
         )
         result["scope_mapped"] = True
     else:
         try:
             central_client.post("/network-config/v1/scope-maps", data=scope_map_body)
             result["scope_mapped"] = True
-            logger.info("Scope-mapped role '%s' → CAMPUS_AP scope-id=%s", role_name, scope_id)
+            logger.info("Scope-mapped role '%s' → %s scope-id=%s", role_name, persona, scope_id)
         except Exception as exc:
             resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
             if "already exists" in resp_text.lower():
