@@ -65,7 +65,7 @@ class MCPClient:
     def get_sites(self) -> list[dict[str, Any]]:
         """Return all sites with their IDs."""
         try:
-            result = self._client.get("/network-monitoring/v1/sites", params={"limit": 100})
+            result = self._client.get("/network-config/v1/sites")
             return result.get("items", result.get("sites", []))
         except Exception as exc:
             logger.warning("MCPClient.get_sites failed: %s", exc)
