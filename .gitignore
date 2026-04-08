@@ -3,6 +3,21 @@
 config/credentials.yaml
 .token_cache_*.json
 
+# Claude local settings (may contain credentials in allowed commands)
+.claude/settings.local.json
+
+# Internal runbook PDFs
+*.pdf
+
+# Real device input files (use inputs/*_example.csv as templates instead)
+inputs/*.csv
+inputs/*.cfg
+!inputs/*_example.csv
+!inputs/*_template.csv
+
+# macOS metadata
+.DS_Store
+
 # Runtime output
 state/
 outputs/
