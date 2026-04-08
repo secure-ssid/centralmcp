@@ -70,7 +70,7 @@ def _build_ssid_body(
         },
         "advertise-apname": False,
         "disable-on-6ghz-mesh": False,
-        "dotlink": True,
+        "dot11k": True,
         "dtim-period": dtim_period,
         "ftm-responder": False,
         "hide-ssid": hide_ssid,
@@ -78,7 +78,7 @@ def _build_ssid_body(
         "explicit-ageout-client": False,
         "inactivity-timeout": inactivity_timeout,
         "local-probe-req-thresh": 0,
-        "max-clients-threshhold": max_clients,
+        "max-clients-threshold": max_clients,
         "rf-band": rf_band,
         "rrm-quiet-ie": False,
         "high-throughput": {
@@ -98,8 +98,13 @@ def _build_ssid_body(
         },
         "extremely-high-throughput": {
             "enable": True,
-            "mio": False,
+            "mlo": False,
+            "beacon-protection": False,
         },
+        "wmm-cfg": {
+            "uapsd": True,
+        },
+        "advertise-timing": False,
         "opmode": opmode,
         "use-ip-for-calling-station-id": False,
         "called-station-id": {
@@ -403,7 +408,8 @@ def list_underlay_ssids(central_client: Any) -> list[dict[str, Any]]:
     """Return all wlan-ssid objects from Central."""
     try:
         result = central_client.get("/network-config/v1/wlan-ssids")
-        items = result.get("wlan-ssids", result.get("items", []))
+        # API returns singular "wlan-ssid" key (not plural)
+        items = result.get("wlan-ssid", result.get("wlan-ssids", result.get("items", [])))
         return items if isinstance(items, list) else []
     except Exception as exc:
         logger.warning("list_underlay_ssids failed: %s", exc)

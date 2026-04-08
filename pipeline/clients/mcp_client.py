@@ -34,14 +34,21 @@ class MCPClient:
     # ------------------------------------------------------------------
 
     def get_device_by_serial(self, serial_number: str) -> Optional[dict[str, Any]]:
-        """Return the device inventory record for a given serial, or None."""
+        """Return the device inventory record for a given serial, or None.
+
+        Note: the device-inventory API does not filter server-side by serialNumber,
+        so we fetch all devices and filter client-side.
+        """
         try:
             result = self._client.get(
                 "/network-monitoring/v1alpha1/device-inventory",
-                params={"serialNumber": serial_number},
+                params={"limit": 200},
             )
             items = result.get("devices", result.get("items", []))
-            return items[0] if items else None
+            for item in items:
+                if item.get("serialNumber", "").lower() == serial_number.lower():
+                    return item
+            return None
         except Exception as exc:
             logger.warning("MCPClient.get_device_by_serial(%s) failed: %s", serial_number, exc)
             return None
@@ -92,10 +99,13 @@ class MCPClient:
             return None
 
     def get_site_by_name(self, name: str) -> Optional[dict[str, Any]]:
-        """Return a site record by name, or None if not found."""
+        """Return a site record by name, or None if not found.
+
+        New Central sites use 'scopeName' as the human-readable name field.
+        """
         sites = self.get_sites()
         for site in sites:
-            site_name = site.get("siteName") or site.get("name", "")
+            site_name = site.get("scopeName") or site.get("siteName") or site.get("name", "")
             if site_name.lower() == name.lower():
                 return site
         return None
@@ -169,22 +179,24 @@ class MCPClient:
             return []
 
     def find_client(self, mac_or_ip: str) -> Optional[dict[str, Any]]:
-        """Find a single client by MAC address or IP address, or None if not found."""
+        """Find a single client by MAC address or IP address, or None if not found.
+
+        Note: the clients API does not filter server-side by macAddress or ipAddress,
+        so we fetch all clients and filter client-side.
+        """
         try:
             result = self._client.get(
                 "/network-monitoring/v1/clients",
-                params={"macAddress": mac_or_ip, "limit": 1},
+                params={"limit": 100},
             )
             items = result.get("clients", result.get("items", []))
-            if items:
-                return items[0]
-            # Retry with IP if MAC lookup returned nothing
-            result = self._client.get(
-                "/network-monitoring/v1/clients",
-                params={"ipAddress": mac_or_ip, "limit": 1},
-            )
-            items = result.get("clients", result.get("items", []))
-            return items[0] if items else None
+            normalized = mac_or_ip.lower()
+            for client in items:
+                if client.get("macAddress", "").lower() == normalized:
+                    return client
+                if client.get("ipv4", "").lower() == normalized:
+                    return client
+            return None
         except Exception as exc:
             logger.warning("MCPClient.find_client(%s) failed: %s", mac_or_ip, exc)
             return None

@@ -21,8 +21,9 @@ Exposes the following tools to Claude (or any MCP client):
   build_underlay_ssid      Create + scope-map an underlay SSID
   create_allow_all_role    Create a permit-all wireless role + scope-map it
   delete_underlay_ssid     Delete an underlay SSID
-  get_underlay_ssid        Fetch an existing SSID config
-  list_underlay_ssids      List all SSID objects
+  get_ssid                 Fetch an existing SSID config
+  list_ssids               List all SSID objects
+  get_scope_maps           List scope-map entries, optionally filtered by resource
   create_vlan              Create an L2 VLAN and scope-map it globally
   create_vlan_interface    Create an L3 VLAN interface (SVI) at device scope
   set_hostname             Set the hostname alias on a device
@@ -291,14 +292,47 @@ def list_scopes() -> list[dict[str, Any]]:
     """
     client = _get_client()
     try:
+        # Build a name lookup from sites and device-groups (both use scopeId + scopeName)
+        name_map: dict[str, tuple[str, str]] = {}  # scope_id -> (name, type)
+
+        # Org-level global scope
+        global_id = str(_fetch_global_scope_id(client))
+        name_map[global_id] = ("Global (Org-wide)", "org")
+
+        try:
+            sites_result = client.get("/network-config/v1/sites")
+            for site in sites_result.get("items", []):
+                sid = str(site.get("scopeId") or site.get("id", ""))
+                sname = site.get("scopeName") or site.get("siteName") or sid
+                if sid:
+                    name_map[sid] = (sname, "site")
+        except Exception:
+            pass
+
+        try:
+            groups_result = client.get("/network-config/v1/device-groups")
+            for grp in groups_result.get("items", []):
+                sid = str(grp.get("scopeId") or grp.get("id", ""))
+                sname = grp.get("scopeName") or sid
+                if sid:
+                    name_map[sid] = (sname, "group")
+        except Exception:
+            pass
+
+        # Collect all unique scope-ids from scope-maps, then label them
         result = client.get("/network-config/v1/scope-maps")
         seen: dict[str, dict] = {}
         for entry in result.get("scope-map", []):
             sid = str(entry.get("scope-id", ""))
-            sname = entry.get("scope-name", sid)
-            stype = entry.get("scope-type", "")
             if sid and sid not in seen:
+                sname, stype = name_map.get(sid, (sid, ""))
                 seen[sid] = {"scope_id": sid, "scope_name": sname, "scope_type": stype}
+
+        # Ensure org/site/group entries are included even if no scope-map exists yet
+        for sid, (sname, stype) in name_map.items():
+            if sid not in seen:
+                seen[sid] = {"scope_id": sid, "scope_name": sname, "scope_type": stype}
+
         return list(seen.values())
     except Exception as exc:
         return [{"error": str(exc)}]
@@ -490,14 +524,28 @@ def push_aruba_device_profiles(dry_run: bool = False) -> dict[str, Any]:
 
 
 @mcp.tool()
-def list_underlay_ssids() -> list[dict[str, Any]]:
+def list_ssids() -> list[dict[str, Any]]:
     """Return all wlan-ssid objects from Aruba New Central."""
     return _list(_get_client())
 
 
 @mcp.tool()
-def get_underlay_ssid(ssid_name: str) -> dict[str, Any] | None:
-    """Fetch the current configuration for a single underlay SSID.
+def get_scope_maps(resource_filter: str | None = None) -> list[dict[str, Any]]:
+    """Return all scope-map entries from Aruba New Central.
+
+    Args:
+        resource_filter: Optional string to filter results by resource name (e.g. 'wlan-ssids/lab').
+    """
+    result = _get_client().get("/network-config/v1/scope-maps")
+    items: list[dict[str, Any]] = result.get("scope-map", result.get("items", []))
+    if resource_filter:
+        items = [i for i in items if resource_filter in i.get("resource", "")]
+    return items
+
+
+@mcp.tool()
+def get_ssid(ssid_name: str) -> dict[str, Any] | None:
+    """Fetch the current configuration for a single SSID.
 
     Returns the SSID config dict, or None if not found.
     """
