@@ -10,6 +10,7 @@ Exposes the following tools to Claude (or any MCP client):
   find_device              Find a device by serial number
   list_clients             List connected clients (optionally by site or device)
   find_client              Find a client by MAC or IP address
+  get_client_details       Fetch detailed info (incl. usage/bandwidth) for a single client by MAC
   list_alerts              List active alerts (optionally by site or severity)
   list_events              List events for a device
   get_events_count         Count events for a device
@@ -34,6 +35,9 @@ Exposes the following tools to Claude (or any MCP client):
   get_firmware_compliance  Read the firmware compliance policy at a scope
   set_firmware_compliance  Create or update a firmware compliance policy (triggers upgrade)
   list_firmware_upgrades   List in-progress or recent firmware upgrade tasks
+  cx_ping                  Ping a destination from a CX switch (async, polls to completion)
+  cx_traceroute            Traceroute to a destination from a CX switch (async, polls to completion)
+  cx_show                  Run one or more 'show' commands on a CX switch (async, polls to completion)
 
 Credentials are loaded from config/credentials.yaml (or env vars —
 see pipeline/config.py).  Set CREDS_PATH env var to override the path.
@@ -95,6 +99,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -454,6 +459,39 @@ def list_clients(
 def find_client(mac_or_ip: str) -> dict[str, Any] | None:
     """Find a single connected client by MAC address or IP address. Returns None if not found."""
     return _get_mcp_client().find_client(mac_or_ip)
+
+
+@mcp.tool()
+def get_client_details(mac_address: str) -> dict[str, Any]:
+    """Fetch detailed info for a single client by MAC address.
+
+    Uses GET /network-monitoring/v1/clients/{mac-address} (classic v1 API).
+    Returns richer detail than list_clients — including usage/bandwidth stats
+    and historical connection info if available.
+
+    Args:
+        mac_address: Client MAC address (e.g. "80:4a:f2:4c:0f:e8").
+
+    Returns:
+        Dict with "client" (detail record) and "errors".
+    """
+    client = _get_client()
+    errors: list[str] = []
+    mac = mac_address.replace("-", ":").lower()
+    try:
+        response = client._request("GET", f"/network-monitoring/v1/clients/{mac}")
+        if response.status_code == 404:
+            errors.append(f"Client {mac} not found.")
+            return {"client": None, "errors": errors}
+        response.raise_for_status()
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        return {"client": data, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"client": None, "errors": errors}
 
 
 # ---------------------------------------------------------------------------
@@ -961,6 +999,201 @@ def delete_underlay_ssid(
         Dict with keys: ssid_name, deleted, errors.
     """
     return _delete(_get_client(), ssid_name=ssid_name, dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------------
+# TROUBLESHOOTING — CX switches  (network-troubleshooting/v1alpha1/cx/...)
+# ---------------------------------------------------------------------------
+
+_CX_TROUBLESHOOTING_BASE = "/network-troubleshooting/v1alpha1/cx"
+_POLL_INTERVAL = 5   # seconds between polling attempts
+_POLL_MAX = 12       # up to ~60 s total
+
+
+def _cx_poll(client: "CentralClient", serial: str, operation: str, task_id: str) -> dict[str, Any]:
+    """Poll an async troubleshooting task until COMPLETED/FAILED or timeout."""
+    endpoint = f"{_CX_TROUBLESHOOTING_BASE}/{serial}/{operation}/async-operations/{task_id}"
+    for _ in range(_POLL_MAX):
+        time.sleep(_POLL_INTERVAL)
+        try:
+            result = client.get(endpoint)
+        except Exception as exc:
+            return {"status": "ERROR", "error": str(exc)}
+        status = result.get("status", "")
+        if status in ("COMPLETED", "FAILED"):
+            return result
+    return result  # return last response even if still running
+
+
+@mcp.tool()
+def cx_ping(
+    serial_number: str,
+    destination: str,
+    count: int | None = None,
+    packet_size: int | None = None,
+    vrf_name: str | None = None,
+    use_management_interface: bool | None = None,
+) -> dict[str, Any]:
+    """Ping a destination from a CX switch and return the result.
+
+    Submits the ping via POST /network-troubleshooting/v1alpha1/cx/{serial}/ping,
+    then polls the async-operations endpoint until COMPLETED or FAILED (up to ~60 s).
+
+    Args:
+        serial_number:           CX switch serial number.
+        destination:             Destination IP address or hostname.
+        count:                   Number of ping packets (1–100, default 5 on device).
+        packet_size:             Packet size in bytes.
+        vrf_name:                VRF name to use as source for the ping.
+        use_management_interface: True to ping via the management interface.
+
+    Returns:
+        Dict with the final async-operations result, plus "errors" if any.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    payload: dict[str, Any] = {"destination": destination}
+    if count is not None:
+        payload["count"] = count
+    if packet_size is not None:
+        payload["packetSize"] = packet_size
+    if vrf_name is not None:
+        payload["vrfName"] = vrf_name
+    if use_management_interface is not None:
+        payload["useManagementInterface"] = use_management_interface
+
+    try:
+        resp = client._request(
+            "POST",
+            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/ping",
+            json=payload,
+        )
+        if resp.status_code != 202:
+            try:
+                body = resp.json()
+            except Exception:
+                body = resp.text
+            errors.append(f"HTTP {resp.status_code}: {body}")
+            return {"status": None, "errors": errors}
+
+        location = resp.json().get("location", "")
+        task_id = location.split("/")[-1]
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+
+    result = _cx_poll(client, serial_number, "ping", task_id)
+    result["errors"] = errors
+    return result
+
+
+@mcp.tool()
+def cx_traceroute(
+    serial_number: str,
+    destination: str,
+    vrf_name: str | None = None,
+    use_management_interface: bool | None = None,
+) -> dict[str, Any]:
+    """Run a traceroute to a destination from a CX switch and return the result.
+
+    Submits via POST /network-troubleshooting/v1alpha1/cx/{serial}/traceroute,
+    then polls until COMPLETED or FAILED (up to ~60 s).
+
+    Args:
+        serial_number:           CX switch serial number.
+        destination:             Destination IP address or hostname.
+        vrf_name:                VRF name to use as source.
+        use_management_interface: True to traceroute via the management interface.
+
+    Returns:
+        Dict with the final async-operations result, plus "errors" if any.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    payload: dict[str, Any] = {"destination": destination}
+    if vrf_name is not None:
+        payload["vrfName"] = vrf_name
+    if use_management_interface is not None:
+        payload["useManagementInterface"] = use_management_interface
+
+    try:
+        resp = client._request(
+            "POST",
+            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/traceroute",
+            json=payload,
+        )
+        if resp.status_code != 202:
+            try:
+                body = resp.json()
+            except Exception:
+                body = resp.text
+            errors.append(f"HTTP {resp.status_code}: {body}")
+            return {"status": None, "errors": errors}
+
+        location = resp.json().get("location", "")
+        task_id = location.split("/")[-1]
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+
+    result = _cx_poll(client, serial_number, "traceroute", task_id)
+    result["errors"] = errors
+    return result
+
+
+@mcp.tool()
+def cx_show(
+    serial_number: str,
+    commands: list[str],
+) -> dict[str, Any]:
+    """Run one or more 'show' commands on a CX switch and return the output.
+
+    All commands must start with 'show ' (max 20 per call).
+    Submits via POST /network-troubleshooting/v1alpha1/cx/{serial}/showCommands,
+    then polls until COMPLETED or FAILED (up to ~60 s).
+
+    Args:
+        serial_number: CX switch serial number.
+        commands:      List of show commands, e.g. ["show version", "show ip route"].
+
+    Returns:
+        Dict with the final async-operations result (includes per-command output),
+        plus "errors" if any.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    if not commands:
+        return {"status": None, "errors": ["commands list cannot be empty"]}
+    if len(commands) > 20:
+        return {"status": None, "errors": [f"commands list cannot exceed 20 items (got {len(commands)})"]}
+    for i, cmd in enumerate(commands):
+        if not cmd.strip().lower().startswith("show "):
+            return {"status": None, "errors": [f"Command {i} must start with 'show ': '{cmd}'"]}
+
+    try:
+        resp = client._request(
+            "POST",
+            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
+            json={"commands": commands},
+        )
+        if resp.status_code != 202:
+            try:
+                body = resp.json()
+            except Exception:
+                body = resp.text
+            errors.append(f"HTTP {resp.status_code}: {body}")
+            return {"status": None, "errors": errors}
+
+        location = resp.json().get("location", "")
+        task_id = location.split("/")[-1]
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+
+    result = _cx_poll(client, serial_number, "showCommands", task_id)
+    result["errors"] = errors
+    return result
 
 
 if __name__ == "__main__":
