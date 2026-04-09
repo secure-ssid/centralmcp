@@ -30,6 +30,9 @@ Exposes the following tools to Claude (or any MCP client):
   create_vlan_interface    Create an L3 VLAN interface (SVI) at device scope
   set_hostname             Set the hostname alias on a device
   push_aruba_device_profiles  Ensure Aruba LLDP device profiles exist at library level
+  get_firmware             Fetch current firmware details for a device
+  upgrade_firmware         Trigger a firmware upgrade on one or more devices
+  list_firmware_upgrades   List in-progress or recent firmware upgrade tasks
 
 Credentials are loaded from config/credentials.yaml (or env vars —
 see pipeline/config.py).  Set CREDS_PATH env var to override the path.
@@ -201,6 +204,145 @@ def list_devices(
 def find_device(serial_number: str) -> dict[str, Any] | None:
     """Find a single device by serial number. Returns the device record or None."""
     return _get_mcp_client().get_device_by_serial(serial_number)
+
+
+# ---------------------------------------------------------------------------
+# READ/WRITE — Firmware
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_firmware(serial_number: str) -> dict[str, Any]:
+    """Fetch current firmware details for a device by serial number.
+
+    Returns the items array from the firmware-details API, which includes
+    the current firmware version, compliance status, and available upgrade versions.
+
+    Args:
+        serial_number: Device serial number (e.g. "CN26KNN2YQ").
+
+    Returns:
+        Dict with key "items" (list of firmware detail records) and "errors".
+
+    Note:
+        The firmwareVersion field includes a platform prefix, e.g. "PL.10.16.1006".
+        To check if a device is on AOS 10, test: "10." in firmwareVersion.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    try:
+        result = client.get(
+            "/network-services/v1alpha1/firmware-details",
+            params={"serialNumber": serial_number},
+        )
+        items = result.get("items", [])
+        return {"serial_number": serial_number, "items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"serial_number": serial_number, "items": [], "errors": errors}
+
+
+@mcp.tool()
+def upgrade_firmware(
+    serial_numbers: list[str],
+    firmware_version: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Trigger a firmware upgrade on one or more switches/APs.
+
+    Uses POST /firmware/v1/upgrade. On this internal instance this endpoint
+    may return 404 — if so the result will contain a warning rather than raising.
+
+    Args:
+        serial_numbers:   List of device serial numbers to upgrade.
+        firmware_version: Target firmware version string (e.g. "PL.10.16.1006").
+                          If omitted, Central will use the compliance target.
+        dry_run:          Preview the payload without submitting.
+
+    Returns:
+        Dict with keys: submitted (list), skipped (list), errors (list).
+    """
+    client = _get_client()
+    submitted: list[str] = []
+    skipped: list[str] = []
+    errors: list[str] = []
+
+    payload: dict[str, Any] = {"device_list": serial_numbers}
+    if firmware_version:
+        payload["firmware_version"] = firmware_version
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "payload": payload,
+            "submitted": [],
+            "skipped": [],
+            "errors": [],
+        }
+
+    try:
+        response = client._request("POST", "/firmware/v1/upgrade", json=payload)
+        if response.status_code == 404:
+            errors.append(
+                "POST /firmware/v1/upgrade returned 404 — endpoint not available on this instance. "
+                "Verify firmware via get_firmware() and upgrade manually if needed."
+            )
+            skipped.extend(serial_numbers)
+        elif response.status_code in (200, 201, 202):
+            submitted.extend(serial_numbers)
+        else:
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+            errors.append(f"HTTP {response.status_code}: {body}")
+            skipped.extend(serial_numbers)
+    except Exception as exc:
+        errors.append(str(exc))
+        skipped.extend(serial_numbers)
+
+    return {"submitted": submitted, "skipped": skipped, "errors": errors}
+
+
+@mcp.tool()
+def list_firmware_upgrades(
+    serial_number: str | None = None,
+) -> dict[str, Any]:
+    """List in-progress or recent firmware upgrade tasks.
+
+    Uses GET /firmware/v1/upgrade to fetch the upgrade job status.
+
+    Args:
+        serial_number: Optional — filter results to a specific device serial.
+
+    Returns:
+        Dict with key "items" (list of upgrade task records) and "errors".
+    """
+    client = _get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {}
+    if serial_number:
+        params["serialNumber"] = serial_number
+
+    try:
+        response = client._request("GET", "/firmware/v1/upgrade", params=params or None)
+        if response.status_code == 404:
+            errors.append(
+                "GET /firmware/v1/upgrade returned 404 — endpoint not available on this instance."
+            )
+            return {"items": [], "errors": errors}
+        response.raise_for_status()
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        items = data.get("items", data) if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            items = [items] if items else []
+        return {"items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "errors": errors}
 
 
 # ---------------------------------------------------------------------------
