@@ -31,7 +31,8 @@ Exposes the following tools to Claude (or any MCP client):
   set_hostname             Set the hostname alias on a device
   push_aruba_device_profiles  Ensure Aruba LLDP device profiles exist at library level
   get_firmware             Fetch current firmware details for a device
-  upgrade_firmware         Trigger a firmware upgrade on one or more devices
+  get_firmware_compliance  Read the firmware compliance policy at a scope
+  set_firmware_compliance  Create or update a firmware compliance policy (triggers upgrade)
   list_firmware_upgrades   List in-progress or recent firmware upgrade tasks
 
 Credentials are loaded from config/credentials.yaml (or env vars —
@@ -243,65 +244,150 @@ def get_firmware(serial_number: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def upgrade_firmware(
-    serial_numbers: list[str],
-    firmware_version: str | None = None,
-    dry_run: bool = False,
+def get_firmware_compliance(
+    scope_id: str | None = None,
+    device_function: str | None = None,
+    object_type: str | None = None,
 ) -> dict[str, Any]:
-    """Trigger a firmware upgrade on one or more switches/APs.
+    """Read the firmware compliance policy at a given scope.
 
-    Uses POST /firmware/v1/upgrade. On this internal instance this endpoint
-    may return 404 — if so the result will contain a warning rather than raising.
+    Uses GET /network-config/v1alpha1/firmware-compliance.
 
     Args:
-        serial_numbers:   List of device serial numbers to upgrade.
-        firmware_version: Target firmware version string (e.g. "PL.10.16.1006").
-                          If omitted, Central will use the compliance target.
-        dry_run:          Preview the payload without submitting.
+        scope_id:        Scope to query (site, group, or global scope-id).
+                         If omitted, returns SHARED/library policies.
+        device_function: Filter by device type — e.g. ACCESS_SWITCH, CAMPUS_AP,
+                         MOBILITY_GW, AGG_SWITCH, CORE_SWITCH.
+        object_type:     LOCAL or SHARED (default: both).
 
     Returns:
-        Dict with keys: submitted (list), skipped (list), errors (list).
+        Dict with key "items" (policy records) and "errors".
     """
     client = _get_client()
-    submitted: list[str] = []
-    skipped: list[str] = []
+    errors: list[str] = []
+    params: dict[str, Any] = {}
+    if scope_id:
+        params["scope-id"] = scope_id
+        params.setdefault("object-type", "LOCAL")
+    if device_function:
+        params["device-function"] = device_function
+    if object_type:
+        params["object-type"] = object_type
+
+    try:
+        result = client.get("/network-config/v1alpha1/firmware-compliance", params=params or None)
+        items = result.get("items", result)
+        if not isinstance(items, list):
+            items = [items] if items else []
+        return {"items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "errors": errors}
+
+
+@mcp.tool()
+def set_firmware_compliance(
+    scope_id: str,
+    device_function: str,
+    firmware_version: str,
+    upgrade_mode: str = "REGULAR",
+    reboot_schedule_mode: str = "IMMEDIATE",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create or update a firmware compliance policy to trigger an upgrade.
+
+    Uses POST /network-config/v1alpha1/firmware-compliance (creates if absent,
+    then PATCH to update if a policy already exists at this scope).
+
+    This is the correct way to upgrade switches and APs on this instance —
+    the /firmware/v1/upgrade endpoint returns 404 here.
+
+    Args:
+        scope_id:            Scope where the policy applies — use get_global_scope_id()
+                             for org-wide, or list_scopes() to find a site/group scope-id.
+        device_function:     Target device type — ACCESS_SWITCH, CAMPUS_AP,
+                             MOBILITY_GW, AGG_SWITCH, or CORE_SWITCH.
+        firmware_version:    Target firmware version (e.g. "10.16.1030").
+        upgrade_mode:        REGULAR (default) or LIVE (hitless/live upgrade).
+        reboot_schedule_mode: IMMEDIATE (default), SINCE, or NEVER.
+        dry_run:             Preview the payload without submitting.
+
+    Returns:
+        Dict with keys: action ("created" or "updated"), scope_id, device_function,
+        firmware_version, response, errors.
+    """
+    client = _get_client()
     errors: list[str] = []
 
-    payload: dict[str, Any] = {"device_list": serial_numbers}
-    if firmware_version:
-        payload["firmware_version"] = firmware_version
+    payload: dict[str, Any] = {
+        "version-chart": {"version": firmware_version},
+        "upgrade-mode": upgrade_mode,
+        "enforcement-schedule": {
+            "upgrade-schedule": {"upgrade-schedule-mode": "IMMEDIATE"},
+            "reboot-schedule": {"reboot-schedule-mode": reboot_schedule_mode},
+        },
+    }
+    params = {"scope-id": scope_id, "object-type": "LOCAL", "device-function": device_function}
 
     if dry_run:
         return {
             "dry_run": True,
+            "action": "would POST or PATCH",
+            "scope_id": scope_id,
+            "device_function": device_function,
+            "firmware_version": firmware_version,
             "payload": payload,
-            "submitted": [],
-            "skipped": [],
             "errors": [],
         }
 
+    # Try POST first; if 412 (already exists), fall back to PATCH
+    action = "created"
     try:
-        response = client._request("POST", "/firmware/v1/upgrade", json=payload)
-        if response.status_code == 404:
-            errors.append(
-                "POST /firmware/v1/upgrade returned 404 — endpoint not available on this instance. "
-                "Verify firmware via get_firmware() and upgrade manually if needed."
+        response = client._request(
+            "POST", "/network-config/v1alpha1/firmware-compliance", json=payload, params=params
+        )
+        if response.status_code == 412:
+            # Policy already exists — update it
+            action = "updated"
+            response = client._request(
+                "PATCH", "/network-config/v1alpha1/firmware-compliance", json=payload, params=params
             )
-            skipped.extend(serial_numbers)
-        elif response.status_code in (200, 201, 202):
-            submitted.extend(serial_numbers)
-        else:
+        if response.status_code not in (200, 201, 202):
             try:
                 body = response.json()
             except Exception:
                 body = response.text
             errors.append(f"HTTP {response.status_code}: {body}")
-            skipped.extend(serial_numbers)
+            return {
+                "action": None,
+                "scope_id": scope_id,
+                "device_function": device_function,
+                "firmware_version": firmware_version,
+                "response": None,
+                "errors": errors,
+            }
+        try:
+            resp_body = response.json()
+        except Exception:
+            resp_body = {}
+        return {
+            "action": action,
+            "scope_id": scope_id,
+            "device_function": device_function,
+            "firmware_version": firmware_version,
+            "response": resp_body,
+            "errors": errors,
+        }
     except Exception as exc:
         errors.append(str(exc))
-        skipped.extend(serial_numbers)
-
-    return {"submitted": submitted, "skipped": skipped, "errors": errors}
+        return {
+            "action": None,
+            "scope_id": scope_id,
+            "device_function": device_function,
+            "firmware_version": firmware_version,
+            "response": None,
+            "errors": errors,
+        }
 
 
 @mcp.tool()
