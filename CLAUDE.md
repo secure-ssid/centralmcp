@@ -72,3 +72,48 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 3. Follow verb_noun naming, no prefix
 4. Include docstring: what it does, args, returns, and any gotchas
 5. Update the tool list in the module docstring at the top of `mcp_server.py`
+
+**Before editing mcp_server.py:** use `Grep` to find the exact line number, then `Read` only the relevant slice. Never page through the whole file.
+
+## API reference
+
+Postman collections are in `resourse/` (note spelling):
+- `MRT APIs.postman_collection.json` — monitoring + troubleshooting endpoints
+- `Configuration APIs.postman_collection.json` — config/provisioning endpoints
+
+## Confirmed endpoint patterns
+
+**Monitoring base:** `GET /network-monitoring/v1/...`
+
+| Resource | Endpoint |
+|---|---|
+| AP detail | `/aps/{serial}` |
+| AP radios | `/aps/{serial}/radios` |
+| AP ports | `/aps/{serial}/ports` |
+| AP cpu/memory trends | `/aps/{serial}/{metric}-utilization-trends?filter=timestamp gt {iso} and timestamp lt {iso}&site-id={id}` |
+| AP throughput trends | `/aps/{serial}/throughput-trends?interface-type=WIRELESS` |
+| Switch detail | `/switches/{serial}` |
+| Switch interfaces | `/switches/{serial}/interfaces` |
+| Switch VLANs | `/switches/{serial}/vlans` |
+| Switch PoE | `/switches/{serial}/interface-poe` |
+| Switch hw trends (cpu/mem) | `/switches/{serial}/hardware-trends?filter=...&site-id={id}` |
+| Switch iface trends | `/switches/{serial}/interface-trends?filter=...&interface-id={id}` |
+| Devices list | `/devices` |
+| Clients list | `/clients` |
+| Config health | `/network-config/v1alpha1/config-health/devices` |
+
+**Troubleshooting base:** `POST /network-troubleshooting/v1/{device-type}/{serial}/{op}`
+- Device types: `cx`, `aos-s`, `gateways`, `aps`
+- Ops: `ping`, `traceroute`, `showCommands`, `reboot`, `poeBounce`, `portBounce`, `cableTest`
+- All async: POST returns 202 + Location header → poll `{endpoint}/async-operations/{task_id}`
+- CX port format: `"1/1/1"` — AOS-S: `"1"` — Gateway: `"GE 0/0/0"`
+
+**Port profiles (confirmed two-step):**
+1. `POST /network-config/v1/sw-port-profiles/{name}` with `{"description": "..."}` (shell)
+2. `PUT /network-config/v1/sw-port-profiles/{name}` with full nested body (switchport/stp/poe/lldp)
+
+## Token cost tips
+
+- Use `Grep` + targeted `Read` with offset/limit instead of reading whole files
+- Filter Postman collection data with a tight Python script — don't dump raw output
+- Start a fresh conversation after long build sessions to reset context
