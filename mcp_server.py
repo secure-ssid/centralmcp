@@ -48,6 +48,13 @@ Exposes the following tools to Claude (or any MCP client):
   acknowledge_alert        Acknowledge, clear, or resolve an active alert
   disconnect_client        Force-disconnect a wireless client by MAC address
   update_device_settings   Update general device-level metadata/settings
+  list_device_stats        Fetch performance stats for a device (throughput, clients, uptime)
+  get_device_health        Fetch config-health or monitoring health state for a device
+  get_wireless_metrics     Fetch AP-specific wireless metrics (RF, clients, utilization)
+  list_switch_ports        List ports/interfaces on a CX switch with link state and stats
+  get_sle_metrics          Fetch SLE (Service Level Experience) scores by site or device
+  create_port_profile      Create a switch port profile and scope-map it
+  update_port_config       Update ethernet interface config on a CX switch (device scope)
 
   GREENLAKE PLATFORM (GLP)
   ------------------------
@@ -2014,6 +2021,578 @@ def disconnect_client(
             errors.append(str(exc))
 
     return {"mac_address": mac_address, "response": None, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# WRITE — Device Settings
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def update_device_settings(
+    serial_number: str,
+    settings: dict[str, Any],
+    device_scope_id: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Update general device-level metadata or settings.
+
+    Tries the following approaches in order until one succeeds:
+      1. PATCH /network-monitoring/v1/devices/{serial}
+      2. PATCH /network-config/v1/switch-system/{serial}?viewtype=LOCAL&scope-id={scope_id}
+         (requires device_scope_id; skipped if not provided)
+
+    Common updatable settings fields (vary by device type):
+      name (str), location (str), notes (str), latitude (float), longitude (float)
+
+    For switch system settings (pass device_scope_id):
+      banner (str), contact (str), location (str)
+
+    Args:
+        serial_number:   Serial number of the device to update.
+        settings:        Dict of field-value pairs to apply.
+        device_scope_id: Config-layer scope-id (use find_device). Required for
+                         switch-system config path.
+        dry_run:         Preview payload without writing.
+
+    Returns:
+        Dict with keys: serial_number, settings, endpoint_used, response, errors.
+    """
+    if dry_run:
+        return {
+            "dry_run": True,
+            "serial_number": serial_number,
+            "settings": settings,
+            "device_scope_id": device_scope_id,
+            "response": None,
+            "errors": [],
+        }
+
+    client = _get_client()
+    errors: list[str] = []
+
+    candidates: list[tuple[str, str, dict[str, Any], dict[str, Any] | None]] = [
+        ("PATCH", f"/network-monitoring/v1/devices/{serial_number}", settings, None),
+    ]
+    if device_scope_id:
+        candidates.append((
+            "PATCH",
+            f"/network-config/v1/switch-system/{serial_number}",
+            settings,
+            {"viewtype": "LOCAL", "scope-id": device_scope_id},
+        ))
+
+    for method, endpoint, payload, params in candidates:
+        try:
+            response = client._request(method, endpoint, json=payload, params=params)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202, 204):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            try:
+                resp_body = response.json()
+            except Exception:
+                resp_body = {}
+            return {
+                "serial_number": serial_number,
+                "settings": settings,
+                "endpoint_used": endpoint,
+                "response": resp_body,
+                "errors": errors,
+            }
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "settings": settings, "endpoint_used": None, "response": None, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# READ — Device Stats & Health
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_device_stats(
+    serial_number: str,
+) -> dict[str, Any]:
+    """Fetch performance stats for a device (throughput, client count, uptime, etc.).
+
+    Tries multiple monitoring endpoints in order:
+      1. GET /network-monitoring/v1/devices/{serial}/stats
+      2. GET /network-monitoring/v1/devices/{serial}  (stats embedded in device record)
+      3. GET /network-monitoring/v1alpha1/devices/{serial}/statistics
+
+    Args:
+        serial_number: Device serial number.
+
+    Returns:
+        Dict with keys: serial_number, stats, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    candidates = [
+        f"/network-monitoring/v1/devices/{serial_number}/stats",
+        f"/network-monitoring/v1/devices/{serial_number}",
+        f"/network-monitoring/v1alpha1/devices/{serial_number}/statistics",
+    ]
+
+    for endpoint in candidates:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+            return {"serial_number": serial_number, "stats": data, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "stats": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_device_health(
+    serial_number: str | None = None,
+    device_scope_id: str | None = None,
+) -> dict[str, Any]:
+    """Fetch config-health or monitoring health state for a device.
+
+    Uses GET /network-config/v1alpha1/config-health/devices (the confirmed runbook
+    endpoint for config compliance/health). Also tries monitoring endpoints as fallback.
+
+    Supply serial_number for monitoring lookups; supply device_scope_id to filter
+    the config-health response to a single device.
+
+    Args:
+        serial_number:   Device serial number. Used to filter monitoring results.
+        device_scope_id: Config-layer scope-id to filter config-health result.
+
+    Returns:
+        Dict with keys: serial_number, health, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    # Try config-health first (confirmed endpoint from runbook)
+    try:
+        params: dict[str, Any] = {}
+        if device_scope_id:
+            params["scope-id"] = device_scope_id
+        response = client._request("GET", "/network-config/v1alpha1/config-health/devices", params=params or None)
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get("items", data.get("devices", [data] if data else []))
+            # If serial given, filter to that device
+            if serial_number and isinstance(items, list):
+                matches = [i for i in items if i.get("serialNumber", "").lower() == serial_number.lower()]
+                items = matches if matches else items
+            return {
+                "serial_number": serial_number,
+                "health": items,
+                "endpoint_used": "/network-config/v1alpha1/config-health/devices",
+                "errors": errors,
+            }
+        errors.append(f"config-health: HTTP {response.status_code}")
+    except Exception as exc:
+        errors.append(f"config-health: {exc}")
+
+    # Fallback: monitoring device record
+    if serial_number:
+        for endpoint in [
+            f"/network-monitoring/v1/devices/{serial_number}",
+            f"/network-monitoring/v1alpha1/devices/{serial_number}",
+        ]:
+            try:
+                response = client._request("GET", endpoint)
+                if response.status_code == 404:
+                    errors.append(f"404 at {endpoint}")
+                    continue
+                if response.status_code == 200:
+                    return {
+                        "serial_number": serial_number,
+                        "health": response.json(),
+                        "endpoint_used": endpoint,
+                        "errors": errors,
+                    }
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+            except Exception as exc:
+                errors.append(str(exc))
+
+    return {"serial_number": serial_number, "health": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_wireless_metrics(
+    serial_number: str,
+) -> dict[str, Any]:
+    """Fetch AP-specific wireless metrics (RF stats, client count, utilization, channel).
+
+    Tries multiple AP monitoring endpoints in order:
+      1. GET /network-monitoring/v1/aps/{serial}
+      2. GET /network-monitoring/v1/devices/{serial}/wireless-stats
+      3. GET /network-monitoring/v1alpha1/aps/{serial}/rf-stats
+
+    Args:
+        serial_number: AP serial number.
+
+    Returns:
+        Dict with keys: serial_number, metrics, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    candidates = [
+        f"/network-monitoring/v1/aps/{serial_number}",
+        f"/network-monitoring/v1/devices/{serial_number}/wireless-stats",
+        f"/network-monitoring/v1alpha1/aps/{serial_number}/rf-stats",
+    ]
+
+    for endpoint in candidates:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+            return {"serial_number": serial_number, "metrics": data, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "metrics": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def list_switch_ports(
+    serial_number: str,
+) -> dict[str, Any]:
+    """List ports/interfaces on a CX switch with link state, speed, and VLAN info.
+
+    Tries multiple monitoring endpoints in order:
+      1. GET /network-monitoring/v1/cx/{serial}/ports
+      2. GET /network-monitoring/v1/cx/{serial}/interfaces
+      3. GET /network-monitoring/v1/switches/{serial}/ports
+
+    Args:
+        serial_number: CX switch serial number.
+
+    Returns:
+        Dict with keys: serial_number, ports, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    candidates = [
+        f"/network-monitoring/v1/cx/{serial_number}/ports",
+        f"/network-monitoring/v1/cx/{serial_number}/interfaces",
+        f"/network-monitoring/v1/switches/{serial_number}/ports",
+    ]
+
+    for endpoint in candidates:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+            ports = data.get("ports", data.get("interfaces", data.get("items", data)))
+            return {"serial_number": serial_number, "ports": ports, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "ports": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_sle_metrics(
+    site_id: str | None = None,
+    serial_number: str | None = None,
+    duration: str = "3H",
+) -> dict[str, Any]:
+    """Fetch SLE (Service Level Experience) scores by site or device.
+
+    SLE metrics measure end-user experience quality (connection success, throughput,
+    roaming, etc.) aggregated over a time window.
+
+    Tries multiple endpoints in order:
+      1. GET /network-monitoring/v1/sle
+      2. GET /network-monitoring/v1alpha1/sle
+
+    Args:
+        site_id:       Filter by site ID (use list_sites to find IDs).
+        serial_number: Filter by device serial number.
+        duration:      Time window — e.g. "3H", "1D", "7D". Defaults to "3H".
+
+    Returns:
+        Dict with keys: sle, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    params: dict[str, Any] = {"duration": duration}
+    if site_id:
+        params["site_id"] = site_id
+    if serial_number:
+        params["serial"] = serial_number
+
+    candidates = [
+        "/network-monitoring/v1/sle",
+        "/network-monitoring/v1alpha1/sle",
+    ]
+
+    for endpoint in candidates:
+        try:
+            response = client._request("GET", endpoint, params=params)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+            return {"sle": data, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"sle": None, "endpoint_used": None, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# WRITE — Switch Port Profiles & Interface Config
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def create_port_profile(
+    profile_name: str,
+    body: dict[str, Any],
+    description: str = "",
+    scope_ids: list[str] | None = None,
+    persona: str = "ACCESS_SWITCH",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create (or update) a switch port profile and scope-map it.
+
+    Follows the confirmed two-step pattern from the migration pipeline:
+      1. POST /network-config/v1/sw-port-profiles/{name}  — creates the shell with description
+      2. PUT  /network-config/v1/sw-port-profiles/{name}  — writes the full configuration body
+      3. POST /network-config/v1/scope-maps               — for each scope_id provided
+
+    The `body` argument must use the nested structure the API expects.  Example bodies:
+
+    ACCESS port (AP uplink):
+      {
+        "mode": "AUTO", "enable": true, "routing": false, "dpi-enable": true,
+        "lldp": {"mode": "TX_RX"},
+        "switchport": {"interface-mode": "ACCESS", "access-vlan": 5},
+        "stp": {"enable": true, "admin-edge-port": true, "bpdu-guard": true,
+                "bpdu-filter": false, "loop-guard": false, "root-guard": false,
+                "rpvst-filter": false, "rpvst-guard": false, "tcn-guard": false, "priority": 6},
+        "poe": {"enabled": true, "allocation-method": "USAGE", "priority": "CRITICAL"}
+      }
+
+    TRUNK port (switch-to-switch):
+      {
+        "mode": "AUTO", "enable": true, "routing": false, "dpi-enable": false, "mtu": 9198,
+        "lldp": {"mode": "TX_RX"},
+        "switchport": {"interface-mode": "TRUNK", "native-vlan": 1},
+        "stp": {"enable": true, "admin-edge-port": false, "bpdu-guard": false,
+                "bpdu-filter": false, "loop-guard": false, "root-guard": false,
+                "rpvst-filter": false, "rpvst-guard": false, "tcn-guard": false, "priority": 6},
+        "poe": {"enabled": false}
+      }
+
+    Args:
+        profile_name: Name of the port profile.
+        body:         Full configuration body dict (nested structure — see examples above).
+        description:  Human-readable description for the profile shell.
+        scope_ids:    List of scope IDs to scope-map this profile to. Pass both the
+                      global scope-id and any switch group scope-ids as needed.
+        persona:      Device type for all scope-maps (default ACCESS_SWITCH).
+        dry_run:      Preview payloads without writing.
+
+    Returns:
+        Dict with keys: profile_name, body, scope_ids, errors.
+    """
+    if dry_run:
+        return {
+            "dry_run": True,
+            "profile_name": profile_name,
+            "description": description,
+            "body": body,
+            "scope_ids": scope_ids or [],
+            "errors": [],
+        }
+
+    client = _get_client()
+    errors: list[str] = []
+    encoded_name = quote(profile_name, safe="")
+
+    # Step 1: create the shell
+    try:
+        client.post(
+            f"/network-config/v1/sw-port-profiles/{encoded_name}",
+            data={"description": description},
+        )
+    except Exception as exc:
+        resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
+        if "duplicate" not in resp_text.lower() and "already exists" not in resp_text.lower():
+            errors.append(f"POST (shell): {exc}")
+
+    # Step 2: write the full config body via PUT
+    try:
+        client.put(f"/network-config/v1/sw-port-profiles/{encoded_name}", data=body)
+    except Exception as exc:
+        errors.append(f"PUT (body): {exc}")
+
+    # Step 3: scope-map to each provided scope
+    for sid in (scope_ids or []):
+        try:
+            _post_scope_map(client, sid, persona, f"sw-port-profiles/{profile_name}")
+        except Exception as exc:
+            resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
+            if "already exists" not in resp_text.lower():
+                errors.append(f"scope_map(scope={sid}): {exc}")
+
+    return {
+        "profile_name": profile_name,
+        "body": body,
+        "scope_ids": scope_ids or [],
+        "errors": errors,
+    }
+
+
+@mcp.tool()
+def update_port_config(
+    serial_number: str,
+    interface_name: str,
+    updates: dict[str, Any],
+    device_scope_id: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Update ethernet interface configuration on a CX switch (device scope).
+
+    Uses PATCH /network-config/v1/ethernet-interfaces/{interface}?viewtype=LOCAL&scope-id={scope_id}.
+
+    Interface names must use slash notation: "1/1/6", "1/1/1", etc.
+    These are automatically URL-encoded ("1/1/6" → "1%2F1%2F6") in the request.
+
+    Common updatable fields:
+      port-profile (str)       — name of a port profile to apply
+      description (str)        — interface description/label
+      admin-state (str)        — "UP" or "DOWN"
+      vlan-mode (str)          — "ACCESS" or "TRUNK"
+      access-vlan (int)        — access VLAN ID
+      native-vlan (int)        — native VLAN for trunk
+      allowed-vlans (str)      — trunk allowed VLAN range e.g. "1-100,200"
+      poe-priority (str)       — "LOW", "HIGH", or "CRITICAL"
+      spanning-tree-port-type (str) — "EDGE", "NETWORK", or "NORMAL"
+
+    Args:
+        serial_number:   CX switch serial number (for context/logging).
+        interface_name:  Interface name, e.g. "1/1/6".
+        updates:         Dict of field-value pairs to PATCH.
+        device_scope_id: Config-layer scope-id of the device (use find_device).
+        dry_run:         Preview payload without writing.
+
+    Returns:
+        Dict with keys: serial_number, interface_name, updates, response, errors.
+    """
+    if dry_run:
+        return {
+            "dry_run": True,
+            "serial_number": serial_number,
+            "interface_name": interface_name,
+            "updates": updates,
+            "device_scope_id": device_scope_id,
+            "response": None,
+            "errors": [],
+        }
+
+    client = _get_client()
+    errors: list[str] = []
+    encoded_iface = quote(interface_name, safe="")
+    endpoint = f"/network-config/v1/ethernet-interfaces/{encoded_iface}"
+    params = {"viewtype": "LOCAL", "scope-id": device_scope_id}
+
+    try:
+        response = client._request("PATCH", endpoint, json=updates, params=params)
+        if response.status_code not in (200, 201, 202, 204):
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+            errors.append(f"HTTP {response.status_code}: {body}")
+            return {
+                "serial_number": serial_number,
+                "interface_name": interface_name,
+                "updates": updates,
+                "response": None,
+                "errors": errors,
+            }
+        try:
+            resp_body = response.json()
+        except Exception:
+            resp_body = {}
+        return {
+            "serial_number": serial_number,
+            "interface_name": interface_name,
+            "updates": updates,
+            "response": resp_body,
+            "errors": errors,
+        }
+    except Exception as exc:
+        errors.append(str(exc))
+        return {
+            "serial_number": serial_number,
+            "interface_name": interface_name,
+            "updates": updates,
+            "response": None,
+            "errors": errors,
+        }
 
 
 if __name__ == "__main__":
