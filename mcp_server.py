@@ -48,13 +48,22 @@ Exposes the following tools to Claude (or any MCP client):
   acknowledge_alert        Acknowledge, clear, or resolve an active alert
   disconnect_client        Force-disconnect a wireless client by MAC address
   update_device_settings   Update general device-level metadata/settings
-  list_device_stats        Fetch performance stats for a device (throughput, clients, uptime)
+  get_device_trends        Fetch time-series utilization trends for an AP or switch (cpu, memory, throughput)
   get_device_health        Fetch config-health or monitoring health state for a device
   get_wireless_metrics     Fetch AP-specific wireless metrics (RF, clients, utilization)
-  list_switch_ports        List ports/interfaces on a CX switch with link state and stats
+  list_switch_ports        List interfaces on a switch with link state, speed, and VLAN info
+  get_switch_details       Fetch full monitoring details for a switch (uptime, CPU, memory, VLANs)
+  get_switch_vlans         List VLANs active on a switch with status and membership
+  get_switch_interface_poe Fetch PoE state and power draw for all switch ports
+  get_switch_interface_trends  Fetch throughput trends for switch interfaces over a time window
+  get_ap_radios            List radios on an AP (band, channel, power, utilization)
+  get_ap_ports             List wired ports on an AP (link state, speed, VLAN)
   get_sle_metrics          Fetch SLE (Service Level Experience) scores by site or device
   create_port_profile      Create a switch port profile and scope-map it
   update_port_config       Update ethernet interface config on a CX switch (device scope)
+  poe_bounce               Bounce PoE on switch/gateway ports (CX, AOS-S, Gateway)
+  port_bounce              Bounce link on switch/gateway ports (CX, AOS-S, Gateway)
+  cable_test               Run cable/TDR test on switch ports (CX, AOS-S)
 
   GREENLAKE PLATFORM (GLP)
   ------------------------
@@ -1053,7 +1062,7 @@ def delete_underlay_ssid(
 
 
 # ---------------------------------------------------------------------------
-# TROUBLESHOOTING — CX switches  (network-troubleshooting/v1alpha1/cx/...)
+# TROUBLESHOOTING — shared helpers
 # ---------------------------------------------------------------------------
 
 _CX_TROUBLESHOOTING_BASE = "/network-troubleshooting/v1alpha1/cx"
@@ -1074,6 +1083,54 @@ def _cx_poll(client: "CentralClient", serial: str, operation: str, task_id: str)
         if status in ("COMPLETED", "FAILED"):
             return result
     return result  # return last response even if still running
+
+
+def _troubleshoot_poll(client: "CentralClient", poll_url: str) -> dict[str, Any]:
+    """Poll a generic async-operations URL until COMPLETED/FAILED or timeout (~60 s)."""
+    for _ in range(_POLL_MAX):
+        time.sleep(_POLL_INTERVAL)
+        try:
+            result = client.get(poll_url)
+        except Exception as exc:
+            return {"status": "ERROR", "error": str(exc)}
+        status = result.get("status", "")
+        if status in ("COMPLETED", "FAILED"):
+            return result
+    return result
+
+
+def _troubleshoot_async(
+    client: "CentralClient",
+    endpoint: str,
+    payload: dict[str, Any],
+    errors: list[str],
+) -> dict[str, Any]:
+    """POST an async troubleshooting request, then poll to completion.
+
+    Returns the final async-operations result dict, with errors appended.
+    """
+    try:
+        resp = client._request("POST", endpoint, json=payload)
+        if resp.status_code not in (200, 201, 202):
+            try:
+                body = resp.json()
+            except Exception:
+                body = resp.text
+            errors.append(f"HTTP {resp.status_code}: {body}")
+            return {"status": None, "errors": errors}
+
+        # Extract task_id from Location header or response body
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
+        # Build poll URL: same base path + /async-operations/{task_id}
+        poll_url = f"{endpoint}/async-operations/{task_id}"
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+
+    result = _troubleshoot_poll(client, poll_url)
+    result["errors"] = errors
+    return result
 
 
 @mcp.tool()
@@ -2118,34 +2175,107 @@ def update_device_settings(
 
 
 @mcp.tool()
-def list_device_stats(
+def get_device_trends(
     serial_number: str,
+    metric: str,
+    start_time: str,
+    end_time: str,
+    site_id: str | None = None,
+    device_type: str | None = None,
 ) -> dict[str, Any]:
-    """Fetch performance stats for a device (throughput, client count, uptime, etc.).
+    """Fetch time-series utilization trends for an AP or switch.
 
-    Tries multiple monitoring endpoints in order:
-      1. GET /network-monitoring/v1/devices/{serial}/stats
-      2. GET /network-monitoring/v1/devices/{serial}  (stats embedded in device record)
-      3. GET /network-monitoring/v1alpha1/devices/{serial}/statistics
+    Confirmed endpoints:
+      AP:     GET /network-monitoring/v1/aps/{serial}/{metric}-utilization-trends
+      Switch: GET /network-monitoring/v1/cx/{serial}/{metric}-utilization-trends
+              (falls back to /network-monitoring/v1/switches/{serial}/... if 404)
+
+    The filter uses ISO 8601 timestamps:
+      "timestamp gt 2024-01-01T00:00:00Z and timestamp lt 2024-01-02T00:00:00Z"
 
     Args:
         serial_number: Device serial number.
+        metric:        Metric to query:
+                         AP:     "cpu", "memory", "throughput"
+                         Switch: "cpu" or "memory" → hardware-trends (both together),
+                                 "throughput" → interface-trends
+        start_time:    ISO 8601 start timestamp, e.g. "2024-01-01T00:00:00Z".
+        end_time:      ISO 8601 end timestamp, e.g. "2024-01-02T00:00:00Z".
+        site_id:       Site ID to include as query param (use list_sites).
+        device_type:   "AP", "SWITCH", or "GATEWAY". Auto-detected from inventory
+                       if omitted.
 
     Returns:
-        Dict with keys: serial_number, stats, endpoint_used, errors.
+        Dict with keys: serial_number, metric, trends, endpoint_used, errors.
     """
     client = _get_client()
     errors: list[str] = []
 
-    candidates = [
-        f"/network-monitoring/v1/devices/{serial_number}/stats",
-        f"/network-monitoring/v1/devices/{serial_number}",
-        f"/network-monitoring/v1alpha1/devices/{serial_number}/statistics",
-    ]
+    # Auto-detect device type if not provided
+    if not device_type:
+        device = _get_mcp_client().get_device_by_serial(serial_number)
+        if device:
+            raw = device.get("deviceType", "")
+            if "ACCESS_POINT" in raw or raw == "AP":
+                device_type = "AP"
+            elif "SWITCH" in raw:
+                device_type = "SWITCH"
+            elif "GATEWAY" in raw:
+                device_type = "GATEWAY"
+
+    filter_str = f"timestamp gt {start_time} and timestamp lt {end_time}"
+    params: dict[str, Any] = {"filter": filter_str}
+    if site_id:
+        params["site-id"] = site_id
+
+    # Build candidate endpoint list based on device type and metric.
+    # Switch CPU/memory come from hardware-trends (returns both together).
+    # AP metrics use {metric}-utilization-trends or throughput-trends.
+    dt = (device_type or "").upper()
+    m = metric.lower()
+    if dt in ("AP", "ACCESS_POINT"):
+        if m == "throughput":
+            metric_segment = "throughput-trends"
+        else:
+            metric_segment = f"{m}-utilization-trends"
+        candidates = [
+            f"/network-monitoring/v1/aps/{serial_number}/{metric_segment}",
+        ]
+        if m == "throughput":
+            params.setdefault("interface-type", "WIRELESS")
+    elif dt in ("SWITCH", "CX"):
+        if m in ("cpu", "memory", "hardware"):
+            metric_segment = "hardware-trends"
+        elif m == "throughput":
+            metric_segment = "interface-trends"
+        else:
+            metric_segment = f"{m}-utilization-trends"
+        candidates = [
+            f"/network-monitoring/v1/switches/{serial_number}/{metric_segment}",
+            f"/network-monitoring/v1alpha1/switch/{serial_number}/{metric_segment}",
+        ]
+    else:
+        # Unknown type — try AP path then switch path
+        if m == "throughput":
+            candidates = [
+                f"/network-monitoring/v1/aps/{serial_number}/throughput-trends",
+                f"/network-monitoring/v1/switches/{serial_number}/interface-trends",
+            ]
+        elif m in ("cpu", "memory", "hardware"):
+            candidates = [
+                f"/network-monitoring/v1/aps/{serial_number}/{m}-utilization-trends",
+                f"/network-monitoring/v1/switches/{serial_number}/hardware-trends",
+            ]
+        else:
+            metric_segment = f"{m}-utilization-trends"
+            candidates = [
+                f"/network-monitoring/v1/aps/{serial_number}/{metric_segment}",
+                f"/network-monitoring/v1/switches/{serial_number}/{metric_segment}",
+            ]
 
     for endpoint in candidates:
         try:
-            response = client._request("GET", endpoint)
+            response = client._request("GET", endpoint, params=params)
             if response.status_code == 404:
                 errors.append(f"404 at {endpoint}")
                 continue
@@ -2160,11 +2290,17 @@ def list_device_stats(
                 data = response.json()
             except Exception:
                 data = {}
-            return {"serial_number": serial_number, "stats": data, "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "metric": metric,
+                "trends": data,
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
-    return {"serial_number": serial_number, "stats": None, "endpoint_used": None, "errors": errors}
+    return {"serial_number": serial_number, "metric": metric, "trends": None, "endpoint_used": None, "errors": errors}
 
 
 @mcp.tool()
@@ -2291,32 +2427,40 @@ def get_wireless_metrics(
 @mcp.tool()
 def list_switch_ports(
     serial_number: str,
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+    search: str | None = None,
 ) -> dict[str, Any]:
-    """List ports/interfaces on a CX switch with link state, speed, and VLAN info.
+    """List ports/interfaces on a switch with link state, speed, duplex, and VLAN info.
 
-    Tries multiple monitoring endpoints in order:
-      1. GET /network-monitoring/v1/cx/{serial}/ports
-      2. GET /network-monitoring/v1/cx/{serial}/interfaces
-      3. GET /network-monitoring/v1/switches/{serial}/ports
+    Uses GET /network-monitoring/v1/switches/{serial}/interfaces (confirmed endpoint).
 
     Args:
-        serial_number: CX switch serial number.
+        serial_number: Switch serial number.
+        limit:         Max interfaces to return (default 100, fetches all by default).
+        offset:        Pagination offset.
+        filter:        OData filter string, e.g. "speed eq '1000' and duplex in ('Full')".
+        search:        Free-text search string against interface names/descriptions.
 
     Returns:
-        Dict with keys: serial_number, ports, endpoint_used, errors.
+        Dict with keys: serial_number, interfaces, endpoint_used, errors.
     """
     client = _get_client()
     errors: list[str] = []
 
-    candidates = [
-        f"/network-monitoring/v1/cx/{serial_number}/ports",
-        f"/network-monitoring/v1/cx/{serial_number}/interfaces",
-        f"/network-monitoring/v1/switches/{serial_number}/ports",
-    ]
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if filter:
+        params["filter"] = filter
+    if search:
+        params["search"] = search
 
-    for endpoint in candidates:
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}/interfaces",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}/interfaces",
+    ]:
         try:
-            response = client._request("GET", endpoint)
+            response = client._request("GET", endpoint, params=params)
             if response.status_code == 404:
                 errors.append(f"404 at {endpoint}")
                 continue
@@ -2327,16 +2471,13 @@ def list_switch_ports(
                     body = response.text
                 errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
                 continue
-            try:
-                data = response.json()
-            except Exception:
-                data = {}
-            ports = data.get("ports", data.get("interfaces", data.get("items", data)))
-            return {"serial_number": serial_number, "ports": ports, "endpoint_used": endpoint, "errors": errors}
+            data = response.json()
+            interfaces = data.get("interfaces", data.get("items", data))
+            return {"serial_number": serial_number, "interfaces": interfaces, "endpoint_used": endpoint, "errors": errors}
         except Exception as exc:
             errors.append(str(exc))
 
-    return {"serial_number": serial_number, "ports": None, "endpoint_used": None, "errors": errors}
+    return {"serial_number": serial_number, "interfaces": None, "endpoint_used": None, "errors": errors}
 
 
 @mcp.tool()
@@ -2593,6 +2734,430 @@ def update_port_config(
             "response": None,
             "errors": errors,
         }
+
+
+# ---------------------------------------------------------------------------
+# READ — Switch monitoring
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_switch_details(serial_number: str) -> dict[str, Any]:
+    """Fetch full monitoring details for a switch (status, uptime, CPU, memory, VLANs).
+
+    Uses GET /network-monitoring/v1/switches/{serial}.
+
+    Args:
+        serial_number: Switch serial number.
+
+    Returns:
+        Dict with keys: serial_number, details, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}",
+    ]:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            return {"serial_number": serial_number, "details": response.json(), "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "details": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_switch_vlans(
+    serial_number: str,
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List VLANs active on a switch with status and membership details.
+
+    Uses GET /network-monitoring/v1/switches/{serial}/vlans.
+
+    Args:
+        serial_number: Switch serial number.
+        limit:         Max VLANs to return (default 100).
+        offset:        Pagination offset.
+        filter:        OData filter, e.g. "status in ('Up') and voice in ('Disabled')".
+
+    Returns:
+        Dict with keys: serial_number, vlans, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if filter:
+        params["filter"] = filter
+
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}/vlans",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}/vlans",
+    ]:
+        try:
+            response = client._request("GET", endpoint, params=params)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            data = response.json()
+            vlans = data.get("vlans", data.get("items", data))
+            return {"serial_number": serial_number, "vlans": vlans, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "vlans": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_switch_interface_poe(
+    serial_number: str,
+    site_id: str | None = None,
+) -> dict[str, Any]:
+    """Fetch PoE state and power draw for all ports on a switch.
+
+    Uses GET /network-monitoring/v1/switches/{serial}/interface-poe.
+
+    Args:
+        serial_number: Switch serial number.
+        site_id:       Site ID (optional, may be required by some instances).
+
+    Returns:
+        Dict with keys: serial_number, poe, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {}
+    if site_id:
+        params["site-id"] = site_id
+
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}/interface-poe",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}/interface-poe",
+    ]:
+        try:
+            response = client._request("GET", endpoint, params=params or None)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            data = response.json()
+            poe = data.get("interfacePoe", data.get("items", data))
+            return {"serial_number": serial_number, "poe": poe, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "poe": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_switch_interface_trends(
+    serial_number: str,
+    start_time: str,
+    end_time: str,
+    site_id: str | None = None,
+    interface_id: str | None = None,
+    uplink: bool | None = None,
+) -> dict[str, Any]:
+    """Fetch throughput trends for switch interfaces over a time window.
+
+    Uses GET /network-monitoring/v1/switches/{serial}/interface-trends.
+    Filter uses ISO 8601 timestamps: "timestamp gt 2024-01-01T00:00:00Z and timestamp lt 2024-01-02T00:00:00Z"
+
+    Args:
+        serial_number: Switch serial number.
+        start_time:    ISO 8601 start timestamp, e.g. "2024-01-01T00:00:00Z".
+        end_time:      ISO 8601 end timestamp.
+        site_id:       Site ID filter.
+        interface_id:  Specific interface name/ID to filter to, e.g. "7" or "1/1/6".
+        uplink:        True to filter to uplink interfaces only.
+
+    Returns:
+        Dict with keys: serial_number, trends, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {
+        "filter": f"timestamp gt {start_time} and timestamp lt {end_time}",
+    }
+    if site_id:
+        params["site-id"] = site_id
+    if interface_id:
+        params["interface-id"] = interface_id
+    if uplink is not None:
+        params["uplink"] = str(uplink).lower()
+
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}/interface-trends",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}/interface-trends",
+    ]:
+        try:
+            response = client._request("GET", endpoint, params=params)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            return {"serial_number": serial_number, "trends": response.json(), "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "trends": None, "endpoint_used": None, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# READ — AP sub-resources
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_ap_radios(serial_number: str) -> dict[str, Any]:
+    """List radios on an AP with band, channel, power, utilization, and mode.
+
+    Uses GET /network-monitoring/v1/aps/{serial}/radios.
+
+    Args:
+        serial_number: AP serial number.
+
+    Returns:
+        Dict with keys: serial_number, radios, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    for endpoint in [
+        f"/network-monitoring/v1/aps/{serial_number}/radios",
+        f"/network-monitoring/v1alpha1/aps/{serial_number}/radios",
+    ]:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            data = response.json()
+            radios = data.get("radios", data.get("items", data))
+            return {"serial_number": serial_number, "radios": radios, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "radios": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_ap_ports(serial_number: str) -> dict[str, Any]:
+    """List wired ports on an AP with link state, speed, VLAN, and duplex.
+
+    Uses GET /network-monitoring/v1/aps/{serial}/ports.
+
+    Args:
+        serial_number: AP serial number.
+
+    Returns:
+        Dict with keys: serial_number, ports, endpoint_used, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    for endpoint in [
+        f"/network-monitoring/v1/aps/{serial_number}/ports",
+        f"/network-monitoring/v1alpha1/aps/{serial_number}/ports",
+    ]:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            data = response.json()
+            ports = data.get("ports", data.get("items", data))
+            return {"serial_number": serial_number, "ports": ports, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "ports": None, "endpoint_used": None, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# TROUBLESHOOTING — PoE bounce, port bounce, cable test (CX / AOS-S / Gateway)
+# ---------------------------------------------------------------------------
+
+
+def _device_type_for_troubleshoot(serial_number: str, device_type: str | None) -> str | None:
+    """Resolve device type string to 'cx', 'aos-s', or 'gateways' for troubleshooting URLs."""
+    if not device_type:
+        device = _get_mcp_client().get_device_by_serial(serial_number)
+        if device:
+            raw = device.get("deviceType", "")
+            if "ACCESS_POINT" in raw or raw == "AP":
+                return None  # APs don't support these ops
+            elif "SWITCH" in raw:
+                device_type = "SWITCH"
+            elif "GATEWAY" in raw:
+                device_type = "GATEWAY"
+
+    dt = (device_type or "").upper()
+    if dt in ("CX", "SWITCH"):
+        return "cx"
+    if dt in ("AOS-S", "AOSS", "AOS_S"):
+        return "aos-s"
+    if dt in ("GATEWAY", "GW"):
+        return "gateways"
+    # Default to cx for unknown switch types
+    return "cx"
+
+
+@mcp.tool()
+def poe_bounce(
+    serial_number: str,
+    ports: list[str],
+    device_type: str | None = None,
+) -> dict[str, Any]:
+    """Bounce (power-cycle) PoE on one or more switch or gateway ports.
+
+    Submits via POST /network-troubleshooting/v1/{device-type}/{serial}/poeBounce,
+    then polls until COMPLETED or FAILED (up to ~60 s).
+
+    Port name format varies by device type:
+      CX switch:  "1/1/1", "1/1/2"
+      AOS-S:      "1", "2"
+      Gateway:    "GE 0/0/0", "GE 0/0/1"
+
+    Args:
+        serial_number: Device serial number.
+        ports:         List of port names to bounce.
+        device_type:   "CX", "AOS-S", or "GATEWAY". Auto-detected if omitted.
+
+    Returns:
+        Dict with the final async-operations result, plus "errors".
+    """
+    client = _get_client()
+    errors: list[str] = []
+    dtype = _device_type_for_troubleshoot(serial_number, device_type)
+    if dtype is None:
+        errors.append("PoE bounce is not supported on Access Points.")
+        return {"status": None, "errors": errors}
+
+    endpoint = f"/network-troubleshooting/v1/{dtype}/{serial_number}/poeBounce"
+    return _troubleshoot_async(client, endpoint, {"ports": ports}, errors)
+
+
+@mcp.tool()
+def port_bounce(
+    serial_number: str,
+    ports: list[str],
+    device_type: str | None = None,
+) -> dict[str, Any]:
+    """Bounce (link-reset) one or more switch or gateway ports.
+
+    Submits via POST /network-troubleshooting/v1/{device-type}/{serial}/portBounce,
+    then polls until COMPLETED or FAILED (up to ~60 s).
+
+    Port name format varies by device type:
+      CX switch:  "1/1/1", "1/1/2"
+      AOS-S:      "1", "2"
+      Gateway:    "GE 0/0/0", "GE 0/0/1"
+
+    Args:
+        serial_number: Device serial number.
+        ports:         List of port names to bounce.
+        device_type:   "CX", "AOS-S", or "GATEWAY". Auto-detected if omitted.
+
+    Returns:
+        Dict with the final async-operations result, plus "errors".
+    """
+    client = _get_client()
+    errors: list[str] = []
+    dtype = _device_type_for_troubleshoot(serial_number, device_type)
+    if dtype is None:
+        errors.append("Port bounce is not supported on Access Points.")
+        return {"status": None, "errors": errors}
+
+    endpoint = f"/network-troubleshooting/v1/{dtype}/{serial_number}/portBounce"
+    return _troubleshoot_async(client, endpoint, {"ports": ports}, errors)
+
+
+@mcp.tool()
+def cable_test(
+    serial_number: str,
+    ports: list[str],
+    device_type: str | None = None,
+) -> dict[str, Any]:
+    """Run a cable/TDR test on one or more switch ports.
+
+    Submits via POST /network-troubleshooting/v1/{device-type}/{serial}/cableTest,
+    then polls until COMPLETED or FAILED (up to ~60 s).
+
+    Supported on CX and AOS-S switches only (not gateways).
+
+    Port name format:
+      CX switch:  "1/1/1", "1/1/2"
+      AOS-S:      "1", "2"
+
+    Args:
+        serial_number: Switch serial number.
+        ports:         List of port names to test.
+        device_type:   "CX" or "AOS-S". Auto-detected if omitted (defaults to "cx").
+
+    Returns:
+        Dict with the final async-operations result, plus "errors".
+    """
+    client = _get_client()
+    errors: list[str] = []
+    dtype = _device_type_for_troubleshoot(serial_number, device_type)
+    if dtype == "gateways":
+        errors.append("Cable test is not supported on gateways.")
+        return {"status": None, "errors": errors}
+    if dtype is None:
+        errors.append("Cable test is not supported on Access Points.")
+        return {"status": None, "errors": errors}
+
+    endpoint = f"/network-troubleshooting/v1/{dtype}/{serial_number}/cableTest"
+    return _troubleshoot_async(client, endpoint, {"ports": ports}, errors)
 
 
 if __name__ == "__main__":
