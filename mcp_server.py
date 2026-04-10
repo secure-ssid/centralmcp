@@ -17,7 +17,8 @@ Exposes the following tools to Claude (or any MCP client):
   list_scopes              List all scopes (org, sites, device groups)
   get_global_scope_id      Discover the org-level global scope-id
   list_inventory           List claimed/unprovisioned devices in inventory
-  list_audit_logs          List New Central config audit/change log entries
+  list_audit_logs          List New Central audit log entries (last 24h by default)
+  get_audit_log            Fetch a single audit log entry by ID
 
   WRITE
   -----
@@ -42,6 +43,11 @@ Exposes the following tools to Claude (or any MCP client):
   cx_show                  Run one or more 'show' commands on a CX switch (async, polls to completion)
   update_ssid              Update an existing SSID (general field PATCH)
   trigger_device_upgrade   Trigger an immediate per-device firmware upgrade (bypasses policy)
+  reboot_device            Reboot an AP, switch, or gateway
+  assign_device_to_site    Assign or move a device to a different site
+  acknowledge_alert        Acknowledge, clear, or resolve an active alert
+  disconnect_client        Force-disconnect a wireless client by MAC address
+  update_device_settings   Update general device-level metadata/settings
 
   GREENLAKE PLATFORM (GLP)
   ------------------------
@@ -1464,20 +1470,20 @@ def list_inventory(
     devices that have been claimed but not yet configured.
 
     Args:
-        status:      Filter by provisioning status, e.g. "UNPROVISIONED",
-                     "PROVISIONED", "PROVISIONING".
-        device_type: Filter by device type, e.g. "SWITCH", "AP", "GATEWAY".
+        status:      Client-side filter by isProvisioned value — "Yes" or "No".
+                     Use "No" to find claimed but unprovisioned devices.
+        device_type: Filter by deviceType, e.g. "ACCESS_POINT", "SWITCH", "GATEWAY".
         limit:       Maximum number of records to return (default 100).
         offset:      Pagination offset (default 0).
 
     Returns:
-        Dict with keys: items (list of device inventory records), errors.
+        Dict with keys: items (list of device inventory records), total, errors.
+        Each record includes: serialNumber, model, deviceType, status, isProvisioned,
+        ipv4, firmwareVersion, siteName, deviceGroupName, scopeId.
     """
     client = _get_client()
     errors: list[str] = []
     params: dict[str, Any] = {"limit": limit, "offset": offset}
-    if status:
-        params["provisioningStatus"] = status
     if device_type:
         params["deviceType"] = device_type
     try:
@@ -1485,7 +1491,9 @@ def list_inventory(
         items = result.get("items", result.get("devices", []))
         if not isinstance(items, list):
             items = []
-        return {"items": items, "total": result.get("total", len(items)), "errors": errors}
+        if status:
+            items = [d for d in items if d.get("isProvisioned") == status]
+        return {"items": items, "total": len(items), "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "total": 0, "errors": errors}
@@ -1498,54 +1506,81 @@ def list_inventory(
 
 @mcp.tool()
 def list_audit_logs(
+    start_at: int | None = None,
+    end_at: int | None = None,
     limit: int = 100,
-    offset: int = 0,
-    serial_number: str | None = None,
-    site_id: str | None = None,
-    start_time: int | None = None,
-    end_time: int | None = None,
-    user_name: str | None = None,
+    offset: int = 1,
+    filter: str | None = None,
+    sort: str | None = None,
 ) -> dict[str, Any]:
-    """List New Central configuration audit/change log entries.
+    """List New Central audit log entries.
 
-    Uses GET /auditlogs/v1/logs — the Central audit trail for config changes,
-    user logins, and device operations. Distinct from list_glp_audit_logs
-    (which covers GreenLake platform events).
+    Uses GET /network-services/v1alpha1/audits. Covers config changes, user
+    actions, and device operations across the tenant.
+
+    Time range defaults to the last 24 hours if not specified. All times are
+    in milliseconds since epoch (not seconds).
 
     Args:
-        limit:         Maximum number of entries to return (default 100).
-        offset:        Pagination offset (default 0).
-        serial_number: Filter to events touching a specific device serial.
-        site_id:       Filter to events for a specific site.
-        start_time:    Start of time range as Unix epoch seconds.
-        end_time:      End of time range as Unix epoch seconds.
-        user_name:     Filter to actions performed by a specific user.
+        start_at: Start of time range in epoch milliseconds.
+                  Defaults to 24 hours ago if omitted.
+        end_at:   End of time range in epoch milliseconds.
+                  Defaults to now if omitted.
+        limit:    Maximum entries to return (1–1000, default 100).
+        offset:   Pagination starting position (1-based, default 1).
+        filter:   OData v4 filter string. Supports 'and' only (no 'or'/'not').
+                  Filterable fields: action, description, destination, category,
+                  subCategory, destinationName, ipAddress, source.
+                  Example: "category eq 'NETWORK_CONFIG' and action eq 'UPDATE'"
+        sort:     Comma-separated sort expressions, e.g. "action asc".
 
     Returns:
-        Dict with keys: items (list of audit log entries), total, errors.
+        Dict with keys: items (list of audit entries), total, errors.
     """
     client = _get_client()
     errors: list[str] = []
-    params: dict[str, Any] = {"limit": limit, "offset": offset}
-    if serial_number:
-        params["serial_number"] = serial_number
-    if site_id:
-        params["site_id"] = site_id
-    if start_time:
-        params["start_time"] = start_time
-    if end_time:
-        params["end_time"] = end_time
-    if user_name:
-        params["user_name"] = user_name
+    now_ms = int(time.time() * 1000)
+    params: dict[str, Any] = {
+        "start-at": start_at if start_at is not None else now_ms - 86_400_000,
+        "end-at": end_at if end_at is not None else now_ms,
+        "limit": limit,
+        "offset": offset,
+    }
+    if filter:
+        params["filter"] = filter
+    if sort:
+        params["sort"] = sort
     try:
-        result = client.get("/auditlogs/v1/logs", params=params)
-        items = result.get("logs", result.get("items", []))
+        result = client.get("/network-services/v1alpha1/audits", params=params)
+        items = result.get("items", result.get("audits", result.get("logs", [])))
         if not isinstance(items, list):
             items = []
         return {"items": items, "total": result.get("total", len(items)), "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "total": 0, "errors": errors}
+
+
+@mcp.tool()
+def get_audit_log(audit_id: str) -> dict[str, Any]:
+    """Fetch a single audit log entry by its audit ID.
+
+    Uses GET /network-services/v1alpha1/audit/{id}.
+
+    Args:
+        audit_id: The audit log entry ID to retrieve.
+
+    Returns:
+        Dict with keys: audit (the log entry dict), errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    try:
+        result = client.get(f"/network-services/v1alpha1/audit/{audit_id}")
+        return {"audit": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"audit": None, "errors": errors}
 
 
 # ---------------------------------------------------------------------------
@@ -1726,6 +1761,259 @@ def trigger_device_upgrade(
             "response": None,
             "errors": errors,
         }
+
+
+# ---------------------------------------------------------------------------
+# WRITE — Device Management
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def reboot_device(
+    serial_number: str,
+    device_type: str | None = None,
+) -> dict[str, Any]:
+    """Reboot an AP, CX switch, or gateway.
+
+    Routes to the correct network-troubleshooting endpoint based on device type:
+      AP      → POST /network-troubleshooting/v1alpha1/aps/{serial}/reboot
+      SWITCH  → POST /network-troubleshooting/v1alpha1/cx/{serial}/reboot
+      GATEWAY → POST /network-troubleshooting/v1alpha1/gateways/{serial}/reboot
+
+    If device_type is omitted, it is auto-detected from inventory.
+
+    Args:
+        serial_number: Serial number of the device to reboot.
+        device_type:   "AP", "SWITCH", or "GATEWAY". Auto-detected if omitted.
+
+    Returns:
+        Dict with keys: serial_number, device_type, response, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    # Auto-detect device type if not provided
+    if not device_type:
+        device = _get_mcp_client().get_device_by_serial(serial_number)
+        if device:
+            raw = device.get("deviceType", "")
+            if "ACCESS_POINT" in raw or raw == "AP":
+                device_type = "AP"
+            elif "SWITCH" in raw:
+                device_type = "SWITCH"
+            elif "GATEWAY" in raw:
+                device_type = "GATEWAY"
+        if not device_type:
+            errors.append(
+                f"Could not determine device type for {serial_number}. "
+                "Provide device_type explicitly: 'AP', 'SWITCH', or 'GATEWAY'."
+            )
+            return {"serial_number": serial_number, "device_type": None, "response": None, "errors": errors}
+
+    dt = device_type.upper()
+    if dt in ("AP", "ACCESS_POINT"):
+        endpoint = f"/network-troubleshooting/v1alpha1/aps/{serial_number}/reboot"
+    elif dt in ("SWITCH", "CX"):
+        endpoint = f"/network-troubleshooting/v1alpha1/cx/{serial_number}/reboot"
+    elif dt in ("GATEWAY", "GW"):
+        endpoint = f"/network-troubleshooting/v1alpha1/gateways/{serial_number}/reboot"
+    else:
+        errors.append(f"Unknown device_type '{device_type}'. Use 'AP', 'SWITCH', or 'GATEWAY'.")
+        return {"serial_number": serial_number, "device_type": device_type, "response": None, "errors": errors}
+
+    try:
+        response = client._request("POST", endpoint, json={})
+        if response.status_code not in (200, 201, 202):
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+            errors.append(f"HTTP {response.status_code}: {body}")
+            return {"serial_number": serial_number, "device_type": device_type, "response": None, "errors": errors}
+        try:
+            resp_body = response.json()
+        except Exception:
+            resp_body = {}
+        return {"serial_number": serial_number, "device_type": device_type, "response": resp_body, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"serial_number": serial_number, "device_type": device_type, "response": None, "errors": errors}
+
+
+@mcp.tool()
+def assign_device_to_site(
+    serial_number: str,
+    site_id: str,
+    device_type: str | None = None,
+) -> dict[str, Any]:
+    """Assign or move a device to a different site.
+
+    Tries the following approaches in order:
+      1. POST /network-monitoring/v1/sites/{site_id}/devices
+      2. POST /monitoring/v1/site/assign  (classic Central)
+
+    Args:
+        serial_number: Serial number of the device to move.
+        site_id:       Target site ID (use list_sites to find IDs).
+        device_type:   Device type hint — "SWITCH", "AP", or "GATEWAY".
+
+    Returns:
+        Dict with keys: serial_number, site_id, response, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    candidates = [
+        ("POST", f"/network-monitoring/v1/sites/{site_id}/devices",
+         {"serials": [serial_number]}),
+        ("POST", "/monitoring/v1/site/assign",
+         {"site_id": int(site_id), "device_id": [serial_number],
+          **({"device_type": device_type} if device_type else {})}),
+    ]
+
+    for method, endpoint, payload in candidates:
+        try:
+            response = client._request(method, endpoint, json=payload)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            try:
+                resp_body = response.json()
+            except Exception:
+                resp_body = {}
+            return {
+                "serial_number": serial_number,
+                "site_id": site_id,
+                "endpoint_used": endpoint,
+                "response": resp_body,
+                "errors": errors,
+            }
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "site_id": site_id, "response": None, "errors": errors}
+
+
+@mcp.tool()
+def acknowledge_alert(
+    alert_id: str,
+    action: str = "ACK",
+) -> dict[str, Any]:
+    """Acknowledge, clear, or resolve an active alert.
+
+    Tries multiple endpoint variants to find what works on this instance.
+
+    Args:
+        alert_id: The alert ID to act on (from list_alerts).
+        action:   "ACK" (acknowledge), "CLEAR", or "RESOLVE". Defaults to "ACK".
+
+    Returns:
+        Dict with keys: alert_id, action, response, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    candidates = [
+        ("POST", "/network-notifications/v1/alerts/acknowledge",
+         {"alert_id": [alert_id], "action": action}),
+        ("POST", f"/network-notifications/v1/alerts/{alert_id}/acknowledge",
+         {"action": action}),
+        ("PATCH", f"/network-notifications/v1/alerts/{alert_id}",
+         {"status": action}),
+    ]
+
+    for method, endpoint, payload in candidates:
+        try:
+            response = client._request(method, endpoint, json=payload)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            try:
+                resp_body = response.json()
+            except Exception:
+                resp_body = {}
+            return {
+                "alert_id": alert_id,
+                "action": action,
+                "endpoint_used": endpoint,
+                "response": resp_body,
+                "errors": errors,
+            }
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"alert_id": alert_id, "action": action, "response": None, "errors": errors}
+
+
+@mcp.tool()
+def disconnect_client(
+    mac_address: str,
+    reason: str = "DISCONNECTED_BY_ADMIN",
+) -> dict[str, Any]:
+    """Force-disconnect a wireless client by MAC address.
+
+    Tries multiple endpoint variants to find what works on this instance.
+
+    Args:
+        mac_address: Client MAC address to disconnect (e.g. "aa:bb:cc:dd:ee:ff").
+        reason:      Disconnect reason. Defaults to "DISCONNECTED_BY_ADMIN".
+
+    Returns:
+        Dict with keys: mac_address, response, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+
+    candidates = [
+        ("POST", "/device-management/v1/client/disconnect",
+         {"mac_addr": mac_address, "disconnect_type": reason}),
+        ("POST", f"/network-troubleshooting/v1alpha1/clients/{mac_address}/disconnect",
+         {}),
+        ("POST", "/network-monitoring/v1/clients/disconnect",
+         {"mac_address": mac_address}),
+    ]
+
+    for method, endpoint, payload in candidates:
+        try:
+            response = client._request(method, endpoint, json=payload)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                continue
+            try:
+                resp_body = response.json()
+            except Exception:
+                resp_body = {}
+            return {
+                "mac_address": mac_address,
+                "endpoint_used": endpoint,
+                "response": resp_body,
+                "errors": errors,
+            }
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"mac_address": mac_address, "response": None, "errors": errors}
 
 
 if __name__ == "__main__":
