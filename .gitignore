@@ -24,6 +24,11 @@ outputs/
 !state/.gitkeep
 !outputs/.gitkeep
 
+# Node (orphan lockfiles from Claude worktree sessions)
+package-lock.json
+package.json
+node_modules/
+
 # Python
 __pycache__/
 *.py[cod]
