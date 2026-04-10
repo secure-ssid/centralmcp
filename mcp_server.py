@@ -16,6 +16,8 @@ Exposes the following tools to Claude (or any MCP client):
   get_events_count         Count events for a device
   list_scopes              List all scopes (org, sites, device groups)
   get_global_scope_id      Discover the org-level global scope-id
+  list_inventory           List claimed/unprovisioned devices in inventory
+  list_audit_logs          List New Central config audit/change log entries
 
   WRITE
   -----
@@ -38,6 +40,20 @@ Exposes the following tools to Claude (or any MCP client):
   cx_ping                  Ping a destination from a CX switch (async, polls to completion)
   cx_traceroute            Traceroute to a destination from a CX switch (async, polls to completion)
   cx_show                  Run one or more 'show' commands on a CX switch (async, polls to completion)
+  update_ssid              Update an existing SSID (general field PATCH)
+  trigger_device_upgrade   Trigger an immediate per-device firmware upgrade (bypasses policy)
+
+  GREENLAKE PLATFORM (GLP)
+  ------------------------
+  list_glp_devices         List GLP workspace device inventory (ownership, warranty, subscription state)
+  get_glp_device           Fetch a single GLP device by serial number
+  list_glp_subscriptions   List GLP subscription (license) keys and their expiry/assignment
+  get_glp_subscription     Fetch a single GLP subscription by ID
+  list_glp_users           List users with access to the GLP workspace
+  list_glp_audit_logs      List GLP audit log entries (who did what, when)
+  glp_assign_subscription  Assign a license/subscription to a device
+  glp_add_device           Add a device to the GLP workspace (async, waits for completion)
+  glp_archive_device       Archive a device in GLP (removes from Central, keeps in GLP)
 
 Credentials are loaded from config/credentials.yaml (or env vars —
 see pipeline/config.py).  Set CREDS_PATH env var to override the path.
@@ -101,10 +117,12 @@ import logging
 import os
 import time
 from typing import Any
+from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
 
 from pipeline.clients.central_client import CentralClient
+from pipeline.clients.glp_client import GLPClient
 from pipeline.clients.mcp_client import MCPClient
 from pipeline.clients.token_manager import TokenManager
 from pipeline.config import build_account_contexts
@@ -155,6 +173,26 @@ def _get_mcp_client() -> MCPClient:
     if _mcp_client is None:
         _mcp_client = MCPClient(_get_client())
     return _mcp_client
+
+
+_glp_client: GLPClient | None = None
+
+
+def _get_glp_client() -> GLPClient:
+    global _glp_client
+    if _glp_client is None:
+        creds_path = os.environ.get("CREDS_PATH", "config/credentials.yaml")
+        _, target_ctx = build_account_contexts(creds_path)
+        tm = TokenManager(
+            client_id=target_ctx.client_id,
+            client_secret=target_ctx.client_secret,
+            cache_key="glp",
+        )
+        _glp_client = GLPClient(
+            token_manager=tm,
+            workspace_id=target_ctx.glp_workspace_id,
+        )
+    return _glp_client
 
 
 # ---------------------------------------------------------------------------
@@ -1194,6 +1232,500 @@ def cx_show(
     result = _cx_poll(client, serial_number, "showCommands", task_id)
     result["errors"] = errors
     return result
+
+
+# ── GreenLake Platform (GLP) ─────────────────────────────────────────────────
+
+
+@mcp.tool()
+def list_glp_devices(
+    limit: int = 100,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List devices in the GLP workspace inventory.
+
+    Returns all hardware registered to the workspace, including warranty,
+    subscription state, and lifecycle fields. Complements list_devices (which
+    shows Central-managed devices) with GLP ownership and licensing data.
+
+    Args:
+        limit:  Maximum number of devices to return (default 100).
+        filter: OData filter string, e.g. "serial eq 'SG30LMR164'".
+
+    Returns:
+        Dict with keys: items (list of device records), errors.
+    """
+    glp = _get_glp_client()
+    errors: list[str] = []
+    try:
+        items = glp.list_devices(limit=limit, filter=filter)
+        return {"items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "errors": errors}
+
+
+@mcp.tool()
+def get_glp_device(serial_number: str) -> dict[str, Any]:
+    """Fetch a single device from GLP by serial number.
+
+    Args:
+        serial_number: Device serial number.
+
+    Returns:
+        Dict with keys: device (record or None), errors.
+    """
+    glp = _get_glp_client()
+    errors: list[str] = []
+    try:
+        device = glp.get_device(serial_number)
+        return {"device": device, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"device": None, "errors": errors}
+
+
+@mcp.tool()
+def list_glp_subscriptions(limit: int = 100) -> dict[str, Any]:
+    """List subscriptions (license keys) in the GLP workspace.
+
+    Shows license type, assigned device, quantity, and expiry date.
+
+    Args:
+        limit: Maximum number of subscriptions to return (default 100).
+
+    Returns:
+        Dict with keys: items (list of subscription records), errors.
+    """
+    glp = _get_glp_client()
+    errors: list[str] = []
+    try:
+        items = glp.list_subscriptions(limit=limit)
+        return {"items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "errors": errors}
+
+
+@mcp.tool()
+def get_glp_subscription(subscription_id: str) -> dict[str, Any]:
+    """Fetch a single GLP subscription by its ID.
+
+    Args:
+        subscription_id: Subscription UUID or key.
+
+    Returns:
+        Dict with keys: subscription (record or None), errors.
+    """
+    glp = _get_glp_client()
+    errors: list[str] = []
+    try:
+        sub = glp.get_subscription(subscription_id)
+        return {"subscription": sub, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"subscription": None, "errors": errors}
+
+
+@mcp.tool()
+def list_glp_users(limit: int = 300) -> dict[str, Any]:
+    """List users who have access to the GLP workspace.
+
+    Args:
+        limit: Maximum number of users to return (default 300).
+
+    Returns:
+        Dict with keys: items (list of user records), errors.
+    """
+    glp = _get_glp_client()
+    errors: list[str] = []
+    try:
+        items = glp.list_users(limit=limit)
+        return {"items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "errors": errors}
+
+
+@mcp.tool()
+def list_glp_audit_logs(
+    limit: int = 100,
+    category: str | None = None,
+) -> dict[str, Any]:
+    """List GLP audit log entries for the workspace.
+
+    Useful for security review and compliance — shows who did what and when.
+
+    Args:
+        limit:    Maximum number of entries to return (default 100).
+        category: Filter by category, e.g. "USER_MANAGEMENT", "DEVICE_MANAGEMENT".
+
+    Returns:
+        Dict with keys: items (list of log entries), errors.
+    """
+    glp = _get_glp_client()
+    errors: list[str] = []
+    try:
+        items = glp.list_audit_logs(limit=limit, category=category)
+        return {"items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "errors": errors}
+
+
+@mcp.tool()
+def glp_assign_subscription(
+    serial_number: str,
+    subscription_key: str,
+) -> dict[str, Any]:
+    """Assign a GLP subscription (license) to a device.
+
+    Args:
+        serial_number:    Device serial number.
+        subscription_key: Subscription key or license type to assign.
+
+    Returns:
+        Dict with keys: result (API response), errors.
+    """
+    glp = _get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.assign_subscription(serial_number, subscription_key)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool()
+def glp_add_device(
+    serial_number: str,
+    mac_address: str | None = None,
+) -> dict[str, Any]:
+    """Add a device to the GLP workspace and wait for the task to complete.
+
+    Submits the add request (async 202) then polls until the task finishes
+    (up to 5 minutes). Use get_glp_device to confirm afterwards.
+
+    Args:
+        serial_number: Device serial number.
+        mac_address:   Optional MAC address (required for some device types).
+
+    Returns:
+        Dict with keys: task_id, task_result, errors.
+    """
+    glp = _get_glp_client()
+    errors: list[str] = []
+    try:
+        task_id = glp.add_device(serial_number, mac_address=mac_address)
+        task_result = glp.poll_task(task_id)
+        return {"task_id": task_id, "task_result": task_result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"task_id": None, "task_result": None, "errors": errors}
+
+
+@mcp.tool()
+def glp_archive_device(serial_number: str) -> dict[str, Any]:
+    """Archive a device in GLP (removes it from Central, keeps it in GLP).
+
+    Args:
+        serial_number: Device serial number.
+
+    Returns:
+        Dict with keys: result (API response), errors.
+    """
+    glp = _get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.archive_device(serial_number)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# READ — Inventory
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_inventory(
+    status: str | None = None,
+    device_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List claimed/unprovisioned devices in the Central device inventory.
+
+    Uses GET /network-monitoring/v1alpha1/device-inventory — the same endpoint
+    as list_devices but exposes provisioningStatus filtering so you can find
+    devices that have been claimed but not yet configured.
+
+    Args:
+        status:      Filter by provisioning status, e.g. "UNPROVISIONED",
+                     "PROVISIONED", "PROVISIONING".
+        device_type: Filter by device type, e.g. "SWITCH", "AP", "GATEWAY".
+        limit:       Maximum number of records to return (default 100).
+        offset:      Pagination offset (default 0).
+
+    Returns:
+        Dict with keys: items (list of device inventory records), errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if status:
+        params["provisioningStatus"] = status
+    if device_type:
+        params["deviceType"] = device_type
+    try:
+        result = client.get("/network-monitoring/v1alpha1/device-inventory", params=params)
+        items = result.get("items", result.get("devices", []))
+        if not isinstance(items, list):
+            items = []
+        return {"items": items, "total": result.get("total", len(items)), "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "total": 0, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# READ — Audit Logs (New Central)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_audit_logs(
+    limit: int = 100,
+    offset: int = 0,
+    serial_number: str | None = None,
+    site_id: str | None = None,
+    start_time: int | None = None,
+    end_time: int | None = None,
+    user_name: str | None = None,
+) -> dict[str, Any]:
+    """List New Central configuration audit/change log entries.
+
+    Uses GET /auditlogs/v1/logs — the Central audit trail for config changes,
+    user logins, and device operations. Distinct from list_glp_audit_logs
+    (which covers GreenLake platform events).
+
+    Args:
+        limit:         Maximum number of entries to return (default 100).
+        offset:        Pagination offset (default 0).
+        serial_number: Filter to events touching a specific device serial.
+        site_id:       Filter to events for a specific site.
+        start_time:    Start of time range as Unix epoch seconds.
+        end_time:      End of time range as Unix epoch seconds.
+        user_name:     Filter to actions performed by a specific user.
+
+    Returns:
+        Dict with keys: items (list of audit log entries), total, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if serial_number:
+        params["serial_number"] = serial_number
+    if site_id:
+        params["site_id"] = site_id
+    if start_time:
+        params["start_time"] = start_time
+    if end_time:
+        params["end_time"] = end_time
+    if user_name:
+        params["user_name"] = user_name
+    try:
+        result = client.get("/auditlogs/v1/logs", params=params)
+        items = result.get("logs", result.get("items", []))
+        if not isinstance(items, list):
+            items = []
+        return {"items": items, "total": result.get("total", len(items)), "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "total": 0, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# WRITE — SSID Update
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def update_ssid(
+    ssid_name: str,
+    updates: dict[str, Any],
+    scope_id: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Update fields on an existing SSID using PATCH.
+
+    Uses PATCH /network-config/v1/wlan-ssids/{name}. Pass only the fields
+    you want to change — all other settings remain untouched.
+
+    Common updatable fields:
+      enable (bool), opmode (str), wpa-passphrase (str),
+      hide-ssid (bool), max-clients-threshold (int),
+      rf-band (str: "24GHZ_5GHZ" | "5GHZ_6GHZ" | "BAND_ALL"),
+      vlan-id-range (list[str])
+
+    Args:
+        ssid_name:  Name of the SSID to update.
+        updates:    Dict of field-value pairs to apply.
+        scope_id:   Optional scope-id for a scope-specific (LOCAL) override.
+                    If omitted, updates the global/shared SSID definition.
+        dry_run:    Preview the payload without submitting.
+
+    Returns:
+        Dict with keys: ssid_name, scope_id, updates, response, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    url_name = quote(ssid_name, safe="")
+    endpoint = f"/network-config/v1/wlan-ssids/{url_name}"
+    params: dict[str, Any] = {}
+    if scope_id:
+        params["scope-id"] = scope_id
+        params["view-type"] = "LOCAL"
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "ssid_name": ssid_name,
+            "scope_id": scope_id,
+            "updates": updates,
+            "response": None,
+            "errors": [],
+        }
+
+    try:
+        response = client._request("PATCH", endpoint, json=updates, params=params or None)
+        if response.status_code not in (200, 201, 202, 204):
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+            errors.append(f"HTTP {response.status_code}: {body}")
+            return {
+                "ssid_name": ssid_name,
+                "scope_id": scope_id,
+                "updates": updates,
+                "response": None,
+                "errors": errors,
+            }
+        try:
+            resp_body = response.json()
+        except Exception:
+            resp_body = {}
+        return {
+            "ssid_name": ssid_name,
+            "scope_id": scope_id,
+            "updates": updates,
+            "response": resp_body,
+            "errors": errors,
+        }
+    except Exception as exc:
+        errors.append(str(exc))
+        return {
+            "ssid_name": ssid_name,
+            "scope_id": scope_id,
+            "updates": updates,
+            "response": None,
+            "errors": errors,
+        }
+
+
+# ---------------------------------------------------------------------------
+# WRITE — Per-Device Firmware Upgrade
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def trigger_device_upgrade(
+    serial_number: str,
+    firmware_version: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Trigger an immediate firmware upgrade on a specific device.
+
+    Uses POST /network-services/v1alpha1/firmware-upgrade (New Central per-device
+    upgrade endpoint). This bypasses any group-level compliance policy and targets
+    a single device directly.
+
+    Note: set_firmware_compliance is the correct approach for policy-driven upgrades
+    across a group or site. Use this tool only when you need to upgrade one device
+    immediately, outside of policy.
+
+    Args:
+        serial_number:    Device serial number to upgrade.
+        firmware_version: Target firmware version string (e.g. "10.16.1030").
+        dry_run:          Preview the payload without submitting.
+
+    Returns:
+        Dict with keys: serial_number, firmware_version, response, errors.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    payload = {"serialNumbers": [serial_number], "firmwareVersion": firmware_version}
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "serial_number": serial_number,
+            "firmware_version": firmware_version,
+            "payload": payload,
+            "response": None,
+            "errors": [],
+        }
+
+    try:
+        response = client._request(
+            "POST", "/network-services/v1alpha1/firmware-upgrade", json=payload
+        )
+        if response.status_code == 404:
+            errors.append(
+                "POST /network-services/v1alpha1/firmware-upgrade returned 404 — "
+                "endpoint not available on this instance. "
+                "Try set_firmware_compliance for policy-driven upgrades."
+            )
+            return {
+                "serial_number": serial_number,
+                "firmware_version": firmware_version,
+                "response": None,
+                "errors": errors,
+            }
+        if response.status_code not in (200, 201, 202):
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+            errors.append(f"HTTP {response.status_code}: {body}")
+            return {
+                "serial_number": serial_number,
+                "firmware_version": firmware_version,
+                "response": None,
+                "errors": errors,
+            }
+        try:
+            resp_body = response.json()
+        except Exception:
+            resp_body = {}
+        return {
+            "serial_number": serial_number,
+            "firmware_version": firmware_version,
+            "response": resp_body,
+            "errors": errors,
+        }
+    except Exception as exc:
+        errors.append(str(exc))
+        return {
+            "serial_number": serial_number,
+            "firmware_version": firmware_version,
+            "response": None,
+            "errors": errors,
+        }
 
 
 if __name__ == "__main__":

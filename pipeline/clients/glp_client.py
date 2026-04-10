@@ -117,3 +117,89 @@ class GLPClient:
             "/device-inventory/unarchive",
             data={"serials": [serial_number]},
         )
+
+    # ------------------------------------------------------------------
+    # GLP read — devices, subscriptions, users, audit logs
+    # ------------------------------------------------------------------
+
+    def list_devices(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List devices in the GLP workspace."""
+        try:
+            params: dict[str, Any] = {"limit": limit, "offset": offset}
+            if filter:
+                params["filter"] = filter
+            result = self._client.get("/devices/v1/devices", params=params)
+            return result.get("items", result.get("devices", []))
+        except Exception as exc:
+            logger.warning("GLP list_devices failed: %s", exc)
+            return []
+
+    def list_subscriptions(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """List subscriptions in the GLP workspace."""
+        try:
+            result = self._client.get(
+                "/subscriptions/v1/subscriptions",
+                params={"limit": limit, "offset": offset},
+            )
+            return result.get("items", result.get("subscriptions", []))
+        except Exception as exc:
+            logger.warning("GLP list_subscriptions failed: %s", exc)
+            return []
+
+    def get_subscription(self, subscription_id: str) -> Optional[dict[str, Any]]:
+        """Fetch a single subscription by ID."""
+        try:
+            return self._client.get(f"/subscriptions/v1/subscriptions/{subscription_id}")
+        except Exception as exc:
+            logger.warning("GLP get_subscription failed for %s: %s", subscription_id, exc)
+            return None
+
+    def list_users(
+        self,
+        limit: int = 300,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """List users in the GLP workspace."""
+        try:
+            result = self._client.get(
+                "/identity/v1/users",
+                params={"limit": limit, "offset": offset},
+            )
+            return result.get("items", result.get("users", []))
+        except Exception as exc:
+            logger.warning("GLP list_users failed: %s", exc)
+            return []
+
+    def get_user(self, user_id: str) -> Optional[dict[str, Any]]:
+        """Fetch a single user by ID."""
+        try:
+            return self._client.get(f"/identity/v1/users/{user_id}")
+        except Exception as exc:
+            logger.warning("GLP get_user failed for %s: %s", user_id, exc)
+            return None
+
+    def list_audit_logs(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        category: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List audit log entries for the GLP workspace."""
+        try:
+            params: dict[str, Any] = {"limit": limit, "offset": offset}
+            if category:
+                params["category"] = category
+            result = self._client.get("/audit-log/v1/logs", params=params)
+            return result.get("items", result.get("logs", []))
+        except Exception as exc:
+            logger.warning("GLP list_audit_logs failed: %s", exc)
+            return []
