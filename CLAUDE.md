@@ -117,3 +117,11 @@ Postman collections are in `resourse/` (note spelling):
 - Use `Grep` + targeted `Read` with offset/limit instead of reading whole files
 - Filter Postman collection data with a tight Python script — don't dump raw output
 - Start a fresh conversation after long build sessions to reset context
+- **Grep large tool results before using them.** These tools return large payloads — extract only what's needed:
+  - `list_devices` — full fleet; grep for `serialNumber`, `deviceType`, `scopeId` fields only
+  - `get_device_health` — all devices; grep for the one serial you care about
+  - `get_wireless_metrics` — rich AP record; grep for specific fields (e.g. `radios`, `cpuUtilization`)
+  - `list_switch_ports` / `list_switch_vlans` — can be 50+ entries; filter by status or name
+  - `list_audit_logs` / `list_glp_audit_logs` — time-series; grep for action or category
+  - `cx_show` — raw show output; grep for the specific line (e.g. interface name, route)
+- Use `site_id` / `serial_number` / `filter` params on tools that support them to limit results at the API level before they hit context
