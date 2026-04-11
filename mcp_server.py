@@ -64,6 +64,37 @@ Exposes the following tools to Claude (or any MCP client):
   poe_bounce               Bounce PoE on switch/gateway ports (CX, AOS-S, Gateway)
   port_bounce              Bounce link on switch/gateway ports (CX, AOS-S, Gateway)
   cable_test               Run cable/TDR test on switch ports (CX, AOS-S)
+  aos_s_ping               Ping a destination from an AOS-S switch (async, polls to completion)
+  aos_s_traceroute         Traceroute to a destination from an AOS-S switch (async, polls to completion)
+  aos_s_show               Run 'show' commands on an AOS-S switch (async, polls to completion)
+  aos_s_arp                Get the ARP table from an AOS-S switch (async, polls to completion)
+  aos_s_locate             Trigger LED locate on an AOS-S switch
+
+  MONITORING — WLANs / Clusters
+  -----------------------------
+  list_wlans               List all WLANs visible in monitoring
+  get_wlan                 Fetch monitoring details for a single WLAN by name
+  list_ap_wlans            List WLANs active on a specific AP
+  get_cluster_members      List members of a gateway cluster
+  get_cluster_tunnels      List tunnels for a gateway cluster
+  get_cluster_tunnel_health  Tunnel health summary for a gateway cluster
+
+  WEBHOOKS
+  --------
+  list_webhooks            List all configured webhooks
+  create_webhook           Create a new webhook
+  get_webhook              Fetch a webhook by ID
+  update_webhook           Patch an existing webhook
+  delete_webhook           Delete a webhook by ID
+  rotate_webhook_key       Rotate the HMAC key for a webhook
+
+  DEVICE GROUPS
+  -------------
+  list_device_groups       List all device groups
+  create_device_group      Create a device group (optionally with devices)
+  delete_device_groups     Bulk-delete device groups by scope ID
+  add_devices_to_group     Add devices to an existing device group
+  remove_devices_from_group  Remove devices from their current device group
 
   GREENLAKE PLATFORM (GLP)
   ------------------------
@@ -1837,18 +1868,20 @@ def reboot_device(
     serial_number: str,
     device_type: str | None = None,
 ) -> dict[str, Any]:
-    """Reboot an AP, CX switch, or gateway.
+    """Reboot an AP, CX switch, AOS-S switch, or gateway.
 
     Routes to the correct network-troubleshooting endpoint based on device type:
       AP      → POST /network-troubleshooting/v1alpha1/aps/{serial}/reboot
-      SWITCH  → POST /network-troubleshooting/v1alpha1/cx/{serial}/reboot
+      CX      → POST /network-troubleshooting/v1alpha1/cx/{serial}/reboot
+      AOS-S   → POST /network-troubleshooting/v1alpha1/aos-s/{serial}/reboot
       GATEWAY → POST /network-troubleshooting/v1alpha1/gateways/{serial}/reboot
 
-    If device_type is omitted, it is auto-detected from inventory.
+    If device_type is omitted, it is auto-detected from inventory (CX assumed for switches).
+    Specify device_type="AOS-S" explicitly for AOS-S switches.
 
     Args:
         serial_number: Serial number of the device to reboot.
-        device_type:   "AP", "SWITCH", or "GATEWAY". Auto-detected if omitted.
+        device_type:   "AP", "CX", "AOS-S", or "GATEWAY". Auto-detected if omitted.
 
     Returns:
         Dict with keys: serial_number, device_type, response, errors.
@@ -1877,12 +1910,14 @@ def reboot_device(
     dt = device_type.upper()
     if dt in ("AP", "ACCESS_POINT"):
         endpoint = f"/network-troubleshooting/v1alpha1/aps/{serial_number}/reboot"
-    elif dt in ("SWITCH", "CX"):
+    elif dt in ("CX", "SWITCH"):
         endpoint = f"/network-troubleshooting/v1alpha1/cx/{serial_number}/reboot"
+    elif dt in ("AOS-S", "AOSS", "AOS_S"):
+        endpoint = f"{_AOS_S_BASE}/{serial_number}/reboot"
     elif dt in ("GATEWAY", "GW"):
         endpoint = f"/network-troubleshooting/v1alpha1/gateways/{serial_number}/reboot"
     else:
-        errors.append(f"Unknown device_type '{device_type}'. Use 'AP', 'SWITCH', or 'GATEWAY'.")
+        errors.append(f"Unknown device_type '{device_type}'. Use 'AP', 'CX', 'AOS-S', or 'GATEWAY'.")
         return {"serial_number": serial_number, "device_type": device_type, "response": None, "errors": errors}
 
     try:
@@ -3158,6 +3193,550 @@ def cable_test(
 
     endpoint = f"/network-troubleshooting/v1/{dtype}/{serial_number}/cableTest"
     return _troubleshoot_async(client, endpoint, {"ports": ports}, errors)
+
+
+# ---------------------------------------------------------------------------
+# TROUBLESHOOTING — AOS-S switches
+# ---------------------------------------------------------------------------
+
+_AOS_S_BASE = "/network-troubleshooting/v1alpha1/aos-s"
+
+
+@mcp.tool()
+def aos_s_ping(
+    serial_number: str,
+    destination: str,
+) -> dict[str, Any]:
+    """Ping a destination from an AOS-S switch and return the result.
+
+    Submits via POST /network-troubleshooting/v1alpha1/aos-s/{serial}/ping,
+    then polls until COMPLETED or FAILED (up to ~60 s).
+
+    Args:
+        serial_number: AOS-S switch serial number.
+        destination:   Destination IP or hostname.
+
+    Returns:
+        Dict with the final async-operations result, plus "errors" if any.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    endpoint = f"{_AOS_S_BASE}/{serial_number}/ping"
+    return _troubleshoot_async(client, endpoint, {"destination": destination}, errors)
+
+
+@mcp.tool()
+def aos_s_traceroute(
+    serial_number: str,
+    destination: str,
+) -> dict[str, Any]:
+    """Run a traceroute to a destination from an AOS-S switch.
+
+    Submits via POST /network-troubleshooting/v1alpha1/aos-s/{serial}/traceroute,
+    then polls until COMPLETED or FAILED (up to ~60 s).
+
+    Args:
+        serial_number: AOS-S switch serial number.
+        destination:   Destination IP or hostname.
+
+    Returns:
+        Dict with the final async-operations result, plus "errors" if any.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    endpoint = f"{_AOS_S_BASE}/{serial_number}/traceroute"
+    return _troubleshoot_async(client, endpoint, {"destination": destination}, errors)
+
+
+@mcp.tool()
+def aos_s_show(
+    serial_number: str,
+    commands: list[str],
+) -> dict[str, Any]:
+    """Run one or more 'show' commands on an AOS-S switch and return the output.
+
+    All commands must start with 'show '.
+    Submits via POST /network-troubleshooting/v1alpha1/aos-s/{serial}/showCommands,
+    then polls until COMPLETED or FAILED (up to ~60 s).
+
+    Args:
+        serial_number: AOS-S switch serial number.
+        commands:      List of show commands, e.g. ["show ip route", "show version"].
+
+    Returns:
+        Dict with the final async-operations result, plus "errors" if any.
+    """
+    if not commands:
+        return {"status": None, "errors": ["commands list cannot be empty"]}
+    for i, cmd in enumerate(commands):
+        if not cmd.strip().lower().startswith("show "):
+            return {"status": None, "errors": [f"Command {i} must start with 'show ': '{cmd}'"]}
+
+    client = _get_client()
+    errors: list[str] = []
+    endpoint = f"{_AOS_S_BASE}/{serial_number}/showCommands"
+    return _troubleshoot_async(client, endpoint, {"commands": commands}, errors)
+
+
+@mcp.tool()
+def aos_s_arp(
+    serial_number: str,
+) -> dict[str, Any]:
+    """Get the ARP table from an AOS-S switch.
+
+    Submits via POST /network-troubleshooting/v1alpha1/aos-s/{serial}/getArpTable,
+    then polls until COMPLETED or FAILED (up to ~60 s).
+
+    Args:
+        serial_number: AOS-S switch serial number.
+
+    Returns:
+        Dict with the final async-operations result, plus "errors" if any.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    endpoint = f"{_AOS_S_BASE}/{serial_number}/getArpTable"
+    return _troubleshoot_async(client, endpoint, {}, errors)
+
+
+@mcp.tool()
+def aos_s_locate(
+    serial_number: str,
+) -> dict[str, Any]:
+    """Trigger the locate (LED blink) function on an AOS-S switch.
+
+    Submits via POST /network-troubleshooting/v1alpha1/aos-s/{serial}/locate.
+
+    Args:
+        serial_number: AOS-S switch serial number.
+
+    Returns:
+        Dict with response status and "errors" if any.
+    """
+    client = _get_client()
+    errors: list[str] = []
+    endpoint = f"{_AOS_S_BASE}/{serial_number}/locate"
+    return _troubleshoot_async(client, endpoint, {}, errors)
+
+
+# ---------------------------------------------------------------------------
+# MONITORING — WLANs
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_wlans(
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List all WLANs visible in New Central monitoring.
+
+    GET /network-monitoring/v1/wlans
+
+    Args:
+        limit:  Max results (default 100).
+        offset: Pagination offset.
+
+    Returns:
+        Dict with "items" list and "total".
+    """
+    client = _get_client()
+    return client.get(f"/network-monitoring/v1/wlans?limit={limit}&offset={offset}")
+
+
+@mcp.tool()
+def get_wlan(
+    wlan_name: str,
+) -> dict[str, Any]:
+    """Fetch monitoring details for a single WLAN by name.
+
+    GET /network-monitoring/v1/wlans/{wlan-name}
+
+    Args:
+        wlan_name: WLAN name (SSID name as shown in Central).
+
+    Returns:
+        WLAN monitoring record dict.
+    """
+    client = _get_client()
+    return client.get(f"/network-monitoring/v1/wlans/{wlan_name}")
+
+
+@mcp.tool()
+def list_ap_wlans(
+    serial_number: str,
+) -> dict[str, Any]:
+    """List WLANs currently active on a specific AP.
+
+    GET /network-monitoring/v1/aps/{serial}/wlans
+
+    Args:
+        serial_number: AP serial number.
+
+    Returns:
+        Dict with "items" list of WLAN records for the AP.
+    """
+    client = _get_client()
+    return client.get(f"/network-monitoring/v1/aps/{serial_number}/wlans")
+
+
+# ---------------------------------------------------------------------------
+# MONITORING — Gateway clusters
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_cluster_members(
+    cluster_name: str,
+) -> dict[str, Any]:
+    """List members of a gateway cluster.
+
+    GET /network-monitoring/v1/clusters/{cluster-name}/members
+
+    Args:
+        cluster_name: Cluster name as shown in Central.
+
+    Returns:
+        Dict with cluster member records.
+    """
+    client = _get_client()
+    return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/members")
+
+
+@mcp.tool()
+def get_cluster_tunnels(
+    cluster_name: str,
+) -> dict[str, Any]:
+    """List tunnels for a gateway cluster.
+
+    GET /network-monitoring/v1/clusters/{cluster-name}/tunnels
+
+    Args:
+        cluster_name: Cluster name as shown in Central.
+
+    Returns:
+        Dict with tunnel records.
+    """
+    client = _get_client()
+    return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/tunnels")
+
+
+@mcp.tool()
+def get_cluster_tunnel_health(
+    cluster_name: str,
+) -> dict[str, Any]:
+    """Get tunnel health summary for a gateway cluster.
+
+    GET /network-monitoring/v1/clusters/{cluster-name}/tunnels-health-summary
+
+    Args:
+        cluster_name: Cluster name as shown in Central.
+
+    Returns:
+        Dict with tunnel health summary (up/down counts, status).
+    """
+    client = _get_client()
+    return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/tunnels-health-summary")
+
+
+# ---------------------------------------------------------------------------
+# WEBHOOKS
+# ---------------------------------------------------------------------------
+
+_WEBHOOKS_BASE = "/network-services/v1/webhooks"
+
+
+@mcp.tool()
+def list_webhooks() -> dict[str, Any]:
+    """List all configured webhooks.
+
+    GET /network-services/v1/webhooks
+
+    Returns:
+        Dict with "items" list of webhook records.
+    """
+    client = _get_client()
+    return client.get(_WEBHOOKS_BASE)
+
+
+@mcp.tool()
+def create_webhook(
+    name: str,
+    endpoint_url: str,
+    auth_mechanism: str = "API_KEY",
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Create a new webhook.
+
+    POST /network-services/v1/webhooks
+
+    Args:
+        name:             Webhook name.
+        endpoint_url:     HTTPS URL that will receive events.
+        auth_mechanism:   "API_KEY" (default) or "HMAC".
+        api_key:          API key value (required when auth_mechanism="API_KEY").
+
+    Returns:
+        Created webhook record dict.
+    """
+    client = _get_client()
+    payload: dict[str, Any] = {
+        "input": {
+            "name": name,
+            "endpoint": endpoint_url,
+            "authMechanism": auth_mechanism,
+        }
+    }
+    if api_key:
+        payload["input"]["apiKey"] = api_key
+
+    resp = client._request("POST", _WEBHOOKS_BASE, json=payload)
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+@mcp.tool()
+def get_webhook(
+    webhook_id: str,
+) -> dict[str, Any]:
+    """Fetch details for a single webhook by ID.
+
+    GET /network-services/v1/webhooks/{id}
+
+    Args:
+        webhook_id: Webhook UUID.
+
+    Returns:
+        Webhook record dict.
+    """
+    client = _get_client()
+    return client.get(f"{_WEBHOOKS_BASE}/{webhook_id}")
+
+
+@mcp.tool()
+def update_webhook(
+    webhook_id: str,
+    name: str | None = None,
+    endpoint_url: str | None = None,
+    auth_mechanism: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Update an existing webhook (PATCH — only provided fields are changed).
+
+    PATCH /network-services/v1/webhooks/{id}
+
+    Args:
+        webhook_id:     Webhook UUID.
+        name:           New name (optional).
+        endpoint_url:   New HTTPS URL (optional).
+        auth_mechanism: "API_KEY" or "HMAC" (optional).
+        api_key:        New API key value (optional).
+
+    Returns:
+        Updated webhook record dict.
+    """
+    client = _get_client()
+    patch: dict[str, Any] = {}
+    if name is not None:
+        patch["name"] = name
+    if endpoint_url is not None:
+        patch["endpoint"] = endpoint_url
+    if auth_mechanism is not None:
+        patch["authMechanism"] = auth_mechanism
+    if api_key is not None:
+        patch["apiKey"] = api_key
+
+    resp = client._request("PATCH", f"{_WEBHOOKS_BASE}/{webhook_id}", json={"input": patch})
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+@mcp.tool()
+def delete_webhook(
+    webhook_id: str,
+) -> dict[str, Any]:
+    """Delete a webhook by ID.
+
+    DELETE /network-services/v1/webhooks/{id}
+
+    Args:
+        webhook_id: Webhook UUID.
+
+    Returns:
+        Dict with status_code and any response body.
+    """
+    client = _get_client()
+    resp = client._request("DELETE", f"{_WEBHOOKS_BASE}/{webhook_id}")
+    try:
+        body = resp.json()
+    except Exception:
+        body = resp.text
+    return {"status_code": resp.status_code, "response": body}
+
+
+@mcp.tool()
+def rotate_webhook_key(
+    webhook_id: str,
+) -> dict[str, Any]:
+    """Rotate the HMAC key for a webhook.
+
+    POST /network-services/v1/webhooks/{id}/rotate-hmac-key
+
+    Args:
+        webhook_id: Webhook UUID.
+
+    Returns:
+        Dict with the new key details.
+    """
+    client = _get_client()
+    resp = client._request("POST", f"{_WEBHOOKS_BASE}/{webhook_id}/rotate-hmac-key")
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+# ---------------------------------------------------------------------------
+# DEVICE GROUPS
+# ---------------------------------------------------------------------------
+
+_DEVICE_GROUPS_BASE = "/network-config/v1/device-groups"
+
+
+@mcp.tool()
+def list_device_groups(
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List all device groups (scopes) in New Central.
+
+    GET /network-config/v1/device-groups
+
+    Args:
+        limit:  Max results (default 100).
+        offset: Pagination offset.
+
+    Returns:
+        Dict with "items" list of device group records (scopeId, scopeName, description).
+    """
+    client = _get_client()
+    return client.get(f"{_DEVICE_GROUPS_BASE}?limit={limit}&offset={offset}")
+
+
+@mcp.tool()
+def create_device_group(
+    name: str,
+    description: str = "",
+    devices: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create a device group, optionally pre-populated with devices.
+
+    Uses POST /network-config/v1/device-groups-create-and-add-devices when devices
+    are provided, otherwise POST /network-config/v1/device-groups.
+
+    Args:
+        name:        Group name (scopeName).
+        description: Optional description.
+        devices:     Optional list of serial numbers to add on creation.
+
+    Returns:
+        Created device group record dict.
+    """
+    client = _get_client()
+    if devices:
+        payload = {"scopeName": name, "description": description, "devices": devices}
+        resp = client._request(
+            "POST", "/network-config/v1/device-groups-create-and-add-devices", json=payload
+        )
+    else:
+        payload = {"scopeName": name, "description": description}
+        resp = client._request("POST", _DEVICE_GROUPS_BASE, json=payload)
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+@mcp.tool()
+def delete_device_groups(
+    scope_ids: list[str],
+) -> dict[str, Any]:
+    """Delete one or more device groups by scope ID.
+
+    DELETE /network-config/v1/device-groups/bulk
+
+    Args:
+        scope_ids: List of scopeId strings to delete.
+
+    Returns:
+        Dict with status_code and response body.
+    """
+    client = _get_client()
+    payload = {"items": [{"id": sid} for sid in scope_ids]}
+    resp = client._request("DELETE", f"{_DEVICE_GROUPS_BASE}/bulk", json=payload)
+    try:
+        body = resp.json()
+    except Exception:
+        body = resp.text
+    return {"status_code": resp.status_code, "response": body}
+
+
+@mcp.tool()
+def add_devices_to_group(
+    scope_id: str,
+    serial_numbers: list[str],
+) -> dict[str, Any]:
+    """Add devices to an existing device group.
+
+    POST /network-config/v1/device-groups-add-devices
+
+    Args:
+        scope_id:       Target group scopeId.
+        serial_numbers: List of device serial numbers to add.
+
+    Returns:
+        Dict with status_code and response body.
+    """
+    client = _get_client()
+    payload = {"desScopeId": scope_id, "devices": serial_numbers}
+    resp = client._request(
+        "POST", "/network-config/v1/device-groups-add-devices", json=payload
+    )
+    try:
+        body = resp.json()
+    except Exception:
+        body = resp.text
+    return {"status_code": resp.status_code, "response": body}
+
+
+@mcp.tool()
+def remove_devices_from_group(
+    serial_numbers: list[str],
+) -> dict[str, Any]:
+    """Remove devices from their current device group.
+
+    POST /network-config/v1/device-groups-remove-devices
+
+    Args:
+        serial_numbers: List of device serial numbers to remove.
+
+    Returns:
+        Dict with status_code and response body.
+    """
+    client = _get_client()
+    payload = {"devices": serial_numbers}
+    resp = client._request(
+        "POST", "/network-config/v1/device-groups-remove-devices", json=payload
+    )
+    try:
+        body = resp.json()
+    except Exception:
+        body = resp.text
+    return {"status_code": resp.status_code, "response": body}
 
 
 if __name__ == "__main__":
