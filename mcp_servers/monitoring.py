@@ -69,7 +69,7 @@ def list_clients(
 @mcp.tool()
 def find_client(mac_or_ip: str) -> dict[str, Any] | None:
     """Find a connected client by MAC address or IP address."""
-    return get_mcp_client().get_client(mac_or_ip)
+    return get_mcp_client().find_client(mac_or_ip)
 
 
 @mcp.tool()
@@ -105,10 +105,9 @@ def get_client_details(mac_address: str) -> dict[str, Any]:
 def list_alerts(
     site_id: str | None = None,
     severity: str | None = None,
-    limit: int = 100,
 ) -> list[dict[str, Any]]:
     """List active alerts, optionally filtered by site_id or severity (CRITICAL/MAJOR/MINOR)."""
-    return get_mcp_client().get_alerts(site_id=site_id, severity=severity, limit=limit)
+    return get_mcp_client().get_alerts(site_id=site_id, severity=severity)
 
 
 @mcp.tool()

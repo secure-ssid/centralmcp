@@ -314,40 +314,44 @@ def reboot_device(
 @mcp.tool()
 def disconnect_client(
     mac_address: str,
-    reason: str = "DISCONNECTED_BY_ADMIN",
+    ap_serial: str | None = None,
 ) -> dict[str, Any]:
-    """Force-disconnect a wireless client by MAC address."""
+    """Force-disconnect a wireless client by MAC address.
+
+    Args:
+        mac_address: Client MAC (e.g. "aa:bb:cc:dd:ee:ff").
+        ap_serial:   Serial of the AP the client is connected to. Auto-looked up if omitted.
+    """
     client = get_client()
     errors: list[str] = []
 
-    candidates = [
-        ("POST", "/device-management/v1/client/disconnect", {"mac_addr": mac_address, "disconnect_type": reason}),
-        ("POST", f"/network-troubleshooting/v1alpha1/clients/{mac_address}/disconnect", {}),
-        ("POST", "/network-monitoring/v1/clients/disconnect", {"mac_address": mac_address}),
-    ]
+    # Resolve AP serial if not provided
+    if not ap_serial:
+        cl = get_mcp_client().find_client(mac_address)
+        if not cl:
+            return {"mac_address": mac_address, "response": None, "errors": ["Client not found in monitoring"]}
+        ap_serial = cl.get("connectedDeviceSerial")
+        if not ap_serial:
+            return {"mac_address": mac_address, "response": None, "errors": ["Could not determine connected AP serial"]}
 
-    for method, endpoint, payload in candidates:
-        try:
-            response = client._request(method, endpoint, json=payload)
-            if response.status_code == 404:
-                errors.append(f"404 at {endpoint}")
-                continue
-            if response.status_code not in (200, 201, 202):
-                try:
-                    body = response.json()
-                except Exception:
-                    body = response.text
-                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
-                continue
+    endpoint = f"/network-troubleshooting/v1alpha1/aps/{ap_serial}/disconnectUserByMacAddress"
+    try:
+        response = client._request("POST", endpoint, json={"userMacAddress": mac_address})
+        if response.status_code not in (200, 201, 202):
             try:
-                resp_body = response.json()
+                body = response.json()
             except Exception:
-                resp_body = {}
-            return {"mac_address": mac_address, "endpoint_used": endpoint, "response": resp_body, "errors": errors}
-        except Exception as exc:
-            errors.append(str(exc))
-
-    return {"mac_address": mac_address, "response": None, "errors": errors}
+                body = response.text
+            errors.append(f"HTTP {response.status_code}: {body}")
+            return {"mac_address": mac_address, "response": None, "errors": errors}
+        try:
+            resp_body = response.json()
+        except Exception:
+            resp_body = {}
+        return {"mac_address": mac_address, "ap_serial": ap_serial, "endpoint_used": endpoint, "response": resp_body, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"mac_address": mac_address, "response": None, "errors": errors}
 
 
 @mcp.tool()
