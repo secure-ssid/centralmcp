@@ -1,0 +1,760 @@
+"""MCP server — Aruba Central read-only monitoring tools (32 tools).
+
+Covers: sites, devices, clients, alerts, events, scopes, inventory,
+audit logs, device health/trends, switch ports/VLANs/PoE, AP radios/ports,
+SLE metrics, WLANs, gateway clusters.
+"""
+import time
+from typing import Any
+
+from mcp.server.fastmcp import FastMCP
+
+from mcp_servers.shared import get_client, get_mcp_client
+
+mcp = FastMCP("aruba-monitoring")
+
+
+# ── Sites ────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_sites() -> list[dict[str, Any]]:
+    """Return all sites with their IDs, names, and location fields."""
+    return get_mcp_client().get_sites()
+
+
+@mcp.tool()
+def get_site(name: str) -> dict[str, Any] | None:
+    """Find a site by name (case-insensitive). Returns None if not found."""
+    sites = get_mcp_client().get_sites()
+    name_lower = name.lower()
+    for site in sites:
+        if site.get("siteName", site.get("name", "")).lower() == name_lower:
+            return site
+    return None
+
+
+# ── Devices ──────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_devices(
+    device_type: str | None = None,
+    site_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List devices, optionally filtered by device_type (e.g. SWITCH, AP) or site_id."""
+    filters: dict[str, Any] = {}
+    if device_type:
+        filters["deviceType"] = device_type
+    if site_id:
+        filters["siteId"] = site_id
+    return get_mcp_client().get_devices(filters or None)
+
+
+@mcp.tool()
+def find_device(serial_number: str) -> dict[str, Any] | None:
+    """Find a single device by serial number. Returns the device record or None."""
+    return get_mcp_client().get_device_by_serial(serial_number)
+
+
+# ── Clients ──────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_clients(
+    site_id: str | None = None,
+    serial_number: str | None = None,
+) -> list[dict[str, Any]]:
+    """List connected clients, optionally filtered by site_id or device serial_number."""
+    return get_mcp_client().get_clients(site_id=site_id, serial_number=serial_number)
+
+
+@mcp.tool()
+def find_client(mac_or_ip: str) -> dict[str, Any] | None:
+    """Find a connected client by MAC address or IP address."""
+    return get_mcp_client().get_client(mac_or_ip)
+
+
+@mcp.tool()
+def get_client_details(mac_address: str) -> dict[str, Any]:
+    """Fetch detailed info (usage, bandwidth, auth) for a single client by MAC address."""
+    client = get_client()
+    errors: list[str] = []
+    mac = mac_address.replace(":", "").replace("-", "").lower()
+
+    for endpoint in [
+        f"/network-monitoring/v1/clients/{mac_address}",
+        f"/network-monitoring/v1/clients/details?macAddress={mac_address}",
+        f"/network-monitoring/v1alpha1/clients/{mac}",
+    ]:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            return {"mac_address": mac_address, "details": response.json(), "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"mac_address": mac_address, "details": None, "endpoint_used": None, "errors": errors}
+
+
+# ── Alerts & Events ───────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_alerts(
+    site_id: str | None = None,
+    severity: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """List active alerts, optionally filtered by site_id or severity (CRITICAL/MAJOR/MINOR)."""
+    return get_mcp_client().get_alerts(site_id=site_id, severity=severity, limit=limit)
+
+
+@mcp.tool()
+def list_events(serial_number: str, hours: int = 24) -> list[dict[str, Any]]:
+    """List events for a device over the past N hours (default 24)."""
+    return get_mcp_client().get_events(serial_number, hours=hours)
+
+
+@mcp.tool()
+def get_events_count(serial_number: str, hours: int = 24) -> dict[str, Any]:
+    """Count events for a device over the past N hours (default 24)."""
+    client = get_client()
+    errors: list[str] = []
+    now_ms = int(time.time() * 1000)
+    params = {
+        "serialNumber": serial_number,
+        "startTime": now_ms - hours * 3_600_000,
+        "endTime": now_ms,
+    }
+    try:
+        result = client.get("/network-monitoring/v1/events/count", params=params)
+        return {"serial_number": serial_number, "count": result.get("count", result), "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"serial_number": serial_number, "count": 0, "errors": errors}
+
+
+# ── Scopes ────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_scopes() -> list[dict[str, Any]]:
+    """List all scopes (org, sites, device groups) with their scope_id and scope_name."""
+    client = get_client()
+    errors: list[str] = []
+
+    for endpoint in [
+        "/network-config/v1/scopes",
+        "/network-config/v1alpha1/scopes",
+    ]:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            data = response.json()
+            items = data if isinstance(data, list) else data.get("items", data.get("scopes", []))
+            return items
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return []
+
+
+@mcp.tool()
+def get_global_scope_id() -> dict[str, Any]:
+    """Return the org-wide global scope_id — use this for 'everywhere'/'all APs' config."""
+    from pipeline.stages.s6_configure import _fetch_global_scope_id
+    client = get_client()
+    errors: list[str] = []
+    try:
+        scope_id = _fetch_global_scope_id(client)
+        return {"global_scope_id": scope_id, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"global_scope_id": None, "errors": errors}
+
+
+# ── Inventory ─────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_inventory(
+    status: str | None = None,
+    device_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List claimed/unprovisioned devices in inventory.
+
+    Args:
+        status: "Yes" = provisioned, "No" = claimed but unprovisioned.
+        device_type: e.g. "ACCESS_POINT", "SWITCH", "GATEWAY".
+    """
+    client = get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if device_type:
+        params["deviceType"] = device_type
+    try:
+        result = client.get("/network-monitoring/v1alpha1/device-inventory", params=params)
+        items = result.get("items", result.get("devices", []))
+        if not isinstance(items, list):
+            items = []
+        if status:
+            items = [d for d in items if d.get("isProvisioned") == status]
+        return {"items": items, "total": len(items), "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "total": 0, "errors": errors}
+
+
+# ── Audit Logs ────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_audit_logs(
+    start_at: int | None = None,
+    end_at: int | None = None,
+    limit: int = 100,
+    offset: int = 1,
+    filter: str | None = None,
+    sort: str | None = None,
+) -> dict[str, Any]:
+    """List New Central audit log entries (config changes, user actions).
+
+    Args:
+        start_at: Epoch milliseconds (defaults to 24h ago).
+        end_at: Epoch milliseconds (defaults to now).
+        filter: OData filter, e.g. "category eq 'NETWORK_CONFIG' and action eq 'UPDATE'".
+    """
+    client = get_client()
+    errors: list[str] = []
+    now_ms = int(time.time() * 1000)
+    params: dict[str, Any] = {
+        "start-at": start_at if start_at is not None else now_ms - 86_400_000,
+        "end-at": end_at if end_at is not None else now_ms,
+        "limit": limit,
+        "offset": offset,
+    }
+    if filter:
+        params["filter"] = filter
+    if sort:
+        params["sort"] = sort
+    try:
+        result = client.get("/network-services/v1alpha1/audits", params=params)
+        items = result.get("items", result.get("audits", result.get("logs", [])))
+        if not isinstance(items, list):
+            items = []
+        return {"items": items, "total": result.get("total", len(items)), "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "total": 0, "errors": errors}
+
+
+@mcp.tool()
+def get_audit_log(audit_id: str) -> dict[str, Any]:
+    """Fetch a single audit log entry by its audit ID."""
+    client = get_client()
+    errors: list[str] = []
+    try:
+        result = client.get(f"/network-services/v1alpha1/audit/{audit_id}")
+        return {"audit": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"audit": None, "errors": errors}
+
+
+# ── Device Health & Trends ────────────────────────────────────────────────────
+
+@mcp.tool()
+def get_device_trends(
+    serial_number: str,
+    metric: str,
+    start_time: str,
+    end_time: str,
+    site_id: str | None = None,
+    device_type: str | None = None,
+) -> dict[str, Any]:
+    """Fetch time-series utilization trends (cpu/memory/throughput) for an AP or switch.
+
+    Args:
+        metric: "cpu", "memory", or "throughput".
+        start_time: ISO 8601 timestamp, e.g. "2024-01-01T00:00:00Z".
+        end_time: ISO 8601 timestamp.
+        device_type: "AP" or "SWITCH". Auto-detected if omitted.
+    """
+    client = get_client()
+    errors: list[str] = []
+
+    if not device_type:
+        device = get_mcp_client().get_device_by_serial(serial_number)
+        if device:
+            raw = device.get("deviceType", "")
+            if "ACCESS_POINT" in raw or raw == "AP":
+                device_type = "AP"
+            elif "SWITCH" in raw:
+                device_type = "SWITCH"
+            elif "GATEWAY" in raw:
+                device_type = "GATEWAY"
+
+    filter_str = f"timestamp gt {start_time} and timestamp lt {end_time}"
+    params: dict[str, Any] = {"filter": filter_str}
+    if site_id:
+        params["site-id"] = site_id
+
+    dt = (device_type or "").upper()
+    m = metric.lower()
+    if dt in ("AP", "ACCESS_POINT"):
+        metric_segment = "throughput-trends" if m == "throughput" else f"{m}-utilization-trends"
+        candidates = [f"/network-monitoring/v1/aps/{serial_number}/{metric_segment}"]
+        if m == "throughput":
+            params.setdefault("interface-type", "WIRELESS")
+    elif dt in ("SWITCH", "CX"):
+        if m in ("cpu", "memory", "hardware"):
+            metric_segment = "hardware-trends"
+        elif m == "throughput":
+            metric_segment = "interface-trends"
+        else:
+            metric_segment = f"{m}-utilization-trends"
+        candidates = [
+            f"/network-monitoring/v1/switches/{serial_number}/{metric_segment}",
+            f"/network-monitoring/v1alpha1/switch/{serial_number}/{metric_segment}",
+        ]
+    else:
+        if m == "throughput":
+            candidates = [
+                f"/network-monitoring/v1/aps/{serial_number}/throughput-trends",
+                f"/network-monitoring/v1/switches/{serial_number}/interface-trends",
+            ]
+        elif m in ("cpu", "memory", "hardware"):
+            candidates = [
+                f"/network-monitoring/v1/aps/{serial_number}/{m}-utilization-trends",
+                f"/network-monitoring/v1/switches/{serial_number}/hardware-trends",
+            ]
+        else:
+            candidates = [
+                f"/network-monitoring/v1/aps/{serial_number}/{m}-utilization-trends",
+                f"/network-monitoring/v1/switches/{serial_number}/{m}-utilization-trends",
+            ]
+
+    for endpoint in candidates:
+        try:
+            response = client._request("GET", endpoint, params=params)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            return {"serial_number": serial_number, "metric": metric, "trends": response.json(), "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "metric": metric, "trends": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_device_health(
+    serial_number: str | None = None,
+    device_scope_id: str | None = None,
+) -> dict[str, Any]:
+    """Fetch config-health or monitoring health state for a device.
+
+    Args:
+        serial_number: Used to filter monitoring results.
+        device_scope_id: Filters the config-health response to one device.
+    """
+    client = get_client()
+    errors: list[str] = []
+
+    try:
+        params: dict[str, Any] = {}
+        if device_scope_id:
+            params["scope-id"] = device_scope_id
+        response = client._request("GET", "/network-config/v1alpha1/config-health/devices", params=params or None)
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get("items", data.get("devices", [data] if data else []))
+            if serial_number and isinstance(items, list):
+                matches = [i for i in items if i.get("serialNumber", "").lower() == serial_number.lower()]
+                items = matches if matches else items
+            return {"serial_number": serial_number, "health": items, "endpoint_used": "/network-config/v1alpha1/config-health/devices", "errors": errors}
+        errors.append(f"config-health: HTTP {response.status_code}")
+    except Exception as exc:
+        errors.append(f"config-health: {exc}")
+
+    if serial_number:
+        for endpoint in [
+            f"/network-monitoring/v1/devices/{serial_number}",
+            f"/network-monitoring/v1alpha1/devices/{serial_number}",
+        ]:
+            try:
+                response = client._request("GET", endpoint)
+                if response.status_code == 404:
+                    errors.append(f"404 at {endpoint}")
+                    continue
+                if response.status_code == 200:
+                    return {"serial_number": serial_number, "health": response.json(), "endpoint_used": endpoint, "errors": errors}
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+            except Exception as exc:
+                errors.append(str(exc))
+
+    return {"serial_number": serial_number, "health": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_wireless_metrics(serial_number: str) -> dict[str, Any]:
+    """Fetch AP wireless metrics: RF stats, client count, utilization, channel."""
+    client = get_client()
+    errors: list[str] = []
+
+    for endpoint in [
+        f"/network-monitoring/v1/aps/{serial_number}",
+        f"/network-monitoring/v1/devices/{serial_number}/wireless-stats",
+        f"/network-monitoring/v1alpha1/aps/{serial_number}/rf-stats",
+    ]:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            return {"serial_number": serial_number, "metrics": response.json(), "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "metrics": None, "endpoint_used": None, "errors": errors}
+
+
+# ── Switch Monitoring ─────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_switch_ports(
+    serial_number: str,
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+    search: str | None = None,
+) -> dict[str, Any]:
+    """List switch interfaces with link state, speed, duplex, and VLAN info.
+
+    Args:
+        filter: OData filter, e.g. "speed eq '1000' and duplex in ('Full')".
+    """
+    client = get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if filter:
+        params["filter"] = filter
+    if search:
+        params["search"] = search
+
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}/interfaces",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}/interfaces",
+    ]:
+        try:
+            response = client._request("GET", endpoint, params=params)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            data = response.json()
+            interfaces = data.get("interfaces", data.get("items", data))
+            return {"serial_number": serial_number, "interfaces": interfaces, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "interfaces": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_switch_details(serial_number: str) -> dict[str, Any]:
+    """Fetch full monitoring details for a switch (status, uptime, CPU, memory, VLANs)."""
+    client = get_client()
+    errors: list[str] = []
+
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}",
+    ]:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            return {"serial_number": serial_number, "details": response.json(), "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "details": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_switch_vlans(
+    serial_number: str,
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List VLANs active on a switch with status and membership details.
+
+    Args:
+        filter: OData filter, e.g. "status in ('Up') and voice in ('Disabled')".
+    """
+    client = get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if filter:
+        params["filter"] = filter
+
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}/vlans",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}/vlans",
+    ]:
+        try:
+            response = client._request("GET", endpoint, params=params)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            data = response.json()
+            vlans = data.get("vlans", data.get("items", data))
+            return {"serial_number": serial_number, "vlans": vlans, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "vlans": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_switch_interface_poe(
+    serial_number: str,
+    site_id: str | None = None,
+) -> dict[str, Any]:
+    """Fetch PoE state and power draw for all ports on a switch."""
+    client = get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {}
+    if site_id:
+        params["site-id"] = site_id
+
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}/interface-poe",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}/interface-poe",
+    ]:
+        try:
+            response = client._request("GET", endpoint, params=params or None)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            data = response.json()
+            poe = data.get("interfaces", data.get("items", data))
+            return {"serial_number": serial_number, "poe": poe, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "poe": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_switch_interface_trends(
+    serial_number: str,
+    start_time: str,
+    end_time: str,
+    site_id: str | None = None,
+    interface_id: str | None = None,
+    uplink: bool | None = None,
+) -> dict[str, Any]:
+    """Fetch throughput trends for switch interfaces over a time window.
+
+    Args:
+        start_time: ISO 8601 timestamp, e.g. "2024-01-01T00:00:00Z".
+        end_time: ISO 8601 timestamp.
+        interface_id: Filter to a specific interface, e.g. "7" or "1/1/6".
+    """
+    client = get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {"filter": f"timestamp gt {start_time} and timestamp lt {end_time}"}
+    if site_id:
+        params["site-id"] = site_id
+    if interface_id:
+        params["interface-id"] = interface_id
+    if uplink is not None:
+        params["uplink"] = str(uplink).lower()
+
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}/interface-trends",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}/interface-trends",
+    ]:
+        try:
+            response = client._request("GET", endpoint, params=params)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            return {"serial_number": serial_number, "trends": response.json(), "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "trends": None, "endpoint_used": None, "errors": errors}
+
+
+# ── AP Sub-Resources ──────────────────────────────────────────────────────────
+
+@mcp.tool()
+def get_ap_radios(serial_number: str) -> dict[str, Any]:
+    """List radios on an AP with band, channel, power, utilization, and mode."""
+    client = get_client()
+    errors: list[str] = []
+
+    for endpoint in [
+        f"/network-monitoring/v1/aps/{serial_number}/radios",
+        f"/network-monitoring/v1alpha1/aps/{serial_number}/radios",
+    ]:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            data = response.json()
+            radios = data.get("radios", data.get("items", data))
+            return {"serial_number": serial_number, "radios": radios, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "radios": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool()
+def get_ap_ports(serial_number: str) -> dict[str, Any]:
+    """List wired ports on an AP with link state, speed, VLAN, and duplex."""
+    client = get_client()
+    errors: list[str] = []
+
+    for endpoint in [
+        f"/network-monitoring/v1/aps/{serial_number}/ports",
+        f"/network-monitoring/v1alpha1/aps/{serial_number}/ports",
+    ]:
+        try:
+            response = client._request("GET", endpoint)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            data = response.json()
+            ports = data.get("ports", data.get("items", data))
+            return {"serial_number": serial_number, "ports": ports, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"serial_number": serial_number, "ports": None, "endpoint_used": None, "errors": errors}
+
+
+# ── SLE ───────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def get_sle_metrics(
+    site_id: str | None = None,
+    serial_number: str | None = None,
+    duration: str = "3H",
+) -> dict[str, Any]:
+    """Fetch SLE (Service Level Experience) scores by site or device.
+
+    Args:
+        duration: Time window — "3H", "1D", or "7D".
+    """
+    client = get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {"duration": duration}
+    if site_id:
+        params["site_id"] = site_id
+    if serial_number:
+        params["serial"] = serial_number
+
+    for endpoint in ["/network-monitoring/v1/sle", "/network-monitoring/v1alpha1/sle"]:
+        try:
+            response = client._request("GET", endpoint, params=params)
+            if response.status_code == 404:
+                errors.append(f"404 at {endpoint}")
+                continue
+            if response.status_code not in (200, 201, 202):
+                errors.append(f"HTTP {response.status_code} at {endpoint}")
+                continue
+            return {"sle": response.json(), "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(str(exc))
+
+    return {"sle": None, "endpoint_used": None, "errors": errors}
+
+
+# ── WLANs ─────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_wlans(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List all WLANs visible in New Central monitoring."""
+    client = get_client()
+    return client.get(f"/network-monitoring/v1/wlans?limit={limit}&offset={offset}")
+
+
+@mcp.tool()
+def get_wlan(wlan_name: str) -> dict[str, Any]:
+    """Fetch monitoring details for a single WLAN by name."""
+    client = get_client()
+    return client.get(f"/network-monitoring/v1/wlans/{wlan_name}")
+
+
+@mcp.tool()
+def list_ap_wlans(serial_number: str) -> dict[str, Any]:
+    """List WLANs currently active on a specific AP."""
+    client = get_client()
+    return client.get(f"/network-monitoring/v1/aps/{serial_number}/wlans")
+
+
+# ── Gateway Clusters ──────────────────────────────────────────────────────────
+
+@mcp.tool()
+def get_cluster_members(cluster_name: str) -> dict[str, Any]:
+    """List members of a gateway cluster."""
+    client = get_client()
+    return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/members")
+
+
+@mcp.tool()
+def get_cluster_tunnels(cluster_name: str) -> dict[str, Any]:
+    """List tunnels for a gateway cluster."""
+    client = get_client()
+    return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/tunnels")
+
+
+@mcp.tool()
+def get_cluster_tunnel_health(cluster_name: str) -> dict[str, Any]:
+    """Get tunnel health summary (up/down counts) for a gateway cluster."""
+    client = get_client()
+    return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/tunnels-health-summary")
+
+
+if __name__ == "__main__":
+    mcp.run()
