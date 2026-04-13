@@ -90,7 +90,7 @@ pipeline/
   ssid_underlay.py    SSID build/delete logic
 config/
   credentials.yaml.example   Template — copy to credentials.yaml and fill in
-resources/            Postman API collections (reference only)
+resources/            Postman download script (collections git-ignored — see resources/README.md)
 inputs/               CSV templates for batch migration
 tests/                Unit + integration tests
 ```

@@ -12,6 +12,9 @@ config/credentials.yaml
 # Internal runbook PDFs
 *.pdf
 
+# Postman collections (large binary-like files — download via resources/README.md)
+resources/*.json
+
 # Real device input files (use inputs/*_example.csv as templates instead)
 inputs/*.csv
 inputs/*.cfg

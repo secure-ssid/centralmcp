@@ -84,7 +84,7 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 
 ## API reference
 
-Postman collections are in `resources/`:
+Postman collections are in `resources/` (git-ignored — download with `python resources/download_collections.py` or import directly from the [HPE Aruba Networking Postman workspace](https://www.postman.com/hpe-aruba-networking/new-hpe-aruba-networking-central/collection/32717089-1d8b9f9e-2137-4a7d-b735-1b3c06f87e70)):
 - `MRT APIs.postman_collection.json` — monitoring + troubleshooting endpoints
 - `Configuration APIs.postman_collection.json` — config/provisioning endpoints
 
