@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "aruba-monitoring": {
+      "command": "/path/to/API-Central/.venv/bin/python3",
+      "args": [
+        "/path/to/API-Central/mcp_servers/monitoring.py"
+      ],
+      "cwd": "/path/to/API-Central",
+      "env": { "PYTHONPATH": "/path/to/API-Central" }
+    },
+    "aruba-config": {
+      "command": "/path/to/API-Central/.venv/bin/python3",
+      "args": [
+        "/path/to/API-Central/mcp_servers/config.py"
+      ],
+      "cwd": "/path/to/API-Central",
+      "env": { "PYTHONPATH": "/path/to/API-Central" }
+    },
+    "aruba-ops": {
+      "command": "/path/to/API-Central/.venv/bin/python3",
+      "args": [
+        "/path/to/API-Central/mcp_servers/ops.py"
+      ],
+      "cwd": "/path/to/API-Central",
+      "env": { "PYTHONPATH": "/path/to/API-Central" }
+    }
+  }
+}

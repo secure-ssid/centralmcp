@@ -5,21 +5,27 @@ HPE Aruba Central API tooling for network device migration, SSID config, switch 
 ## Project layout
 
 ```
-mcp_server.py          MCP tool definitions (thin wrappers — 60+ tools)
+mcp_servers/
+  monitoring.py        Monitoring tools — device health, trends, wireless metrics
+  config.py            Config tools — SSIDs, VLANs, profiles, webhooks, firmware
+  ops.py               Ops tools — reboots, ping, cable test, PoE bounce, GLP mgmt
+  shared.py            Shared utilities and helpers
 pipeline/
   clients/             CentralClient, GLPClient, MCPClient, TokenManager
   stages/              s1_discover → s8_verify (migration pipeline)
   config.py            Credentials loader (config/credentials.yaml or env)
   ssid_underlay.py     SSID build/delete logic
 config/credentials.yaml  API credentials (never commit)
+resources/             Postman API collections (monitoring + config endpoints)
 inputs/                CSV files for batch migration
 outputs/               Reports and results
 state/                 Pipeline state store (idempotent runs)
 ```
 
-## MCP tools (mcp_server.py)
+## MCP tools (`mcp_servers/`)
 
-Tools follow `verb_noun` naming — no prefix. The server name `aruba-central` provides context.
+Three domain servers — `monitoring.py`, `config.py`, `ops.py` — each registered in `.mcp.json`.
+Tools follow `verb_noun` naming — no prefix. The server name provides context (`aruba-monitoring`, `aruba-config`, `aruba-ops`).
 
 | Verb | Meaning |
 |------|---------|
@@ -67,17 +73,18 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 
 ## Adding new MCP tools
 
-1. Add `@mcp.tool()` function in `mcp_server.py`
-2. Use thin wrapper pattern — delegate to `pipeline/clients/` or inline API call
-3. Follow verb_noun naming, no prefix
-4. Include docstring: what it does, args, returns, and any gotchas
-5. Update the tool list in the module docstring at the top of `mcp_server.py`
+1. Decide which domain server the tool belongs to: `mcp_servers/monitoring.py`, `mcp_servers/config.py`, or `mcp_servers/ops.py`
+2. Add `@mcp.tool()` function in the appropriate server file
+3. Use thin wrapper pattern — delegate to `pipeline/clients/` or inline API call
+4. Follow verb_noun naming, no prefix
+5. Include docstring: what it does, args, returns, and any gotchas
+6. Update the tool list in the module docstring at the top of the server file
 
-**Before editing mcp_server.py:** use `Grep` to find the exact line number, then `Read` only the relevant slice. Never page through the whole file.
+**Before editing any server file:** use `Grep` to find the exact line number, then `Read` only the relevant slice. Never page through the whole file.
 
 ## API reference
 
-Postman collections are in `resourse/` (note spelling):
+Postman collections are in `resources/`:
 - `MRT APIs.postman_collection.json` — monitoring + troubleshooting endpoints
 - `Configuration APIs.postman_collection.json` — config/provisioning endpoints
 

@@ -6,6 +6,9 @@ config/credentials.yaml
 # Claude local settings (may contain credentials in allowed commands)
 .claude/settings.local.json
 
+# MCP server config (contains local absolute paths — copy from .mcp.json.example)
+.mcp.json
+
 # Internal runbook PDFs
 *.pdf
 
