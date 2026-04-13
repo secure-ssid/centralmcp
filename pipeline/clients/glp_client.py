@@ -40,7 +40,7 @@ class GLPClient:
         """Look up a device in GLP by serial number. Returns None if not found."""
         try:
             result = self._client.get(
-                "/device-management/v1/devices",
+                "/devices/v1/devices",
                 params={"filter": f"serial eq '{serial_number}'"},
             )
             items = result.get("items", result.get("devices", []))
@@ -50,13 +50,28 @@ class GLPClient:
             return None
 
     def add_device(self, serial_number: str, mac_address: Optional[str] = None) -> str:
-        """Add a device to the GLP workspace. Returns task_id for polling."""
-        body: dict[str, Any] = {"serialNumber": serial_number}
-        if mac_address:
-            body["macAddress"] = mac_address
-        result = self._client.post("/device-management/v1/devices", data=body)
-        task_id = result.get("taskId") or result.get("task_id", "")
-        logger.info("GLP add_device %s → taskId=%s", serial_number, task_id)
+        """Add a single device to the GLP workspace. Returns async-operation ID."""
+        return self.add_devices([{"serialNumber": serial_number, "macAddress": mac_address}])
+
+    def add_devices(self, devices: list[dict[str, Any]]) -> str:
+        """Add one or more network devices to the GLP workspace in a single call.
+
+        Args:
+            devices: List of dicts with 'serialNumber' (required) and 'macAddress' (required).
+
+        Returns:
+            Async-operation ID for polling with poll_task().
+        """
+        network = [
+            {k: v for k, v in d.items() if v is not None}
+            for d in devices
+        ]
+        body: dict[str, Any] = {"network": network, "compute": [], "storage": []}
+        location = self._client.post_async("/devices/v1/devices", data=body)
+        # Location: /devices/v1/async-operations/{id}
+        task_id = location.rstrip("/").split("/")[-1]
+        serials = [d.get("serialNumber") for d in devices]
+        logger.info("GLP add_devices %s → async-op id=%s", serials, task_id)
         return task_id
 
     def poll_task(
@@ -65,22 +80,22 @@ class GLPClient:
         timeout: int = _TASK_POLL_TIMEOUT,
         interval: int = _TASK_POLL_INTERVAL,
     ) -> dict[str, Any]:
-        """Poll a GLP async task until completion or timeout.
+        """Poll a GLP async-operation until completion or timeout.
 
         Returns the final task response dict.
         Raises RuntimeError on timeout or task failure.
         """
         deadline = time.time() + timeout
         while time.time() < deadline:
-            result = self._client.get(f"/device-management/v1/tasks/{task_id}")
+            result = self._client.get(f"/devices/v1/async-operations/{task_id}")
             status = result.get("status", "").lower()
-            logger.debug("GLP task %s status=%s", task_id, status)
+            logger.debug("GLP async-op %s status=%s", task_id, status)
             if status in ("completed", "success"):
                 return result
             if status in ("failed", "error"):
-                raise RuntimeError(f"GLP task {task_id} failed: {result}")
+                raise RuntimeError(f"GLP async-op {task_id} failed: {result}")
             time.sleep(interval)
-        raise RuntimeError(f"GLP task {task_id} timed out after {timeout}s")
+        raise RuntimeError(f"GLP async-op {task_id} timed out after {timeout}s")
 
     # ------------------------------------------------------------------
     # Subscriptions

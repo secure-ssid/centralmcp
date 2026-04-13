@@ -84,13 +84,29 @@ class CentralClient:
     def post(
         self,
         endpoint: str,
-        data: Optional[dict[str, Any]] = None,
+        data: Optional[dict[str, Any] | list[Any]] = None,
         params: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        logger.debug("POST %s%s", self.base_url, endpoint)
+        logger.debug("POST %s%s body=%s", self.base_url, endpoint, data)
         response = self._request("POST", endpoint, json=data, params=params)
-        response.raise_for_status()
+        if not response.ok:
+            raise Exception(f"{response.status_code} {response.reason} — {response.text[:500]}")
         return _parse_json(response)
+
+    def post_async(
+        self,
+        endpoint: str,
+        data: Optional[dict[str, Any] | list[Any]] = None,
+        params: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """POST to an async endpoint; returns the Location header value (task URI)."""
+        logger.debug("POST(async) %s%s", self.base_url, endpoint)
+        response = self._request("POST", endpoint, json=data, params=params)
+        if not response.ok:
+            raise Exception(f"{response.status_code} {response.reason} — {response.text[:500]}")
+        location = response.headers.get("Location", "")
+        logger.info("POST async Location: %s", location)
+        return location
 
     def patch(
         self,
