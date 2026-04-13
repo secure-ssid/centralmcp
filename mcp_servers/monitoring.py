@@ -61,9 +61,26 @@ def find_device(serial_number: str) -> dict[str, Any] | None:
 def list_clients(
     site_id: str | None = None,
     serial_number: str | None = None,
+    ssid: str | None = None,
+    connection_type: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List connected clients, optionally filtered by site_id or device serial_number."""
-    return get_mcp_client().get_clients(site_id=site_id, serial_number=serial_number)
+    """List connected clients. ALWAYS filter before calling — unfiltered returns all clients.
+
+    Args:
+        site_id: Filter by site ID.
+        serial_number: Filter by AP or switch serial (narrows to clients on that device).
+        ssid: Filter by WLAN/SSID name (e.g. "aruba-home").
+        connection_type: "Wireless" or "Wired".
+
+    Ask the user which AP, SSID, or connection type they care about before calling
+    with no filters.
+    """
+    return get_mcp_client().get_clients(
+        site_id=site_id,
+        serial_number=serial_number,
+        ssid=ssid,
+        connection_type=connection_type,
+    )
 
 
 @mcp.tool()

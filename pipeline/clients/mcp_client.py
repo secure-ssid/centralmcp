@@ -119,12 +119,16 @@ class MCPClient:
         site_id: Optional[str] = None,
         severity: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Return active alerts, optionally filtered by site or severity."""
-        params: dict[str, Any] = {"status": "Active"}
+        """Return active alerts, optionally filtered by site or severity.
+
+        Severity must be passed via OData filter expression, not a bare param.
+        """
+        filters = ["status eq 'Active'"]
         if site_id:
-            params["siteId"] = site_id
+            filters.append(f"siteId eq '{site_id}'")
         if severity:
-            params["severity"] = severity
+            filters.append(f"severity eq '{severity.capitalize()}'")
+        params: dict[str, Any] = {"filter": " and ".join(filters)}
         try:
             result = self._client.get("/network-notifications/v1/alerts", params=params)
             return result.get("alerts", result.get("items", []))
@@ -164,13 +168,22 @@ class MCPClient:
         self,
         site_id: Optional[str] = None,
         serial_number: Optional[str] = None,
+        ssid: Optional[str] = None,
+        connection_type: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Return connected clients, optionally filtered by site or device serial."""
+        """Return connected clients, optionally filtered by site, device serial, SSID, or type."""
         params: dict[str, Any] = {"limit": 100}
         if site_id:
-            params["siteId"] = site_id
+            params["site-id"] = site_id
         if serial_number:
-            params["serial"] = serial_number
+            params["serial-number"] = serial_number
+        odata: list[str] = []
+        if ssid:
+            odata.append(f"wlanName eq '{ssid}'")
+        if connection_type:
+            odata.append(f"clientConnectionType eq '{connection_type}'")
+        if odata:
+            params["filter"] = " and ".join(odata)
         try:
             result = self._client.get("/network-monitoring/v1/clients", params=params)
             return result.get("clients", result.get("items", []))
