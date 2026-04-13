@@ -1,6 +1,6 @@
-"""MCP server — Aruba Central ops: troubleshooting, GLP, and device actions (24 tools).
+"""MCP server — Aruba Central ops: troubleshooting, GLP, and device actions (25 tools).
 
-Covers: CX/AOS-S ping/traceroute/show, PoE bounce, port bounce, cable test,
+Covers: CX/AOS-S/Gateway ping/traceroute/show, PoE bounce, port bounce, cable test,
 reboot, disconnect client, acknowledge alert, GreenLake Platform (GLP) inventory/licensing.
 """
 from typing import Any
@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp_servers.shared import (
     _AOS_S_BASE,
     _CX_TROUBLESHOOTING_BASE,
+    _GATEWAY_BASE,
     cx_poll,
     device_type_for_troubleshoot,
     get_client,
@@ -169,6 +170,27 @@ def aos_s_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
     client = get_client()
     errors: list[str] = []
     return troubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/showCommands", {"commands": commands}, errors)
+
+
+@mcp.tool()
+def gateway_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
+    """Run 'show' commands on an Aruba gateway (9004, 7xxx, etc.) via async troubleshooting API.
+
+    Args:
+        serial_number: Gateway serial (e.g. 'CNJDKLB03G').
+        commands: List of show commands, each must start with 'show '.
+
+    Returns:
+        Async poll result with command output, or errors if the device is offline/unreachable.
+    """
+    if not commands:
+        return {"status": None, "errors": ["commands list cannot be empty"]}
+    for i, cmd in enumerate(commands):
+        if not cmd.strip().lower().startswith("show "):
+            return {"status": None, "errors": [f"Command {i} must start with 'show ': '{cmd}'"]}
+    client = get_client()
+    errors: list[str] = []
+    return troubleshoot_async(client, f"{_GATEWAY_BASE}/{serial_number}/showCommands", {"commands": commands}, errors)
 
 
 @mcp.tool()

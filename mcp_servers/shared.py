@@ -66,6 +66,7 @@ def get_glp_client() -> GLPClient:
 
 _CX_TROUBLESHOOTING_BASE = "/network-troubleshooting/v1alpha1/cx"
 _AOS_S_BASE = "/network-troubleshooting/v1alpha1/aos-s"
+_GATEWAY_BASE = "/network-troubleshooting/v1alpha1/gateways"
 _POLL_INTERVAL = 5
 _POLL_MAX = 12
 

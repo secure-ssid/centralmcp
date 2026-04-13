@@ -1,7 +1,8 @@
-"""MCP server — Aruba Central configuration and provisioning tools (32 tools).
+"""MCP server — Aruba Central configuration and provisioning tools (35 tools).
 
 Covers: VLANs, SSIDs, port profiles, firmware compliance, device management,
-webhooks, device groups. Always use dry_run=True first for write operations.
+webhooks, device groups, gateway interface and static route config.
+Always use dry_run=True first for write operations.
 """
 import os
 from typing import Any
@@ -624,6 +625,125 @@ def update_port_config(
                 "updates": updates, "response": None, "errors": errors}
 
 
+# ── Gateway Interface & Routing Config ────────────────────────────────────────
+
+@mcp.tool()
+def gateway_config_interface(
+    serial_number: str,
+    interface_name: str,
+    updates: dict[str, Any],
+    device_scope_id: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """PATCH ethernet interface config on an Aruba gateway at device scope. Always dry_run first.
+
+    Args:
+        serial_number: Gateway serial (e.g. 'CNP6L2H038').
+        interface_name: Interface name as shown in 'show interface', e.g. 'GE 0/0/1'.
+            Will be URL-encoded automatically.
+        device_scope_id: Device's config-layer scope-id (use find_device → scopeId).
+        updates: Fields to PATCH, e.g. {"jumbo": True, "trusted": True, "mtu": 9216}.
+        dry_run: If True, return payload without sending.
+    """
+    if dry_run:
+        return {
+            "dry_run": True, "serial_number": serial_number,
+            "interface_name": interface_name, "updates": updates,
+            "device_scope_id": device_scope_id, "response": None, "errors": [],
+        }
+
+    client = get_client()
+    errors: list[str] = []
+    encoded_iface = quote(interface_name, safe="")
+    endpoint = f"/network-config/v1/ethernet-interfaces/{encoded_iface}"
+    params = {"viewtype": "LOCAL", "scope-id": device_scope_id}
+
+    try:
+        response = client._request("PATCH", endpoint, json=updates, params=params)
+        if response.status_code not in (200, 201, 202, 204):
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+            errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+            return {"serial_number": serial_number, "interface_name": interface_name,
+                    "updates": updates, "response": None, "errors": errors}
+        try:
+            resp_body = response.json()
+        except Exception:
+            resp_body = {}
+        return {"serial_number": serial_number, "interface_name": interface_name,
+                "updates": updates, "response": resp_body, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"serial_number": serial_number, "interface_name": interface_name,
+                "updates": updates, "response": None, "errors": errors}
+
+
+@mcp.tool()
+def gateway_config_static_route(
+    serial_number: str,
+    destination: str,
+    nexthop: str,
+    device_scope_id: str,
+    admin_distance: int = 1,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create or replace a static route on an Aruba gateway at device scope. Always dry_run first.
+
+    Args:
+        serial_number: Gateway serial (e.g. 'CNP6L2H038').
+        destination: Route destination in CIDR notation, e.g. '0.0.0.0/0' or '192.168.1.0/24'.
+        nexthop: Next-hop IP address, e.g. '192.168.1.1'.
+        device_scope_id: Device's config-layer scope-id (use find_device → scopeId).
+        admin_distance: Administrative distance (default 1; use 50 for default route).
+        dry_run: If True, return payload without sending.
+
+    Returns:
+        API response or dry_run payload. Gotcha: route name derived from destination
+        (slashes replaced with underscores) for the URL path.
+    """
+    route_name = destination.replace("/", "_")
+    payload = {
+        "nexthop": [{"ip-address": nexthop, "admin-distance": admin_distance}],
+        "network": destination,
+    }
+
+    if dry_run:
+        return {
+            "dry_run": True, "serial_number": serial_number,
+            "destination": destination, "nexthop": nexthop,
+            "admin_distance": admin_distance, "device_scope_id": device_scope_id,
+            "payload": payload, "errors": [],
+        }
+
+    client = get_client()
+    errors: list[str] = []
+    endpoint = f"/network-config/v1/static-route/{route_name}"
+    params = {"viewtype": "LOCAL", "scope-id": device_scope_id}
+
+    try:
+        response = client._request("PUT", endpoint, json=payload, params=params)
+        if response.status_code not in (200, 201, 202, 204):
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+            errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+            return {"serial_number": serial_number, "destination": destination,
+                    "nexthop": nexthop, "response": None, "errors": errors}
+        try:
+            resp_body = response.json()
+        except Exception:
+            resp_body = {}
+        return {"serial_number": serial_number, "destination": destination,
+                "nexthop": nexthop, "response": resp_body, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"serial_number": serial_number, "destination": destination,
+                "nexthop": nexthop, "response": None, "errors": errors}
+
+
 # ── Device Management ─────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -643,6 +763,9 @@ def assign_device_to_site(
 
     candidates = [
         ("POST", f"/network-monitoring/v1/sites/{site_id}/devices", {"serials": [serial_number]}),
+        ("POST", "/central/v2/sites/associate",
+         {"site_id": int(site_id), "device_id": [serial_number],
+          **({"device_type": device_type} if device_type else {})}),
         ("POST", "/monitoring/v1/site/assign",
          {"site_id": int(site_id), "device_id": [serial_number],
           **({"device_type": device_type} if device_type else {})}),
