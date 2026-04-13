@@ -113,27 +113,47 @@ def create_vlan_interface(
 def set_hostname(
     device_scope_id: str,
     hostname: str,
+    device_function: str = "CAMPUS_AP",
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Set the hostname alias on a device. Always dry_run first.
 
     Args:
         device_scope_id: Device's numeric scope-id (use find_device).
+        device_function: Device persona — CAMPUS_AP (default), MOBILITY_GW,
+            ACCESS_SWITCH, AGG_SWITCH, or CORE_SWITCH.
     """
     if dry_run:
-        return {"device_scope_id": device_scope_id, "hostname": hostname, "dry_run": True}
+        return {"device_scope_id": device_scope_id, "hostname": hostname,
+                "device_function": device_function, "dry_run": True}
 
     client = get_client()
+    params = {"object-type": "LOCAL", "scope-id": device_scope_id,
+              "device-function": device_function}
+    alias_payload = {"default-value": {"hostname-value": {"hostname": hostname}}}
+    sysinfo_payload = {"hostname-alias": "sys_host_name"}
+    errors: list[str] = []
     try:
-        client.post(
-            "/network-config/v1/aliases/sys_host_name",
-            params={"view-type": "LOCAL", "scope-id": device_scope_id},
-            data={"name": "sys_host_name", "type": "ALIAS_HOSTNAME",
-                  "default-value": {"hostname-value": {"hostname": hostname}}},
-        )
-        return {"device_scope_id": device_scope_id, "hostname": hostname, "set": True, "errors": []}
+        # Step 1: set the alias value (create or update)
+        try:
+            client.post("/network-config/v1alpha1/aliases/sys_host_name",
+                        params=params, data=alias_payload)
+        except Exception:
+            client.patch("/network-config/v1alpha1/aliases/sys_host_name",
+                         params=params, data=alias_payload)
+        # Step 2: link the alias in system-info (try PATCH first, then POST)
+        try:
+            client.patch("/network-config/v1alpha1/system-info",
+                         params=params, data=sysinfo_payload)
+        except Exception:
+            client.post("/network-config/v1alpha1/system-info",
+                        params=params, data=sysinfo_payload)
+        return {"device_scope_id": device_scope_id, "hostname": hostname,
+                "device_function": device_function, "set": True, "errors": errors}
     except Exception as exc:
-        return {"device_scope_id": device_scope_id, "hostname": hostname, "set": False, "errors": [str(exc)]}
+        errors.append(str(exc))
+        return {"device_scope_id": device_scope_id, "hostname": hostname,
+                "device_function": device_function, "set": False, "errors": errors}
 
 
 @mcp.tool()
