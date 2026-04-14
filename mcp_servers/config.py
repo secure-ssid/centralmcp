@@ -1002,6 +1002,97 @@ def update_device_settings(
     return {"serial_number": serial_number, "settings": settings, "endpoint_used": None, "response": None, "errors": errors}
 
 
+# ── Roles ─────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_roles() -> dict[str, Any]:
+    """List all wireless/gateway roles configured in Central."""
+    return get_client().get("/network-config/v1alpha1/roles")
+
+
+@mcp.tool()
+def list_role_acls() -> dict[str, Any]:
+    """List all role ACL policies configured in Central."""
+    return get_client().get("/network-config/v1alpha1/role-acls")
+
+
+@mcp.tool()
+def delete_role_acl(
+    name: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete a role ACL policy by name. Must be done before deleting the role. Always dry_run first.
+
+    Args:
+        name: ACL policy name (from list_role_acls).
+    """
+    if dry_run:
+        return {"dry_run": True, "name": name}
+
+    client = get_client()
+    resp = client._request("DELETE", f"/network-config/v1alpha1/role-acls/{name}")
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+@mcp.tool()
+def delete_config_assignment(
+    scope_id: str,
+    device_function: str,
+    profile_type: str,
+    profile_instance: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Unassign a profile (e.g. role) from a device function at a given scope. Always dry_run first.
+
+    This is required before deleting a role — removes the role's assignment to a device function.
+
+    Args:
+        scope_id: Scope ID where the assignment lives (use get_global_scope_id or list_scopes).
+        device_function: Device function the profile is assigned to (e.g. 'CAMPUS_AP', 'MOBILITY_GW').
+        profile_type: Type of profile — 'roles' for wireless roles.
+        profile_instance: The profile name being unassigned (e.g. the role name).
+    """
+    endpoint = f"/network-config/v1alpha1/config-assignments/{scope_id}/{device_function}/{profile_type}/{profile_instance}"
+
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint}
+
+    client = get_client()
+    resp = client._request("DELETE", endpoint)
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+@mcp.tool()
+def delete_role(
+    name: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete a wireless/gateway role by name. Always dry_run first.
+
+    Pre-requisites — must be done first or this will fail:
+    1. Delete any ACLs associated with the role (list_role_acls → delete_role_acl).
+    2. Unassign from all device functions (delete_config_assignment for each scope+device_function).
+
+    Args:
+        name: Role name (from list_roles).
+    """
+    if dry_run:
+        return {"dry_run": True, "name": name}
+
+    client = get_client()
+    resp = client._request("DELETE", f"/network-config/v1alpha1/roles/{name}")
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
 # ── Webhooks ──────────────────────────────────────────────────────────────────
 
 @mcp.tool()
