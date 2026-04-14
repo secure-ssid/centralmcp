@@ -366,9 +366,31 @@ def build_overlay_ssid(
     # ------------------------------------------------------------------
     aaa_profile_name = ssid_name  # profile name matches SSID name
     if mac_auth_server_group:
+        # Step 1b-i: Create macauth server object (required before AAA profile can reference it)
+        macauth_endpoint = f"/network-config/v1alpha1/macauth/{quote(aaa_profile_name, safe='')}"
+        macauth_payload = {"name": aaa_profile_name}
+        if dry_run:
+            logger.info("[dry-run] Would POST %s (macauth server object)", macauth_endpoint)
+        else:
+            try:
+                central_client.post(macauth_endpoint, data=macauth_payload)
+                logger.info("Created macauth object '%s'", aaa_profile_name)
+            except Exception as exc:
+                resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+                if "duplicate" in resp_text.lower() or "already exists" in resp_text.lower():
+                    logger.warning("macauth object '%s' already exists — continuing", aaa_profile_name)
+                else:
+                    result["errors"].append(f"create_macauth: {exc}")
+                    logger.error("Failed to create macauth object '%s': %s", aaa_profile_name, exc)
+
+        # Step 1b-ii: Create AAA profile referencing the macauth object and server group
         aaa_payload = {
             "name": aaa_profile_name,
-            "auth-server-group": mac_auth_server_group,
+            "authentication": {
+                "mac-auth": aaa_profile_name,
+                "mac-default-role": ssid_name,
+                "macauth-server-group": mac_auth_server_group,
+            },
         }
         aaa_endpoint = f"/network-config/v1alpha1/aaa-profile/{quote(aaa_profile_name, safe='')}"
         if dry_run:
@@ -404,10 +426,11 @@ def build_overlay_ssid(
     body["type"] = "EMPLOYEE"
     body["default-role"] = ssid_name
     if mac_auth_server_group:
-        body["mac-auth"] = {
-            "enable": True,
-            "aaa-profile": aaa_profile_name,
-        }
+        body["auth-server-group"] = mac_auth_server_group
+        body["acct-server-group"] = mac_auth_server_group
+        body["cloud-auth"] = True
+        body["radius-accounting"] = True
+        body["radius-interim-accounting-interval"] = 10
 
     # ------------------------------------------------------------------
     # Step 2: Create wlan-ssid
