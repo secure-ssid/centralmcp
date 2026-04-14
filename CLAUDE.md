@@ -9,6 +9,7 @@ mcp_servers/
   monitoring.py        Monitoring tools — device health, trends, wireless metrics
   config.py            Config tools — SSIDs, VLANs, profiles, webhooks, firmware
   ops.py               Ops tools — reboots, ping, cable test, PoE bounce, GLP mgmt
+  nac.py               NAC tools — MAC reg, MPSK, visitors, auth servers, AAA profiles, AAA test
   shared.py            Shared utilities and helpers
 pipeline/
   clients/             CentralClient, GLPClient, MCPClient, TokenManager
@@ -24,8 +25,8 @@ state/                 Pipeline state store (idempotent runs)
 
 ## MCP tools (`mcp_servers/`)
 
-Three domain servers — `monitoring.py`, `config.py`, `ops.py` — each registered in `.mcp.json`.
-Tools follow `verb_noun` naming — no prefix. The server name provides context (`aruba-monitoring`, `aruba-config`, `aruba-ops`).
+Four domain servers — `monitoring.py`, `config.py`, `ops.py`, `nac.py` — each registered in `.mcp.json`.
+Tools follow `verb_noun` naming — no prefix. The server name provides context (`aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`).
 
 | Verb | Meaning |
 |------|---------|
@@ -73,7 +74,7 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 
 ## Adding new MCP tools
 
-1. Decide which domain server the tool belongs to: `mcp_servers/monitoring.py`, `mcp_servers/config.py`, or `mcp_servers/ops.py`
+1. Decide which domain server the tool belongs to: `mcp_servers/monitoring.py`, `mcp_servers/config.py`, `mcp_servers/ops.py`, or `mcp_servers/nac.py` (NAC/auth/RADIUS)
 2. Add `@mcp.tool()` function in the appropriate server file
 3. Use thin wrapper pattern — delegate to `pipeline/clients/` or inline API call
 4. Follow verb_noun naming, no prefix

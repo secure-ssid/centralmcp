@@ -1,6 +1,6 @@
 """MCP server — Aruba Central configuration and provisioning tools.
 
-Covers: VLANs, SSIDs, port profiles, firmware compliance, device management,
+Covers: VLANs, SSIDs, overlay WLANs, port profiles, firmware compliance, device management,
 webhooks, device groups, gateway clusters, interface and static route config.
 Always use dry_run=True first for write operations.
 """
@@ -465,6 +465,35 @@ def build_overlay_ssid(
 
 
 @mcp.tool()
+def list_overlay_wlans() -> dict[str, Any]:
+    """List all overlay (tunneled/GRE) WLAN profiles configured in Central."""
+    return get_client().get("/network-config/v1alpha1/overlay-wlan")
+
+
+@mcp.tool()
+def delete_overlay_ssid(
+    profile_name: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete an overlay (tunneled/GRE) WLAN profile. Must be done before deleting the underlay SSID. Always dry_run first.
+
+    Args:
+        profile_name: The overlay-wlan profile name (visible in the gw-profile field of the SSID config,
+                      or use list_overlay_wlans to find it).
+        dry_run: If True, return the target without sending.
+    """
+    if dry_run:
+        return {"dry_run": True, "profile_name": profile_name, "endpoint": f"/network-config/v1alpha1/overlay-wlan/{profile_name}"}
+
+    client = get_client()
+    resp = client._request("DELETE", f"/network-config/v1alpha1/overlay-wlan/{profile_name}")
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+@mcp.tool()
 def create_allow_all_role(
     role_name: str,
     scope_id: str,
@@ -490,7 +519,7 @@ def delete_underlay_ssid(
 ) -> dict[str, Any]:
     """Delete an underlay SSID and its scope-map. Always dry_run first."""
     client = get_client()
-    return _delete(client=client, ssid_name=ssid_name, scope_id=scope_id, dry_run=dry_run)
+    return _delete(client, ssid_name=ssid_name, dry_run=dry_run)
 
 
 @mcp.tool()
