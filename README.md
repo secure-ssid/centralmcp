@@ -8,7 +8,7 @@ Designed to work as a **Claude Code MCP server** so you can drive network operat
 
 ## Features
 
-- **88 MCP tools** across three domain servers (monitoring, config, ops)
+- **129 MCP tools** across four domain servers (monitoring, config, ops, nac)
 - **8-stage migration pipeline** — discover devices → verify config → push to New Central
 - SSID build/delete with scope-map targeting (org-wide, site, or group)
 - Switch provisioning: VLANs, port profiles, SVIs
@@ -50,7 +50,7 @@ cp .mcp.json.example .mcp.json
 
 ### Claude Code MCP integration
 
-Once `.mcp.json` is configured, start Claude Code from this directory — the three MCP servers (`aruba-monitoring`, `aruba-config`, `aruba-ops`) will load automatically.
+Once `.mcp.json` is configured, start Claude Code from this directory — the four MCP servers (`aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`) will load automatically.
 
 Example prompts:
 - *"List all devices at the Home Lab site"*
@@ -82,6 +82,7 @@ mcp_servers/
   monitoring.py       Monitoring tools (health, trends, wireless metrics)
   config.py           Config tools (SSIDs, VLANs, profiles, webhooks, firmware)
   ops.py              Ops tools (reboots, ping, cable test, PoE bounce, GLP)
+  nac.py              NAC tools (MAC reg, MPSK, visitors, auth servers, AAA)
   shared.py           Shared utilities
 pipeline/
   clients/            CentralClient, GLPClient, MCPClient, TokenManager

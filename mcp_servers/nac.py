@@ -1,7 +1,8 @@
-"""MCP server — Aruba Central NAC and authentication tools (19 tools).
+"""MCP server — Aruba Central NAC and authentication tools (26 tools).
 
 Covers: Central NAC (CNAC) MAC registrations, Named MPSK registrations, visitor accounts,
-RADIUS/auth server profiles, AAA profiles, and AAA connectivity testing.
+RADIUS/auth server profiles, AAA profiles, AAA connectivity testing, authorization policies,
+and static classification tags.
 Always use dry_run=True first for write operations.
 
 Tools:
@@ -24,6 +25,10 @@ Tools:
   create_aaa_profile         Create an AAA profile
   delete_aaa_profile         Delete an AAA profile
   test_aaa                   Run an AAA connectivity test from an AP or CX switch (async)
+  list_authz_policies        List authorization policies
+  get_authz_policy           Get a single authorization policy by ID
+  create_authz_policy        Create an authorization policy
+  delete_authz_policy        Delete an authorization policy
   list_static_tags           List user-created static classification tags
   create_static_tag          Create a static classification tag
   delete_static_tag          Delete a static classification tag by tag-id

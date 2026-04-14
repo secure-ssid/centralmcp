@@ -23,6 +23,14 @@
       ],
       "cwd": "/path/to/API-Central",
       "env": { "PYTHONPATH": "/path/to/API-Central" }
+    },
+    "aruba-nac": {
+      "command": "/path/to/API-Central/.venv/bin/python3",
+      "args": [
+        "/path/to/API-Central/mcp_servers/nac.py"
+      ],
+      "cwd": "/path/to/API-Central",
+      "env": { "PYTHONPATH": "/path/to/API-Central" }
     }
   }
 }
