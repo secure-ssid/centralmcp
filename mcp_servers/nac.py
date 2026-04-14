@@ -558,73 +558,76 @@ def get_authz_policy(policy_id: str) -> dict[str, Any]:
 def create_authz_policy(
     policy_name: str,
     rule_name: str,
-    tag_id: str,
     role: str,
+    tag_id: str | None = None,
     position: int = 1,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a CNAC authz policy that assigns a role to devices with a given tag. Always dry_run first.
+    """Create a CNAC authz policy that assigns a role to devices. Always dry_run first.
 
-    This is the API backing the GUI's "Client Classification → tag → role" mapping.
-    When a device is classified and tagged, it receives the specified role.
-    Both the policy UUID and all condition/rule UUIDs are auto-generated.
+    Two modes:
+    - Allow all (tag_id omitted): catch-all rule — every authenticated device gets the role.
+    - Tag-based (tag_id provided): only devices with the matching tag get the role.
 
     Args:
-        policy_name: Human-readable name for the policy (e.g. 'AV-Policy').
-        rule_name: Human-readable name for the rule inside the policy (e.g. 'AV-Rule').
-        tag_id: The UUID of the static tag to match — get this from create_static_tag or list_static_tags.
-        role: Wireless role to assign when the tag matches (e.g. 'AV-Role').
-        position: Policy priority (lower = higher priority, default 1). Must be unique across policies.
+        policy_name: Human-readable name for the policy (e.g. 'Central-MacAuth-Policy').
+        rule_name: Human-readable name for the rule (e.g. 'Allow-All').
+        role: Wireless role to assign (e.g. 'Central-MacAuth').
+        tag_id: UUID of the static tag to match (from list_static_tags). Omit for catch-all.
+        position: Policy priority (lower = higher priority, default 1). Must be unique.
         dry_run: If True, return the payload without sending.
 
     Returns:
         API response or dry-run payload. Includes generated policy_id UUID.
     """
     policy_id = str(uuid.uuid4())
+
+    rule: dict[str, Any] = {
+        "position": 1,
+        "rule-id": str(uuid.uuid4()),
+        "rule-name": rule_name,
+        "enable": True,
+        "enf-profile": [
+            {
+                "profile-id": str(uuid.uuid4()),
+                "type": "ENF_RADIUS",
+                "radius-profile": {
+                    "defined-attr": [
+                        {
+                            "attr-name": "ATTR_ARUBA_ROLE",
+                            "value": role,
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+
+    if tag_id:
+        rule["conditions"] = {
+            "combinator-operator": "COMB_OP_AND",
+            "condition": [
+                {
+                    "position": 1,
+                    "condition-id": str(uuid.uuid4()),
+                    "combinator-operator": "COMB_OP_AND",
+                    "condition-group": [
+                        {
+                            "position": 1,
+                            "condition-group-id": str(uuid.uuid4()),
+                            "attr": "TAGS",
+                            "operator": "OP_CONTAINS_ELEM",
+                            "value": tag_id,
+                        }
+                    ],
+                }
+            ],
+        }
+
     payload: dict[str, Any] = {
         "name": policy_name,
         "position": position,
-        "rule": [
-            {
-                "position": 1,
-                "rule-id": str(uuid.uuid4()),
-                "rule-name": rule_name,
-                "enable": True,
-                "conditions": {
-                    "combinator-operator": "COMB_OP_AND",
-                    "condition": [
-                        {
-                            "position": 1,
-                            "condition-id": str(uuid.uuid4()),
-                            "combinator-operator": "COMB_OP_AND",
-                            "condition-group": [
-                                {
-                                    "position": 1,
-                                    "condition-group-id": str(uuid.uuid4()),
-                                    "attr": "TAGS",
-                                    "operator": "OP_CONTAINS_ELEM",
-                                    "value": tag_id,
-                                }
-                            ],
-                        }
-                    ],
-                },
-                "enf-profile": [
-                    {
-                        "profile-id": str(uuid.uuid4()),
-                        "type": "ENF_RADIUS",
-                        "radius-profile": {
-                            "defined-attr": [
-                                {
-                                    "attr-name": "ATTR_ARUBA_ROLE",
-                                    "value": role,
-                                }
-                            ]
-                        },
-                    }
-                ],
-            }
-        ],
+        "rule": [rule],
     }
 
     if dry_run:
