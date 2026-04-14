@@ -8,7 +8,7 @@ Designed to work as a **Claude Code MCP server** so you can drive network operat
 
 ## Features
 
-- **129 MCP tools** across four domain servers (monitoring, config, ops, nac)
+- **137 MCP tools** across four domain servers (monitoring, config, ops, nac)
 - **8-stage migration pipeline** — discover devices → verify config → push to New Central
 - SSID build/delete with scope-map targeting (org-wide, site, or group)
 - Switch provisioning: VLANs, port profiles, SVIs
@@ -115,6 +115,12 @@ See [CLAUDE.md](CLAUDE.md) for:
 - Scope and device-type translation rules
 - API endpoint patterns
 - Token cost optimization tips
+
+---
+
+## Disclaimer
+
+This project was made with love for Aruba. It is an independent, community-built tool and is **not an official HPE or HPE Aruba Networking product**. It is not endorsed by, affiliated with, or supported by HPE. Use at your own risk.
 
 ---
 
