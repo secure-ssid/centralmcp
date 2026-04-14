@@ -1033,6 +1033,45 @@ def create_role(
 
 
 @mcp.tool()
+def update_role(
+    name: str,
+    description: str | None = None,
+    allow_all: bool = True,
+    vlan_id: int | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Update an existing wireless role in the Central Library (object-type=SHARED) using PUT.
+
+    Use this when the role already exists and create_role returns a duplicate error.
+
+    Args:
+        name: Exact role name to update.
+        allow_all: If True (default), attaches the built-in 'allowall' policy.
+        vlan_id: Optional access VLAN for role members.
+        dry_run: If True, return payload without sending.
+    """
+    payload: dict[str, Any] = {}
+    if description:
+        payload["description"] = description
+    if allow_all:
+        payload["policies"] = [{"name": "allowall", "position": 1}]
+    if vlan_id is not None:
+        payload["vlan-parameters"] = {"access-vlan": vlan_id}
+
+    if dry_run:
+        return {"dry_run": True, "name": name, "payload": payload}
+
+    client = get_client()
+    resp = client._request(
+        "PUT",
+        f"/network-config/v1alpha1/roles/{name}",
+        params={"object-type": "SHARED"},
+        json=payload,
+    )
+    return resp_json(resp)
+
+
+@mcp.tool()
 def list_role_acls() -> dict[str, Any]:
     """List all role ACL policies configured in Central."""
     return get_client().get("/network-config/v1alpha1/role-acls")
