@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central configuration and provisioning tools (35 tools).
+"""MCP server — Aruba Central configuration and provisioning tools (36 tools).
 
 Covers: VLANs, SSIDs, port profiles, firmware compliance, device management,
 webhooks, device groups, gateway interface and static route config.
@@ -742,6 +742,74 @@ def gateway_config_static_route(
         errors.append(str(exc))
         return {"serial_number": serial_number, "destination": destination,
                 "nexthop": nexthop, "response": None, "errors": errors}
+
+
+@mcp.tool()
+def gateway_join_cluster(
+    cluster_name: str,
+    scope_id: str,
+    gateways: list[dict[str, Any]],
+    device_function: str = "MOBILITY_GW",
+    auto_cluster: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Add/update gateway cluster membership via PATCH. Always dry_run first.
+
+    Args:
+        cluster_name: Cluster name, e.g. 'GW-HA'.
+        scope_id: Group or site scope-id that owns the cluster.
+        gateways: List of gateway dicts, each with:
+            - ip: Gateway IP address (str)
+            - mac: MAC address (str, e.g. '20:4c:03:82:04:c2')
+            - priority: VRRP priority int (higher = preferred master, e.g. 110/100)
+            - coa_vrrp_ip: COA/VRRP virtual IP (str)
+        device_function: MOBILITY_GW (default).
+        auto_cluster: Whether to enable auto-cluster (default False).
+        dry_run: If True, return payload without sending.
+    """
+    payload: dict[str, Any] = {
+        "name": cluster_name,
+        "auto-cluster": auto_cluster,
+        "ipv4-gateways": [
+            {
+                "ip": gw["ip"],
+                "mac": gw["mac"],
+                "priority": gw["priority"],
+                "coa-vrrp-ip": gw["coa_vrrp_ip"],
+            }
+            for gw in gateways
+        ],
+    }
+
+    if dry_run:
+        return {
+            "dry_run": True, "cluster_name": cluster_name,
+            "scope_id": scope_id, "device_function": device_function,
+            "payload": payload, "errors": [],
+        }
+
+    client = get_client()
+    errors: list[str] = []
+    endpoint = f"/network-config/v1alpha1/gateway-clusters/{cluster_name}"
+    params = {"object-type": "variable", "scope-id": scope_id, "device-function": device_function}
+
+    try:
+        response = client._request("PATCH", endpoint, json=payload, params=params)
+        if response.status_code not in (200, 201, 202, 204):
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+            errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+            return {"cluster_name": cluster_name, "payload": payload, "response": None, "errors": errors}
+        try:
+            resp_body = response.json()
+        except Exception:
+            resp_body = {}
+        return {"cluster_name": cluster_name, "payload": payload, "response": resp_body, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"cluster_name": cluster_name, "payload": payload, "response": None, "errors": errors}
 
 
 # ── Device Management ─────────────────────────────────────────────────────────
