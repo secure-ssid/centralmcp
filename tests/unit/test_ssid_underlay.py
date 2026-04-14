@@ -1,4 +1,4 @@
-"""Unit tests for pipeline/ssid_underlay.py."""
+"""Unit tests for pipeline/create_ssid.py."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
-from pipeline.ssid_underlay import (
+from pipeline.create_ssid import (
     _build_ssid_body,
     build_underlay_ssid,
     delete_underlay_ssid,

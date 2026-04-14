@@ -88,7 +88,7 @@ pipeline/
   clients/            CentralClient, GLPClient, MCPClient, TokenManager
   stages/             s1_discover → s8_verify
   config.py           Credential loader
-  ssid_underlay.py    SSID build/delete logic
+  create_ssid.py      SSID build/delete logic (underlay + overlay)
 config/
   credentials.yaml.example   Template — copy to credentials.yaml and fill in
 resources/            Postman download script (collections git-ignored — see resources/README.md)

@@ -15,7 +15,7 @@ pipeline/
   clients/             CentralClient, GLPClient, MCPClient, TokenManager
   stages/              s1_discover → s8_verify (migration pipeline)
   config.py            Credentials loader (config/credentials.yaml or env)
-  ssid_underlay.py     SSID build/delete logic
+  create_ssid.py       SSID build/delete logic (underlay + overlay)
 config/credentials.yaml  API credentials (never commit)
 resources/             Postman API collections (monitoring + config endpoints)
 inputs/                CSV files for batch migration

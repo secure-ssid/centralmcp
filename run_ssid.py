@@ -55,7 +55,7 @@ from rich.table import Table
 from pipeline.clients.central_client import CentralClient
 from pipeline.clients.token_manager import TokenManager
 from pipeline.config import build_account_contexts
-from pipeline.ssid_underlay import build_underlay_ssid
+from pipeline.create_ssid import build_underlay_ssid
 from pipeline.stages.s6_configure import _fetch_global_scope_id
 
 console = Console()
