@@ -426,6 +426,7 @@ def build_overlay_ssid(
     body["type"] = "EMPLOYEE"
     body["default-role"] = ssid_name
     if mac_auth_server_group:
+        body["mac-authentication"] = True
         body["auth-server-group"] = mac_auth_server_group
         body["acct-server-group"] = mac_auth_server_group
         body["cloud-auth"] = True
