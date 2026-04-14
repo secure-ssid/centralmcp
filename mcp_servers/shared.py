@@ -124,6 +124,14 @@ def troubleshoot_async(
     return result
 
 
+def resp_json(resp: Any) -> dict[str, Any]:
+    """Return resp.json() or {status_code, text} if the body is not JSON."""
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
 def device_type_for_troubleshoot(serial_number: str, device_type: str | None) -> str | None:
     """Auto-detect device type from inventory if not supplied."""
     if device_type:

@@ -74,14 +74,13 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 
 ## Adding new MCP tools
 
-1. Decide which domain server the tool belongs to: `mcp_servers/monitoring.py`, `mcp_servers/config.py`, `mcp_servers/ops.py`, or `mcp_servers/nac.py` (NAC/auth/RADIUS)
-2. Add `@mcp.tool()` function in the appropriate server file
-3. Use thin wrapper pattern — delegate to `pipeline/clients/` or inline API call
-4. Follow verb_noun naming, no prefix
-5. Include docstring: what it does, args, returns, and any gotchas
-6. Update the tool list in the module docstring at the top of the server file
+1. Pick the right domain server: `monitoring.py`, `config.py`, `ops.py`, or `nac.py`.
+2. Add `@mcp.tool()` with verb_noun naming, no prefix.
+3. Use thin wrapper — delegate to `pipeline/clients/` or inline API call.
+4. Docstring: what it does, key args, and any gotchas.
+5. Update the tool count in the module docstring.
 
-**Before editing any server file:** use `Grep` to find the exact line number, then `Read` only the relevant slice. Never page through the whole file.
+**Before editing:** use `Grep` to find the line, then `Read` only that slice.
 
 ## API reference
 
@@ -122,14 +121,8 @@ Postman collections are in `resources/` (git-ignored — download with `python r
 
 ## Token cost tips
 
-- Use `Grep` + targeted `Read` with offset/limit instead of reading whole files
-- Filter Postman collection data with a tight Python script — don't dump raw output
-- Start a fresh conversation after long build sessions to reset context
-- **Grep large tool results before using them.** These tools return large payloads — extract only what's needed:
-  - `list_devices` — full fleet; grep for `serialNumber`, `deviceType`, `scopeId` fields only
-  - `get_device_health` — all devices; grep for the one serial you care about
-  - `get_wireless_metrics` — rich AP record; grep for specific fields (e.g. `radios`, `cpuUtilization`)
-  - `list_switch_ports` / `list_switch_vlans` — can be 50+ entries; filter by status or name
-  - `list_audit_logs` / `list_glp_audit_logs` — time-series; grep for action or category
-  - `cx_show` — raw show output; grep for the specific line (e.g. interface name, route)
-- Use `site_id` / `serial_number` / `filter` params on tools that support them to limit results at the API level before they hit context
+- Use `Grep` + targeted `Read` with offset/limit instead of reading whole files.
+- Filter Postman collection data with a tight Python script — don't dump raw output.
+- Start a fresh conversation after long build sessions to reset context.
+- Large tool results — grep before using: `list_devices`, `get_device_health`, `get_wireless_metrics`, `list_switch_ports`, `list_audit_logs`, `cx_show`.
+- Use `site_id` / `serial_number` / `filter` params to limit API results before they hit context.

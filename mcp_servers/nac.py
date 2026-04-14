@@ -1,42 +1,8 @@
 """MCP server — Aruba Central NAC and authentication tools (31 tools).
 
-Covers: Central NAC (CNAC) MAC registrations, Named MPSK registrations, visitor accounts,
-RADIUS/auth server profiles, AAA profiles, AAA connectivity testing, authorization policies,
-and static classification tags.
-Always use dry_run=True first for write operations.
-
-Tools:
-  list_mac_registrations     List all MAC auth registrations
-  add_mac_registration       Register a MAC address for NAC
-  update_mac_registration    Update an existing MAC registration
-  delete_mac_registration    Remove a MAC registration
-  list_mpsk_registrations    List Named MPSK registrations
-  add_mpsk_registration      Create a Named MPSK registration
-  delete_mpsk_registration   Remove a Named MPSK registration
-  list_visitors              List visitor accounts
-  add_visitor                Create a visitor account
-  delete_visitor             Remove a visitor account
-  list_auth_servers          List RADIUS/auth server profiles
-  get_auth_server            Get a single auth server profile by name
-  create_auth_server         Create a RADIUS auth server profile
-  delete_auth_server         Delete an auth server profile
-  list_aaa_profiles          List AAA profiles
-  get_aaa_profile            Get a single AAA profile by name
-  create_aaa_profile         Create an AAA profile
-  delete_aaa_profile         Delete an AAA profile
-  test_aaa                   Run an AAA connectivity test from an AP or CX switch (async)
-  list_authz_policies        List authorization policies
-  get_authz_policy           Get a single authorization policy by ID
-  create_authz_policy        Create an authorization policy
-  delete_authz_policy        Delete an authorization policy
-  list_static_tags           List user-created static classification tags
-  create_static_tag          Create a static classification tag
-  delete_static_tag          Delete a static classification tag by tag-id
-  list_auth_profiles         List all Central NAC authentication profiles
-  get_auth_profile           Get a single auth profile by UUID
-  create_mac_auth_profile    Create a MAB (MAC auth) profile for wireless SSIDs
-  delete_auth_profile        Delete an auth profile by UUID
-  list_identity_stores       List all Central NAC identity stores
+Covers: CNAC MAC registrations, Named MPSK registrations, visitor accounts,
+RADIUS/auth server profiles, AAA profiles, AAA connectivity testing, authorization
+policies, and static classification tags.
 """
 import uuid
 from typing import Any
@@ -46,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp_servers.shared import (
     _CX_TROUBLESHOOTING_BASE,
     get_client,
+    resp_json,
     troubleshoot_async,
 )
 
@@ -71,13 +38,12 @@ def add_mac_registration(
     enable: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Register a MAC address for Central NAC authentication. Always dry_run first.
+    """Register a MAC address for Central NAC authentication.
 
     Args:
         mac_address: MAC address to register (e.g. 'aa:bb:cc:dd:ee:ff').
-        display_name: Human-readable label for this registration.
-        tags: Optional list of static tag strings.
-        enable: Whether the registration is active (default True).
+        display_name: Human-readable label.
+        tags: Optional static tag strings.
         dry_run: If True, return payload without sending.
     """
     payload: dict[str, Any] = {
@@ -96,10 +62,7 @@ def add_mac_registration(
 
     client = get_client()
     resp = client._request("POST", f"{_CNAC_BASE}/cnac-mac-reg", json=payload)
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -111,14 +74,11 @@ def update_mac_registration(
     enable: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Update an existing MAC registration by ID. Always dry_run first.
+    """Update an existing MAC registration by ID.
 
     Args:
-        registration_id: The registration ID to update (from list_mac_registrations).
-        mac_address: MAC address (required even for update).
-        display_name: Human-readable label.
-        tags: Static tag strings.
-        enable: Whether the registration is active.
+        registration_id: From list_mac_registrations.
+        mac_address: Required even for updates.
         dry_run: If True, return payload without sending.
     """
     payload: dict[str, Any] = {
@@ -137,10 +97,7 @@ def update_mac_registration(
 
     client = get_client()
     resp = client._request("PUT", f"{_CNAC_BASE}/cnac-mac-reg/{registration_id}", json=payload)
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -148,20 +105,13 @@ def delete_mac_registration(
     registration_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a MAC registration by ID. Always dry_run first.
-
-    Args:
-        registration_id: ID from list_mac_registrations.
-    """
+    """Delete a MAC registration by ID (from list_mac_registrations)."""
     if dry_run:
         return {"dry_run": True, "registration_id": registration_id}
 
     client = get_client()
     resp = client._request("DELETE", f"{_CNAC_BASE}/cnac-mac-reg/{registration_id}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 # ── Named MPSK Registrations ──────────────────────────────────────────────────
@@ -181,14 +131,13 @@ def add_mpsk_registration(
     enable: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a Named MPSK registration. Always dry_run first.
+    """Create a Named MPSK registration.
 
     Args:
-        name: Unique name for this MPSK registration.
-        network: SSID/network name this MPSK applies to.
+        name: Unique name.
+        network: SSID this MPSK applies to.
         user_role: Optional role to assign on connection.
-        password_policy: Password generation policy — "WORDS" (default) or other supported values.
-        enable: Whether registration is active (default True).
+        password_policy: "WORDS" (default) or other supported values.
         dry_run: If True, return payload without sending.
     """
     payload: dict[str, Any] = {
@@ -207,10 +156,7 @@ def add_mpsk_registration(
 
     client = get_client()
     resp = client._request("POST", f"{_CNAC_BASE}/cnac-named-mpsk-reg", json=payload)
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -218,20 +164,13 @@ def delete_mpsk_registration(
     registration_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a Named MPSK registration by ID. Always dry_run first.
-
-    Args:
-        registration_id: ID from list_mpsk_registrations.
-    """
+    """Delete a Named MPSK registration by ID (from list_mpsk_registrations)."""
     if dry_run:
         return {"dry_run": True, "registration_id": registration_id}
 
     client = get_client()
     resp = client._request("DELETE", f"{_CNAC_BASE}/cnac-named-mpsk-reg/{registration_id}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 # ── Visitor Accounts ──────────────────────────────────────────────────────────
@@ -253,16 +192,12 @@ def add_visitor(
     enable: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a Central NAC visitor account. Always dry_run first.
+    """Create a Central NAC visitor account.
 
     Args:
-        display_name: Display name shown in the portal.
-        name: Username / login name for the visitor.
-        email: Visitor email address (used for credential delivery).
-        phone: Visitor phone number.
-        company_name: Company affiliation.
-        expire_at: Expiry timestamp in ISO 8601 format (e.g. '2026-05-01T00:00:00Z').
-        enable: Whether account is active (default True).
+        display_name: Display name shown in portal.
+        name: Login username.
+        expire_at: ISO 8601 expiry (e.g. '2026-05-01T00:00:00Z').
         dry_run: If True, return payload without sending.
     """
     payload: dict[str, Any] = {
@@ -286,10 +221,7 @@ def add_visitor(
 
     client = get_client()
     resp = client._request("POST", f"{_CNAC_BASE}/cnac-visitor", json=payload)
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -297,20 +229,13 @@ def delete_visitor(
     visitor_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a visitor account by ID. Always dry_run first.
-
-    Args:
-        visitor_id: ID from list_visitors.
-    """
+    """Delete a visitor account by ID (from list_visitors)."""
     if dry_run:
         return {"dry_run": True, "visitor_id": visitor_id}
 
     client = get_client()
     resp = client._request("DELETE", f"{_CNAC_BASE}/cnac-visitor/{visitor_id}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 # ── Auth Server Profiles ──────────────────────────────────────────────────────
@@ -323,11 +248,7 @@ def list_auth_servers() -> dict[str, Any]:
 
 @mcp.tool()
 def get_auth_server(name: str) -> dict[str, Any]:
-    """Get a single RADIUS/auth server profile by name.
-
-    Args:
-        name: Profile name (as returned by list_auth_servers).
-    """
+    """Get a single RADIUS/auth server profile by name (from list_auth_servers)."""
     return get_client().get(f"{_CNAC_BASE}/auth-servers/{name}")
 
 
@@ -342,17 +263,13 @@ def create_auth_server(
     enable: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a RADIUS auth server profile. Always dry_run first.
+    """Create a RADIUS auth server profile.
 
     Args:
-        name: Unique profile name.
         auth_server_address: IP or hostname of the RADIUS server.
-        shared_secret: Shared secret (plaintext — stored securely by Central).
-        server_type: Server type — "RADIUS" (default), "RADSEC", "LDAP", "TACACS".
-        auth_port: Authentication port (default 1812).
-        acct_port: Accounting port (default 1813).
-        enable: Whether profile is active (default True).
-        dry_run: If True, return payload without sending.
+        shared_secret: Plaintext secret (stored securely by Central).
+        server_type: "RADIUS" (default), "RADSEC", "LDAP", or "TACACS".
+        dry_run: If True, return payload without sending (secret masked).
     """
     payload: dict[str, Any] = {
         "name": name,
@@ -374,10 +291,7 @@ def create_auth_server(
 
     client = get_client()
     resp = client._request("POST", f"{_CNAC_BASE}/auth-servers/{name}", json=payload)
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -385,20 +299,13 @@ def delete_auth_server(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a RADIUS/auth server profile by name. Always dry_run first.
-
-    Args:
-        name: Profile name (as returned by list_auth_servers).
-    """
+    """Delete a RADIUS/auth server profile by name (from list_auth_servers)."""
     if dry_run:
         return {"dry_run": True, "name": name}
 
     client = get_client()
     resp = client._request("DELETE", f"{_CNAC_BASE}/auth-servers/{name}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 # ── AAA Profiles ──────────────────────────────────────────────────────────────
@@ -411,11 +318,7 @@ def list_aaa_profiles() -> dict[str, Any]:
 
 @mcp.tool()
 def get_aaa_profile(name: str) -> dict[str, Any]:
-    """Get a single AAA profile by name.
-
-    Args:
-        name: Profile name (as returned by list_aaa_profiles).
-    """
+    """Get a single AAA profile by name (from list_aaa_profiles)."""
     return get_client().get(f"{_CNAC_BASE}/aaa-profile/{name}")
 
 
@@ -428,14 +331,12 @@ def create_aaa_profile(
     description: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create an AAA profile. Always dry_run first.
+    """Create an AAA profile.
 
     Args:
-        name: Unique profile name.
-        auth_role: Role assigned after successful authentication.
-        fallback_role: Role assigned when auth server is unreachable.
+        auth_role: Role after successful authentication.
+        fallback_role: Role when auth server is unreachable.
         acct_server_group: Accounting server group name.
-        description: Optional description.
         dry_run: If True, return payload without sending.
     """
     payload: dict[str, Any] = {"name": name}
@@ -455,10 +356,7 @@ def create_aaa_profile(
 
     client = get_client()
     resp = client._request("POST", f"{_CNAC_BASE}/aaa-profile/{name}", json=payload)
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -466,20 +364,13 @@ def delete_aaa_profile(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete an AAA profile by name. Always dry_run first.
-
-    Args:
-        name: Profile name (as returned by list_aaa_profiles).
-    """
+    """Delete an AAA profile by name (from list_aaa_profiles)."""
     if dry_run:
         return {"dry_run": True, "name": name}
 
     client = get_client()
     resp = client._request("DELETE", f"{_CNAC_BASE}/aaa-profile/{name}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 # ── AAA Test ──────────────────────────────────────────────────────────────────
@@ -494,21 +385,13 @@ def test_aaa(
     radius_server_ip: str | None = None,
     auth_method: str = "chap",
 ) -> dict[str, Any]:
-    """Run an AAA connectivity test from an AP or CX switch (async, polls ~60s).
-
-    Tests that a device can reach and authenticate against a RADIUS server.
+    """Test AAA connectivity from an AP or CX switch (async, polls ~60s).
 
     Args:
-        serial_number: Device serial number.
-        username: Test username to authenticate with.
-        password: Test password.
         device_type: "AP" (default) or "CX".
         server_name: Auth server profile name — required for AP tests.
         radius_server_ip: RADIUS server IP — required for CX tests.
-        auth_method: Auth method for CX tests — "chap" (default) or "pap".
-
-    Returns:
-        Async task result with status and output from the device.
+        auth_method: CX only — "chap" (default) or "pap".
     """
     errors: list[str] = []
     client = get_client()
@@ -546,11 +429,7 @@ def list_authz_policies() -> dict[str, Any]:
 
 @mcp.tool()
 def get_authz_policy(policy_id: str) -> dict[str, Any]:
-    """Get a single CNAC authz policy by ID.
-
-    Args:
-        policy_id: Policy ID (from list_authz_policies).
-    """
+    """Get a single CNAC authz policy by ID (from list_authz_policies)."""
     return get_client().get(f"{_CNAC_BASE}/authz-policies/{policy_id}")
 
 
@@ -563,22 +442,15 @@ def create_authz_policy(
     position: int = 1,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a CNAC authz policy that assigns a role to devices. Always dry_run first.
+    """Create a CNAC authz policy that assigns a role to devices.
 
-    Two modes:
-    - Allow all (tag_id omitted): catch-all rule — every authenticated device gets the role.
-    - Tag-based (tag_id provided): only devices with the matching tag get the role.
+    Two modes: omit tag_id for catch-all (every authenticated device gets the role),
+    or provide tag_id to match only devices with that static tag.
 
     Args:
-        policy_name: Human-readable name for the policy (e.g. 'Central-MacAuth-Policy').
-        rule_name: Human-readable name for the rule (e.g. 'Allow-All').
-        role: Wireless role to assign (e.g. 'Central-MacAuth').
-        tag_id: UUID of the static tag to match (from list_static_tags). Omit for catch-all.
-        position: Policy priority (lower = higher priority, default 1). Must be unique.
-        dry_run: If True, return the payload without sending.
-
-    Returns:
-        API response or dry-run payload. Includes generated policy_id UUID.
+        tag_id: UUID from list_static_tags. Omit for catch-all.
+        position: Priority (lower = higher, default 1). Must be unique.
+        dry_run: If True, return payload without sending.
     """
     policy_id = str(uuid.uuid4())
 
@@ -636,10 +508,7 @@ def create_authz_policy(
 
     client = get_client()
     resp = client._request("POST", f"{_CNAC_BASE}/authz-policies/{policy_id}", json=payload)
-    try:
-        result = resp.json()
-    except Exception:
-        result = {"status_code": resp.status_code, "text": resp.text}
+    result = resp_json(resp)
     result["policy_id"] = policy_id
     return result
 
@@ -649,20 +518,13 @@ def delete_authz_policy(
     policy_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a CNAC authz policy by ID. Always dry_run first.
-
-    Args:
-        policy_id: Policy ID (from list_authz_policies).
-    """
+    """Delete a CNAC authz policy by ID (from list_authz_policies)."""
     if dry_run:
         return {"dry_run": True, "policy_id": policy_id}
 
     client = get_client()
     resp = client._request("DELETE", f"{_CNAC_BASE}/authz-policies/{policy_id}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 _STATIC_TAG_BASE = "/network-config/v1alpha1/static-tag"
@@ -670,9 +532,8 @@ _STATIC_TAG_BASE = "/network-config/v1alpha1/static-tag"
 
 @mcp.tool()
 def list_static_tags() -> dict[str, Any]:
-    """List all user-created static classification tags.
+    """List user-created static classification tags (each has 'tag-id' and 'name').
 
-    Returns a dict with a 'tag' list. Each entry has 'tag-id' (UUID) and 'name'.
     Note: system-generated tags (e.g. IoT) are not returned by this endpoint.
     """
     return get_client().get(_STATIC_TAG_BASE)
@@ -683,14 +544,13 @@ def create_static_tag(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a static classification tag for client classification.
+    """Create a static classification tag (tag-id is auto-generated).
 
     Tags are used in authz policies to assign roles to classified clients.
-    tag-id is auto-generated as a UUID.
 
     Args:
-        name: Display name for the tag (e.g. 'AV', 'IoT', 'Console').
-        dry_run: If True, return the payload without sending.
+        name: Tag display name (e.g. 'AV', 'IoT', 'Console').
+        dry_run: If True, return payload without sending.
     """
     tag_id = str(uuid.uuid4())
     payload = {"name": name}
@@ -698,27 +558,17 @@ def create_static_tag(
         return {"payload": payload, "tag_id": tag_id, "url": f"{_STATIC_TAG_BASE}/{tag_id}"}
     client = get_client()
     resp = client._request("POST", f"{_STATIC_TAG_BASE}/{tag_id}", json=payload)
-    try:
-        result = resp.json()
-    except Exception:
-        result = {"status_code": resp.status_code, "text": resp.text}
+    result = resp_json(resp)
     result["tag_id"] = tag_id
     return result
 
 
 @mcp.tool()
 def delete_static_tag(tag_id: str) -> dict[str, Any]:
-    """Delete a static classification tag by its UUID tag-id.
-
-    Args:
-        tag_id: The UUID of the tag to delete (from list_static_tags).
-    """
+    """Delete a static classification tag by its UUID tag-id (from list_static_tags)."""
     client = get_client()
     resp = client._request("DELETE", f"{_STATIC_TAG_BASE}/{tag_id}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 # ── Auth Profiles ─────────────────────────────────────────────────────────────
@@ -737,11 +587,7 @@ def list_auth_profiles() -> dict[str, Any]:
 
 @mcp.tool()
 def get_auth_profile(profile_id: str) -> dict[str, Any]:
-    """Get a single Central NAC auth profile by UUID.
-
-    Args:
-        profile_id: UUID of the profile (from list_auth_profiles).
-    """
+    """Get a single Central NAC auth profile by UUID (from list_auth_profiles)."""
     return get_client().get(f"{_AUTH_PROFILE_BASE}/{profile_id}")
 
 
@@ -754,24 +600,18 @@ def create_mac_auth_profile(
     description: str = "",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a Central NAC MAC authentication (MAB) profile for wireless SSIDs. Always dry_run first.
+    """Create a Central NAC MAC authentication (MAB) profile for wireless SSIDs.
 
-    Creates an auth-type=MAB profile that authenticates clients by MAC address.
-    Each SSID can only belong to one auth profile.
+    Each SSID can only belong to one auth profile. SSIDs must have cloud-auth=True and
+    mac-authentication=True.
 
     Args:
-        name: Profile name (e.g. "Wireless_MacAuth").
-        networks: List of SSID names to associate (e.g. ["Central-MacAuth"]).
-                  Each SSID must have cloud-auth=True and mac-authentication=True.
-        allow_all: If True (default), allow all MAC addresses (no pre-registration required).
-                   If False, only MACs registered in the identity store are allowed.
-        identity_store_id: UUID of the identity store to use. Defaults to the built-in
-                           MAC Address Store. Use list_identity_stores to find others.
-        description: Optional description.
+        networks: SSID names to associate (e.g. ["Central-MacAuth"]).
+        allow_all: True = allow all MACs; False = only pre-registered MACs.
+        identity_store_id: Defaults to built-in MAC Address Store. Use list_identity_stores for others.
         dry_run: If True, return payload without sending.
     """
-    import uuid as _uuid
-    profile_id = str(_uuid.uuid4())
+    profile_id = str(uuid.uuid4())
     payload: dict[str, Any] = {
         "auth-profile-id": profile_id,
         "name": name,
@@ -788,10 +628,7 @@ def create_mac_auth_profile(
 
     client = get_client()
     resp = client._request("POST", f"{_AUTH_PROFILE_BASE}/{profile_id}", json=payload)
-    try:
-        result = resp.json()
-    except Exception:
-        result = {"status_code": resp.status_code, "text": resp.text}
+    result = resp_json(resp)
     result["profile_id"] = profile_id
     return result
 
@@ -801,20 +638,13 @@ def delete_auth_profile(
     profile_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a Central NAC authentication profile by UUID. Always dry_run first.
-
-    Args:
-        profile_id: UUID of the profile (from list_auth_profiles).
-    """
+    """Delete a Central NAC authentication profile by UUID (from list_auth_profiles)."""
     if dry_run:
         return {"dry_run": True, "profile_id": profile_id}
 
     client = get_client()
     resp = client._request("DELETE", f"{_AUTH_PROFILE_BASE}/{profile_id}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()

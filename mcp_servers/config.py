@@ -2,7 +2,6 @@
 
 Covers: VLANs, SSIDs, overlay WLANs, port profiles, firmware compliance, device management,
 webhooks, device groups, gateway clusters, interface and static route config.
-Always use dry_run=True first for write operations.
 """
 import os
 from typing import Any
@@ -10,7 +9,7 @@ from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_servers.shared import get_client, get_mcp_client
+from mcp_servers.shared import get_client, get_mcp_client, resp_json
 from pipeline.config import build_account_contexts
 from pipeline.create_ssid import (
     build_overlay_ssid as _build_overlay,
@@ -49,7 +48,7 @@ def create_vlan(
     persona: str = "ACCESS_SWITCH",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create an L2 VLAN and scope-map it (org-wide if scope_id omitted). Always dry_run first."""
+    """Create an L2 VLAN and scope-map it (org-wide if scope_id omitted)."""
     if dry_run:
         return {"vlan_id": vlan_id, "dry_run": True, "created": False}
 
@@ -93,7 +92,7 @@ def create_vlan_interface(
     persona: str = "ACCESS_SWITCH",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create an L3 SVI at device scope (global L2 VLAN shell is auto-confirmed). Always dry_run first.
+    """Create an L3 SVI at device scope (global L2 VLAN shell is auto-confirmed).
 
     Args:
         device_scope_id: Device's numeric scope-id (use find_device).
@@ -122,7 +121,7 @@ def set_hostname(
     device_function: str = "CAMPUS_AP",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Set the hostname alias on a device. Always dry_run first.
+    """Set the hostname alias on a device.
 
     Args:
         device_scope_id: Device's numeric scope-id (use find_device).
@@ -223,7 +222,7 @@ def set_firmware_compliance(
     reboot_schedule_mode: str = "IMMEDIATE",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create or update a firmware compliance policy (triggers upgrade). Always dry_run first.
+    """Create or update a firmware compliance policy (triggers upgrade).
 
     Args:
         scope_id: Use get_global_scope_id() for org-wide, or list_scopes() for a site/group.
@@ -306,7 +305,7 @@ def trigger_device_upgrade(
     reboot_schedule_mode: str = "IMMEDIATE",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Trigger an immediate per-device firmware upgrade (bypasses compliance policy). Always dry_run first.
+    """Trigger an immediate per-device firmware upgrade (bypasses compliance policy).
 
     Args:
         device_function: AUTO-detected if omitted; otherwise ACCESS_SWITCH, CAMPUS_AP, etc.
@@ -410,7 +409,7 @@ def build_underlay_ssid(
     vlan_ids: list[int] | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a bridge-mode (underlay) SSID and scope-map it. Always dry_run first.
+    """Create a bridge-mode (underlay) SSID and scope-map it.
 
     Args:
         scope_id: Use get_global_scope_id() for org-wide, or list_scopes() for site/group.
@@ -446,7 +445,7 @@ def build_overlay_ssid(
     policy_name: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a tunneled (overlay/GRE) SSID via a gateway cluster. Always dry_run first.
+    """Create a tunneled (overlay/GRE) SSID via a gateway cluster.
 
     Args:
         scope_id: Device group scope-id (use list_scopes() to find it — overlay WLANs cannot use global scope).
@@ -488,7 +487,7 @@ def delete_overlay_ssid(
     profile_name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete an overlay (tunneled/GRE) WLAN profile. Must be done before deleting the underlay SSID. Always dry_run first.
+    """Delete an overlay (tunneled/GRE) WLAN profile. Must be done before deleting the underlay SSID.
 
     Args:
         profile_name: The overlay-wlan profile name (visible in the gw-profile field of the SSID config,
@@ -500,10 +499,7 @@ def delete_overlay_ssid(
 
     client = get_client()
     resp = client._request("DELETE", f"/network-config/v1alpha1/overlay-wlan/{profile_name}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -513,7 +509,7 @@ def create_allow_all_role(
     persona: str = "CAMPUS_AP",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a permit-all wireless role and scope-map it. Always dry_run first."""
+    """Create a permit-all wireless role and scope-map it."""
     client = get_client()
     return _create_role(
         client,
@@ -530,7 +526,7 @@ def delete_underlay_ssid(
     scope_id: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete an underlay SSID and its scope-map. Always dry_run first."""
+    """Delete an underlay SSID and its scope-map."""
     client = get_client()
     return _delete(client, ssid_name=ssid_name, dry_run=dry_run)
 
@@ -542,7 +538,7 @@ def update_ssid(
     scope_id: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """PATCH an existing SSID — only provided fields are changed. Always dry_run first.
+    """PATCH an existing SSID — only provided fields are changed.
 
     Args:
         updates: Fields to change, e.g. {"enable": True, "wpa-passphrase": "newpass"}.
@@ -590,7 +586,7 @@ def create_port_profile(
     persona: str = "ACCESS_SWITCH",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create (or update) a switch port profile and scope-map it. Always dry_run first.
+    """Create (or update) a switch port profile and scope-map it.
 
     Two-step: POST (shell) then PUT (full config body). Pass the nested config dict as body.
     """
@@ -633,7 +629,7 @@ def update_port_config(
     device_scope_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """PATCH ethernet interface config on a CX switch at device scope. Always dry_run first.
+    """PATCH ethernet interface config on a CX switch at device scope.
 
     Args:
         interface_name: e.g. "1/1/6".
@@ -682,13 +678,11 @@ def gateway_config_interface(
     device_scope_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """PATCH ethernet interface config on an Aruba gateway at device scope. Always dry_run first.
+    """PATCH ethernet interface config on an Aruba gateway at device scope.
 
     Args:
-        serial_number: Gateway serial (e.g. 'CNP6L2H038').
-        interface_name: Interface name as shown in 'show interface', e.g. 'GE 0/0/1'.
-            Will be URL-encoded automatically.
-        device_scope_id: Device's config-layer scope-id (use find_device → scopeId).
+        interface_name: As shown in 'show interface', e.g. 'GE 0/0/1' (URL-encoded automatically).
+        device_scope_id: Use find_device → scopeId.
         updates: Fields to PATCH, e.g. {"jumbo": True, "trusted": True, "mtu": 9216}.
         dry_run: If True, return payload without sending.
     """
@@ -736,19 +730,14 @@ def gateway_config_static_route(
     admin_distance: int = 1,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create or replace a static route on an Aruba gateway at device scope. Always dry_run first.
+    """Create or replace a static route on an Aruba gateway at device scope.
 
     Args:
-        serial_number: Gateway serial (e.g. 'CNP6L2H038').
-        destination: Route destination in CIDR notation, e.g. '0.0.0.0/0' or '192.168.1.0/24'.
-        nexthop: Next-hop IP address, e.g. '192.168.1.1'.
-        device_scope_id: Device's config-layer scope-id (use find_device → scopeId).
-        admin_distance: Administrative distance (default 1; use 50 for default route).
+        destination: CIDR, e.g. '0.0.0.0/0'. Slashes become underscores in the URL path.
+        nexthop: Next-hop IP, e.g. '192.168.1.1'.
+        admin_distance: Default 1; use 50 for a default route.
+        device_scope_id: Use find_device → scopeId.
         dry_run: If True, return payload without sending.
-
-    Returns:
-        API response or dry_run payload. Gotcha: route name derived from destination
-        (slashes replaced with underscores) for the URL path.
     """
     route_name = destination.replace("/", "_")
     payload = {
@@ -803,31 +792,15 @@ def gateway_join_cluster(
     auto_cluster: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Add/update gateway cluster membership via API. Always dry_run first.
-
-    Flow: POST to collection URL to create; if duplicate, PATCH resource URL to update.
-    "name" is omitted from the PATCH body (it's in the URL) to avoid backend treating
-    the update as a create attempt.
+    """Add/update gateway cluster membership via API (POST to create, PATCH if duplicate).
 
     Args:
-        cluster_name: Cluster name, e.g. 'GW-HA'.
-        scope_id: Group scope-id that owns the cluster (use list_scopes or find_device →
-            deviceGroupId to get the Wireless group scope-id).
-        gateways: List of gateway dicts, each with:
-            - ip: Gateway IP address (str)
-            - mac: MAC address (str, e.g. '20:4c:03:82:04:c2')
-            - priority: VRRP priority int (higher = preferred master, e.g. 110/100)
-            - coa_vrrp_ip: COA/VRRP virtual IP (str)
-        coa_vrrp_vlan: VLAN ID for COA/VRRP (required when coa_vrrp_ip is set).
-        coa_vrrp_id: VRRP group ID (optional).
-        coa_vrrp_passphrase: VRRP passphrase (optional).
-        device_function: MOBILITY_GW (default).
-        auto_cluster: Whether to enable auto-cluster (default False).
+        scope_id: Group scope-id — use list_scopes or find_device → deviceGroupId.
+        gateways: List of dicts each with keys: ip, mac, priority (VRRP; higher = master), coa_vrrp_ip.
+        coa_vrrp_vlan: Required when coa_vrrp_ip is set.
         dry_run: If True, return payload without sending.
 
-    Note: Cloud-managed Central tenants may restrict gateway cluster creation via API.
-    If this tool fails, create the cluster profile in the GUI first, then re-run the
-    tool — it will PATCH the existing profile with gateways and VRRP config.
+    Note: If creation fails, create the cluster in the GUI first — this tool will then PATCH it.
     """
     payload: dict[str, Any] = {
         "name": cluster_name,
@@ -970,7 +943,7 @@ def update_device_settings(
     device_scope_id: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Update device metadata or settings (name, location, notes, banner). Always dry_run first.
+    """Update device metadata or settings (name, location, notes, banner).
 
     Args:
         device_scope_id: Required for switch-system config path.
@@ -1031,16 +1004,11 @@ def create_role(
     vlan_id: int | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a wireless role in the Central Library (SHARED). Always dry_run first.
-
-    Creates the role at /network-config/v1alpha1/roles/:name?object-type=SHARED.
-    Use delete_config_assignment + delete_role to remove it later.
+    """Create a wireless role in the Central Library (object-type=SHARED).
 
     Args:
-        name: Role name.
-        description: Optional description.
         allow_all: If True (default), attaches the built-in 'allowall' policy.
-        vlan_id: Optional access VLAN ID to assign to role members.
+        vlan_id: Optional access VLAN for role members.
         dry_run: If True, return payload without sending.
     """
     payload: dict[str, Any] = {}
@@ -1061,10 +1029,7 @@ def create_role(
         params={"object-type": "SHARED"},
         json=payload,
     )
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -1078,20 +1043,13 @@ def delete_role_acl(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a role ACL policy by name. Must be done before deleting the role. Always dry_run first.
-
-    Args:
-        name: ACL policy name (from list_role_acls).
-    """
+    """Delete a role ACL policy by name (from list_role_acls). Must precede delete_role."""
     if dry_run:
         return {"dry_run": True, "name": name}
 
     client = get_client()
     resp = client._request("DELETE", f"/network-config/v1alpha1/role-acls/{name}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -1106,23 +1064,14 @@ def create_gw_policy(
     rules: list[dict] | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a GW security policy. Always dry_run first.
-
-    Creates a POLICY_TYPE_SECURITY policy and registers it in the policy group
-    so it can be scope-mapped and referenced by roles.
+    """Create a POLICY_TYPE_SECURITY GW policy and register it in the policy group.
 
     Args:
-        name: Policy name — must be unique. Use the SSID/role name for allow-all policies.
-        rules: List of policy rule dicts. Each rule needs:
-               position (int), description (str), condition (dict), action (dict).
-               Condition example: {"type": "CONDITION_DEFAULT", "rule-type": "RULE_ANY",
-                 "source": {"type": "ADDRESS_ROLE", "role": "<role-name>"},
-                 "destination": {"type": "ADDRESS_ANY"}}
-               Action example: {"type": "ACTION_ALLOW"} or {"type": "ACTION_DROP"}
-               If omitted, creates a default allow-all rule for a role with the same name.
+        name: Must be unique. Use SSID/role name for allow-all policies.
+        rules: Policy rule dicts (position, description, condition, action). If omitted,
+               creates a default allow-all rule sourced from the role named `name`.
         dry_run: If True, return payload without sending.
     """
-    from urllib.parse import quote as _quote
     if rules is None:
         rules = [{
             "position": 1,
@@ -1149,13 +1098,8 @@ def create_gw_policy(
         return {"dry_run": True, "name": name, "payload": payload}
 
     client = get_client()
-    # Create the policy
-    resp = client._request("POST", f"/network-config/v1alpha1/policies/{_quote(name, safe='')}", json=payload)
-    result: dict[str, Any] = {}
-    try:
-        result["policy"] = resp.json()
-    except Exception:
-        result["policy"] = {"status_code": resp.status_code, "text": resp.text}
+    resp = client._request("POST", f"/network-config/v1alpha1/policies/{quote(name, safe='')}", json=payload)
+    result: dict[str, Any] = {"policy": resp_json(resp)}
 
     # Add to policy group (required before scope-mapping)
     pg_resp = client._request(
@@ -1173,21 +1117,13 @@ def delete_gw_policy(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a GW security policy by name. Always dry_run first.
-
-    Args:
-        name: Policy name (from list_gw_policies).
-    """
+    """Delete a GW security policy by name (from list_gw_policies)."""
     if dry_run:
         return {"dry_run": True, "name": name}
 
     client = get_client()
-    from urllib.parse import quote as _quote
-    resp = client._request("DELETE", f"/network-config/v1alpha1/policies/{_quote(name, safe='')}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    resp = client._request("DELETE", f"/network-config/v1alpha1/policies/{quote(name, safe='')}")
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -1198,15 +1134,13 @@ def delete_config_assignment(
     profile_instance: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Unassign a profile (e.g. role) from a device function at a given scope. Always dry_run first.
-
-    This is required before deleting a role — removes the role's assignment to a device function.
+    """Unassign a profile from a device function at a scope (required before delete_role).
 
     Args:
-        scope_id: Scope ID where the assignment lives (use get_global_scope_id or list_scopes).
-        device_function: Device function the profile is assigned to (e.g. 'CAMPUS_AP', 'MOBILITY_GW').
-        profile_type: Type of profile — 'roles' for wireless roles.
-        profile_instance: The profile name being unassigned (e.g. the role name).
+        scope_id: Use get_global_scope_id or list_scopes.
+        device_function: e.g. 'CAMPUS_AP', 'MOBILITY_GW'.
+        profile_type: e.g. 'roles'.
+        profile_instance: Profile name being unassigned.
     """
     endpoint = f"/network-config/v1alpha1/config-assignments/{scope_id}/{device_function}/{profile_type}/{profile_instance}"
 
@@ -1215,10 +1149,7 @@ def delete_config_assignment(
 
     client = get_client()
     resp = client._request("DELETE", endpoint)
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -1226,24 +1157,17 @@ def delete_role(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a wireless/gateway role by name. Always dry_run first.
+    """Delete a wireless/gateway role by name (from list_roles).
 
-    Pre-requisites — must be done first or this will fail:
-    1. Delete any ACLs associated with the role (list_role_acls → delete_role_acl).
-    2. Unassign from all device functions (delete_config_assignment for each scope+device_function).
-
-    Args:
-        name: Role name (from list_roles).
+    Pre-requisites: delete associated ACLs (delete_role_acl) and unassign from all scopes
+    (delete_config_assignment) before calling this.
     """
     if dry_run:
         return {"dry_run": True, "name": name}
 
     client = get_client()
     resp = client._request("DELETE", f"/network-config/v1alpha1/roles/{name}")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 # ── Device Fingerprinting ─────────────────────────────────────────────────────
@@ -1285,10 +1209,7 @@ def create_webhook(
     if api_key:
         payload["input"]["apiKey"] = api_key
     resp = client._request("POST", _WEBHOOKS_BASE, json=payload)
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -1317,10 +1238,7 @@ def update_webhook(
     if api_key is not None:
         patch["apiKey"] = api_key
     resp = client._request("PATCH", f"{_WEBHOOKS_BASE}/{webhook_id}", json={"input": patch})
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
@@ -1340,10 +1258,7 @@ def rotate_webhook_key(webhook_id: str) -> dict[str, Any]:
     """Rotate the HMAC key for a webhook."""
     client = get_client()
     resp = client._request("POST", f"{_WEBHOOKS_BASE}/{webhook_id}/rotate-hmac-key")
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 # ── Device Groups ─────────────────────────────────────────────────────────────
@@ -1368,10 +1283,7 @@ def create_device_group(
     else:
         payload = {"scopeName": name, "description": description}
         resp = client._request("POST", _DEVICE_GROUPS_BASE, json=payload)
-    try:
-        return resp.json()
-    except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+    return resp_json(resp)
 
 
 @mcp.tool()
