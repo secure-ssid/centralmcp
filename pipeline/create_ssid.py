@@ -332,34 +332,41 @@ def build_overlay_ssid(
                 result["errors"].append(f"create_role: {exc}")
                 logger.error("Failed to create role '%s': %s", ssid_name, exc)
 
-    # Scope-map the role at global scope for both CAMPUS_AP and MOBILITY_GW
-    # (must be global so the API can resolve default-role references cross-scope)
+    # Scope-map the role at global scope (CAMPUS_AP + MOBILITY_GW) AND at the
+    # device group scope for MOBILITY_GW — gateways only resolve roles scoped
+    # to their own device group, not just global.
     from pipeline.stages.s6_configure import _fetch_global_scope_id
     global_scope_id = _fetch_global_scope_id(central_client)
-    for persona in ("CAMPUS_AP", "MOBILITY_GW"):
-        role_scope_map = {
-            "scope-map": [
-                {
-                    "scope-name": global_scope_id,
-                    "scope-id": int(global_scope_id),
-                    "persona": persona,
-                    "resource": f"roles/{ssid_name}",
-                }
-            ]
-        }
-        if dry_run:
-            logger.info("[dry-run] Would scope-map roles/%s → %s scope=global", ssid_name, persona)
-        else:
-            try:
-                central_client.post("/network-config/v1/scope-maps", data=role_scope_map)
-                logger.info("Scope-mapped roles/%s → %s scope-id=%s", ssid_name, persona, global_scope_id)
-            except Exception as exc:
-                resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
-                if "already exists" in resp_text.lower():
-                    logger.warning("Scope-map for role '%s' (%s) already exists — skipping", ssid_name, persona)
-                else:
-                    result["errors"].append(f"scope_map_role ({persona}): {exc}")
-                    logger.error("Failed to scope-map role '%s' (%s): %s", ssid_name, persona, exc)
+    role_scope_targets = [
+        (global_scope_id, "CAMPUS_AP"),
+        (global_scope_id, "MOBILITY_GW"),
+        (scope_id, "MOBILITY_GW"),  # device group scope — required for GW role resolution
+    ]
+    for r_scope_id, persona in role_scope_targets:
+        for resource in (f"roles/{ssid_name}", f"role-gpids/{ssid_name}"):
+            role_scope_map = {
+                "scope-map": [
+                    {
+                        "scope-name": r_scope_id,
+                        "scope-id": int(r_scope_id),
+                        "persona": persona,
+                        "resource": resource,
+                    }
+                ]
+            }
+            if dry_run:
+                logger.info("[dry-run] Would scope-map %s → %s scope=%s", resource, persona, r_scope_id)
+            else:
+                try:
+                    central_client.post("/network-config/v1/scope-maps", data=role_scope_map)
+                    logger.info("Scope-mapped %s → %s scope-id=%s", resource, persona, r_scope_id)
+                except Exception as exc:
+                    resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+                    if "already exists" in resp_text.lower():
+                        logger.warning("Scope-map for %s (%s) already exists — skipping", resource, persona)
+                    else:
+                        result["errors"].append(f"scope_map_role ({resource}/{persona}): {exc}")
+                        logger.error("Failed to scope-map %s (%s): %s", resource, persona, exc)
 
     # ------------------------------------------------------------------
     # Step 1b: Create AAA profile for MAC auth (if requested)
