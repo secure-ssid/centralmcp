@@ -443,6 +443,7 @@ def build_overlay_ssid(
     opmode: str = "ENHANCED_OPEN",
     passphrase: str | None = None,
     mac_auth_server_group: str | None = None,
+    policy_name: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a tunneled (overlay/GRE) SSID via a gateway cluster. Always dry_run first.
@@ -456,6 +457,8 @@ def build_overlay_ssid(
         passphrase: Required for WPA2/WPA3-PSK opmodes.
         mac_auth_server_group: If set, creates an AAA profile named after the SSID and enables MAC auth
                                against this Central NAC server group.
+        policy_name: Name of an existing GW security policy to attach (use list_gw_policies to find one).
+                     If omitted, an allow-all policy named after the SSID is created automatically.
         dry_run: If True, return payload without sending.
     """
     client = get_client()
@@ -469,6 +472,7 @@ def build_overlay_ssid(
         opmode=opmode,
         wpa_passphrase=passphrase,
         mac_auth_server_group=mac_auth_server_group,
+        policy_name=policy_name,
         dry_run=dry_run,
     )
 
@@ -1084,6 +1088,102 @@ def delete_role_acl(
 
     client = get_client()
     resp = client._request("DELETE", f"/network-config/v1alpha1/role-acls/{name}")
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+@mcp.tool()
+def list_gw_policies() -> dict[str, Any]:
+    """List all GW security policies (used as role allow/deny rules for overlay SSIDs)."""
+    return get_client().get("/network-config/v1alpha1/policies")
+
+
+@mcp.tool()
+def create_gw_policy(
+    name: str,
+    rules: list[dict] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a GW security policy. Always dry_run first.
+
+    Creates a POLICY_TYPE_SECURITY policy and registers it in the policy group
+    so it can be scope-mapped and referenced by roles.
+
+    Args:
+        name: Policy name — must be unique. Use the SSID/role name for allow-all policies.
+        rules: List of policy rule dicts. Each rule needs:
+               position (int), description (str), condition (dict), action (dict).
+               Condition example: {"type": "CONDITION_DEFAULT", "rule-type": "RULE_ANY",
+                 "source": {"type": "ADDRESS_ROLE", "role": "<role-name>"},
+                 "destination": {"type": "ADDRESS_ANY"}}
+               Action example: {"type": "ACTION_ALLOW"} or {"type": "ACTION_DROP"}
+               If omitted, creates a default allow-all rule for a role with the same name.
+        dry_run: If True, return payload without sending.
+    """
+    from urllib.parse import quote as _quote
+    if rules is None:
+        rules = [{
+            "position": 1,
+            "description": "Allow All",
+            "condition": {
+                "type": "CONDITION_DEFAULT",
+                "rule-type": "RULE_ANY",
+                "source": {"type": "ADDRESS_ROLE", "role": name},
+                "destination": {"type": "ADDRESS_ANY"},
+            },
+            "action": {"type": "ACTION_ALLOW"},
+        }]
+
+    payload = {
+        "name": name,
+        "type": "POLICY_TYPE_SECURITY",
+        "security-policy": {
+            "type": "SECURITY_POLICY_TYPE_DEFAULT",
+            "policy-rule": rules,
+        },
+    }
+
+    if dry_run:
+        return {"dry_run": True, "name": name, "payload": payload}
+
+    client = get_client()
+    # Create the policy
+    resp = client._request("POST", f"/network-config/v1alpha1/policies/{_quote(name, safe='')}", json=payload)
+    result: dict[str, Any] = {}
+    try:
+        result["policy"] = resp.json()
+    except Exception:
+        result["policy"] = {"status_code": resp.status_code, "text": resp.text}
+
+    # Add to policy group (required before scope-mapping)
+    pg_resp = client._request(
+        "PATCH",
+        "/network-config/v1alpha1/policy-groups",
+        json={"policy-group": {"policy-group-list": [{"name": name, "position": 3}]}},
+    )
+    result["policy_group"] = {"status_code": pg_resp.status_code}
+
+    return result
+
+
+@mcp.tool()
+def delete_gw_policy(
+    name: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete a GW security policy by name. Always dry_run first.
+
+    Args:
+        name: Policy name (from list_gw_policies).
+    """
+    if dry_run:
+        return {"dry_run": True, "name": name}
+
+    client = get_client()
+    from urllib.parse import quote as _quote
+    resp = client._request("DELETE", f"/network-config/v1alpha1/policies/{_quote(name, safe='')}")
     try:
         return resp.json()
     except Exception:

@@ -277,6 +277,7 @@ def build_overlay_ssid(
     wpa_passphrase: str | None = None,
     wpa3_transition: bool = True,
     mac_auth_server_group: str | None = None,
+    policy_name: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create an overlay SSID that tunnels client traffic through a Mobility Gateway.
@@ -290,6 +291,8 @@ def build_overlay_ssid(
         cluster_scope_id:      Scope-id of the gateway cluster.
         mac_auth_server_group: If set, creates an AAA profile named after the SSID pointing
                                to this Central NAC server group and attaches MAC auth to the SSID.
+        policy_name:           Name of an existing GW security policy to use. If omitted, an
+                               allow-all policy named after the SSID is created automatically.
         dry_run:               If True, log actions but do not call any write APIs.
 
     Returns:
@@ -443,8 +446,10 @@ def build_overlay_ssid(
     # ------------------------------------------------------------------
     # Step 1c: Create allow-all security policy + add to policy group + scope-map
     # (Required so the role shows "Referenced By 1 policy" and GW can enforce it)
+    # If policy_name is provided, skip creation and use the existing policy instead.
     # ------------------------------------------------------------------
-    policy_endpoint = f"/network-config/v1alpha1/policies/{url_name}"
+    effective_policy = policy_name or ssid_name
+    policy_endpoint = f"/network-config/v1alpha1/policies/{quote(effective_policy, safe='')}"
     policy_payload = {
         "name": ssid_name,
         "type": "POLICY_TYPE_SECURITY",
@@ -466,31 +471,38 @@ def build_overlay_ssid(
         },
     }
     if dry_run:
-        logger.info("[dry-run] Would POST %s (allow-all security policy)", policy_endpoint)
-        logger.info("[dry-run] Would PATCH policy-groups to add '%s'", ssid_name)
-        logger.info("[dry-run] Would scope-map policies/%s → CAMPUS_AP + MOBILITY_GW", ssid_name)
+        if not policy_name:
+            logger.info("[dry-run] Would POST %s (allow-all security policy)", policy_endpoint)
+            logger.info("[dry-run] Would PATCH policy-groups to add '%s'", effective_policy)
+        else:
+            logger.info("[dry-run] Using existing policy '%s' (skipping creation)", policy_name)
+        logger.info("[dry-run] Would scope-map policies/%s → CAMPUS_AP + MOBILITY_GW", effective_policy)
     else:
-        try:
-            central_client.post(policy_endpoint, data=policy_payload)
-            logger.info("Created allow-all policy '%s'", ssid_name)
-        except Exception as exc:
-            resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
-            if "duplicate" in resp_text.lower() or "already exists" in resp_text.lower():
-                logger.warning("Policy '%s' already exists — continuing", ssid_name)
-            else:
-                result["errors"].append(f"create_policy: {exc}")
-                logger.error("Failed to create policy '%s': %s", ssid_name, exc)
+        if not policy_name:
+            # Create a new allow-all policy named after the SSID
+            try:
+                central_client.post(policy_endpoint, data=policy_payload)
+                logger.info("Created allow-all policy '%s'", effective_policy)
+            except Exception as exc:
+                resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+                if "duplicate" in resp_text.lower() or "already exists" in resp_text.lower():
+                    logger.warning("Policy '%s' already exists — continuing", effective_policy)
+                else:
+                    result["errors"].append(f"create_policy: {exc}")
+                    logger.error("Failed to create policy '%s': %s", effective_policy, exc)
 
-        try:
-            central_client._request(
-                "PATCH",
-                "/network-config/v1alpha1/policy-groups",
-                json={"policy-group": {"policy-group-list": [{"name": ssid_name, "position": 3}]}},
-            )
-            logger.info("Added '%s' to policy group", ssid_name)
-        except Exception as exc:
-            result["errors"].append(f"add_policy_group: {exc}")
-            logger.error("Failed to add '%s' to policy group: %s", ssid_name, exc)
+            try:
+                central_client._request(
+                    "PATCH",
+                    "/network-config/v1alpha1/policy-groups",
+                    json={"policy-group": {"policy-group-list": [{"name": effective_policy, "position": 3}]}},
+                )
+                logger.info("Added '%s' to policy group", effective_policy)
+            except Exception as exc:
+                result["errors"].append(f"add_policy_group: {exc}")
+                logger.error("Failed to add '%s' to policy group: %s", effective_policy, exc)
+        else:
+            logger.info("Using existing policy '%s' — skipping creation", policy_name)
 
         global_scope_id_pol = _fetch_global_scope_id(central_client)
         for persona in ("CAMPUS_AP", "MOBILITY_GW"):
@@ -499,19 +511,19 @@ def build_overlay_ssid(
                     "scope-name": global_scope_id_pol,
                     "scope-id": int(global_scope_id_pol),
                     "persona": persona,
-                    "resource": f"policies/{ssid_name}",
+                    "resource": f"policies/{effective_policy}",
                 }]
             }
             try:
                 central_client.post("/network-config/v1/scope-maps", data=pol_scope_map)
-                logger.info("Scope-mapped policies/%s → %s global", ssid_name, persona)
+                logger.info("Scope-mapped policies/%s → %s global", effective_policy, persona)
             except Exception as exc:
                 resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
                 if "already exists" in resp_text.lower():
-                    logger.warning("Scope-map for policies/%s (%s) already exists", ssid_name, persona)
+                    logger.warning("Scope-map for policies/%s (%s) already exists", effective_policy, persona)
                 else:
                     result["errors"].append(f"scope_map_policy ({persona}): {exc}")
-                    logger.error("Failed to scope-map policy '%s' (%s): %s", ssid_name, persona, exc)
+                    logger.error("Failed to scope-map policy '%s' (%s): %s", effective_policy, persona, exc)
 
     # ------------------------------------------------------------------
     # Step 2: Create wlan-ssid
