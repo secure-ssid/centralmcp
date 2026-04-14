@@ -438,28 +438,37 @@ def build_overlay_ssid(
     ssid_name: str,
     scope_id: str,
     cluster_name: str,
-    persona: str = "CAMPUS_AP",
-    opmode: str = "WPA3_SAE_AES",
+    cluster_scope_id: str,
+    vlan_ids: list[int],
+    opmode: str = "ENHANCED_OPEN",
     passphrase: str | None = None,
-    vlan_id: int | None = None,
+    mac_auth_server_group: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a tunneled (overlay/GRE) SSID via a gateway cluster. Always dry_run first.
 
     Args:
+        scope_id: Device group scope-id (use list_scopes() to find it — overlay WLANs cannot use global scope).
         cluster_name: Gateway cluster name (use list_gw_clusters).
-        scope_id: Use get_global_scope_id() or list_scopes().
+        cluster_scope_id: Scope-id of the gateway cluster (use list_gw_clusters).
+        vlan_ids: List of VLAN IDs (e.g. [200]).
+        opmode: ENHANCED_OPEN (WPA3 open/OWE, default), WPA3_SAE_AES, WPA3_WPA2_AES, WPA2_AES, or OPEN_NETWORK.
+        passphrase: Required for WPA2/WPA3-PSK opmodes.
+        mac_auth_server_group: If set, creates an AAA profile named after the SSID and enables MAC auth
+                               against this Central NAC server group.
+        dry_run: If True, return payload without sending.
     """
     client = get_client()
     return _build_overlay(
-        client=client,
+        central_client=client,
         ssid_name=ssid_name,
+        vlan_ids=[str(v) for v in vlan_ids],
         scope_id=scope_id,
         cluster_name=cluster_name,
-        persona=persona,
+        cluster_scope_id=cluster_scope_id,
         opmode=opmode,
-        passphrase=passphrase,
-        vlan_id=vlan_id,
+        wpa_passphrase=passphrase,
+        mac_auth_server_group=mac_auth_server_group,
         dry_run=dry_run,
     )
 

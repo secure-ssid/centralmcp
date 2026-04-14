@@ -276,22 +276,26 @@ def build_overlay_ssid(
     rf_band: str = "BAND_ALL",
     wpa_passphrase: str | None = None,
     wpa3_transition: bool = True,
+    mac_auth_server_group: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create an overlay SSID that tunnels client traffic through a Mobility Gateway.
 
     Args:
-        central_client:   CentralClient instance with valid credentials.
-        ssid_name:        SSID name to broadcast.
-        vlan_ids:         List of VLAN IDs to assign (e.g. ["200"]).
-        scope_id:         Device Group scope-id (overlay WLANs cannot use global scope).
-        cluster_name:     Name of the gateway cluster to tunnel through.
-        cluster_scope_id: Scope-id of the gateway cluster.
-        dry_run:          If True, log actions but do not call any write APIs.
+        central_client:        CentralClient instance with valid credentials.
+        ssid_name:             SSID name to broadcast.
+        vlan_ids:              List of VLAN IDs to assign (e.g. ["200"]).
+        scope_id:              Device Group scope-id (overlay WLANs cannot use global scope).
+        cluster_name:          Name of the gateway cluster to tunnel through.
+        cluster_scope_id:      Scope-id of the gateway cluster.
+        mac_auth_server_group: If set, creates an AAA profile named after the SSID pointing
+                               to this Central NAC server group and attaches MAC auth to the SSID.
+        dry_run:               If True, log actions but do not call any write APIs.
 
     Returns:
         Dict with keys: ssid_name, vlan_ids, scope_id, cluster_name,
-        created (bool), overlay_created (bool), scope_mapped (bool), errors (list[str]).
+        created (bool), overlay_created (bool), scope_mapped (bool),
+        aaa_profile_created (bool), errors (list[str]).
     """
     url_name = quote(ssid_name, safe="")
     result: dict[str, Any] = {
@@ -302,6 +306,7 @@ def build_overlay_ssid(
         "created": False,
         "overlay_created": False,
         "scope_mapped": False,
+        "aaa_profile_created": False,
         "errors": [],
     }
 
@@ -356,6 +361,33 @@ def build_overlay_ssid(
                     result["errors"].append(f"scope_map_role ({persona}): {exc}")
                     logger.error("Failed to scope-map role '%s' (%s): %s", ssid_name, persona, exc)
 
+    # ------------------------------------------------------------------
+    # Step 1b: Create AAA profile for MAC auth (if requested)
+    # ------------------------------------------------------------------
+    aaa_profile_name = ssid_name  # profile name matches SSID name
+    if mac_auth_server_group:
+        aaa_payload = {
+            "name": aaa_profile_name,
+            "auth-server-group": mac_auth_server_group,
+        }
+        aaa_endpoint = f"/network-config/v1alpha1/aaa-profile/{quote(aaa_profile_name, safe='')}"
+        if dry_run:
+            logger.info("[dry-run] Would POST %s (AAA profile, server-group=%s)", aaa_endpoint, mac_auth_server_group)
+            result["aaa_profile_created"] = True
+        else:
+            try:
+                central_client.post(aaa_endpoint, data=aaa_payload)
+                result["aaa_profile_created"] = True
+                logger.info("Created AAA profile '%s' → server-group '%s'", aaa_profile_name, mac_auth_server_group)
+            except Exception as exc:
+                resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+                if "duplicate" in resp_text.lower() or "already exists" in resp_text.lower():
+                    logger.warning("AAA profile '%s' already exists — continuing", aaa_profile_name)
+                    result["aaa_profile_created"] = True
+                else:
+                    result["errors"].append(f"create_aaa_profile: {exc}")
+                    logger.error("Failed to create AAA profile '%s': %s", aaa_profile_name, exc)
+
     # Build WLAN body with overlay-specific overrides
     body = _build_ssid_body(
         ssid_name,
@@ -371,6 +403,11 @@ def build_overlay_ssid(
     body["cluster-preemption"] = False
     body["type"] = "EMPLOYEE"
     body["default-role"] = ssid_name
+    if mac_auth_server_group:
+        body["mac-auth"] = {
+            "enable": True,
+            "aaa-profile": aaa_profile_name,
+        }
 
     # ------------------------------------------------------------------
     # Step 2: Create wlan-ssid
