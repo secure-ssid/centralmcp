@@ -627,6 +627,7 @@ def create_authz_policy(
     payload: dict[str, Any] = {
         "name": policy_name,
         "position": position,
+        "enable": True,
         "rule": [rule],
     }
 
