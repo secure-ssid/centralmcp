@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central NAC and authentication tools (26 tools).
+"""MCP server — Aruba Central NAC and authentication tools (31 tools).
 
 Covers: Central NAC (CNAC) MAC registrations, Named MPSK registrations, visitor accounts,
 RADIUS/auth server profiles, AAA profiles, AAA connectivity testing, authorization policies,
@@ -32,6 +32,11 @@ Tools:
   list_static_tags           List user-created static classification tags
   create_static_tag          Create a static classification tag
   delete_static_tag          Delete a static classification tag by tag-id
+  list_auth_profiles         List all Central NAC authentication profiles
+  get_auth_profile           Get a single auth profile by UUID
+  create_mac_auth_profile    Create a MAB (MAC auth) profile for wireless SSIDs
+  delete_auth_profile        Delete an auth profile by UUID
+  list_identity_stores       List all Central NAC identity stores
 """
 import uuid
 from typing import Any
@@ -710,6 +715,108 @@ def delete_static_tag(tag_id: str) -> dict[str, Any]:
         return resp.json()
     except Exception:
         return {"status_code": resp.status_code, "text": resp.text}
+
+
+# ── Auth Profiles ─────────────────────────────────────────────────────────────
+
+_AUTH_PROFILE_BASE = "/network-config/v1alpha1/auth-profiles"
+
+# UUID of the built-in Central NAC MAC Address Store identity store
+_MAC_ADDRESS_STORE_ID = "4c6c406a-7c1f-442a-8e43-c627090e8624"
+
+
+@mcp.tool()
+def list_auth_profiles() -> dict[str, Any]:
+    """List all Central NAC authentication profiles (MAB, AIRPASS, DPP, etc.)."""
+    return get_client().get(_AUTH_PROFILE_BASE)
+
+
+@mcp.tool()
+def get_auth_profile(profile_id: str) -> dict[str, Any]:
+    """Get a single Central NAC auth profile by UUID.
+
+    Args:
+        profile_id: UUID of the profile (from list_auth_profiles).
+    """
+    return get_client().get(f"{_AUTH_PROFILE_BASE}/{profile_id}")
+
+
+@mcp.tool()
+def create_mac_auth_profile(
+    name: str,
+    networks: list[str],
+    allow_all: bool = True,
+    identity_store_id: str = _MAC_ADDRESS_STORE_ID,
+    description: str = "",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a Central NAC MAC authentication (MAB) profile for wireless SSIDs. Always dry_run first.
+
+    Creates an auth-type=MAB profile that authenticates clients by MAC address.
+    Each SSID can only belong to one auth profile.
+
+    Args:
+        name: Profile name (e.g. "Wireless_MacAuth").
+        networks: List of SSID names to associate (e.g. ["Central-MacAuth"]).
+                  Each SSID must have cloud-auth=True and mac-authentication=True.
+        allow_all: If True (default), allow all MAC addresses (no pre-registration required).
+                   If False, only MACs registered in the identity store are allowed.
+        identity_store_id: UUID of the identity store to use. Defaults to the built-in
+                           MAC Address Store. Use list_identity_stores to find others.
+        description: Optional description.
+        dry_run: If True, return payload without sending.
+    """
+    import uuid as _uuid
+    profile_id = str(_uuid.uuid4())
+    payload: dict[str, Any] = {
+        "auth-profile-id": profile_id,
+        "name": name,
+        "description": description,
+        "auth-type": "MAB",
+        "networks": networks,
+        "wired": False,
+        "identity-stores": [identity_store_id],
+        "mab": {"allow-all": allow_all},
+    }
+
+    if dry_run:
+        return {"dry_run": True, "profile_id": profile_id, "payload": payload}
+
+    client = get_client()
+    resp = client._request("POST", f"{_AUTH_PROFILE_BASE}/{profile_id}", json=payload)
+    try:
+        result = resp.json()
+    except Exception:
+        result = {"status_code": resp.status_code, "text": resp.text}
+    result["profile_id"] = profile_id
+    return result
+
+
+@mcp.tool()
+def delete_auth_profile(
+    profile_id: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete a Central NAC authentication profile by UUID. Always dry_run first.
+
+    Args:
+        profile_id: UUID of the profile (from list_auth_profiles).
+    """
+    if dry_run:
+        return {"dry_run": True, "profile_id": profile_id}
+
+    client = get_client()
+    resp = client._request("DELETE", f"{_AUTH_PROFILE_BASE}/{profile_id}")
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+@mcp.tool()
+def list_identity_stores() -> dict[str, Any]:
+    """List all Central NAC identity stores (MAC Address Store, DPP Registration Store, etc.)."""
+    return get_client().get(f"{_CNAC_BASE}/identity-stores")
 
 
 if __name__ == "__main__":
