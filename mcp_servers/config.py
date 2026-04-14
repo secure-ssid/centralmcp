@@ -1,7 +1,7 @@
-"""MCP server — Aruba Central configuration and provisioning tools (36 tools).
+"""MCP server — Aruba Central configuration and provisioning tools.
 
 Covers: VLANs, SSIDs, port profiles, firmware compliance, device management,
-webhooks, device groups, gateway interface and static route config.
+webhooks, device groups, gateway clusters, interface and static route config.
 Always use dry_run=True first for write operations.
 """
 import os
@@ -34,6 +34,11 @@ _WEBHOOKS_BASE = "/network-services/v1/webhooks"
 _DEVICE_GROUPS_BASE = "/network-config/v1/device-groups"
 
 
+def _exc_resp_text(exc: Exception) -> str:
+    """Extract response body text from a requests exception, or '' if unavailable."""
+    return getattr(getattr(exc, "response", None), "text", "") or ""
+
+
 # ── VLANs ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -59,7 +64,7 @@ def create_vlan(
     try:
         client.post(f"/network-config/v1/layer2-vlan/{vlan_id}", data=body)
     except Exception as exc:
-        resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
+        resp_text = _exc_resp_text(exc)
         if "duplicate" in resp_text.lower():
             try:
                 client.put(f"/network-config/v1/layer2-vlan/{vlan_id}", data=body)
@@ -71,7 +76,7 @@ def create_vlan(
     try:
         _post_scope_map(client, scope_id, persona, f"layer2-vlan/{vlan_id}")
     except Exception as exc:
-        resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
+        resp_text = _exc_resp_text(exc)
         if "already exists" not in resp_text.lower():
             errors.append(f"scope_map: {exc}")
 
@@ -558,7 +563,7 @@ def create_port_profile(
     try:
         client.post(f"/network-config/v1/sw-port-profiles/{encoded_name}", data={"description": description})
     except Exception as exc:
-        resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
+        resp_text = _exc_resp_text(exc)
         if "duplicate" not in resp_text.lower() and "already exists" not in resp_text.lower():
             errors.append(f"POST (shell): {exc}")
 
@@ -571,7 +576,7 @@ def create_port_profile(
         try:
             _post_scope_map(client, sid, persona, f"sw-port-profiles/{profile_name}")
         except Exception as exc:
-            resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
+            resp_text = _exc_resp_text(exc)
             if "already exists" not in resp_text.lower():
                 errors.append(f"scope_map(scope={sid}): {exc}")
 
@@ -749,23 +754,38 @@ def gateway_join_cluster(
     cluster_name: str,
     scope_id: str,
     gateways: list[dict[str, Any]],
+    coa_vrrp_vlan: int | None = None,
+    coa_vrrp_id: str | None = None,
+    coa_vrrp_passphrase: str | None = None,
     device_function: str = "MOBILITY_GW",
     auto_cluster: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Add/update gateway cluster membership via PATCH. Always dry_run first.
+    """Add/update gateway cluster membership via API. Always dry_run first.
+
+    Flow: POST to collection URL to create; if duplicate, PATCH resource URL to update.
+    "name" is omitted from the PATCH body (it's in the URL) to avoid backend treating
+    the update as a create attempt.
 
     Args:
         cluster_name: Cluster name, e.g. 'GW-HA'.
-        scope_id: Group or site scope-id that owns the cluster.
+        scope_id: Group scope-id that owns the cluster (use list_scopes or find_device →
+            deviceGroupId to get the Wireless group scope-id).
         gateways: List of gateway dicts, each with:
             - ip: Gateway IP address (str)
             - mac: MAC address (str, e.g. '20:4c:03:82:04:c2')
             - priority: VRRP priority int (higher = preferred master, e.g. 110/100)
             - coa_vrrp_ip: COA/VRRP virtual IP (str)
+        coa_vrrp_vlan: VLAN ID for COA/VRRP (required when coa_vrrp_ip is set).
+        coa_vrrp_id: VRRP group ID (optional).
+        coa_vrrp_passphrase: VRRP passphrase (optional).
         device_function: MOBILITY_GW (default).
         auto_cluster: Whether to enable auto-cluster (default False).
         dry_run: If True, return payload without sending.
+
+    Note: Cloud-managed Central tenants may restrict gateway cluster creation via API.
+    If this tool fails, create the cluster profile in the GUI first, then re-run the
+    tool — it will PATCH the existing profile with gateways and VRRP config.
     """
     payload: dict[str, Any] = {
         "name": cluster_name,
@@ -780,6 +800,18 @@ def gateway_join_cluster(
             for gw in gateways
         ],
     }
+    if coa_vrrp_vlan is not None:
+        coa_vrrp: dict[str, Any] = {"vlan": coa_vrrp_vlan}
+        if coa_vrrp_id is not None:
+            coa_vrrp["id"] = coa_vrrp_id
+        if coa_vrrp_passphrase is not None:
+            coa_vrrp["passphrase"] = coa_vrrp_passphrase
+        payload["coa-vrrp"] = coa_vrrp
+
+    # If all gateways share the same VRRP VIP, one-to-one-redundancy is required.
+    vrrp_ips = {gw.get("coa_vrrp_ip") for gw in gateways}
+    if len(vrrp_ips) == 1 and len(gateways) > 1:
+        payload["one-to-one-redundancy"] = True
 
     if dry_run:
         return {
@@ -790,23 +822,48 @@ def gateway_join_cluster(
 
     client = get_client()
     errors: list[str] = []
-    endpoint = f"/network-config/v1alpha1/gateway-clusters/{cluster_name}"
-    params = {"object-type": "variable", "scope-id": scope_id, "device-function": device_function}
+    params = {"object-type": "LOCAL", "scope-id": scope_id, "device-function": device_function}
+
+    def _resp_err(resp: Any) -> str:
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        return f"HTTP {resp.status_code}: {body}"
+
+    def _is_duplicate_resp(resp: Any) -> bool:
+        try:
+            msg = str(resp.json())
+        except Exception:
+            msg = resp.text or ""
+        return "duplicate" in msg.lower() or "already exists" in msg.lower()
 
     try:
-        response = client._request("PATCH", endpoint, json=payload, params=params)
-        if response.status_code not in (200, 201, 202, 204):
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
-            errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+        # POST to collection URL — correct REST create; name is in the body.
+        response = client._request(
+            "POST", "/network-config/v1alpha1/gateway-clusters", json=payload, params=params
+        )
+        if response.status_code in (200, 201, 202, 204):
+            return {"cluster_name": cluster_name, "action": "created", "payload": payload,
+                    "response": response.json() if response.text else {}, "errors": errors}
+
+        if not _is_duplicate_resp(response):
+            errors.append(f"POST failed: {_resp_err(response)}")
             return {"cluster_name": cluster_name, "payload": payload, "response": None, "errors": errors}
-        try:
-            resp_body = response.json()
-        except Exception:
-            resp_body = {}
-        return {"cluster_name": cluster_name, "payload": payload, "response": resp_body, "errors": errors}
+
+        # Cluster exists — PATCH resource URL. Omit "name" from body: it's in the URL,
+        # and sending it may cause the backend to treat the PATCH as a create attempt.
+        patch_payload = {k: v for k, v in payload.items() if k != "name"}
+        response = client._request(
+            "PATCH", f"/network-config/v1alpha1/gateway-clusters/{cluster_name}",
+            json=patch_payload, params=params,
+        )
+        if response.status_code in (200, 201, 202, 204):
+            return {"cluster_name": cluster_name, "action": "updated", "payload": patch_payload,
+                    "response": response.json() if response.text else {}, "errors": errors}
+
+        errors.append(f"PATCH failed: {_resp_err(response)}")
+        return {"cluster_name": cluster_name, "payload": patch_payload, "response": None, "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
         return {"cluster_name": cluster_name, "payload": payload, "response": None, "errors": errors}
