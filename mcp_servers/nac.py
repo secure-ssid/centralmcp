@@ -546,9 +546,9 @@ def get_authz_policy(policy_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 def create_authz_policy(
-    policy_id: str,
+    policy_name: str,
     rule_name: str,
-    tag: str,
+    tag_id: str,
     role: str,
     position: int = 1,
     dry_run: bool = False,
@@ -556,23 +556,27 @@ def create_authz_policy(
     """Create a CNAC authz policy that assigns a role to devices with a given tag. Always dry_run first.
 
     This is the API backing the GUI's "Client Classification → tag → role" mapping.
-    When a device is classified and tagged (e.g. tag='AV'), it receives the specified role.
+    When a device is classified and tagged, it receives the specified role.
+    Both the policy UUID and all condition/rule UUIDs are auto-generated.
 
     Args:
-        policy_id: Unique policy identifier (used as the URL key, e.g. 'AV-Policy').
-        rule_name: Human-readable name for the rule inside the policy.
-        tag: The CNAC static tag to match (e.g. 'AV'). Attribute used: 'TAGS'.
+        policy_name: Human-readable name for the policy (e.g. 'AV-Policy').
+        rule_name: Human-readable name for the rule inside the policy (e.g. 'AV-Rule').
+        tag_id: The UUID of the static tag to match — get this from create_static_tag or list_static_tags.
         role: Wireless role to assign when the tag matches (e.g. 'AV-Role').
-        position: Rule position/priority (lower = higher priority, default 1).
+        position: Policy priority (lower = higher priority, default 1). Must be unique across policies.
         dry_run: If True, return the payload without sending.
 
     Returns:
-        API response or dry-run payload.
+        API response or dry-run payload. Includes generated policy_id UUID.
     """
+    policy_id = str(uuid.uuid4())
     payload: dict[str, Any] = {
+        "name": policy_name,
+        "position": position,
         "rule": [
             {
-                "position": position,
+                "position": 1,
                 "rule-id": str(uuid.uuid4()),
                 "rule-name": rule_name,
                 "enable": True,
@@ -589,7 +593,7 @@ def create_authz_policy(
                                     "condition-group-id": str(uuid.uuid4()),
                                     "attr": "TAGS",
                                     "operator": "OP_CONTAINS_ELEM",
-                                    "value": tag,
+                                    "value": tag_id,
                                 }
                             ],
                         }
@@ -598,6 +602,7 @@ def create_authz_policy(
                 "enf-profile": [
                     {
                         "profile-id": str(uuid.uuid4()),
+                        "type": "ENF_RADIUS",
                         "radius-profile": {
                             "defined-attr": [
                                 {
@@ -605,22 +610,24 @@ def create_authz_policy(
                                     "value": role,
                                 }
                             ]
-                        }
+                        },
                     }
                 ],
             }
-        ]
+        ],
     }
 
     if dry_run:
-        return {"dry_run": True, "policy_id": policy_id, "payload": payload}
+        return {"dry_run": True, "policy_id": policy_id, "policy_name": policy_name, "payload": payload}
 
     client = get_client()
     resp = client._request("POST", f"{_CNAC_BASE}/authz-policies/{policy_id}", json=payload)
     try:
-        return resp.json()
+        result = resp.json()
     except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+        result = {"status_code": resp.status_code, "text": resp.text}
+    result["policy_id"] = policy_id
+    return result
 
 
 @mcp.tool()
