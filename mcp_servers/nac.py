@@ -679,11 +679,11 @@ def create_static_tag(
         dry_run: If True, return the payload without sending.
     """
     tag_id = str(uuid.uuid4())
-    payload = {"tag": [{"tag-id": tag_id, "name": name}]}
+    payload = {"name": name}
     if dry_run:
-        return {"payload": payload, "tag_id": tag_id}
+        return {"payload": payload, "tag_id": tag_id, "url": f"{_STATIC_TAG_BASE}/{tag_id}"}
     client = get_client()
-    resp = client._request("POST", _STATIC_TAG_BASE, json=payload)
+    resp = client._request("POST", f"{_STATIC_TAG_BASE}/{tag_id}", json=payload)
     try:
         result = resp.json()
     except Exception:
