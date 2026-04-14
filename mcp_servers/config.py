@@ -503,7 +503,7 @@ def create_allow_all_role(
     """Create a permit-all wireless role and scope-map it. Always dry_run first."""
     client = get_client()
     return _create_role(
-        client=client,
+        client,
         role_name=role_name,
         scope_id=scope_id,
         persona=persona,
@@ -1011,6 +1011,50 @@ def list_roles() -> dict[str, Any]:
 
 
 @mcp.tool()
+def create_role(
+    name: str,
+    description: str | None = None,
+    allow_all: bool = True,
+    vlan_id: int | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a wireless role in the Central Library (SHARED). Always dry_run first.
+
+    Creates the role at /network-config/v1alpha1/roles/:name?object-type=SHARED.
+    Use delete_config_assignment + delete_role to remove it later.
+
+    Args:
+        name: Role name.
+        description: Optional description.
+        allow_all: If True (default), attaches the built-in 'allowall' policy.
+        vlan_id: Optional access VLAN ID to assign to role members.
+        dry_run: If True, return payload without sending.
+    """
+    payload: dict[str, Any] = {}
+    if description:
+        payload["description"] = description
+    if allow_all:
+        payload["policies"] = [{"name": "allowall", "position": 1}]
+    if vlan_id is not None:
+        payload["vlan-parameters"] = {"access-vlan": vlan_id}
+
+    if dry_run:
+        return {"dry_run": True, "name": name, "payload": payload}
+
+    client = get_client()
+    resp = client._request(
+        "POST",
+        f"/network-config/v1alpha1/roles/{name}",
+        params={"object-type": "SHARED"},
+        json=payload,
+    )
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+@mcp.tool()
 def list_role_acls() -> dict[str, Any]:
     """List all role ACL policies configured in Central."""
     return get_client().get("/network-config/v1alpha1/role-acls")
@@ -1091,6 +1135,20 @@ def delete_role(
         return resp.json()
     except Exception:
         return {"status_code": resp.status_code, "text": resp.text}
+
+
+# ── Device Fingerprinting ─────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_fingerprinting_profiles() -> dict[str, Any]:
+    """List all device-fingerprinting wireless profiles (AP-side) configured in Central."""
+    return get_client().get("/network-config/v1alpha1/devicefingerprinting")
+
+
+@mcp.tool()
+def list_fingerprinting_switch_profiles() -> dict[str, Any]:
+    """List all device-fingerprinting switch profiles configured in Central."""
+    return get_client().get("/network-config/v1alpha1/devicefingerprinting-profile")
 
 
 # ── Webhooks ──────────────────────────────────────────────────────────────────

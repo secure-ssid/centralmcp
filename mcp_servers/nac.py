@@ -24,7 +24,11 @@ Tools:
   create_aaa_profile         Create an AAA profile
   delete_aaa_profile         Delete an AAA profile
   test_aaa                   Run an AAA connectivity test from an AP or CX switch (async)
+  list_static_tags           List user-created static classification tags
+  create_static_tag          Create a static classification tag
+  delete_static_tag          Delete a static classification tag by tag-id
 """
+import uuid
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -520,6 +524,180 @@ def test_aaa(
         }
 
     return troubleshoot_async(client, endpoint, payload, errors)
+
+
+# ── Authz Policies ────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_authz_policies() -> dict[str, Any]:
+    """List all CNAC authorization policies (tag/category → role mappings)."""
+    return get_client().get(f"{_CNAC_BASE}/authz-policies")
+
+
+@mcp.tool()
+def get_authz_policy(policy_id: str) -> dict[str, Any]:
+    """Get a single CNAC authz policy by ID.
+
+    Args:
+        policy_id: Policy ID (from list_authz_policies).
+    """
+    return get_client().get(f"{_CNAC_BASE}/authz-policies/{policy_id}")
+
+
+@mcp.tool()
+def create_authz_policy(
+    policy_id: str,
+    rule_name: str,
+    tag: str,
+    role: str,
+    position: int = 1,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a CNAC authz policy that assigns a role to devices with a given tag. Always dry_run first.
+
+    This is the API backing the GUI's "Client Classification → tag → role" mapping.
+    When a device is classified and tagged (e.g. tag='AV'), it receives the specified role.
+
+    Args:
+        policy_id: Unique policy identifier (used as the URL key, e.g. 'AV-Policy').
+        rule_name: Human-readable name for the rule inside the policy.
+        tag: The CNAC static tag to match (e.g. 'AV'). Attribute used: 'TAGS'.
+        role: Wireless role to assign when the tag matches (e.g. 'AV-Role').
+        position: Rule position/priority (lower = higher priority, default 1).
+        dry_run: If True, return the payload without sending.
+
+    Returns:
+        API response or dry-run payload.
+    """
+    payload: dict[str, Any] = {
+        "rule": [
+            {
+                "position": position,
+                "rule-id": str(uuid.uuid4()),
+                "rule-name": rule_name,
+                "enable": True,
+                "conditions": {
+                    "combinator-operator": "COMB_OP_AND",
+                    "condition": [
+                        {
+                            "position": 1,
+                            "condition-id": str(uuid.uuid4()),
+                            "combinator-operator": "COMB_OP_AND",
+                            "condition-group": [
+                                {
+                                    "position": 1,
+                                    "condition-group-id": str(uuid.uuid4()),
+                                    "attr": "TAGS",
+                                    "operator": "OP_CONTAINS_ELEM",
+                                    "value": tag,
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "enf-profile": [
+                    {
+                        "profile-id": str(uuid.uuid4()),
+                        "radius-profile": {
+                            "defined-attr": [
+                                {
+                                    "attr-name": "ATTR_ARUBA_ROLE",
+                                    "value": role,
+                                }
+                            ]
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+
+    if dry_run:
+        return {"dry_run": True, "policy_id": policy_id, "payload": payload}
+
+    client = get_client()
+    resp = client._request("POST", f"{_CNAC_BASE}/authz-policies/{policy_id}", json=payload)
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+@mcp.tool()
+def delete_authz_policy(
+    policy_id: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete a CNAC authz policy by ID. Always dry_run first.
+
+    Args:
+        policy_id: Policy ID (from list_authz_policies).
+    """
+    if dry_run:
+        return {"dry_run": True, "policy_id": policy_id}
+
+    client = get_client()
+    resp = client._request("DELETE", f"{_CNAC_BASE}/authz-policies/{policy_id}")
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
+
+
+_STATIC_TAG_BASE = "/network-config/v1alpha1/static-tag"
+
+
+@mcp.tool()
+def list_static_tags() -> dict[str, Any]:
+    """List all user-created static classification tags.
+
+    Returns a dict with a 'tag' list. Each entry has 'tag-id' (UUID) and 'name'.
+    Note: system-generated tags (e.g. IoT) are not returned by this endpoint.
+    """
+    return get_client().get(_STATIC_TAG_BASE)
+
+
+@mcp.tool()
+def create_static_tag(
+    name: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a static classification tag for client classification.
+
+    Tags are used in authz policies to assign roles to classified clients.
+    tag-id is auto-generated as a UUID.
+
+    Args:
+        name: Display name for the tag (e.g. 'AV', 'IoT', 'Console').
+        dry_run: If True, return the payload without sending.
+    """
+    tag_id = str(uuid.uuid4())
+    payload = {"tag": [{"tag-id": tag_id, "name": name}]}
+    if dry_run:
+        return {"payload": payload, "tag_id": tag_id}
+    client = get_client()
+    resp = client._request("POST", _STATIC_TAG_BASE, json=payload)
+    try:
+        result = resp.json()
+    except Exception:
+        result = {"status_code": resp.status_code, "text": resp.text}
+    result["tag_id"] = tag_id
+    return result
+
+
+@mcp.tool()
+def delete_static_tag(tag_id: str) -> dict[str, Any]:
+    """Delete a static classification tag by its UUID tag-id.
+
+    Args:
+        tag_id: The UUID of the tag to delete (from list_static_tags).
+    """
+    client = get_client()
+    resp = client._request("DELETE", f"{_STATIC_TAG_BASE}/{tag_id}")
+    try:
+        return resp.json()
+    except Exception:
+        return {"status_code": resp.status_code, "text": resp.text}
 
 
 if __name__ == "__main__":
