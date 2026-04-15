@@ -158,7 +158,7 @@ def get_events_count(serial_number: str, hours: int = 24) -> dict[str, Any]:
 def list_scopes() -> list[dict[str, Any]]:
     """List all scopes (org, sites, device groups) with their scope_id and scope_name."""
     client = get_client()
-    errors: list[str] = []
+    items: list[dict[str, Any]] = []
 
     for endpoint in [
         "/network-config/v1/scopes",
@@ -166,19 +166,58 @@ def list_scopes() -> list[dict[str, Any]]:
     ]:
         try:
             response = client._request("GET", endpoint)
-            if response.status_code == 404:
-                errors.append(f"404 at {endpoint}")
+            if response.status_code in (400, 404):
                 continue
             if response.status_code not in (200, 201, 202):
-                errors.append(f"HTTP {response.status_code} at {endpoint}")
                 continue
             data = response.json()
-            items = data if isinstance(data, list) else data.get("items", data.get("scopes", []))
-            return items
-        except Exception as exc:
-            errors.append(str(exc))
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                items = data.get("items", data.get("scopes", []))
+            if isinstance(items, list) and items:
+                return items
+        except Exception:
+            continue
 
-    return []
+    # Fallback for tenants where /scopes endpoints return 400.
+    # Surface site scopes (plus global scope when available) so callers still get usable scope IDs.
+    site_scopes = get_mcp_client().get_sites()
+    normalized: list[dict[str, Any]] = []
+    for site in site_scopes:
+        scope_id = (
+            site.get("scopeId")
+            or site.get("scope_id")
+            or site.get("siteId")
+            or site.get("id")
+        )
+        scope_name = site.get("scopeName") or site.get("scope_name") or site.get("siteName") or site.get("name")
+        if scope_id and scope_name:
+            normalized.append(
+                {
+                    "scope_id": str(scope_id),
+                    "scope_name": str(scope_name),
+                    "scope_type": "SITE",
+                }
+            )
+
+    try:
+        from pipeline.stages.s6_configure import _fetch_global_scope_id
+
+        global_scope_id = _fetch_global_scope_id(client)
+        if global_scope_id:
+            normalized.insert(
+                0,
+                {
+                    "scope_id": str(global_scope_id),
+                    "scope_name": "Global",
+                    "scope_type": "GLOBAL",
+                },
+            )
+    except Exception:
+        pass
+
+    return normalized
 
 
 @mcp.tool()

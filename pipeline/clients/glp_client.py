@@ -192,7 +192,7 @@ class GLPClient:
             return result.get("items", result.get("users", []))
         except Exception as exc:
             logger.warning("GLP list_users failed: %s", exc)
-            return []
+            raise RuntimeError(f"GLP list_users failed: {exc}") from exc
 
     def get_user(self, user_id: str) -> Optional[dict[str, Any]]:
         """Fetch a single user by ID."""
@@ -217,4 +217,4 @@ class GLPClient:
             return result.get("items", result.get("logs", []))
         except Exception as exc:
             logger.warning("GLP list_audit_logs failed: %s", exc)
-            return []
+            raise RuntimeError(f"GLP list_audit_logs failed: {exc}") from exc

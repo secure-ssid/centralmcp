@@ -386,10 +386,21 @@ def get_ssid(ssid_name: str) -> dict[str, Any] | None:
 def get_scope_maps(resource_filter: str | None = None) -> list[dict[str, Any]]:
     """Return all scope-map entries, optionally filtered by resource name."""
     client = get_client()
-    maps = client.get("/network-config/v1/scope-maps")
-    if resource_filter and isinstance(maps, list):
-        return [m for m in maps if resource_filter.lower() in str(m.get("resource", "")).lower()]
-    return maps if isinstance(maps, list) else []
+    maps_resp = client.get("/network-config/v1/scope-maps")
+    if isinstance(maps_resp, list):
+        maps = maps_resp
+    elif isinstance(maps_resp, dict):
+        # New Central currently returns {"scope-map": [...]} for this endpoint.
+        maps = maps_resp.get("scope-map", maps_resp.get("items", []))
+    else:
+        maps = []
+
+    if not isinstance(maps, list):
+        maps = []
+    if resource_filter:
+        needle = resource_filter.lower()
+        return [m for m in maps if needle in str(m.get("resource", "")).lower()]
+    return maps
 
 
 @mcp.tool()
