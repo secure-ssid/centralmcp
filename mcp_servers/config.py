@@ -9,7 +9,14 @@ from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_servers.shared import get_client, get_mcp_client, resp_json
+from mcp_servers.shared import (
+    bound_collection_response,
+    clamp_limit,
+    compact_http_error,
+    get_client,
+    get_mcp_client,
+    resp_json,
+)
 from pipeline.config import build_account_contexts
 from pipeline.create_ssid import (
     build_overlay_ssid as _build_overlay,
@@ -254,11 +261,7 @@ def set_firmware_compliance(
             action = "updated"
             response = client._request("PATCH", "/network-config/v1alpha1/firmware-compliance", json=payload, params=params)
         if response.status_code not in (200, 201, 202):
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
-            errors.append(f"HTTP {response.status_code}: {body}")
+            errors.append(compact_http_error(response))
             return {"action": None, "scope_id": scope_id, "device_function": device_function,
                     "firmware_version": firmware_version, "response": None, "errors": errors}
         try:
@@ -349,11 +352,7 @@ def trigger_device_upgrade(
                 errors.append(f"404 at {endpoint}")
                 continue
             if response.status_code not in (200, 201, 202):
-                try:
-                    body = response.json()
-                except Exception:
-                    body = response.text
-                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                errors.append(compact_http_error(response, endpoint=endpoint))
                 continue
             try:
                 resp_body = response.json()
@@ -371,9 +370,17 @@ def trigger_device_upgrade(
 # ── SSIDs ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_ssids() -> list[dict[str, Any]]:
-    """Return all SSID objects from Aruba New Central."""
-    return _list(get_client())
+def list_ssids(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """Return wlan-ssid objects from Aruba New Central (bounded by default)."""
+    items = _list(get_client())
+    data: dict[str, Any] = {"wlan-ssid": items}
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset, list_key="wlan-ssid")
 
 
 @mcp.tool()
@@ -383,8 +390,13 @@ def get_ssid(ssid_name: str) -> dict[str, Any] | None:
 
 
 @mcp.tool()
-def get_scope_maps(resource_filter: str | None = None) -> list[dict[str, Any]]:
-    """Return all scope-map entries, optionally filtered by resource name."""
+def get_scope_maps(
+    resource_filter: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """Return scope-map entries, optionally filtered by resource name (bounded by default)."""
     client = get_client()
     maps_resp = client.get("/network-config/v1/scope-maps")
     if isinstance(maps_resp, list):
@@ -399,14 +411,24 @@ def get_scope_maps(resource_filter: str | None = None) -> list[dict[str, Any]]:
         maps = []
     if resource_filter:
         needle = resource_filter.lower()
-        return [m for m in maps if needle in str(m.get("resource", "")).lower()]
-    return maps
+        maps = [m for m in maps if needle in str(m.get("resource", "")).lower()]
+    data: dict[str, Any] = {"scope_maps": maps}
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset, list_key="scope_maps")
 
 
 @mcp.tool()
-def list_gw_clusters() -> list[dict[str, Any]]:
-    """List available gateway clusters for use with overlay/tunneled SSIDs."""
-    return get_mcp_client().get_gw_clusters()
+def list_gw_clusters(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List gateway clusters for overlay/tunneled SSIDs (bounded by default)."""
+    clusters = get_mcp_client().get_gw_clusters()
+    if full_list:
+        return {"items": clusters}
+    return bound_collection_response(clusters, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -468,11 +490,7 @@ def build_underlay_ssid(
     try:
         response = client._request("PATCH", f"/network-config/v1/wlan-ssids/{url_name}", json=updates)
         if response.status_code not in (200, 201, 202, 204):
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
-            result.setdefault("errors", []).append(f"post_configure_macauth: HTTP {response.status_code}: {body}")
+            result.setdefault("errors", []).append(f"post_configure_macauth: {compact_http_error(response)}")
             return result
         result["mac_auth_configured"] = True
         result["mac_auth_updates"] = updates
@@ -526,9 +544,16 @@ def build_overlay_ssid(
 
 
 @mcp.tool()
-def list_overlay_wlans() -> dict[str, Any]:
-    """List all overlay (tunneled/GRE) WLAN profiles configured in Central."""
-    return get_client().get("/network-config/v1alpha1/overlay-wlan")
+def list_overlay_wlans(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List overlay (tunneled/GRE) WLAN profiles (bounded by default)."""
+    data = get_client().get("/network-config/v1alpha1/overlay-wlan")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -608,11 +633,7 @@ def update_ssid(
     try:
         response = client._request("PATCH", endpoint, json=updates, params=params or None)
         if response.status_code not in (200, 201, 202, 204):
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
-            errors.append(f"HTTP {response.status_code}: {body}")
+            errors.append(compact_http_error(response))
             return {"ssid_name": ssid_name, "scope_id": scope_id, "updates": updates, "response": None, "errors": errors}
         try:
             resp_body = response.json()
@@ -698,11 +719,7 @@ def update_port_config(
     try:
         response = client._request("PATCH", endpoint, json=updates, params=params)
         if response.status_code not in (200, 201, 202, 204):
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
-            errors.append(f"HTTP {response.status_code}: {body}")
+            errors.append(compact_http_error(response))
             return {"serial_number": serial_number, "interface_name": interface_name,
                     "updates": updates, "response": None, "errors": errors}
         try:
@@ -751,11 +768,7 @@ def gateway_config_interface(
     try:
         response = client._request("PATCH", endpoint, json=updates, params=params)
         if response.status_code not in (200, 201, 202, 204):
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
-            errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+            errors.append(compact_http_error(response, endpoint=endpoint))
             return {"serial_number": serial_number, "interface_name": interface_name,
                     "updates": updates, "response": None, "errors": errors}
         try:
@@ -810,11 +823,7 @@ def gateway_config_static_route(
     try:
         response = client._request("PUT", endpoint, json=payload, params=params)
         if response.status_code not in (200, 201, 202, 204):
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
-            errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+            errors.append(compact_http_error(response, endpoint=endpoint))
             return {"serial_number": serial_number, "destination": destination,
                     "nexthop": nexthop, "response": None, "errors": errors}
         try:
@@ -967,11 +976,7 @@ def assign_device_to_site(
                 errors.append(f"404 at {endpoint}")
                 continue
             if response.status_code not in (200, 201, 202):
-                try:
-                    body = response.json()
-                except Exception:
-                    body = response.text
-                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                errors.append(compact_http_error(response, endpoint=endpoint))
                 continue
             try:
                 resp_body = response.json()
@@ -1019,11 +1024,7 @@ def update_device_settings(
                 errors.append(f"404 at {endpoint}")
                 continue
             if response.status_code not in (200, 201, 202, 204):
-                try:
-                    body = response.json()
-                except Exception:
-                    body = response.text
-                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                errors.append(compact_http_error(response, endpoint=endpoint))
                 continue
             try:
                 resp_body = response.json()
@@ -1040,9 +1041,16 @@ def update_device_settings(
 # ── Roles ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_roles() -> dict[str, Any]:
-    """List all wireless/gateway roles configured in Central."""
-    return get_client().get("/network-config/v1alpha1/roles")
+def list_roles(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List wireless/gateway roles (bounded by default)."""
+    data = get_client().get("/network-config/v1alpha1/roles")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -1121,9 +1129,16 @@ def update_role(
 
 
 @mcp.tool()
-def list_role_acls() -> dict[str, Any]:
-    """List all role ACL policies configured in Central."""
-    return get_client().get("/network-config/v1alpha1/role-acls")
+def list_role_acls(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List role ACL policies (bounded by default)."""
+    data = get_client().get("/network-config/v1alpha1/role-acls")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -1141,9 +1156,16 @@ def delete_role_acl(
 
 
 @mcp.tool()
-def list_gw_policies() -> dict[str, Any]:
-    """List all GW security policies (used as role allow/deny rules for overlay SSIDs)."""
-    return get_client().get("/network-config/v1alpha1/policies")
+def list_gw_policies(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List GW security policies (bounded by default)."""
+    data = get_client().get("/network-config/v1alpha1/policies")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -1261,23 +1283,44 @@ def delete_role(
 # ── Device Fingerprinting ─────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_fingerprinting_profiles() -> dict[str, Any]:
-    """List all device-fingerprinting wireless profiles (AP-side) configured in Central."""
-    return get_client().get("/network-config/v1alpha1/devicefingerprinting")
+def list_fingerprinting_profiles(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List device-fingerprinting wireless profiles (bounded by default)."""
+    data = get_client().get("/network-config/v1alpha1/devicefingerprinting")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
-def list_fingerprinting_switch_profiles() -> dict[str, Any]:
-    """List all device-fingerprinting switch profiles configured in Central."""
-    return get_client().get("/network-config/v1alpha1/devicefingerprinting-profile")
+def list_fingerprinting_switch_profiles(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List device-fingerprinting switch profiles (bounded by default)."""
+    data = get_client().get("/network-config/v1alpha1/devicefingerprinting-profile")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 # ── Webhooks ──────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_webhooks() -> dict[str, Any]:
-    """List all configured webhooks."""
-    return get_client().get(_WEBHOOKS_BASE)
+def list_webhooks(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List configured webhooks (bounded by default)."""
+    data = get_client().get(_WEBHOOKS_BASE)
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -1354,7 +1397,9 @@ def rotate_webhook_key(webhook_id: str) -> dict[str, Any]:
 @mcp.tool()
 def list_device_groups(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     """List all device groups (scopeId, scopeName, description)."""
-    return get_client().get(f"{_DEVICE_GROUPS_BASE}?limit={limit}&offset={offset}")
+    lim = clamp_limit(limit)
+    off = max(0, offset)
+    return get_client().get(f"{_DEVICE_GROUPS_BASE}?limit={lim}&offset={off}")
 
 
 @mcp.tool()

@@ -76,7 +76,12 @@ class CentralClient:
         return response  # last response after all retries
 
     def get(self, endpoint: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        logger.debug("GET %s%s params=%s", self.base_url, endpoint, params)
+        logger.debug(
+            "GET %s%s params_keys=%s",
+            self.base_url,
+            endpoint,
+            sorted((params or {}).keys()),
+        )
         response = self._request("GET", endpoint, params=params)
         response.raise_for_status()
         return _parse_json(response)
@@ -87,7 +92,13 @@ class CentralClient:
         data: Optional[dict[str, Any] | list[Any]] = None,
         params: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        logger.debug("POST %s%s body=%s", self.base_url, endpoint, data)
+        logger.debug(
+            "POST %s%s body_type=%s body_keys=%s",
+            self.base_url,
+            endpoint,
+            type(data).__name__ if data is not None else None,
+            sorted(data.keys()) if isinstance(data, dict) else None,
+        )
         response = self._request("POST", endpoint, json=data, params=params)
         if not response.ok:
             raise Exception(f"{response.status_code} {response.reason} — {response.text[:500]}")
@@ -176,5 +187,5 @@ def _parse_json(response: requests.Response) -> dict[str, Any]:
         result = response.json()
         return result if isinstance(result, dict) else {"items": result}
     except ValueError as exc:
-        logger.error("Failed to parse JSON: %s — body: %s", exc, response.text[:500])
+        logger.error("Failed to parse JSON: %s (body_len=%d)", exc, len(response.text or ""))
         return {}

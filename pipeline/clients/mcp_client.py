@@ -17,6 +17,13 @@ from typing import Any, Optional
 from pipeline.clients.central_client import CentralClient
 
 logger = logging.getLogger(__name__)
+_DEFAULT_LIST_LIMIT = 50
+_MAX_LIST_LIMIT = 200
+_MAX_SEARCH_PAGES = 10
+
+
+def _bounded_limit(limit: int) -> int:
+    return max(1, min(limit, _MAX_LIST_LIMIT))
 
 
 class MCPClient:
@@ -40,25 +47,39 @@ class MCPClient:
         so we fetch all devices and filter client-side.
         """
         try:
-            result = self._client.get(
-                "/network-monitoring/v1alpha1/device-inventory",
-                params={"limit": 200},
-            )
-            items = result.get("devices", result.get("items", []))
-            for item in items:
-                if item.get("serialNumber", "").lower() == serial_number.lower():
-                    return item
+            limit = 100
+            offset = 0
+            for _ in range(_MAX_SEARCH_PAGES):
+                result = self._client.get(
+                    "/network-monitoring/v1alpha1/device-inventory",
+                    params={"limit": limit, "offset": offset},
+                )
+                items = result.get("devices", result.get("items", []))
+                for item in items:
+                    if item.get("serialNumber", "").lower() == serial_number.lower():
+                        return item
+                if len(items) < limit:
+                    break
+                offset += limit
             return None
         except Exception as exc:
             logger.warning("MCPClient.get_device_by_serial(%s) failed: %s", serial_number, exc)
             return None
 
-    def get_devices(self, filters: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+    def get_devices(
+        self,
+        filters: Optional[dict[str, Any]] = None,
+        limit: int = _DEFAULT_LIST_LIMIT,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
         """Return a list of device inventory records matching optional filters."""
         try:
+            params = dict(filters or {})
+            params.setdefault("limit", _bounded_limit(limit))
+            params.setdefault("offset", max(0, offset))
             result = self._client.get(
                 "/network-monitoring/v1alpha1/device-inventory",
-                params=filters or {},
+                params=params,
             )
             return result.get("devices", result.get("items", []))
         except Exception as exc:
@@ -69,10 +90,13 @@ class MCPClient:
     # Sites
     # ------------------------------------------------------------------
 
-    def get_sites(self) -> list[dict[str, Any]]:
+    def get_sites(self, limit: int = _DEFAULT_LIST_LIMIT, offset: int = 0) -> list[dict[str, Any]]:
         """Return all sites with their IDs."""
         try:
-            result = self._client.get("/network-config/v1/sites")
+            result = self._client.get(
+                "/network-config/v1/sites",
+                params={"limit": _bounded_limit(limit), "offset": max(0, offset)},
+            )
             return result.get("items", result.get("sites", []))
         except Exception as exc:
             logger.warning("MCPClient.get_sites failed: %s", exc)
@@ -118,6 +142,7 @@ class MCPClient:
         self,
         site_id: Optional[str] = None,
         severity: Optional[str] = None,
+        limit: int = _DEFAULT_LIST_LIMIT,
     ) -> list[dict[str, Any]]:
         """Return active alerts, optionally filtered by site or severity.
 
@@ -128,7 +153,7 @@ class MCPClient:
             filters.append(f"siteId eq '{site_id}'")
         if severity:
             filters.append(f"severity eq '{severity.capitalize()}'")
-        params: dict[str, Any] = {"filter": " and ".join(filters)}
+        params: dict[str, Any] = {"filter": " and ".join(filters), "limit": _bounded_limit(limit)}
         try:
             result = self._client.get("/network-notifications/v1/alerts", params=params)
             return result.get("alerts", result.get("items", []))
@@ -170,9 +195,10 @@ class MCPClient:
         serial_number: Optional[str] = None,
         ssid: Optional[str] = None,
         connection_type: Optional[str] = None,
+        limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Return connected clients, optionally filtered by site, device serial, SSID, or type."""
-        params: dict[str, Any] = {"limit": 100}
+        params: dict[str, Any] = {"limit": _bounded_limit(limit)}
         if site_id:
             params["site-id"] = site_id
         if serial_number:
@@ -198,17 +224,23 @@ class MCPClient:
         so we fetch all clients and filter client-side.
         """
         try:
-            result = self._client.get(
-                "/network-monitoring/v1/clients",
-                params={"limit": 100},
-            )
-            items = result.get("clients", result.get("items", []))
+            limit = 100
+            offset = 0
             normalized = mac_or_ip.lower()
-            for client in items:
-                if client.get("macAddress", "").lower() == normalized:
-                    return client
-                if client.get("ipv4", "").lower() == normalized:
-                    return client
+            for _ in range(_MAX_SEARCH_PAGES):
+                result = self._client.get(
+                    "/network-monitoring/v1/clients",
+                    params={"limit": limit, "offset": offset},
+                )
+                items = result.get("clients", result.get("items", []))
+                for client in items:
+                    if client.get("macAddress", "").lower() == normalized:
+                        return client
+                    if client.get("ipv4", "").lower() == normalized:
+                        return client
+                if len(items) < limit:
+                    break
+                offset += limit
             return None
         except Exception as exc:
             logger.warning("MCPClient.find_client(%s) failed: %s", mac_or_ip, exc)

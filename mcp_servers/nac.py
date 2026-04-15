@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import (
     _CX_TROUBLESHOOTING_BASE,
+    bound_collection_response,
     get_client,
     resp_json,
     troubleshoot_async,
@@ -25,9 +26,22 @@ _AP_TROUBLESHOOTING_BASE = "/network-troubleshooting/v1alpha1/aps"
 # ── MAC Registrations ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_mac_registrations() -> dict[str, Any]:
-    """List all Central NAC MAC address registrations."""
-    return get_client().get(f"{_CNAC_BASE}/cnac-mac-reg")
+def list_mac_registrations(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List Central NAC MAC address registrations (bounded by default).
+
+    Args:
+        limit: Max rows to return (1–200, default 50).
+        offset: Skip this many rows (pagination).
+        full_list: If True, return the full API JSON without slicing (may be large).
+    """
+    data = get_client().get(f"{_CNAC_BASE}/cnac-mac-reg")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -117,9 +131,16 @@ def delete_mac_registration(
 # ── Named MPSK Registrations ──────────────────────────────────────────────────
 
 @mcp.tool()
-def list_mpsk_registrations() -> dict[str, Any]:
-    """List all Central NAC Named MPSK registrations."""
-    return get_client().get(f"{_CNAC_BASE}/cnac-named-mpsk-reg")
+def list_mpsk_registrations(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List Central NAC Named MPSK registrations (bounded by default)."""
+    data = get_client().get(f"{_CNAC_BASE}/cnac-named-mpsk-reg")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -176,9 +197,16 @@ def delete_mpsk_registration(
 # ── Visitor Accounts ──────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_visitors() -> dict[str, Any]:
-    """List all Central NAC visitor accounts."""
-    return get_client().get(f"{_CNAC_BASE}/cnac-visitor")
+def list_visitors(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List Central NAC visitor accounts (bounded by default)."""
+    data = get_client().get(f"{_CNAC_BASE}/cnac-visitor")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -241,9 +269,16 @@ def delete_visitor(
 # ── Auth Server Profiles ──────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_auth_servers() -> dict[str, Any]:
-    """List all RADIUS/auth server profiles configured in Central."""
-    return get_client().get(f"{_CNAC_BASE}/auth-servers")
+def list_auth_servers(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List RADIUS/auth server profiles (bounded by default)."""
+    data = get_client().get(f"{_CNAC_BASE}/auth-servers")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -311,9 +346,16 @@ def delete_auth_server(
 # ── AAA Profiles ──────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_aaa_profiles() -> dict[str, Any]:
-    """List all AAA profiles configured in Central."""
-    return get_client().get(f"{_CNAC_BASE}/aaa-profile")
+def list_aaa_profiles(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List AAA profiles (bounded by default)."""
+    data = get_client().get(f"{_CNAC_BASE}/aaa-profile")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -422,9 +464,16 @@ def test_aaa(
 # ── Authz Policies ────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_authz_policies() -> dict[str, Any]:
-    """List all CNAC authorization policies (tag/category → role mappings)."""
-    return get_client().get(f"{_CNAC_BASE}/authz-policies")
+def list_authz_policies(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List CNAC authorization policies (bounded by default)."""
+    data = get_client().get(f"{_CNAC_BASE}/authz-policies")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -531,12 +580,19 @@ _STATIC_TAG_BASE = "/network-config/v1alpha1/static-tag"
 
 
 @mcp.tool()
-def list_static_tags() -> dict[str, Any]:
-    """List user-created static classification tags (each has 'tag-id' and 'name').
+def list_static_tags(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List user-created static classification tags (bounded by default).
 
     Note: system-generated tags (e.g. IoT) are not returned by this endpoint.
     """
-    return get_client().get(_STATIC_TAG_BASE)
+    data = get_client().get(_STATIC_TAG_BASE)
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -580,9 +636,16 @@ _MAC_ADDRESS_STORE_ID = "4c6c406a-7c1f-442a-8e43-c627090e8624"
 
 
 @mcp.tool()
-def list_auth_profiles() -> dict[str, Any]:
-    """List all Central NAC authentication profiles (MAB, AIRPASS, DPP, etc.)."""
-    return get_client().get(_AUTH_PROFILE_BASE)
+def list_auth_profiles(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List Central NAC authentication profiles (bounded by default)."""
+    data = get_client().get(_AUTH_PROFILE_BASE)
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -648,9 +711,16 @@ def delete_auth_profile(
 
 
 @mcp.tool()
-def list_identity_stores() -> dict[str, Any]:
-    """List all Central NAC identity stores (MAC Address Store, DPP Registration Store, etc.)."""
-    return get_client().get(f"{_CNAC_BASE}/identity-stores")
+def list_identity_stores(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List Central NAC identity stores (bounded by default)."""
+    data = get_client().get(f"{_CNAC_BASE}/identity-stores")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 if __name__ == "__main__":

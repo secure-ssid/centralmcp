@@ -9,7 +9,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_servers.shared import get_client, get_mcp_client
+from mcp_servers.shared import bound_collection_response, clamp_limit, get_client, get_mcp_client
 
 mcp = FastMCP("aruba-monitoring")
 
@@ -17,19 +17,30 @@ mcp = FastMCP("aruba-monitoring")
 # ── Sites ────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_sites() -> list[dict[str, Any]]:
-    """Return all sites with their IDs, names, and location fields."""
-    return get_mcp_client().get_sites()
+def list_sites(
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Return sites with IDs, names, and location fields (paginated)."""
+    return get_mcp_client().get_sites(limit=clamp_limit(limit), offset=max(0, offset))
 
 
 @mcp.tool()
 def get_site(name: str) -> dict[str, Any] | None:
     """Find a site by name (case-insensitive). Returns None if not found."""
-    sites = get_mcp_client().get_sites()
     name_lower = name.lower()
-    for site in sites:
-        if site.get("siteName", site.get("name", "")).lower() == name_lower:
-            return site
+    page_size = 100
+    offset = 0
+    for _ in range(50):
+        sites = get_mcp_client().get_sites(limit=page_size, offset=offset)
+        if not sites:
+            break
+        for site in sites:
+            if site.get("siteName", site.get("name", "")).lower() == name_lower:
+                return site
+        if len(sites) < page_size:
+            break
+        offset += page_size
     return None
 
 
@@ -39,6 +50,7 @@ def get_site(name: str) -> dict[str, Any] | None:
 def list_devices(
     device_type: str | None = None,
     site_id: str | None = None,
+    limit: int = 50,
 ) -> list[dict[str, Any]]:
     """List devices, optionally filtered by device_type (e.g. SWITCH, AP) or site_id."""
     filters: dict[str, Any] = {}
@@ -46,7 +58,7 @@ def list_devices(
         filters["deviceType"] = device_type
     if site_id:
         filters["siteId"] = site_id
-    return get_mcp_client().get_devices(filters or None)
+    return get_mcp_client().get_devices(filters or None, limit=limit)
 
 
 @mcp.tool()
@@ -63,6 +75,7 @@ def list_clients(
     serial_number: str | None = None,
     ssid: str | None = None,
     connection_type: str | None = None,
+    limit: int = 100,
 ) -> list[dict[str, Any]]:
     """List connected clients. ALWAYS filter before calling — unfiltered returns all clients.
 
@@ -80,6 +93,7 @@ def list_clients(
         serial_number=serial_number,
         ssid=ssid,
         connection_type=connection_type,
+        limit=limit,
     )
 
 
@@ -122,15 +136,33 @@ def get_client_details(mac_address: str) -> dict[str, Any]:
 def list_alerts(
     site_id: str | None = None,
     severity: str | None = None,
+    limit: int = 50,
 ) -> list[dict[str, Any]]:
     """List active alerts, optionally filtered by site_id or severity (CRITICAL/MAJOR/MINOR)."""
-    return get_mcp_client().get_alerts(site_id=site_id, severity=severity)
+    return get_mcp_client().get_alerts(site_id=site_id, severity=severity, limit=limit)
 
 
 @mcp.tool()
-def list_events(serial_number: str, hours: int = 24) -> list[dict[str, Any]]:
-    """List events for a device over the past N hours (default 24)."""
-    return get_mcp_client().get_events(serial_number, hours=hours)
+def list_events(
+    serial_number: str,
+    hours: int = 24,
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List events for a device over the past N hours (bounded by default)."""
+    events = get_mcp_client().get_events(serial_number, hours=hours)
+    if full_list:
+        return {
+            "items": events,
+            "_pagination": {
+                "offset": 0,
+                "limit": len(events),
+                "total": len(events),
+                "truncated": False,
+            },
+        }
+    return bound_collection_response(events, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -155,8 +187,12 @@ def get_events_count(serial_number: str, hours: int = 24) -> dict[str, Any]:
 # ── Scopes ────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_scopes() -> list[dict[str, Any]]:
-    """List all scopes (org, sites, device groups) with their scope_id and scope_name."""
+def list_scopes(
+    limit: int = 100,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List scopes (org, sites, device groups) with scope_id and scope_name (bounded by default)."""
     client = get_client()
     items: list[dict[str, Any]] = []
 
@@ -176,13 +212,33 @@ def list_scopes() -> list[dict[str, Any]]:
             elif isinstance(data, dict):
                 items = data.get("items", data.get("scopes", []))
             if isinstance(items, list) and items:
-                return items
+                if full_list:
+                    return {
+                        "items": items,
+                        "_pagination": {
+                            "offset": 0,
+                            "limit": len(items),
+                            "total": len(items),
+                            "truncated": False,
+                        },
+                    }
+                return bound_collection_response(items, limit=limit, offset=offset)
         except Exception:
             continue
 
     # Fallback for tenants where /scopes endpoints return 400.
     # Surface site scopes (plus global scope when available) so callers still get usable scope IDs.
-    site_scopes = get_mcp_client().get_sites()
+    site_scopes: list[dict[str, Any]] = []
+    page_size = 100
+    off = 0
+    for _ in range(50):
+        page = get_mcp_client().get_sites(limit=page_size, offset=off)
+        if not page:
+            break
+        site_scopes.extend(page)
+        if len(page) < page_size:
+            break
+        off += page_size
     normalized: list[dict[str, Any]] = []
     for site in site_scopes:
         scope_id = (
@@ -217,7 +273,17 @@ def list_scopes() -> list[dict[str, Any]]:
     except Exception:
         pass
 
-    return normalized
+    if full_list:
+        return {
+            "items": normalized,
+            "_pagination": {
+                "offset": 0,
+                "limit": len(normalized),
+                "total": len(normalized),
+                "truncated": False,
+            },
+        }
+    return bound_collection_response(normalized, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -251,7 +317,10 @@ def list_inventory(
     """
     client = get_client()
     errors: list[str] = []
-    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    params: dict[str, Any] = {
+        "limit": clamp_limit(limit),
+        "offset": max(0, offset),
+    }
     if device_type:
         params["deviceType"] = device_type
     try:
@@ -291,8 +360,8 @@ def list_audit_logs(
     params: dict[str, Any] = {
         "start-at": start_at if start_at is not None else now_ms - 86_400_000,
         "end-at": end_at if end_at is not None else now_ms,
-        "limit": limit,
-        "offset": offset,
+        "limit": clamp_limit(limit),
+        "offset": max(0, offset),
     }
     if filter:
         params["filter"] = filter
@@ -503,7 +572,10 @@ def list_switch_ports(
     """
     client = get_client()
     errors: list[str] = []
-    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    params: dict[str, Any] = {
+        "limit": clamp_limit(limit),
+        "offset": max(0, offset),
+    }
     if filter:
         params["filter"] = filter
     if search:
@@ -569,7 +641,10 @@ def get_switch_vlans(
     """
     client = get_client()
     errors: list[str] = []
-    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    params: dict[str, Any] = {
+        "limit": clamp_limit(limit),
+        "offset": max(0, offset),
+    }
     if filter:
         params["filter"] = filter
 
@@ -771,7 +846,9 @@ def get_sle_metrics(
 def list_wlans(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     """List all WLANs visible in New Central monitoring."""
     client = get_client()
-    return client.get(f"/network-monitoring/v1/wlans?limit={limit}&offset={offset}")
+    lim = clamp_limit(limit)
+    off = max(0, offset)
+    return client.get(f"/network-monitoring/v1/wlans?limit={lim}&offset={off}")
 
 
 @mcp.tool()

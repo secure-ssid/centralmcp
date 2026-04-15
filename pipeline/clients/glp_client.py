@@ -20,6 +20,21 @@ _TASK_POLL_INTERVAL = 10  # seconds
 _TASK_POLL_TIMEOUT = 300  # 5 minutes
 
 
+def _compact_exception_message(exc: Exception, max_chars: int = 240) -> str:
+    """Return a compact, structured exception message for tool-friendly output."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    try:
+        body = response.json()
+    except Exception:
+        body = response.text
+    body_text = str(body or "").strip()
+    if len(body_text) > max_chars:
+        body_text = f"{body_text[:max_chars]}... [truncated {len(body_text) - max_chars} chars]"
+    return f"HTTP {response.status_code} {response.reason}: {body_text}"
+
+
 class GLPClient:
     """Client for HPE GreenLake Platform device and subscription management APIs."""
 
@@ -71,7 +86,12 @@ class GLPClient:
         # Location: /devices/v1/async-operations/{id}
         task_id = location.rstrip("/").split("/")[-1]
         serials = [d.get("serialNumber") for d in devices]
-        logger.info("GLP add_devices %s → async-op id=%s", serials, task_id)
+        logger.info(
+            "GLP add_devices serial_count=%d sample=%s -> async-op id=%s",
+            len(serials),
+            serials[:5],
+            task_id,
+        )
         return task_id
 
     def poll_task(
@@ -151,8 +171,9 @@ class GLPClient:
             result = self._client.get("/devices/v1/devices", params=params)
             return result.get("items", result.get("devices", []))
         except Exception as exc:
-            logger.warning("GLP list_devices failed: %s", exc)
-            return []
+            msg = _compact_exception_message(exc)
+            logger.warning("GLP list_devices failed: %s", msg)
+            raise RuntimeError(f"GLP list_devices failed: {msg}") from exc
 
     def list_subscriptions(
         self,
@@ -167,8 +188,9 @@ class GLPClient:
             )
             return result.get("items", result.get("subscriptions", []))
         except Exception as exc:
-            logger.warning("GLP list_subscriptions failed: %s", exc)
-            return []
+            msg = _compact_exception_message(exc)
+            logger.warning("GLP list_subscriptions failed: %s", msg)
+            raise RuntimeError(f"GLP list_subscriptions failed: {msg}") from exc
 
     def get_subscription(self, subscription_id: str) -> Optional[dict[str, Any]]:
         """Fetch a single subscription by ID."""

@@ -11,6 +11,7 @@ from mcp_servers.shared import (
     _AOS_S_BASE,
     _CX_TROUBLESHOOTING_BASE,
     _GATEWAY_BASE,
+    compact_http_error,
     cx_poll,
     device_type_for_troubleshoot,
     get_client,
@@ -49,11 +50,7 @@ def cx_ping(
     try:
         resp = client._request("POST", f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/ping", json=payload)
         if resp.status_code != 202:
-            try:
-                body = resp.json()
-            except Exception:
-                body = resp.text
-            errors.append(f"HTTP {resp.status_code}: {body}")
+            errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
         location = resp.json().get("location", "")
         task_id = location.split("/")[-1]
@@ -85,11 +82,7 @@ def cx_traceroute(
     try:
         resp = client._request("POST", f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/traceroute", json=payload)
         if resp.status_code != 202:
-            try:
-                body = resp.json()
-            except Exception:
-                body = resp.text
-            errors.append(f"HTTP {resp.status_code}: {body}")
+            errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
         location = resp.json().get("location", "")
         task_id = location.split("/")[-1]
@@ -124,11 +117,7 @@ def cx_show(
             "POST", f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands", json={"commands": commands}
         )
         if resp.status_code != 202:
-            try:
-                body = resp.json()
-            except Exception:
-                body = resp.text
-            errors.append(f"HTTP {resp.status_code}: {body}")
+            errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
         location = resp.json().get("location", "")
         task_id = location.split("/")[-1]
@@ -317,11 +306,7 @@ def reboot_device(
     try:
         response = client._request("POST", endpoint, json={})
         if response.status_code not in (200, 201, 202):
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
-            errors.append(f"HTTP {response.status_code}: {body}")
+            errors.append(compact_http_error(response))
             return {"serial_number": serial_number, "device_type": device_type, "response": None, "errors": errors}
         try:
             resp_body = response.json()
@@ -360,11 +345,7 @@ def disconnect_client(
     try:
         response = client._request("POST", endpoint, json={"userMacAddress": mac_address})
         if response.status_code not in (200, 201, 202):
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
-            errors.append(f"HTTP {response.status_code}: {body}")
+            errors.append(compact_http_error(response))
             return {"mac_address": mac_address, "response": None, "errors": errors}
         try:
             resp_body = response.json()
@@ -402,11 +383,7 @@ def acknowledge_alert(
                 errors.append(f"404 at {endpoint}")
                 continue
             if response.status_code not in (200, 201, 202):
-                try:
-                    body = response.json()
-                except Exception:
-                    body = response.text
-                errors.append(f"HTTP {response.status_code} at {endpoint}: {body}")
+                errors.append(compact_http_error(response, endpoint=endpoint))
                 continue
             try:
                 resp_body = response.json()

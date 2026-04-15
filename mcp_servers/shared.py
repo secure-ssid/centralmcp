@@ -69,6 +69,84 @@ _AOS_S_BASE = "/network-troubleshooting/v1alpha1/aos-s"
 _GATEWAY_BASE = "/network-troubleshooting/v1alpha1/gateways"
 _POLL_INTERVAL = 5
 _POLL_MAX = 12
+DEFAULT_LIST_LIMIT = 50
+MAX_LIST_LIMIT = 200
+
+
+def clamp_limit(limit: int | None, default: int = DEFAULT_LIST_LIMIT) -> int:
+    """Clamp list/read limits to a safe, bounded range."""
+    if limit is None:
+        return default
+    return max(1, min(limit, MAX_LIST_LIMIT))
+
+
+def _truncate_text(value: Any, max_chars: int = 240) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}... [truncated {len(text) - max_chars} chars]"
+
+
+def compact_http_error(resp: Any, endpoint: str | None = None, max_chars: int = 240) -> str:
+    """Return a compact HTTP error message with bounded payload preview."""
+    try:
+        body = resp.json()
+    except Exception:
+        body = resp.text
+    where = f" at {endpoint}" if endpoint else ""
+    return f"HTTP {resp.status_code}{where}: {_truncate_text(body, max_chars=max_chars)}"
+
+
+def bound_collection_response(
+    data: Any,
+    *,
+    limit: int,
+    offset: int = 0,
+    list_key: str | None = None,
+) -> Any:
+    """Slice the primary list in a JSON value to reduce MCP tool output size.
+
+    - If ``data`` is a list, wraps as ``{"items": [...], "_pagination": ...}``.
+    - If ``data`` is a dict, slices ``list_key`` or the longest top-level list
+      (excluding ``_pagination``) and adds ``_pagination`` metadata.
+    """
+    lim = clamp_limit(limit)
+    off = max(0, offset)
+    if isinstance(data, list):
+        total = len(data)
+        page = data[off : off + lim]
+        return {
+            "items": page,
+            "_pagination": {
+                "offset": off,
+                "limit": lim,
+                "total": total,
+                "truncated": total > off + len(page),
+            },
+        }
+    if not isinstance(data, dict):
+        return data
+    out = {k: v for k, v in data.items() if k != "_pagination"}
+    key = list_key
+    if key is None:
+        candidates = [(k, len(v)) for k, v in out.items() if isinstance(v, list)]
+        if not candidates:
+            return data
+        key = max(candidates, key=lambda kv: (kv[1], kv[0]))[0]
+    val = out.get(key)
+    if not isinstance(val, list):
+        return data
+    total = len(val)
+    page = val[off : off + lim]
+    out[key] = page
+    out["_pagination"] = {
+        "offset": off,
+        "limit": lim,
+        "total": total,
+        "truncated": total > off + len(page),
+        "list_key": key,
+    }
+    return out
 
 
 def cx_poll(client: CentralClient, serial: str, operation: str, task_id: str) -> dict[str, Any]:
@@ -107,11 +185,7 @@ def troubleshoot_async(
     try:
         resp = client._request("POST", endpoint, json=payload)
         if resp.status_code not in (200, 201, 202):
-            try:
-                body = resp.json()
-            except Exception:
-                body = resp.text
-            errors.append(f"HTTP {resp.status_code}: {body}")
+            errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
         location = resp.headers.get("Location", "") or resp.json().get("location", "")
         task_id = location.rstrip("/").split("/")[-1]
@@ -125,11 +199,16 @@ def troubleshoot_async(
 
 
 def resp_json(resp: Any) -> dict[str, Any]:
-    """Return resp.json() or {status_code, text} if the body is not JSON."""
+    """Return resp.json() or compact metadata if the body is not JSON."""
     try:
         return resp.json()
     except Exception:
-        return {"status_code": resp.status_code, "text": resp.text}
+        raw_text = resp.text or ""
+        return {
+            "status_code": resp.status_code,
+            "text_preview": _truncate_text(raw_text),
+            "text_length": len(raw_text),
+        }
 
 
 def device_type_for_troubleshoot(serial_number: str, device_type: str | None) -> str | None:
