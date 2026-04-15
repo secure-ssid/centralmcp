@@ -6,9 +6,12 @@ config/credentials.yaml
 # Claude local settings (may contain credentials in allowed commands)
 .claude/settings.local.json
 
-# MCP server config (contains local absolute paths — copy from .mcp.json.example)
+# Local MCP client configs (often include absolute paths/secrets)
+# Keep shared settings in .mcp.json.example only.
 .mcp.json
 .cursor/mcp.json
+.claude/mcp.json
+.vscode/mcp.json
 
 # Local cross-agent handoff state (copy from SESSION_CONTEXT.md.example)
 SESSION_CONTEXT.md
