@@ -1,0 +1,28 @@
+# Session Context
+
+Use this file as a shared handoff log between Cursor and Claude.
+
+## Current Goal
+
+- <single sentence goal>
+
+## Current Status
+
+- <key state item>
+
+## Last Verified
+
+- <endpoint/tool/check>: pass|fail
+
+## Open Items
+
+- <pending item>
+
+## Next Step
+
+- <exact next action>
+
+## Notes
+
+- Keep this file concise and operational.
+- Never include secrets, credentials, or tokens.
