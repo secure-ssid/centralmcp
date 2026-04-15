@@ -418,6 +418,8 @@ def build_underlay_ssid(
     passphrase: str | None = None,
     vlan_id: int | None = None,
     vlan_ids: list[int] | None = None,
+    mac_auth_server_group: str | None = "sys_central_nac",
+    default_role: str = "macauth-allow",
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a bridge-mode (underlay) SSID and scope-map it.
@@ -428,19 +430,55 @@ def build_underlay_ssid(
         opmode: WPA3_SAE_AES, WPA3_WPA2_AES, WPA2_AES, or OPEN_NETWORK.
         passphrase: Required for WPA2/WPA3-PSK modes.
         vlan_id / vlan_ids: Single VLAN or list of VLAN IDs.
+        mac_auth_server_group: Central NAC server-group for MAC auth post-config. Set None to skip.
+        default_role: Role assigned to authenticated underlay MAC-auth clients.
     """
     client = get_client()
-    return _build(
-        client=client,
+    resolved_vlan_ids = vlan_ids or ([vlan_id] if vlan_id is not None else [1])
+    result = _build(
+        central_client=client,
         ssid_name=ssid_name,
+        vlan_ids=[str(v) for v in resolved_vlan_ids],
         scope_id=scope_id,
         persona=persona,
         opmode=opmode,
-        passphrase=passphrase,
-        vlan_id=vlan_id,
-        vlan_ids=vlan_ids,
+        wpa_passphrase=passphrase,
         dry_run=dry_run,
     )
+    if dry_run or mac_auth_server_group is None:
+        return result
+
+    if result.get("errors"):
+        return result
+
+    url_name = quote(ssid_name, safe="")
+    updates = {
+        "mac-authentication": True,
+        "primary-auth-server": mac_auth_server_group,
+        "cloud-auth": True,
+        "radius-accounting": True,
+        "radius-interim-accounting-interval": 10,
+        "default-role": default_role,
+        "denylist": False,
+        "called-station-id": {
+            "type": "MAC_ADDRESS",
+            "include-ssid": True,
+        },
+    }
+    try:
+        response = client._request("PATCH", f"/network-config/v1/wlan-ssids/{url_name}", json=updates)
+        if response.status_code not in (200, 201, 202, 204):
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+            result.setdefault("errors", []).append(f"post_configure_macauth: HTTP {response.status_code}: {body}")
+            return result
+        result["mac_auth_configured"] = True
+        result["mac_auth_updates"] = updates
+    except Exception as exc:
+        result.setdefault("errors", []).append(f"post_configure_macauth: {exc}")
+    return result
 
 
 @mcp.tool()

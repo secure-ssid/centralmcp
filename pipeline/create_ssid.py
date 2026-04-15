@@ -437,11 +437,16 @@ def build_overlay_ssid(
     body["default-role"] = ssid_name
     if mac_auth_server_group:
         body["mac-authentication"] = True
+        body["called-station-id"] = {
+            "type": "MAC_ADDRESS",
+            "include-ssid": True,
+        }
         body["auth-server-group"] = mac_auth_server_group
         body["acct-server-group"] = mac_auth_server_group
         body["cloud-auth"] = True
         body["radius-accounting"] = True
         body["radius-interim-accounting-interval"] = 10
+        body["denylist"] = False
 
     # ------------------------------------------------------------------
     # Step 1c: Create allow-all security policy + add to policy group + scope-map
@@ -555,6 +560,62 @@ def build_overlay_ssid(
         except Exception as exc:
             result["errors"].append(f"patch_default_role: {exc}")
             logger.error("Failed to patch default-role on SSID '%s': %s", ssid_name, exc)
+
+    # Keep MAC-auth SSIDs in a known-good state to avoid sticky denylist rejects
+    # and missing SSID context in Called-Station-ID during NAC authorization.
+    if not dry_run and result["created"] and mac_auth_server_group:
+        try:
+            central_client.patch(
+                endpoint,
+                data={
+                    "called-station-id": {"type": "MAC_ADDRESS", "include-ssid": True},
+                    "denylist": False,
+                },
+            )
+            logger.info("Patched MAC-auth defaults on SSID '%s' (include-ssid=true, denylist=false)", ssid_name)
+        except Exception as exc:
+            result["errors"].append(f"patch_macauth_defaults: {exc}")
+            logger.error("Failed to patch MAC-auth defaults on SSID '%s': %s", ssid_name, exc)
+
+    # Central binds overlay SSIDs to an auto-generated gw-profile name. Normalize
+    # that active profile instead of leaving a stale manual AAA profile reference.
+    if not dry_run and result["created"] and mac_auth_server_group:
+        try:
+            ssid_obj = central_client.get(endpoint)
+            gw_profile = str(ssid_obj.get("gw-profile", "")).strip()
+            if gw_profile:
+                result["gw_profile"] = gw_profile
+                gw_profile_encoded = quote(gw_profile, safe="")
+                gw_aaa_endpoint = f"/network-config/v1alpha1/aaa-profile/{gw_profile_encoded}"
+                aaa_obj = central_client.get(gw_aaa_endpoint)
+                auth = aaa_obj.setdefault("authentication", {})
+                auth["mac-auth"] = gw_profile
+                auth["mac-default-role"] = ssid_name
+                auth["macauth-server-group"] = mac_auth_server_group
+                if "auth-precedence" not in auth:
+                    auth["auth-precedence"] = ["MAC_AUTH", "DOT1X"]
+                central_client.put(gw_aaa_endpoint, data=aaa_obj)
+                logger.info("Normalized active GW AAA profile '%s' for SSID '%s'", gw_profile, ssid_name)
+
+                # Clean up helper profile created by this function when Central chose
+                # a different active profile name.
+                if aaa_profile_name != gw_profile:
+                    helper_ep = f"/network-config/v1alpha1/aaa-profile/{quote(aaa_profile_name, safe='')}"
+                    try:
+                        central_client.delete(helper_ep)
+                        logger.info("Deleted helper AAA profile '%s' (active profile is '%s')", aaa_profile_name, gw_profile)
+                    except Exception as exc:
+                        resp_text = getattr(getattr(exc, "response", None), "text", "") or str(exc)
+                        if "404" in resp_text or "not found" in resp_text.lower():
+                            logger.info("Helper AAA profile '%s' already absent", aaa_profile_name)
+                        else:
+                            result["errors"].append(f"cleanup_helper_aaa: {exc}")
+                            logger.error("Failed to delete helper AAA profile '%s': %s", aaa_profile_name, exc)
+            else:
+                result["errors"].append("normalize_gw_profile: missing gw-profile on created overlay SSID")
+        except Exception as exc:
+            result["errors"].append(f"normalize_gw_profile: {exc}")
+            logger.error("Failed to normalize active GW AAA profile for '%s': %s", ssid_name, exc)
 
     # ------------------------------------------------------------------
     # Step 4: Create overlay-wlan profile

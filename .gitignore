@@ -8,6 +8,7 @@ config/credentials.yaml
 
 # MCP server config (contains local absolute paths — copy from .mcp.json.example)
 .mcp.json
+.cursor/mcp.json
 
 # Local cross-agent handoff state (copy from SESSION_CONTEXT.md.example)
 SESSION_CONTEXT.md
