@@ -26,13 +26,13 @@ def get_client() -> CentralClient:
     global _central_client
     if _central_client is None:
         creds_path = os.environ.get("CREDS_PATH", "config/credentials.yaml")
-        _, target_ctx = build_account_contexts(creds_path)
+        source_ctx, _ = build_account_contexts(creds_path)
         tm = TokenManager(
-            client_id=target_ctx.client_id,
-            client_secret=target_ctx.client_secret,
-            cache_key="target",
+            client_id=source_ctx.client_id,
+            client_secret=source_ctx.client_secret,
+            cache_key="source",
         )
-        _central_client = CentralClient(base_url=target_ctx.base_url, token_manager=tm)
+        _central_client = CentralClient(base_url=source_ctx.base_url, token_manager=tm)
     return _central_client
 
 
