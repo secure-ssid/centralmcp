@@ -147,6 +147,30 @@ class TestResolveDeviceId:
         inner.get.side_effect = RuntimeError("network exploded")
         assert glp.resolve_device_id("SERIAL1") is None
 
+    def test_rejects_unsafe_serial_without_calling_api(self, clean_env):
+        """OData injection defence — bogus chars in serial => None, no GET."""
+        glp, inner = _make_glp_client()
+        for bad in ["SERIAL'", "SER IAL", "SERIAL;DROP", "S'; DROP--", ""]:
+            assert glp.resolve_device_id(bad) is None
+        inner.get.assert_not_called()
+
+    def test_accepts_real_world_serial_formats(self, clean_env):
+        """Concrete serials from the lab should all pass validation."""
+        glp, _ = _make_glp_client()
+        for good in ["SG30LMR164", "CNP6L2H02W", "VNVQMPJ028", "PHSXM52029",
+                     "test_device-01", "ABCDEFG-1234_5"]:
+            assert glp._is_safe_serial(good), f"{good!r} rejected"
+
+    def test_cache_is_per_instance_not_shared(self, clean_env):
+        """Regression: fixes a prior class-level mutable default that would
+        have let one GLPClient's cache leak into another's."""
+        glp_a, _ = _make_glp_client()
+        glp_b, _ = _make_glp_client()
+        glp_a._device_id_cache["X"] = "uuid-A"
+        assert glp_b._device_id_cache.get("X") is None, (
+            "cache leaked between instances — check __init__ vs class scope"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Payload shape per HPE docs
