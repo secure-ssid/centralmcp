@@ -121,36 +121,54 @@ class GLPClient:
     # Subscriptions
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Mutating ops — DISABLED pending correct endpoint paths
+    #
+    # The previous implementations posted to `/license/assign`,
+    # `/license/unassign`, `/device-inventory/archive`, and
+    # `/device-inventory/unarchive` against the GLP base URL
+    # (https://global.api.greenlake.hpe.com). Those paths are stale Classic
+    # Central routes (not GLP) and they are NOT present in the official
+    # Aruba "New Central" Postman collections (MRT + Configuration APIs)
+    # either. Calling them at the GLP host returns 404.
+    #
+    # Correct GLP paths need to come from the GLP Subscriptions and Device
+    # Management service references. Until those are confirmed, raise
+    # NotImplementedError so broken mutations can't silently fire.
+    #
+    # See https://developer.greenlake.hpe.com/docs/greenlake/services/
+    # ------------------------------------------------------------------
+
     def assign_subscription(self, serial_number: str, subscription_key: str) -> dict[str, Any]:
-        """Assign a subscription to a device."""
-        return self._client.post(
-            "/license/assign",
-            data={"serials": [serial_number], "license_type": subscription_key},
+        """Assign a subscription to a device. Disabled — see module comment."""
+        raise NotImplementedError(
+            "assign_subscription is disabled: the previous path "
+            "POST /license/assign is not a valid GLP endpoint. "
+            "Correct path TBD from GLP Subscriptions service reference."
         )
 
     def unassign_subscription(self, serial_number: str) -> dict[str, Any]:
-        """Remove all subscriptions from a device."""
-        return self._client.post(
-            "/license/unassign",
-            data={"serials": [serial_number]},
+        """Remove all subscriptions from a device. Disabled — see module comment."""
+        raise NotImplementedError(
+            "unassign_subscription is disabled: the previous path "
+            "POST /license/unassign is not a valid GLP endpoint. "
+            "Correct path TBD from GLP Subscriptions service reference."
         )
 
-    # ------------------------------------------------------------------
-    # Device inventory (Classic Central API, still used in New Central flows)
-    # ------------------------------------------------------------------
-
     def archive_device(self, serial_number: str) -> dict[str, Any]:
-        """Archive a device in the source Central account (removes from Central, stays in GLP)."""
-        return self._client.post(
-            "/device-inventory/archive",
-            data={"serials": [serial_number]},
+        """Archive a device. Disabled — see module comment."""
+        raise NotImplementedError(
+            "archive_device is disabled: the previous path "
+            "POST /device-inventory/archive is not a valid GLP endpoint. "
+            "Correct path TBD from GLP Device Management service reference."
         )
 
     def unarchive_device(self, serial_number: str) -> dict[str, Any]:
-        """Unarchive a device (returns it to GLP unassigned state)."""
-        return self._client.post(
-            "/device-inventory/unarchive",
-            data={"serials": [serial_number]},
+        """Unarchive a device. Disabled — see module comment."""
+        raise NotImplementedError(
+            "unarchive_device is disabled: the previous path "
+            "POST /device-inventory/unarchive is not a valid GLP endpoint. "
+            "Correct path TBD from GLP Device Management service reference."
         )
 
     # ------------------------------------------------------------------
