@@ -108,18 +108,41 @@ def list_clients(
     serial_number: str | None = None,
     ssid: str | None = None,
     connection_type: str | None = None,
+    hostname_contains: str | None = None,
+    os_contains: str | None = None,
+    device_type_contains: str | None = None,
+    ssid_contains: str | None = None,
+    site_contains: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """List connected clients. ALWAYS filter before calling — unfiltered returns all clients.
+    """List connected clients, with optional filters. ALWAYS filter before calling — unfiltered returns all clients.
 
     Args:
-        site_id: Filter by site ID.
+        site_id: Filter server-side by exact site ID.
         serial_number: Filter by AP or switch serial (narrows to clients on that device).
-        ssid: Filter by WLAN/SSID name (e.g. "aruba-home").
+        ssid: Filter server-side by exact WLAN/SSID name (e.g. "aruba-home").
         connection_type: "Wireless" or "Wired".
+        hostname_contains: Case-insensitive substring match on the client hostname /
+            display name (e.g. "roku", "iphone", "stephen-mbp"). Use this for natural-
+            language queries like "show me clients that are roku devices".
+        os_contains: Case-insensitive substring match on client OS
+            (e.g. "windows", "mac", "ios", "android", "linux"). Use for queries like
+            "show me windows clients".
+        device_type_contains: Case-insensitive substring match on client device type
+            / classification (e.g. "roku", "apple", "printer", "phone", "laptop").
+        ssid_contains: Case-insensitive substring match on SSID / WLAN name
+            (e.g. "aruba-home", "guest"). Prefer this over ``ssid`` for fuzzy
+            natural-language queries.
+        site_contains: Case-insensitive substring match on site name
+            (e.g. "headquarters", "home").
 
-    Ask the user which AP, SSID, or connection type they care about before calling
-    with no filters.
+    Prefer the ``*_contains`` filters for natural-language queries from end users
+    ("clients that are roku", "clients on aruba-home SSID", "windows clients at HQ").
+    Server-side filtering is used for ``site_id``, ``serial_number``, ``ssid``, and
+    ``connection_type``; the ``*_contains`` filters are applied client-side after
+    the fetch against whichever of these client fields are populated by Central:
+    ``hostname``/``name``, ``osType``/``os``, ``deviceType``/``clientType``,
+    ``network``/``wlanName``/``ssid``, ``siteName``/``site``.
 
     NOTE: Central's clients endpoint doesn't expose server-side offset
     pagination the way devices does — page by narrowing filters instead.
@@ -135,6 +158,32 @@ def list_clients(
         connection_type=connection_type,
         limit=clamp_limit(limit),
     )
+
+    # Client-side substring filters. Each filter checks multiple possible field
+    # names because Central's v1 and v1alpha1 responses differ.
+    def _match(client: dict[str, Any], needle: str, fields: tuple[str, ...]) -> bool:
+        n = needle.lower()
+        for f in fields:
+            v = client.get(f)
+            if v and n in str(v).lower():
+                return True
+        return False
+
+    filters: list[tuple[str, tuple[str, ...]]] = []
+    if hostname_contains:
+        filters.append((hostname_contains, ("hostname", "name", "clientHostname")))
+    if os_contains:
+        filters.append((os_contains, ("osType", "os_type", "os", "operatingSystem")))
+    if device_type_contains:
+        filters.append((device_type_contains, ("deviceType", "device_type", "clientType", "client_type", "classification")))
+    if ssid_contains:
+        filters.append((ssid_contains, ("network", "wlanName", "ssid", "SSID")))
+    if site_contains:
+        filters.append((site_contains, ("siteName", "site_name", "site", "scopeName")))
+
+    if filters and isinstance(clients, list):
+        clients = [c for c in clients if all(_match(c, needle, fields) for needle, fields in filters)]
+
     return maybe_bound(clients, limit=limit, offset=0)
 
 
