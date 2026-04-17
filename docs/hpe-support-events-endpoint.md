@@ -19,10 +19,12 @@ consistently return `400 Bad Request` — need required-param documentation
 
 - **Region / cluster:** `internal.api.central.arubanetworks.com`
 - **Auth:** OAuth2 client-credentials against `sso.common.cloud.hpe.com/as/token.oauth2`
-- **Workspace ID:** `19ff50f0076511f1bd8c627d531797c4`
-- **OAuth client ID used:** `11a5f4b5-3734-4684-831a-318ead0bd9ba`
-  (Central/source account)
-- **Application instance id on the token:** `e9392bf6-0244-4005-8f4d-0805c1d33a99`
+- **Workspace ID:** `<redacted — provided in ticket>`
+- **OAuth client ID used:** `<redacted — Central/source account>`
+- **Application instance id on the token:** `<redacted>`
+
+(Fill in the actual IDs from `config/credentials.yaml` when submitting the
+ticket. They're intentionally not committed to the repo.)
 
 Other endpoints on the same gateway (e.g. `/network-monitoring/v1/switches/{serial}`,
 `/network-notifications/v1alpha1/alerts`, `/network-config/v1alpha1/cnac-mac-reg`)
