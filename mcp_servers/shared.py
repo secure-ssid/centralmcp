@@ -48,10 +48,13 @@ def get_glp_client() -> GLPClient:
     if _glp_client is None:
         creds_path = os.environ.get("CREDS_PATH", "config/credentials.yaml")
         _, target_ctx = build_account_contexts(creds_path)
+        # GLP tokens live only ~15 min, so use a smaller refresh buffer than
+        # the Central default (300s would burn a third of every window).
         tm = TokenManager(
             client_id=target_ctx.client_id,
             client_secret=target_ctx.client_secret,
             cache_key="glp",
+            expiry_buffer=60,
         )
         _glp_client = GLPClient(
             token_manager=tm,

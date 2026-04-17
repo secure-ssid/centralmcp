@@ -18,8 +18,23 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# Buffer before expiry at which we proactively refresh (seconds)
-_EXPIRY_BUFFER = 300
+# Default buffer before expiry at which we proactively refresh (seconds).
+# Central tokens live ~120 min so 300s buffer is fine; GLP tokens live only
+# 15 min so callers should pass a smaller buffer (60-90s) to avoid burning
+# a third of every token window. See:
+# https://developer.greenlake.hpe.com/docs/greenlake/guides/public/authentication/authentication/
+_DEFAULT_EXPIRY_BUFFER = 300
+
+
+def _default_cache_dir() -> Path:
+    """Default token cache directory. Avoids CWD so tokens don't leak
+    into whatever directory the MCP server happens to run from."""
+    override = os.environ.get("TOKEN_CACHE_DIR")
+    if override:
+        return Path(override).expanduser()
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".cache"
+    return base / "centralmcp"
 
 
 class TokenManager:
@@ -31,6 +46,7 @@ class TokenManager:
         client_secret: str,
         token_url: str = "https://sso.common.cloud.hpe.com/as/token.oauth2",
         cache_key: str = "central",
+        expiry_buffer: int = _DEFAULT_EXPIRY_BUFFER,
     ):
         """
         Args:
@@ -40,20 +56,28 @@ class TokenManager:
             cache_key: Unique key used to name the cache file, e.g. "source" or "target".
                        Produces .token_cache_{cache_key}.json so source/target caches
                        never collide.
+            expiry_buffer: Seconds before the token's stated expiry to refresh
+                       proactively. Default 300s is right for Central's 120-min
+                       tokens. For GLP (15-min tokens), pass 60-90s.
         """
         self.client_id = client_id
         self.client_secret = client_secret
         self.token_url = token_url
+        self.expiry_buffer = expiry_buffer
 
         cache_filename = f".token_cache_{cache_key}.json"
-        token_cache_dir = os.environ.get("TOKEN_CACHE_DIR")
-        if token_cache_dir:
-            try:
-                Path(token_cache_dir).mkdir(parents=True, exist_ok=True)
-                self.cache_file = Path(token_cache_dir) / cache_filename
-            except Exception:
-                self.cache_file = Path(cache_filename)
-        else:
+        cache_dir = _default_cache_dir()
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            self.cache_file = cache_dir / cache_filename
+        except Exception as exc:
+            # Fall back to CWD only if the preferred dir is unwritable, and
+            # shout about it so the operator notices.
+            logger.warning(
+                "Could not create token cache dir %s (%s); falling back to CWD",
+                cache_dir,
+                exc,
+            )
             self.cache_file = Path(cache_filename)
 
         self.access_token: Optional[str] = None
@@ -68,7 +92,7 @@ class TokenManager:
                 data = json.load(f)
             self.access_token = data.get("access_token")
             self.token_expires_at = data.get("expires_at")
-            if self.token_expires_at and time.time() < (self.token_expires_at - _EXPIRY_BUFFER):
+            if self.token_expires_at and time.time() < (self.token_expires_at - self.expiry_buffer):
                 logger.debug("Loaded valid token from cache (%s)", self.cache_file)
             else:
                 logger.debug("Cached token expired (%s)", self.cache_file)
@@ -81,7 +105,13 @@ class TokenManager:
 
     def _save_token_to_cache(self) -> None:
         try:
-            with open(self.cache_file, "w") as f:
+            # Write with 0600 perms so tokens aren't world-readable.
+            fd = os.open(
+                self.cache_file,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                0o600,
+            )
+            with os.fdopen(fd, "w") as f:
                 json.dump(
                     {
                         "access_token": self.access_token,
@@ -125,7 +155,7 @@ class TokenManager:
             force_refresh
             or not self.access_token
             or not self.token_expires_at
-            or time.time() >= (self.token_expires_at - _EXPIRY_BUFFER)
+            or time.time() >= (self.token_expires_at - self.expiry_buffer)
         )
         if needs_refresh:
             self._refresh_token()
@@ -134,4 +164,4 @@ class TokenManager:
     def is_token_valid(self) -> bool:
         if not self.access_token or not self.token_expires_at:
             return False
-        return time.time() < (self.token_expires_at - _EXPIRY_BUFFER)
+        return time.time() < (self.token_expires_at - self.expiry_buffer)
