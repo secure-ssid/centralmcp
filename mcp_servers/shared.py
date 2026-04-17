@@ -152,6 +152,43 @@ def bound_collection_response(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Feature flag: bound list tool responses (A3)
+# ---------------------------------------------------------------------------
+#
+# When ``CENTRALMCP_BOUND_LISTS`` is set to "1"/"true"/"yes", list tools
+# that currently return a raw list[dict] wrap their response in
+# ``{"items": [...], "_pagination": {...}}`` via
+# bound_collection_response. Default OFF so existing clients that
+# memoised the list shape don't break on upgrade. Flip on once
+# consumers have moved to the wrapped shape.
+
+_BOUND_LISTS_FLAG = "CENTRALMCP_BOUND_LISTS"
+
+
+def _bound_lists_enabled() -> bool:
+    return os.environ.get(_BOUND_LISTS_FLAG, "").lower() in ("1", "true", "yes")
+
+
+def maybe_bound(
+    data: Any,
+    *,
+    limit: int,
+    offset: int = 0,
+    list_key: str | None = None,
+) -> Any:
+    """Wrap ``data`` with bound_collection_response when ``CENTRALMCP_BOUND_LISTS``
+    is enabled; otherwise return ``data`` unchanged.
+
+    Lets list tools opt callers into the wrapped shape without a
+    breaking change. Callers that always want the wrap should call
+    ``bound_collection_response`` directly (several tools already do).
+    """
+    if not _bound_lists_enabled():
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset, list_key=list_key)
+
+
 def cx_poll(client: CentralClient, serial: str, operation: str, task_id: str) -> dict[str, Any]:
     endpoint = f"{_CX_TROUBLESHOOTING_BASE}/{serial}/{operation}/async-operations/{task_id}"
     result: dict[str, Any] = {}

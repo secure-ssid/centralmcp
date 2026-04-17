@@ -9,7 +9,13 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_servers.shared import bound_collection_response, clamp_limit, get_client, get_mcp_client
+from mcp_servers.shared import (
+    bound_collection_response,
+    clamp_limit,
+    get_client,
+    get_mcp_client,
+    maybe_bound,
+)
 
 mcp = FastMCP("aruba-monitoring")
 
@@ -20,9 +26,15 @@ mcp = FastMCP("aruba-monitoring")
 def list_sites(
     limit: int = 100,
     offset: int = 0,
-) -> list[dict[str, Any]]:
-    """Return sites with IDs, names, and location fields (paginated)."""
-    return get_mcp_client().get_sites(limit=clamp_limit(limit), offset=max(0, offset))
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """Return sites with IDs, names, and location fields (paginated).
+
+    With ``CENTRALMCP_BOUND_LISTS=1`` returns
+    ``{"items": [...], "_pagination": {...}}``; otherwise returns the
+    raw ``list[dict]`` for back-compat.
+    """
+    sites = get_mcp_client().get_sites(limit=clamp_limit(limit), offset=max(0, offset))
+    return maybe_bound(sites, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -51,14 +63,35 @@ def list_devices(
     device_type: str | None = None,
     site_id: str | None = None,
     limit: int = 50,
-) -> list[dict[str, Any]]:
-    """List devices, optionally filtered by device_type (e.g. SWITCH, AP) or site_id."""
+    offset: int = 0,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """List devices, optionally filtered by device_type (e.g. SWITCH, AP) or site_id.
+
+    ``offset`` is forwarded to the Central API (it supports server-side
+    pagination on devices).
+
+    With ``CENTRALMCP_BOUND_LISTS=1`` returns
+    ``{"items": [...], "_pagination": {...}}``; otherwise returns the
+    raw ``list[dict]`` for back-compat.
+    """
     filters: dict[str, Any] = {}
     if device_type:
         filters["deviceType"] = device_type
     if site_id:
         filters["siteId"] = site_id
-    return get_mcp_client().get_devices(filters or None, limit=limit)
+    off = max(0, offset)
+    devices = get_mcp_client().get_devices(
+        filters or None, limit=clamp_limit(limit), offset=off
+    )
+    # Client already returned the paginated slice — pass offset=0 to
+    # maybe_bound so it doesn't try to re-slice the already-trimmed
+    # result (which would produce misleading pagination metadata).
+    # The true offset is reflected in the _pagination block we attach
+    # manually when the flag is on.
+    wrapped = maybe_bound(devices, limit=limit, offset=0)
+    if isinstance(wrapped, dict) and "_pagination" in wrapped:
+        wrapped["_pagination"]["offset"] = off
+    return wrapped
 
 
 @mcp.tool()
@@ -76,7 +109,7 @@ def list_clients(
     ssid: str | None = None,
     connection_type: str | None = None,
     limit: int = 100,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | dict[str, Any]:
     """List connected clients. ALWAYS filter before calling — unfiltered returns all clients.
 
     Args:
@@ -87,14 +120,22 @@ def list_clients(
 
     Ask the user which AP, SSID, or connection type they care about before calling
     with no filters.
+
+    NOTE: Central's clients endpoint doesn't expose server-side offset
+    pagination the way devices does — page by narrowing filters instead.
+
+    With ``CENTRALMCP_BOUND_LISTS=1`` returns
+    ``{"items": [...], "_pagination": {...}}``; otherwise returns the
+    raw ``list[dict]`` for back-compat.
     """
-    return get_mcp_client().get_clients(
+    clients = get_mcp_client().get_clients(
         site_id=site_id,
         serial_number=serial_number,
         ssid=ssid,
         connection_type=connection_type,
-        limit=limit,
+        limit=clamp_limit(limit),
     )
+    return maybe_bound(clients, limit=limit, offset=0)
 
 
 @mcp.tool()
@@ -137,9 +178,20 @@ def list_alerts(
     site_id: str | None = None,
     severity: str | None = None,
     limit: int = 50,
-) -> list[dict[str, Any]]:
-    """List active alerts, optionally filtered by site_id or severity (CRITICAL/MAJOR/MINOR)."""
-    return get_mcp_client().get_alerts(site_id=site_id, severity=severity, limit=limit)
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """List active alerts, optionally filtered by site_id or severity (CRITICAL/MAJOR/MINOR).
+
+    NOTE: Central's alerts endpoint doesn't expose server-side offset
+    pagination — page by narrowing filters instead.
+
+    With ``CENTRALMCP_BOUND_LISTS=1`` returns
+    ``{"items": [...], "_pagination": {...}}``; otherwise returns the
+    raw ``list[dict]`` for back-compat.
+    """
+    alerts = get_mcp_client().get_alerts(
+        site_id=site_id, severity=severity, limit=clamp_limit(limit)
+    )
+    return maybe_bound(alerts, limit=limit, offset=0)
 
 
 @mcp.tool()
