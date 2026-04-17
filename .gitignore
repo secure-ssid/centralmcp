@@ -9,12 +9,8 @@ config/credentials.yaml
 # Local MCP client configs (often include absolute paths/secrets)
 # Keep shared settings in .mcp.json.example only.
 .mcp.json
-.cursor/mcp.json
 .claude/mcp.json
 .vscode/mcp.json
-
-# Local cross-agent handoff state (copy from SESSION_CONTEXT.md.example)
-SESSION_CONTEXT.md
 
 # Internal runbook PDFs
 *.pdf
