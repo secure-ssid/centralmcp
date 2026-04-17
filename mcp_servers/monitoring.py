@@ -167,7 +167,18 @@ def list_events(
 
 @mcp.tool()
 def get_events_count(serial_number: str, hours: int = 24) -> dict[str, Any]:
-    """Count events for a device over the past N hours (default 24)."""
+    """Count events for a device over the past N hours (default 24).
+
+    KNOWN ISSUE: the Central events endpoint is unstable on ``internal.api``
+    at the moment. The legacy path ``/network-monitoring/v1/events/count``
+    returns 404, and the peer-consensus replacement
+    ``/network-troubleshooting/v1/event-filters`` (used by
+    KarthikSKumar98/central-mcp-server and nowireless4u/hpe-networking-mcp)
+    returns 400 "Bad Request" for every reasonable param combination we've
+    tried. Until the required param shape is documented, this tool tries
+    both paths and surfaces the error body so callers can see what Central
+    wants.
+    """
     client = get_client()
     errors: list[str] = []
     now_ms = int(time.time() * 1000)
@@ -176,12 +187,26 @@ def get_events_count(serial_number: str, hours: int = 24) -> dict[str, Any]:
         "startTime": now_ms - hours * 3_600_000,
         "endTime": now_ms,
     }
-    try:
-        result = client.get("/network-monitoring/v1/events/count", params=params)
-        return {"serial_number": serial_number, "count": result.get("count", result), "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"serial_number": serial_number, "count": 0, "errors": errors}
+    # Try peer-consensus path first, then legacy fallback.
+    for endpoint in (
+        "/network-troubleshooting/v1/event-filters",
+        "/network-monitoring/v1/events/count",
+    ):
+        try:
+            result = client.get(endpoint, params=params)
+            count = result.get("count")
+            if count is None:
+                items = result.get("items", [])
+                count = sum(i.get("count", 0) for i in items) if items else 0
+            return {
+                "serial_number": serial_number,
+                "count": count,
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"serial_number": serial_number, "count": 0, "endpoint_used": None, "errors": errors}
 
 
 # ── Scopes ────────────────────────────────────────────────────────────────────
@@ -804,40 +829,13 @@ def get_ap_ports(serial_number: str) -> dict[str, Any]:
 
 
 # ── SLE ───────────────────────────────────────────────────────────────────────
-
-@mcp.tool()
-def get_sle_metrics(
-    site_id: str | None = None,
-    serial_number: str | None = None,
-    duration: str = "3H",
-) -> dict[str, Any]:
-    """Fetch SLE (Service Level Experience) scores by site or device.
-
-    Args:
-        duration: Time window — "3H", "1D", or "7D".
-    """
-    client = get_client()
-    errors: list[str] = []
-    params: dict[str, Any] = {"duration": duration}
-    if site_id:
-        params["site_id"] = site_id
-    if serial_number:
-        params["serial"] = serial_number
-
-    for endpoint in ["/network-monitoring/v1/sle", "/network-monitoring/v1alpha1/sle"]:
-        try:
-            response = client._request("GET", endpoint, params=params)
-            if response.status_code == 404:
-                errors.append(f"404 at {endpoint}")
-                continue
-            if response.status_code not in (200, 201, 202):
-                errors.append(f"HTTP {response.status_code} at {endpoint}")
-                continue
-            return {"sle": response.json(), "endpoint_used": endpoint, "errors": errors}
-        except Exception as exc:
-            errors.append(str(exc))
-
-    return {"sle": None, "endpoint_used": None, "errors": errors}
+#
+# get_sle_metrics was removed: neither /network-monitoring/v1/sle nor
+# /network-monitoring/v1alpha1/sle nor any sibling variant
+# (/service-level, /wireless-service-level, /connectivity/sle) exist in the
+# New Central API. No peer MCP (pycentral, KarthikSKumar98/central-mcp-server,
+# nowireless4u/hpe-networking-mcp, gl-mcp) wraps SLE either. Bring it back
+# here only when the official API exposes a real path.
 
 
 # ── WLANs ─────────────────────────────────────────────────────────────────────

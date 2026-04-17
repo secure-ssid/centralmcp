@@ -189,12 +189,14 @@ def aos_s_arp(serial_number: str) -> dict[str, Any]:
     return troubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/getArpTable", {}, errors)
 
 
-@mcp.tool()
-def aos_s_locate(serial_number: str) -> dict[str, Any]:
-    """Trigger LED locate/blink on an AOS-S switch (async, polls ~60s)."""
-    client = get_client()
-    errors: list[str] = []
-    return troubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/locate", {}, errors)
+# aos_s_locate was removed: per pycentral's
+# TROUBLESHOOTING_METHOD_DEVICE_MAPPING, `locate` is only supported on
+# cx / aps / gateways, not aos-s. Hitting /network-troubleshooting/v1alpha1/
+# aos-s/{serial}/locate always returns "Device not found" — it's not a
+# real endpoint.
+#
+# If AOS-S locate is needed in the future, route it differently (CLI over
+# the show-commands path, or a classic-central /network-actions call).
 
 
 # ── PoE / Port / Cable Ops ────────────────────────────────────────────────────
@@ -363,6 +365,16 @@ def acknowledge_alert(
 ) -> dict[str, Any]:
     """Acknowledge, clear, or resolve an active alert.
 
+    NOTE: No peer MCP (pycentral, KarthikSKumar98/central-mcp-server,
+    nowireless4u/hpe-networking-mcp) wraps an acknowledge endpoint for New
+    Central alerts, and all three candidate paths below returned 404 on a
+    live lab in 2026-04. The real write path — if/when exposed — is likely
+    via the Central UI only, or on a separate service we haven't identified.
+
+    Today this tool is preserved so callers get a structured "not
+    available" answer (with probed paths in errors) rather than a silent
+    crash. All candidates are tried in turn; first 2xx wins.
+
     Args:
         action: "ACK" (default), "CLEAR", or "RESOLVE".
     """
@@ -392,6 +404,11 @@ def acknowledge_alert(
         except Exception as exc:
             errors.append(str(exc))
 
+    errors.append(
+        "acknowledge_alert: no candidate path accepted the request. "
+        "This endpoint may not be exposed on New Central; track "
+        "https://developer.arubanetworks.com/new-central/reference for updates."
+    )
     return {"alert_id": alert_id, "action": action, "response": None, "errors": errors}
 
 
