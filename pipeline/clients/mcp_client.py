@@ -93,10 +93,8 @@ class MCPClient:
     def get_sites(self, limit: int = _DEFAULT_LIST_LIMIT, offset: int = 0) -> list[dict[str, Any]]:
         """Return all sites with their IDs."""
         try:
-            result = self._client.get(
-                "/network-config/v1/sites",
-                params={"limit": _bounded_limit(limit), "offset": max(0, offset)},
-            )
+            # The sites config API does not support limit/offset query params
+            result = self._client.get("/network-config/v1/sites")
             return result.get("items", result.get("sites", []))
         except Exception as exc:
             logger.warning("MCPClient.get_sites failed: %s", exc)
@@ -234,9 +232,9 @@ class MCPClient:
                 )
                 items = result.get("clients", result.get("items", []))
                 for client in items:
-                    if client.get("macAddress", "").lower() == normalized:
+                    if (client.get("macAddress") or "").lower() == normalized:
                         return client
-                    if client.get("ipv4", "").lower() == normalized:
+                    if (client.get("ipv4") or "").lower() == normalized:
                         return client
                 if len(items) < limit:
                     break
