@@ -725,5 +725,11 @@ def list_identity_stores(
 
 if __name__ == "__main__":
     from mcp_servers._cache_hygiene import stable_list_tools
+    from mcp_servers._middleware import (
+        NullStripMiddleware,
+        RateLimitMiddleware,
+        install_middleware,
+    )
     stable_list_tools(mcp)
+    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
     mcp.run()
