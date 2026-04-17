@@ -1,7 +1,7 @@
-"""MCP server — Aruba Central ops: troubleshooting, GLP, and device actions (25 tools).
+"""MCP server — Aruba Central ops: troubleshooting and device actions (15 tools).
 
 Covers: CX/AOS-S/Gateway ping/traceroute/show, PoE bounce, port bounce, cable test,
-reboot, disconnect client, acknowledge alert, GreenLake Platform (GLP) inventory/licensing.
+reboot, disconnect client, acknowledge alert.
 """
 from typing import Any
 
@@ -15,7 +15,6 @@ from mcp_servers.shared import (
     cx_poll,
     device_type_for_troubleshoot,
     get_client,
-    get_glp_client,
     get_mcp_client,
     troubleshoot_async,
 )
@@ -394,156 +393,6 @@ def acknowledge_alert(
             errors.append(str(exc))
 
     return {"alert_id": alert_id, "action": action, "response": None, "errors": errors}
-
-
-# ── GreenLake Platform (GLP) ──────────────────────────────────────────────────
-
-@mcp.tool()
-def list_glp_devices(limit: int = 100, filter: str | None = None) -> dict[str, Any]:
-    """List devices in the GLP workspace (warranty, subscription state, lifecycle).
-
-    Args:
-        filter: OData filter, e.g. "serial eq 'SG30LMR164'".
-    """
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        items = glp.list_devices(limit=limit, filter=filter)
-        return {"items": items, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"items": [], "errors": errors}
-
-
-@mcp.tool()
-def get_glp_device(serial_number: str) -> dict[str, Any]:
-    """Fetch a single device from GLP by serial number."""
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        device = glp.get_device(serial_number)
-        return {"device": device, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"device": None, "errors": errors}
-
-
-@mcp.tool()
-def list_glp_subscriptions(limit: int = 100) -> dict[str, Any]:
-    """List subscriptions (license keys) in the GLP workspace (type, assigned device, expiry)."""
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        items = glp.list_subscriptions(limit=limit)
-        return {"items": items, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"items": [], "errors": errors}
-
-
-@mcp.tool()
-def get_glp_subscription(subscription_id: str) -> dict[str, Any]:
-    """Fetch a single GLP subscription by ID."""
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        sub = glp.get_subscription(subscription_id)
-        return {"subscription": sub, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"subscription": None, "errors": errors}
-
-
-@mcp.tool()
-def list_glp_users(limit: int = 300) -> dict[str, Any]:
-    """List users with access to the GLP workspace."""
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        items = glp.list_users(limit=limit)
-        return {"items": items, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"items": [], "errors": errors}
-
-
-@mcp.tool()
-def list_glp_audit_logs(limit: int = 100, category: str | None = None) -> dict[str, Any]:
-    """List GLP audit log entries (who did what and when).
-
-    Args:
-        category: e.g. "USER_MANAGEMENT", "DEVICE_MANAGEMENT".
-    """
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        items = glp.list_audit_logs(limit=limit, category=category)
-        return {"items": items, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"items": [], "errors": errors}
-
-
-@mcp.tool()
-def glp_assign_subscription(serial_number: str, subscription_key: str) -> dict[str, Any]:
-    """Assign a GLP subscription (license) to a device."""
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        result = glp.assign_subscription(serial_number, subscription_key)
-        return {"result": result, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"result": None, "errors": errors}
-
-
-@mcp.tool()
-def glp_add_device(serial_number: str, mac_address: str | None = None) -> dict[str, Any]:
-    """Add a device to the GLP workspace (async task, polls until complete, ~5min max)."""
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        task_id = glp.add_device(serial_number, mac_address=mac_address)
-        task_result = glp.poll_task(task_id)
-        return {"task_id": task_id, "task_result": task_result, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"task_id": None, "task_result": None, "errors": errors}
-
-
-@mcp.tool()
-def glp_add_devices_bulk(devices: list[dict[str, str]]) -> dict[str, Any]:
-    """Add multiple network devices to GLP in a single API call.
-
-    Args:
-        devices: List of dicts, each with 'serialNumber' and 'macAddress'.
-                 Example: [{"serialNumber": "ABC123", "macAddress": "20:4C:03:E4:11:C8"}, ...]
-
-    Returns:
-        task_id, task_result (with successfulDevicesSerial / failedDevicesSerial), errors.
-    """
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        task_id = glp.add_devices(devices)
-        task_result = glp.poll_task(task_id)
-        return {"task_id": task_id, "task_result": task_result, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"task_id": None, "task_result": None, "errors": errors}
-
-
-@mcp.tool()
-def glp_archive_device(serial_number: str) -> dict[str, Any]:
-    """Archive a device in GLP (removes from Central, keeps in GLP inventory)."""
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        result = glp.archive_device(serial_number)
-        return {"result": result, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"result": None, "errors": errors}
 
 
 if __name__ == "__main__":
