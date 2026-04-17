@@ -58,6 +58,12 @@ class GLPClient:
     ):
         self._client = CentralClient(base_url=base_url, token_manager=token_manager)
         self.workspace_id = workspace_id
+        # Per-instance serial -> deviceId cache. NOT at class scope (that
+        # would share across all GLPClient instances in the process; in
+        # prod there's only one singleton so harmless, but the per-test
+        # isolation and the docstring's "process-local" claim both want
+        # the per-instance form).
+        self._device_id_cache: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Device management
@@ -139,14 +145,35 @@ class GLPClient:
     # The cache is process-local and **not** persisted — a restart
     # re-fetches, which is fine and keeps stale mappings from sticking.
 
-    _device_id_cache: dict[str, str] = {}
+    # Serial numbers are restricted to ASCII alphanumerics, dashes, and
+    # underscores in practice (HPE spec; matches every serial format we've
+    # seen on AOS-S / CX / AP / gateway hardware). We reject anything else
+    # defensively before interpolating into an OData filter, so a serial
+    # containing ``'`` can't terminate the quoted string and inject query
+    # fragments. This is belt-and-suspenders — the filter value itself is
+    # unlikely to be attacker-controlled in normal MCP use.
+    _SERIAL_SAFE_CHARS = set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    )
+
+    @classmethod
+    def _is_safe_serial(cls, serial_number: str) -> bool:
+        return bool(serial_number) and all(c in cls._SERIAL_SAFE_CHARS for c in serial_number)
 
     def resolve_device_id(self, serial_number: str) -> Optional[str]:
         """Return the GLP device UUID for ``serial_number``, or None if not found.
 
         Looks up via ``GET /devices/v1/devices?filter=serialNumber eq '<s>'``.
         Results are memoised for the lifetime of this client instance.
+        Rejects malformed serials before interpolating into the filter so a
+        rogue caller can't break out of the quoted string.
         """
+        if not self._is_safe_serial(serial_number):
+            logger.warning(
+                "resolve_device_id: rejecting serial %r (must be ASCII alnum/dash/underscore)",
+                serial_number,
+            )
+            return None
         cached = self._device_id_cache.get(serial_number)
         if cached is not None:
             return cached
