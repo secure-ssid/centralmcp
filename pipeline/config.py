@@ -25,8 +25,34 @@ def load_credentials(creds_path: str = "config/credentials.yaml") -> dict[str, A
         with open(creds_file) as f:
             config = yaml.safe_load(f) or {}
 
+    # Back-compat for clearer YAML key names. The codebase's original
+    # "source_account" / "target_account" names are a holdover from the
+    # cross-account migration pipeline. For MCP-only use the clearer
+    # "central_account" (for the Central/source creds) and "glp_account"
+    # (for the GLP/target creds) keys are accepted as aliases. If both
+    # are present in a file, the legacy key wins so existing installs
+    # aren't surprised by a rename.
+    _SECTION_ALIASES = {
+        "source_account": ("central_account",),
+        "target_account": ("glp_account",),
+    }
+
+    def _section(name: str) -> dict[str, Any]:
+        sect = config.get(name)
+        if sect:
+            return sect
+        for alias in _SECTION_ALIASES.get(name, ()):
+            alias_sect = config.get(alias)
+            if alias_sect:
+                return alias_sect
+        return {}
+
     def _get(section: str, key: str, env_var: str, default: str = "") -> str:
-        return os.getenv(env_var) or config.get(section, {}).get(key, default)
+        # env var wins; then the canonical section name; then any alias.
+        env_val = os.getenv(env_var)
+        if env_val:
+            return env_val
+        return _section(section).get(key, default)
 
     glp_section = config.get("glp", {})
 
