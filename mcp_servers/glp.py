@@ -161,4 +161,6 @@ def glp_archive_device(serial_number: str) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
+    from mcp_servers._cache_hygiene import stable_list_tools
+    stable_list_tools(mcp)
     mcp.run()
