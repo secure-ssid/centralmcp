@@ -1,0 +1,49 @@
+{
+  "mcpServers": {
+    "aruba-monitoring": {
+      "command": "${workspaceFolder}/.venv/bin/python3",
+      "args": ["${workspaceFolder}/mcp_servers/monitoring.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "CREDS_PATH": "${workspaceFolder}/config/credentials.yaml"
+      }
+    },
+    "aruba-config": {
+      "command": "${workspaceFolder}/.venv/bin/python3",
+      "args": ["${workspaceFolder}/mcp_servers/config.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "CREDS_PATH": "${workspaceFolder}/config/credentials.yaml"
+      }
+    },
+    "aruba-ops": {
+      "command": "${workspaceFolder}/.venv/bin/python3",
+      "args": ["${workspaceFolder}/mcp_servers/ops.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "CREDS_PATH": "${workspaceFolder}/config/credentials.yaml"
+      }
+    },
+    "aruba-nac": {
+      "command": "${workspaceFolder}/.venv/bin/python3",
+      "args": ["${workspaceFolder}/mcp_servers/nac.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "CREDS_PATH": "${workspaceFolder}/config/credentials.yaml"
+      }
+    },
+    "aruba-glp": {
+      "command": "${workspaceFolder}/.venv/bin/python3",
+      "args": ["${workspaceFolder}/mcp_servers/glp.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "CREDS_PATH": "${workspaceFolder}/config/credentials.yaml"
+      }
+    }
+  }
+}
