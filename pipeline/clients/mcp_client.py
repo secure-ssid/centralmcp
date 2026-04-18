@@ -12,6 +12,7 @@ take simple Python types and return plain dicts.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from pipeline.clients.central_client import CentralClient
@@ -24,6 +25,26 @@ _MAX_SEARCH_PAGES = 10
 
 def _bounded_limit(limit: int) -> int:
     return max(1, min(limit, _MAX_LIST_LIMIT))
+
+
+def _inventory_device_type_to_event_context(device_type: str | None) -> str:
+    """Map device-inventory ``deviceType`` to ``/network-troubleshooting/v1/events`` context-type."""
+    raw = (device_type or "").upper()
+    if "ACCESS_POINT" in raw or raw == "AP":
+        return "ACCESS_POINT"
+    if "GATEWAY" in raw:
+        return "GATEWAY"
+    if "SWITCH" in raw or "CX" in raw:
+        return "SWITCH"
+    return "SWITCH"
+
+
+def _rfc3339_utc_ms(dt: datetime) -> str:
+    """Format UTC datetime for Central ``start-at`` / ``end-at`` query params."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
 class MCPClient:
@@ -167,17 +188,43 @@ class MCPClient:
         self,
         serial_number: str,
         hours: int = 24,
+        site_id: Optional[str] = None,
+        context_type: Optional[str] = None,
+        api_limit: int = 1000,
     ) -> list[dict[str, Any]]:
-        """Return events for a device within the last N hours."""
+        """Return events for a device within the last N hours.
+
+        Uses GET ``/network-troubleshooting/v1/events`` with ``context-type``,
+        ``context-identifier``, ``start-at``, ``end-at``, ``site-id``, and ``limit``.
+        If ``site_id`` or ``context_type`` is omitted, they are resolved from
+        device inventory (serial → site + device type).
+        """
+        end = datetime.now(timezone.utc)
+        span_h = min(max(1, hours), 24 * 30)
+        start = end - timedelta(hours=span_h)
+
+        device: Optional[dict[str, Any]] = None
+        if site_id is None or context_type is None:
+            device = self.get_device_by_serial(serial_number)
+        if site_id is None:
+            site_id = (device or {}).get("siteId")
+        if context_type is None:
+            context_type = _inventory_device_type_to_event_context((device or {}).get("deviceType"))
+        if not site_id:
+            logger.warning("MCPClient.get_events(%s): could not resolve site_id", serial_number)
+            return []
+
+        lim = max(1, min(1000, api_limit))
+        params = {
+            "context-type": context_type,
+            "context-identifier": serial_number,
+            "start-at": _rfc3339_utc_ms(start),
+            "end-at": _rfc3339_utc_ms(end),
+            "site-id": site_id,
+            "limit": lim,
+        }
         try:
-            result = self._client.get(
-                "/network-troubleshooting/v1/events",
-                params={
-                    "contextType": "SWITCH",
-                    "contextIdentifier": serial_number,
-                    "timeRange": "last_24h" if hours <= 24 else "last_7d",
-                },
-            )
+            result = self._client.get("/network-troubleshooting/v1/events", params=params)
             return result.get("events", result.get("items", []))
         except Exception as exc:
             logger.warning("MCPClient.get_events(%s) failed: %s", serial_number, exc)

@@ -251,7 +251,11 @@ def list_events(
     offset: int = 0,
     full_list: bool = False,
 ) -> dict[str, Any]:
-    """List events for a device over the past N hours (bounded by default)."""
+    """List events for a device over the past N hours (bounded by default).
+
+    Resolves AP vs switch (etc.) and site from device inventory when calling
+    ``GET /network-troubleshooting/v1/events``.
+    """
     events = get_mcp_client().get_events(serial_number, hours=hours)
     if full_list:
         return {
