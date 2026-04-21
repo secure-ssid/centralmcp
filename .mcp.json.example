@@ -43,6 +43,17 @@
         "PYTHONPATH": "/path/to/API-Central",
         "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml"
       }
+    },
+    "aruba-glp": {
+      "command": "/path/to/API-Central/.venv/bin/python3",
+      "args": [
+        "/path/to/API-Central/mcp_servers/glp.py"
+      ],
+      "cwd": "/path/to/API-Central",
+      "env": {
+        "PYTHONPATH": "/path/to/API-Central",
+        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml"
+      }
     }
   }
 }
