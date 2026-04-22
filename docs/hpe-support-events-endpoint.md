@@ -71,8 +71,8 @@ All of these return the same `"Bad Request"`:
 | `serialNumber` | `siteId` | `deviceType` | `startTime`/`endTime` | Result |
 |:--|:--|:--|:--|:--|
 | _(omitted)_ | _(omitted)_ | _(omitted)_ | _(omitted)_ | 400 |
-| `SG30LMR164` | _(omitted)_ | _(omitted)_ | epoch ms | 400 |
-| _(omitted)_ | `79244870000394240` | _(omitted)_ | epoch ms | 400 |
+| `S110L11164` | _(omitted)_ | _(omitted)_ | epoch ms | 400 |
+| _(omitted)_ | `11114870000394240` | _(omitted)_ | epoch ms | 400 |
 | `SG30LMR164` (as `serial`) | _(omitted)_ | _(omitted)_ | epoch ms | 400 |
 | `SG30LMR164` (as `deviceSerial`) | _(omitted)_ | _(omitted)_ | epoch ms | 400 |
 | `SG30LMR164` (as `deviceId`) | _(omitted)_ | _(omitted)_ | epoch ms | 400 |
@@ -83,12 +83,6 @@ All of these return the same `"Bad Request"`:
 These are recent reproductions on the prod gateway. Please correlate
 against the Central/MRT service logs:
 
-- `d9f79f98f593cd24c0925c180beeb763`
-- `53d8fd02350b034e7d8590b062f7bc36`
-- `b4801fc65834856c3cdad9746e77e75d`
-- `6552848b08a2d3720e8b0a4481f453be`
-- `cc1fa8a409c81a21230de4d181a8ec44`
-- `ad9625cd93f7660077c36b05b24b8f90`
 
 (Add new debugIds as you run fresh repros.)
 
