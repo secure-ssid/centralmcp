@@ -489,7 +489,10 @@ def _provision_nac_mac_auth(client, ssid_name: str, default_role: str, result: d
                         "profile-id": str(uuid.uuid4()),
                         "type": "ENF_RADIUS",
                         "radius-profile": {
-                            "defined-attr": [{"attr-name": "ATTR_ARUBA_ROLE", "value": default_role}]
+                            "defined-attr": [
+                                {"attr-name": "ATTR_POLICY_ACTION", "value": "Accept"},
+                                {"attr-name": "ATTR_ARUBA_ROLE", "value": default_role},
+                            ]
                         },
                     }],
                 }],
