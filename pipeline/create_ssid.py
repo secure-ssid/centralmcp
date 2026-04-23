@@ -34,7 +34,7 @@ def _build_ssid_body(
     *,
     enabled: bool = True,
     opmode: str = "ENHANCED_OPEN",
-    rf_band: str = "24GHZ_5GHZ",
+    rf_band: str = "BAND_ALL",
     hide_ssid: bool = False,
     max_clients: int = 1024,
     wpa3_transition: bool = True,
@@ -144,7 +144,7 @@ def build_underlay_ssid(
     # Optional overrides
     enabled: bool = True,
     opmode: str = "ENHANCED_OPEN",
-    rf_band: str = "24GHZ_5GHZ",
+    rf_band: str = "BAND_ALL",
     hide_ssid: bool = False,
     max_clients: int = 1024,
     wpa3_transition: bool = True,
