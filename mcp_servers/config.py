@@ -611,6 +611,20 @@ def build_underlay_ssid(
         result.setdefault("errors", []).append(f"post_configure_macauth: {exc}")
         return result
 
+    # Central auto-creates a role named after the SSID with no policies — add allowall so
+    # clients assigned this role (pre-auth or RADIUS-returned) aren't silently denied.
+    effective_default_role = default_role if default_role is not None else ssid_name
+    try:
+        resp = client._request(
+            "PUT",
+            f"/network-config/v1alpha1/roles/{effective_default_role}",
+            params={"object-type": "SHARED"},
+            json={"policies": [{"name": "allowall", "position": 1}]},
+        )
+        result["role_allowall"] = {"role": effective_default_role, "status": resp.status_code}
+    except Exception as exc:
+        result.setdefault("errors", []).append(f"role_allowall: {exc}")
+
     # Auto-create Central NAC auth profile and catch-all authz policy
     result = _provision_nac_mac_auth(client, ssid_name, default_role, result)
     return result
