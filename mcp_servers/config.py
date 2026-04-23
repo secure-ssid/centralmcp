@@ -436,7 +436,7 @@ def build_underlay_ssid(
     ssid_name: str,
     scope_id: str,
     persona: str = "CAMPUS_AP",
-    opmode: str = "WPA3_SAE",
+    opmode: str = "ENHANCED_OPEN",
     passphrase: str | None = None,
     vlan_id: int | None = None,
     vlan_ids: list[int] | None = None,
@@ -449,7 +449,11 @@ def build_underlay_ssid(
     Args:
         scope_id: Use get_global_scope_id() for org-wide, or list_scopes() for site/group.
         persona: CAMPUS_AP (default), MOBILITY_GW, ACCESS_SWITCH, etc.
-        opmode: Valid API values — WPA3_SAE (default), WPA2_PERSONAL, WPA2_ENTERPRISE, ENHANCED_OPEN, WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL. OPEN_NETWORK and WPA3_SAE_AES are NOT valid API values.
+        opmode: Valid API values — ENHANCED_OPEN (default, no password — correct for MAC-auth SSIDs),
+                WPA3_SAE (requires passphrase), WPA2_PERSONAL (requires passphrase),
+                WPA2_ENTERPRISE, WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL.
+                OPEN_NETWORK and WPA3_SAE_AES are NOT valid API values.
+                ALWAYS confirm opmode with user before calling — do not assume.
         passphrase: Required for WPA2/WPA3-PSK modes.
         vlan_id / vlan_ids: Single VLAN or list of VLAN IDs.
         mac_auth_server_group: Central NAC server-group for MAC auth post-config. Set None to skip.
