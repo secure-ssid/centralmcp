@@ -625,6 +625,22 @@ def build_underlay_ssid(
     except Exception as exc:
         result.setdefault("errors", []).append(f"role_allowall: {exc}")
 
+    # Scope-map macauth-allow to this site/scope so APs here can enforce it.
+    # The role lives in the shared library but must be visible at the SSID's scope.
+    try:
+        for resource in ["roles/macauth-allow", "role-gpids/macauth-allow"]:
+            client._request("POST", "/network-config/v1/scope-maps", json={
+                "scope-map": [{
+                    "scope-name": scope_id,
+                    "scope-id": int(scope_id),
+                    "persona": persona,
+                    "resource": resource,
+                }]
+            })
+        result["macauth_allow_scope_map"] = {"scope_id": scope_id, "status": "ok"}
+    except Exception as exc:
+        result.setdefault("errors", []).append(f"macauth_allow_scope_map: {exc}")
+
     # Auto-create Central NAC auth profile and catch-all authz policy
     result = _provision_nac_mac_auth(client, ssid_name, default_role, result)
     return result
