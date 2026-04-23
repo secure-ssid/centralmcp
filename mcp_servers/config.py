@@ -449,12 +449,15 @@ def build_underlay_ssid(
     Args:
         scope_id: Use get_global_scope_id() for org-wide, or list_scopes() for site/group.
         persona: CAMPUS_AP (default), MOBILITY_GW, ACCESS_SWITCH, etc.
-        opmode: Valid API values — ENHANCED_OPEN (default, no password — correct for MAC-auth SSIDs),
-                WPA3_SAE (requires passphrase), WPA2_PERSONAL (requires passphrase),
-                WPA2_ENTERPRISE, WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL.
-                OPEN_NETWORK and WPA3_SAE_AES are NOT valid API values.
-                ALWAYS confirm opmode with user before calling — do not assume.
-        passphrase: Required for WPA2/WPA3-PSK modes.
+        opmode: ALWAYS confirm with the user before calling — never assume.
+                Common combinations:
+                  - MAC auth only (no password): ENHANCED_OPEN (default)
+                  - MAC auth + PSK (device must know key AND be registered): WPA3_SAE or WPA2_PERSONAL — ask user for passphrase
+                  - WPA3 + WPA2 compatible PSK: WPA3_SAE with wpa3-transition-mode-enable=true
+                Valid API values: ENHANCED_OPEN, WPA3_SAE, WPA2_PERSONAL, WPA2_ENTERPRISE,
+                WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL.
+                NOT valid: OPEN_NETWORK, WPA3_SAE_AES.
+        passphrase: Required for WPA2/WPA3-PSK modes — always ask the user for this, never generate or assume.
         vlan_id / vlan_ids: Single VLAN or list of VLAN IDs.
         mac_auth_server_group: Central NAC server-group for MAC auth post-config. Set None to skip.
         default_role: Role assigned to authenticated underlay MAC-auth clients.
