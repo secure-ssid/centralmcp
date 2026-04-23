@@ -619,7 +619,7 @@ def build_underlay_ssid(
             "PUT",
             f"/network-config/v1alpha1/roles/{effective_default_role}",
             params={"object-type": "SHARED"},
-            json={"policies": [{"name": "allowall", "position": 1}]},
+            json={"policies": [{"name": "sys_allow_all", "position": 1}]},
         )
         result["role_allowall"] = {"role": effective_default_role, "status": resp.status_code}
     except Exception as exc:
@@ -1214,7 +1214,7 @@ def create_role(
     """Create a wireless role in the Central Library (object-type=SHARED).
 
     Args:
-        allow_all: If True (default), attaches the built-in 'allowall' policy.
+        allow_all: If True (default), attaches the built-in 'sys_allow_all' policy.
         vlan_id: Optional access VLAN for role members.
         dry_run: If True, return payload without sending.
     """
@@ -1222,7 +1222,7 @@ def create_role(
     if description:
         payload["description"] = description
     if allow_all:
-        payload["policies"] = [{"name": "allowall", "position": 1}]
+        payload["policies"] = [{"name": "sys_allow_all", "position": 1}]
     if vlan_id is not None:
         payload["vlan-parameters"] = {"access-vlan": vlan_id}
 
@@ -1253,7 +1253,7 @@ def update_role(
 
     Args:
         name: Exact role name to update.
-        allow_all: If True (default), attaches the built-in 'allowall' policy.
+        allow_all: If True (default), attaches the built-in 'sys_allow_all' policy.
         vlan_id: Optional access VLAN for role members.
         dry_run: If True, return payload without sending.
     """
@@ -1261,7 +1261,7 @@ def update_role(
     if description:
         payload["description"] = description
     if allow_all:
-        payload["policies"] = [{"name": "allowall", "position": 1}]
+        payload["policies"] = [{"name": "sys_allow_all", "position": 1}]
     if vlan_id is not None:
         payload["vlan-parameters"] = {"access-vlan": vlan_id}
 
