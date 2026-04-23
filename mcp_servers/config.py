@@ -512,7 +512,7 @@ def build_underlay_ssid(
     ssid_name: str,
     scope_id: str,
     persona: str = "CAMPUS_AP",
-    opmode: str = "ENHANCED_OPEN",
+    opmode: str = "OPEN",
     passphrase: str | None = None,
     vlan_id: int | None = None,
     vlan_ids: list[int] | None = None,
@@ -527,10 +527,10 @@ def build_underlay_ssid(
         persona: CAMPUS_AP (default), MOBILITY_GW, ACCESS_SWITCH, etc.
         opmode: ALWAYS confirm with the user before calling — never assume.
                 Common combinations:
-                  - MAC auth only (no password): ENHANCED_OPEN (default)
+                  - MAC auth only (no password): OPEN (default) — do NOT use ENHANCED_OPEN; it causes Central NAC to misclassify the RADIUS request as Captive Portal and reject with "Unexpected Client Data"
                   - MAC auth + PSK (device must know key AND be registered): WPA3_SAE or WPA2_PERSONAL — ask user for passphrase
                   - WPA3 + WPA2 compatible PSK: WPA3_SAE with wpa3-transition-mode-enable=true
-                Valid API values: ENHANCED_OPEN, WPA3_SAE, WPA2_PERSONAL, WPA2_ENTERPRISE,
+                Valid API values: OPEN, ENHANCED_OPEN, WPA3_SAE, WPA2_PERSONAL, WPA2_ENTERPRISE,
                 WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL.
                 NOT valid: OPEN_NETWORK, WPA3_SAE_AES.
         passphrase: Required for WPA2/WPA3-PSK modes — always ask the user for this, never generate or assume.
@@ -600,7 +600,7 @@ def build_overlay_ssid(
     cluster_name: str,
     cluster_scope_id: str,
     vlan_ids: list[int],
-    opmode: str = "ENHANCED_OPEN",
+    opmode: str = "OPEN",
     passphrase: str | None = None,
     mac_auth_server_group: str | None = None,
     policy_name: str | None = None,
@@ -613,7 +613,7 @@ def build_overlay_ssid(
         cluster_name: Gateway cluster name (use list_gw_clusters).
         cluster_scope_id: Scope-id of the gateway cluster (use list_gw_clusters).
         vlan_ids: List of VLAN IDs (e.g. [200]).
-        opmode: Valid API values — ENHANCED_OPEN (default), WPA3_SAE, WPA2_PERSONAL, WPA2_ENTERPRISE, WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL. OPEN_NETWORK and WPA3_SAE_AES are NOT valid API values.
+        opmode: Valid API values — OPEN (default for MAC auth), ENHANCED_OPEN, WPA3_SAE, WPA2_PERSONAL, WPA2_ENTERPRISE, WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL. OPEN_NETWORK and WPA3_SAE_AES are NOT valid. Do NOT use ENHANCED_OPEN for MAC-auth-only SSIDs — it causes NAC to reject with "Unexpected Client Data".
         passphrase: Required for WPA2/WPA3-PSK opmodes.
         mac_auth_server_group: If set, creates an AAA profile named after the SSID and enables MAC auth
                                against this Central NAC server group.
