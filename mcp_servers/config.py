@@ -617,8 +617,7 @@ def build_underlay_ssid(
     try:
         resp = client._request(
             "PUT",
-            f"/network-config/v1alpha1/roles/{effective_default_role}",
-            params={"object-type": "SHARED"},
+            f"/network-config/v1/roles/{effective_default_role}",
             json={"policies": [{"name": "sys_allow_all", "position": 1}]},
         )
         result["role_allowall"] = {"role": effective_default_role, "status": resp.status_code}
@@ -1232,8 +1231,7 @@ def create_role(
     client = get_client()
     resp = client._request(
         "POST",
-        f"/network-config/v1alpha1/roles/{name}",
-        params={"object-type": "SHARED"},
+        f"/network-config/v1/roles/{name}",
         json=payload,
     )
     return resp_json(resp)
@@ -1271,8 +1269,7 @@ def update_role(
     client = get_client()
     resp = client._request(
         "PUT",
-        f"/network-config/v1alpha1/roles/{name}",
-        params={"object-type": "SHARED"},
+        f"/network-config/v1/roles/{name}",
         json=payload,
     )
     return resp_json(resp)
