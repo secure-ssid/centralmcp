@@ -514,10 +514,8 @@ def create_authz_policy(
                 "type": "ENF_RADIUS",
                 "radius-profile": {
                     "defined-attr": [
-                        {
-                            "attr-name": "ATTR_ARUBA_ROLE",
-                            "value": role,
-                        }
+                        {"attr-name": "ATTR_POLICY_ACTION", "value": "Accept"},
+                        {"attr-name": "ATTR_ARUBA_ROLE", "value": role},
                     ]
                 },
             }
