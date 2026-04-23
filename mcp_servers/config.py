@@ -435,6 +435,7 @@ def list_gw_clusters(
 _CNAC_BASE = "/network-config/v1alpha1"
 _AUTH_PROFILE_BASE = f"{_CNAC_BASE}/auth-profiles"
 _MAC_ADDRESS_STORE_ID = "4c6c406a-7c1f-442a-8e43-c627090e8624"
+_CENTRAL_ORG_NAME = "SecureSSID-LAB"
 
 
 def _provision_nac_mac_auth(client, ssid_name: str, default_role: str, result: dict) -> dict:
@@ -460,6 +461,7 @@ def _provision_nac_mac_auth(client, ssid_name: str, default_role: str, result: d
                 "auth-type": "MAB",
                 "networks": [ssid_name],
                 "wired": False,
+                "organization-name": _CENTRAL_ORG_NAME,
                 "identity-stores": [_MAC_ADDRESS_STORE_ID],
                 "mab": {"allow-all": True},
             })
@@ -467,14 +469,15 @@ def _provision_nac_mac_auth(client, ssid_name: str, default_role: str, result: d
     except Exception as exc:
         result.setdefault("errors", []).append(f"nac_auth_profile: {exc}")
 
-    # Get current policy count to pick a non-colliding position
+    # Place the catch-all policy at position 0 so it runs before any MAC Address Store policies
     try:
         existing_policies = client.get(f"{_CNAC_BASE}/authz-policies").get("policy", [])
         policy_names = [p.get("name") for p in existing_policies]
         if f"{ssid_name}-Allow" in policy_names:
             result["nac_authz_policy"] = {"skipped": "already exists"}
         else:
-            position = max((p.get("position", 0) for p in existing_policies), default=0) + 1
+            existing_positions = {p.get("position", 0) for p in existing_policies}
+            position = 0 if 0 not in existing_positions else min(existing_positions) - 1
             policy_id = str(uuid.uuid4())
             resp = client._request("POST", f"{_CNAC_BASE}/authz-policies/{policy_id}", json={
                 "name": f"{ssid_name}-Allow",
