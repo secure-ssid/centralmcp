@@ -432,6 +432,75 @@ def list_gw_clusters(
     return bound_collection_response(clusters, limit=limit, offset=offset)
 
 
+_CNAC_BASE = "/network-config/v1alpha1"
+_AUTH_PROFILE_BASE = f"{_CNAC_BASE}/auth-profiles"
+_MAC_ADDRESS_STORE_ID = "4c6c406a-7c1f-442a-8e43-c627090e8624"
+
+
+def _provision_nac_mac_auth(client, ssid_name: str, default_role: str, result: dict) -> dict:
+    """Create Central NAC MAB auth profile + catch-all authz policy for an SSID.
+
+    Called automatically by build_underlay_ssid and build_overlay_ssid when
+    mac_auth_server_group is set. Skipped silently if a profile for the SSID
+    already exists (idempotent).
+    """
+    # Skip if auth profile already exists for this SSID
+    try:
+        existing = client.get(_AUTH_PROFILE_BASE).get("auth-profile", [])
+        for p in existing:
+            if ssid_name in p.get("networks", []):
+                result["nac_auth_profile"] = {"skipped": "already exists"}
+                break
+        else:
+            profile_id = str(uuid.uuid4())
+            resp = client._request("POST", f"{_AUTH_PROFILE_BASE}/{profile_id}", json={
+                "auth-profile-id": profile_id,
+                "name": ssid_name,
+                "description": "",
+                "auth-type": "MAB",
+                "networks": [ssid_name],
+                "wired": False,
+                "identity-stores": [_MAC_ADDRESS_STORE_ID],
+                "mab": {"allow-all": True},
+            })
+            result["nac_auth_profile"] = {"profile_id": profile_id, "status": resp.status_code}
+    except Exception as exc:
+        result.setdefault("errors", []).append(f"nac_auth_profile: {exc}")
+
+    # Get current policy count to pick a non-colliding position
+    try:
+        existing_policies = client.get(f"{_CNAC_BASE}/authz-policies").get("policy", [])
+        policy_names = [p.get("name") for p in existing_policies]
+        if f"{ssid_name}-Allow" in policy_names:
+            result["nac_authz_policy"] = {"skipped": "already exists"}
+        else:
+            position = max((p.get("position", 0) for p in existing_policies), default=0) + 1
+            policy_id = str(uuid.uuid4())
+            resp = client._request("POST", f"{_CNAC_BASE}/authz-policies/{policy_id}", json={
+                "name": f"{ssid_name}-Allow",
+                "position": position,
+                "enable": True,
+                "rule": [{
+                    "position": 1,
+                    "rule-id": str(uuid.uuid4()),
+                    "rule-name": "Allow-All-Wireless",
+                    "enable": True,
+                    "enf-profile": [{
+                        "profile-id": str(uuid.uuid4()),
+                        "type": "ENF_RADIUS",
+                        "radius-profile": {
+                            "defined-attr": [{"attr-name": "ATTR_ARUBA_ROLE", "value": default_role}]
+                        },
+                    }],
+                }],
+            })
+            result["nac_authz_policy"] = {"policy_id": policy_id, "status": resp.status_code}
+    except Exception as exc:
+        result.setdefault("errors", []).append(f"nac_authz_policy: {exc}")
+
+    return result
+
+
 @mcp.tool()
 def build_underlay_ssid(
     ssid_name: str,
@@ -475,7 +544,14 @@ def build_underlay_ssid(
         wpa_passphrase=passphrase,
         dry_run=dry_run,
     )
-    if dry_run or mac_auth_server_group is None:
+    if dry_run:
+        if mac_auth_server_group:
+            result["will_also_create"] = [
+                f"Central NAC MAB auth profile: '{ssid_name}' (allow-all, linked to MAC Address Store)",
+                f"Central NAC authz policy: '{ssid_name}-Allow' (catch-all, assigns role '{default_role}')",
+            ]
+        return result
+    if mac_auth_server_group is None:
         return result
 
     if result.get("errors"):
@@ -507,52 +583,7 @@ def build_underlay_ssid(
         return result
 
     # Auto-create Central NAC auth profile and catch-all authz policy
-    _CNAC_BASE = "/network-config/v1alpha1"
-    _AUTH_PROFILE_BASE = f"{_CNAC_BASE}/auth-profiles"
-    _MAC_ADDRESS_STORE_ID = "4c6c406a-7c1f-442a-8e43-c627090e8624"
-
-    try:
-        profile_id = str(uuid.uuid4())
-        profile_payload = {
-            "auth-profile-id": profile_id,
-            "name": ssid_name,
-            "description": "",
-            "auth-type": "MAB",
-            "networks": [ssid_name],
-            "wired": False,
-            "identity-stores": [_MAC_ADDRESS_STORE_ID],
-            "mab": {"allow-all": True},
-        }
-        resp = client._request("POST", f"{_AUTH_PROFILE_BASE}/{profile_id}", json=profile_payload)
-        result["nac_auth_profile"] = {"profile_id": profile_id, "status": resp.status_code}
-    except Exception as exc:
-        result.setdefault("errors", []).append(f"nac_auth_profile: {exc}")
-
-    try:
-        policy_id = str(uuid.uuid4())
-        policy_payload = {
-            "name": f"{ssid_name}-Allow",
-            "position": 99,
-            "enable": True,
-            "rule": [{
-                "position": 1,
-                "rule-id": str(uuid.uuid4()),
-                "rule-name": "Allow-All-Wireless",
-                "enable": True,
-                "enf-profile": [{
-                    "profile-id": str(uuid.uuid4()),
-                    "type": "ENF_RADIUS",
-                    "radius-profile": {
-                        "defined-attr": [{"attr-name": "ATTR_ARUBA_ROLE", "value": default_role}]
-                    },
-                }],
-            }],
-        }
-        resp = client._request("POST", f"{_CNAC_BASE}/authz-policies/{policy_id}", json=policy_payload)
-        result["nac_authz_policy"] = {"policy_id": policy_id, "status": resp.status_code}
-    except Exception as exc:
-        result.setdefault("errors", []).append(f"nac_authz_policy: {exc}")
-
+    result = _provision_nac_mac_auth(client, ssid_name, default_role, result)
     return result
 
 
@@ -585,7 +616,7 @@ def build_overlay_ssid(
         dry_run: If True, return payload without sending.
     """
     client = get_client()
-    return _build_overlay(
+    result = _build_overlay(
         central_client=client,
         ssid_name=ssid_name,
         vlan_ids=[str(v) for v in vlan_ids],
@@ -598,6 +629,9 @@ def build_overlay_ssid(
         policy_name=policy_name,
         dry_run=dry_run,
     )
+    if not dry_run and mac_auth_server_group and not result.get("errors"):
+        result = _provision_nac_mac_auth(client, ssid_name, "macauth-allow", result)
+    return result
 
 
 @mcp.tool()
