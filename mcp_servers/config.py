@@ -4,6 +4,7 @@ Covers: VLANs, SSIDs, overlay WLANs, port profiles, firmware compliance, device 
 webhooks, device groups, gateway clusters, interface and static route config.
 """
 import os
+import uuid
 from typing import Any
 from urllib.parse import quote
 
@@ -503,6 +504,55 @@ def build_underlay_ssid(
         result["mac_auth_updates"] = updates
     except Exception as exc:
         result.setdefault("errors", []).append(f"post_configure_macauth: {exc}")
+        return result
+
+    # Auto-create Central NAC auth profile and catch-all authz policy
+    _CNAC_BASE = "/network-config/v1alpha1"
+    _AUTH_PROFILE_BASE = f"{_CNAC_BASE}/auth-profiles"
+    _MAC_ADDRESS_STORE_ID = "4c6c406a-7c1f-442a-8e43-c627090e8624"
+
+    try:
+        profile_id = str(uuid.uuid4())
+        profile_payload = {
+            "auth-profile-id": profile_id,
+            "name": ssid_name,
+            "description": "",
+            "auth-type": "MAB",
+            "networks": [ssid_name],
+            "wired": False,
+            "identity-stores": [_MAC_ADDRESS_STORE_ID],
+            "mab": {"allow-all": True},
+        }
+        resp = client._request("POST", f"{_AUTH_PROFILE_BASE}/{profile_id}", json=profile_payload)
+        result["nac_auth_profile"] = {"profile_id": profile_id, "status": resp.status_code}
+    except Exception as exc:
+        result.setdefault("errors", []).append(f"nac_auth_profile: {exc}")
+
+    try:
+        policy_id = str(uuid.uuid4())
+        policy_payload = {
+            "name": f"{ssid_name}-Allow",
+            "position": 99,
+            "enable": True,
+            "rule": [{
+                "position": 1,
+                "rule-id": str(uuid.uuid4()),
+                "rule-name": "Allow-All-Wireless",
+                "enable": True,
+                "enf-profile": [{
+                    "profile-id": str(uuid.uuid4()),
+                    "type": "ENF_RADIUS",
+                    "radius-profile": {
+                        "defined-attr": [{"attr-name": "ATTR_ARUBA_ROLE", "value": default_role}]
+                    },
+                }],
+            }],
+        }
+        resp = client._request("POST", f"{_CNAC_BASE}/authz-policies/{policy_id}", json=policy_payload)
+        result["nac_authz_policy"] = {"policy_id": policy_id, "status": resp.status_code}
+    except Exception as exc:
+        result.setdefault("errors", []).append(f"nac_authz_policy: {exc}")
+
     return result
 
 
