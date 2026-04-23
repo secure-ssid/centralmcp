@@ -436,7 +436,7 @@ def build_underlay_ssid(
     ssid_name: str,
     scope_id: str,
     persona: str = "CAMPUS_AP",
-    opmode: str = "WPA3_SAE_AES",
+    opmode: str = "WPA3_SAE",
     passphrase: str | None = None,
     vlan_id: int | None = None,
     vlan_ids: list[int] | None = None,
@@ -449,7 +449,7 @@ def build_underlay_ssid(
     Args:
         scope_id: Use get_global_scope_id() for org-wide, or list_scopes() for site/group.
         persona: CAMPUS_AP (default), MOBILITY_GW, ACCESS_SWITCH, etc.
-        opmode: WPA3_SAE_AES, WPA3_WPA2_AES, WPA2_AES, or OPEN_NETWORK.
+        opmode: Valid API values — WPA3_SAE (default), WPA2_PERSONAL, WPA2_ENTERPRISE, ENHANCED_OPEN, WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL. OPEN_NETWORK and WPA3_SAE_AES are NOT valid API values.
         passphrase: Required for WPA2/WPA3-PSK modes.
         vlan_id / vlan_ids: Single VLAN or list of VLAN IDs.
         mac_auth_server_group: Central NAC server-group for MAC auth post-config. Set None to skip.
@@ -519,7 +519,7 @@ def build_overlay_ssid(
         cluster_name: Gateway cluster name (use list_gw_clusters).
         cluster_scope_id: Scope-id of the gateway cluster (use list_gw_clusters).
         vlan_ids: List of VLAN IDs (e.g. [200]).
-        opmode: ENHANCED_OPEN (WPA3 open/OWE, default), WPA3_SAE_AES, WPA3_WPA2_AES, WPA2_AES, or OPEN_NETWORK.
+        opmode: Valid API values — ENHANCED_OPEN (default), WPA3_SAE, WPA2_PERSONAL, WPA2_ENTERPRISE, WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL. OPEN_NETWORK and WPA3_SAE_AES are NOT valid API values.
         passphrase: Required for WPA2/WPA3-PSK opmodes.
         mac_auth_server_group: If set, creates an AAA profile named after the SSID and enables MAC auth
                                against this Central NAC server group.

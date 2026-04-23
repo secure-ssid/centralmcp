@@ -38,6 +38,14 @@ package-lock.json
 package.json
 node_modules/
 
+# Scraped doc sources (regenerate with ingestion scrapers)
+ingestion/sources/
+ingestion/markdown_vsg/
+
+# Local vector DB and model data (docker volumes)
+qdrant_data/
+ollama_data/
+
 # Python
 __pycache__/
 *.py[cod]
