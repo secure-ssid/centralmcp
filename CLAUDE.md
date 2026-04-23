@@ -63,7 +63,13 @@ Users speak in GUI terms. Translate before calling tools:
 Before calling `build_underlay_ssid` or `create_allow_all_role`, confirm:
 1. WHERE: org-wide, site name, or group name?
 2. DEVICE TYPE: APs, gateways, or a switch type?
-3. SECURITY (SSID only): open, WPA3, WPA3+WPA2, or WPA2-PSK? (if PSK: passphrase?)
+3. SECURITY (SSID only): explicitly ask — options are:
+   - MAC auth only, no password → ENHANCED_OPEN
+   - MAC auth + PSK (dual factor) → WPA3_SAE or WPA2_PERSONAL + ask for passphrase
+   - WPA3 PSK only → WPA3_SAE + ask for passphrase
+   - WPA3 + WPA2 compatible → WPA3_SAE + transition mode + ask for passphrase
+   - WPA2 PSK only → WPA2_PERSONAL + ask for passphrase
+   Never assume or default — always confirm with the user.
 4. VLAN IDs (SSID only): which VLAN(s)?
 
 Firmware upgrades via `set_firmware_compliance` — the `/firmware/v1/upgrade` endpoint returns 404 on this instance.
