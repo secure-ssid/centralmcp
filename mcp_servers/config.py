@@ -445,27 +445,48 @@ def _provision_nac_mac_auth(client, ssid_name: str, default_role: str, result: d
     mac_auth_server_group is set. Skipped silently if a profile for the SSID
     already exists (idempotent).
     """
-    # Skip if auth profile already exists for this SSID
+    # Add SSID to an existing wireless MAB allow-all profile (UI-created profiles have hidden
+    # internal bindings that API-created ones lack — patching a working profile is more reliable).
     try:
         existing = client.get(_AUTH_PROFILE_BASE).get("auth-profile", [])
+
+        # Already registered — nothing to do
         for p in existing:
             if ssid_name in p.get("networks", []):
                 result["nac_auth_profile"] = {"skipped": "already exists"}
                 break
         else:
-            profile_id = str(uuid.uuid4())
-            resp = client._request("POST", f"{_AUTH_PROFILE_BASE}/{profile_id}", json={
-                "auth-profile-id": profile_id,
-                "name": ssid_name,
-                "description": "",
-                "auth-type": "MAB",
-                "networks": [ssid_name],
-                "wired": False,
-                "organization-name": _CENTRAL_ORG_NAME,
-                "identity-stores": [_MAC_ADDRESS_STORE_ID],
-                "mab": {"allow-all": True},
-            })
-            result["nac_auth_profile"] = {"profile_id": profile_id, "status": resp.status_code}
+            # Find an existing wireless MAB allow-all profile to append to
+            target = next(
+                (p for p in existing
+                 if p.get("auth-type") == "MAB"
+                 and not p.get("wired", False)
+                 and p.get("mab", {}).get("allow-all")
+                 and p.get("organization-name")),
+                None,
+            )
+            if target:
+                updated_networks = target.get("networks", []) + [ssid_name]
+                profile_id = target["auth-profile-id"]
+                resp = client._request("PATCH", f"{_AUTH_PROFILE_BASE}/{profile_id}", json={
+                    "networks": updated_networks,
+                })
+                result["nac_auth_profile"] = {"profile_id": profile_id, "action": "patched", "status": resp.status_code}
+            else:
+                # Fallback: create new profile
+                profile_id = str(uuid.uuid4())
+                resp = client._request("POST", f"{_AUTH_PROFILE_BASE}/{profile_id}", json={
+                    "auth-profile-id": profile_id,
+                    "name": ssid_name,
+                    "description": "",
+                    "auth-type": "MAB",
+                    "networks": [ssid_name],
+                    "wired": False,
+                    "organization-name": _CENTRAL_ORG_NAME,
+                    "identity-stores": [_MAC_ADDRESS_STORE_ID],
+                    "mab": {"allow-all": True},
+                })
+                result["nac_auth_profile"] = {"profile_id": profile_id, "action": "created", "status": resp.status_code}
     except Exception as exc:
         result.setdefault("errors", []).append(f"nac_auth_profile: {exc}")
 
