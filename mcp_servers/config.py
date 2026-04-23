@@ -491,11 +491,43 @@ def _provision_nac_mac_auth(client, ssid_name: str, default_role: str | None, re
     except Exception as exc:
         result.setdefault("errors", []).append(f"nac_auth_profile: {exc}")
 
-    # NOTE: Do NOT create authz policies via API — Central NAC silently ignores API-created
-    # policies regardless of position. A UI-created catch-all policy (no conditions, no
-    # identity-stores) at position 0 returning ATTR_ARUBA_ROLE=macauth-allow must exist.
-    # The policy named "Wireless-MAC-Allow" serves this role in this tenant.
-    result["nac_authz_policy"] = {"skipped": "UI-created catch-all required — see Wireless-MAC-Allow policy"}
+    # Create a catch-all authz policy with NO conditions — conditions (e.g. NAS-Port-Type)
+    # prevent NAC from matching. A plain no-condition policy at a low position works correctly.
+    try:
+        existing_policies = client.get(f"{_CNAC_BASE}/authz-policies").get("policy", [])
+        policy_names = [p.get("name") for p in existing_policies]
+        policy_name = f"{ssid_name} Allow"
+        if policy_name in policy_names:
+            result["nac_authz_policy"] = {"skipped": "already exists"}
+        else:
+            existing_positions = {p.get("position", 0) for p in existing_policies}
+            position = 0 if 0 not in existing_positions else min(existing_positions) - 1
+            policy_id = str(uuid.uuid4())
+            resp = client._request("POST", f"{_CNAC_BASE}/authz-policies/{policy_id}", json={
+                "name": policy_name,
+                "position": position,
+                "enable": True,
+                "policy-type": "CUSTOM",
+                "rule": [{
+                    "position": 1,
+                    "rule-id": str(uuid.uuid4()),
+                    "rule-name": "Allow All",
+                    "enable": True,
+                    "enf-profile": [{
+                        "profile-id": str(uuid.uuid4()),
+                        "type": "ENF_RADIUS",
+                        "radius-profile": {
+                            "defined-attr": [
+                                {"attr-name": "ATTR_POLICY_ACTION", "value": "Accept"},
+                                {"attr-name": "ATTR_ARUBA_ROLE", "value": effective_role},
+                            ]
+                        },
+                    }],
+                }],
+            })
+            result["nac_authz_policy"] = {"policy_id": policy_id, "name": policy_name, "status": resp.status_code}
+    except Exception as exc:
+        result.setdefault("errors", []).append(f"nac_authz_policy: {exc}")
 
     return result
 
@@ -547,7 +579,7 @@ def build_underlay_ssid(
         if mac_auth_server_group:
             result["will_also_create"] = [
                 f"Central NAC MAB auth profile: add '{ssid_name}' to existing wireless allow-all profile",
-                "Central NAC authz policy: using existing UI-created 'Wireless-MAC-Allow' catch-all (no new policy created)",
+                f"Central NAC authz policy: '{ssid_name} Allow' (no conditions, assigns role '{default_role or ssid_name}')",
             ]
         return result
     if mac_auth_server_group is None:
