@@ -448,7 +448,7 @@ def _provision_nac_mac_auth(client, ssid_name: str, default_role: str, result: d
     # Add SSID to an existing wireless MAB allow-all profile (UI-created profiles have hidden
     # internal bindings that API-created ones lack — patching a working profile is more reliable).
     try:
-        existing = client.get(_AUTH_PROFILE_BASE).get("auth-profile", [])
+        existing = client.get(_AUTH_PROFILE_BASE).get("profile", [])
 
         # Already registered — nothing to do
         for p in existing:
