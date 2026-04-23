@@ -632,6 +632,10 @@ _AUTH_PROFILE_BASE = "/network-config/v1alpha1/auth-profiles"
 # UUID of the built-in Central NAC MAC Address Store identity store
 _MAC_ADDRESS_STORE_ID = "4c6c406a-7c1f-442a-8e43-c627090e8624"
 
+# Central tenant/org name — required in auth profiles so NAC routes RADIUS to the right tenant.
+# UI-created profiles always have this; API-created ones must include it or NAC rejects all MAB.
+_CENTRAL_ORG_NAME = "SecureSSID-LAB"
+
 
 @mcp.tool()
 def list_auth_profiles(
@@ -680,6 +684,7 @@ def create_mac_auth_profile(
         "auth-type": "MAB",
         "networks": networks,
         "wired": False,
+        "organization-name": _CENTRAL_ORG_NAME,
         "identity-stores": [identity_store_id],
         "mab": {"allow-all": allow_all},
     }
