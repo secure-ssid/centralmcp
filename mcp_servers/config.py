@@ -438,13 +438,14 @@ _MAC_ADDRESS_STORE_ID = "4c6c406a-7c1f-442a-8e43-c627090e8624"
 _CENTRAL_ORG_NAME = "SecureSSID-LAB"
 
 
-def _provision_nac_mac_auth(client, ssid_name: str, default_role: str, result: dict) -> dict:
+def _provision_nac_mac_auth(client, ssid_name: str, default_role: str | None, result: dict) -> dict:
     """Create Central NAC MAB auth profile + catch-all authz policy for an SSID.
 
     Called automatically by build_underlay_ssid and build_overlay_ssid when
     mac_auth_server_group is set. Skipped silently if a profile for the SSID
     already exists (idempotent).
     """
+    effective_role = default_role if default_role is not None else ssid_name
     # Add SSID to an existing wireless MAB allow-all profile (UI-created profiles have hidden
     # internal bindings that API-created ones lack — patching a working profile is more reliable).
     try:
@@ -515,7 +516,7 @@ def _provision_nac_mac_auth(client, ssid_name: str, default_role: str, result: d
                         "radius-profile": {
                             "defined-attr": [
                                 {"attr-name": "ATTR_POLICY_ACTION", "value": "Accept"},
-                                {"attr-name": "ATTR_ARUBA_ROLE", "value": default_role},
+                                {"attr-name": "ATTR_ARUBA_ROLE", "value": effective_role},
                             ]
                         },
                     }],
@@ -538,7 +539,7 @@ def build_underlay_ssid(
     vlan_id: int | None = None,
     vlan_ids: list[int] | None = None,
     mac_auth_server_group: str | None = "sys_central_nac",
-    default_role: str = "macauth-allow",
+    default_role: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a bridge-mode (underlay) SSID and scope-map it.
@@ -557,7 +558,7 @@ def build_underlay_ssid(
         passphrase: Required for WPA2/WPA3-PSK modes — always ask the user for this, never generate or assume.
         vlan_id / vlan_ids: Single VLAN or list of VLAN IDs.
         mac_auth_server_group: Central NAC server-group for MAC auth post-config. Set None to skip.
-        default_role: Role assigned to authenticated underlay MAC-auth clients.
+        default_role: Override the default role for MAC-auth clients. Only set if the user explicitly requests a specific role — omit to keep the role auto-created by SSID creation (named after the SSID).
     """
     client = get_client()
     resolved_vlan_ids = vlan_ids or ([vlan_id] if vlan_id is not None else [1])
@@ -575,7 +576,7 @@ def build_underlay_ssid(
         if mac_auth_server_group:
             result["will_also_create"] = [
                 f"Central NAC MAB auth profile: '{ssid_name}' (allow-all, linked to MAC Address Store)",
-                f"Central NAC authz policy: '{ssid_name}-Allow' (catch-all, assigns role '{default_role}')",
+                f"Central NAC authz policy: '{ssid_name}-Allow' (catch-all, assigns role '{default_role or ssid_name}')",
             ]
         return result
     if mac_auth_server_group is None:
@@ -591,13 +592,14 @@ def build_underlay_ssid(
         "cloud-auth": True,
         "radius-accounting": True,
         "radius-interim-accounting-interval": 10,
-        "default-role": default_role,
         "denylist": False,
         "called-station-id": {
             "type": "MAC_ADDRESS",
             "include-ssid": True,
         },
     }
+    if default_role is not None:
+        updates["default-role"] = default_role
     try:
         response = client._request("PATCH", f"/network-config/v1/wlan-ssids/{url_name}", json=updates)
         if response.status_code not in (200, 201, 202, 204):
