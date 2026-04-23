@@ -44,6 +44,14 @@
         "PYTHONPATH": "${workspaceFolder}",
         "CREDS_PATH": "${workspaceFolder}/config/credentials.yaml"
       }
+    },
+    "aruba-rag": {
+      "command": "${workspaceFolder}/.venv/bin/python3",
+      "args": ["${workspaceFolder}/mcp_servers/rag.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      }
     }
   }
 }
