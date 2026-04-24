@@ -6,27 +6,39 @@ HPE Aruba Central API tooling for network device migration, SSID config, switch 
 
 ```
 mcp_servers/
+  tool_router.py       Unified router — proxies the 6 domain servers under one MCP entrypoint
   monitoring.py        Monitoring tools — device health, trends, wireless metrics
   config.py            Config tools — SSIDs, VLANs, profiles, webhooks, firmware
   ops.py               Ops tools — reboots, ping, cable test, PoE bounce, GLP mgmt
   nac.py               NAC tools — MAC reg, MPSK, visitors, auth servers, AAA profiles, AAA test
+  glp.py               GreenLake Platform tools — devices, subscriptions, users, audit logs
+  rag.py               RAG tools — search_docs over ingested Aruba/HPE docs (Qdrant + Ollama)
   shared.py            Shared utilities and helpers
 pipeline/
-  clients/             CentralClient, GLPClient, MCPClient, TokenManager
+  clients/             CentralClient, GLPClient, MCPClient, TokenManager, OllamaClient, QdrantClient
   stages/              s1_discover → s8_verify (migration pipeline)
   config.py            Credentials loader (config/credentials.yaml or env)
   create_ssid.py       SSID build/delete logic (underlay + overlay)
+ingestion/
+  ingest_docs.py       Scrape + chunk + embed Aruba/HPE docs into Qdrant
+  sources/             Raw scraped docs (git-ignored — regenerable)
+scripts/
+  ingest_tools.py      Re-index the RAG corpus against the configured Qdrant/Ollama stack
+docker-compose.yml     Qdrant + Ollama runtime for the RAG server
 config/credentials.yaml  API credentials (never commit)
 resources/             Postman API collections (monitoring + config endpoints)
 inputs/                CSV files for batch migration
 outputs/               Reports and results
 state/                 Pipeline state store (idempotent runs)
+.cursor/
+  mcp.json             Router-only entry (aruba-tool-router) — low token overhead
+  mcp.dev.json         All 6 domain servers directly — full introspection for debugging
 ```
 
 ## MCP tools (`mcp_servers/`)
 
-Four domain servers — `monitoring.py`, `config.py`, `ops.py`, `nac.py` — each registered in `.mcp.json`.
-Tools follow `verb_noun` naming — no prefix. The server name provides context (`aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`).
+Six domain servers — `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, `rag.py` — each registered in `.cursor/mcp.dev.json`. For day-to-day use, `tool_router.py` is the single entrypoint registered in `.cursor/mcp.json` and proxies to all six.
+Tools follow `verb_noun` naming — no prefix. The server name provides context (`aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`, `aruba-glp`, `aruba-rag`).
 
 | Verb | Meaning |
 |------|---------|
@@ -80,7 +92,7 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 
 ## Adding new MCP tools
 
-1. Pick the right domain server: `monitoring.py`, `config.py`, `ops.py`, or `nac.py`.
+1. Pick the right domain server: `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, or `rag.py`. The `tool_router.py` auto-exposes any tool registered on those servers — no router edits needed.
 2. Add `@mcp.tool()` with verb_noun naming, no prefix.
 3. Use thin wrapper — delegate to `pipeline/clients/` or inline API call.
 4. Docstring: what it does, key args, and any gotchas.
