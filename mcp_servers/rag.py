@@ -59,8 +59,8 @@ def search_docs(
         top_k:    Number of results to return (default 5, max 20).
         source:   Optional folder filter — one of: developer_docs, tech_docs,
                   nac_docs, vsg_docs, techdocs_html, openapi_specs.
-        doc_type: Optional type filter — one of: developer-docs, tech-docs,
-                  nac, vsg, openapi.
+        doc_type: DEPRECATED — prefer `source`. Still accepted: developer-docs,
+                  tech-docs, techdocs-html, nac, vsg, openapi.
 
     Returns:
         List of chunks with text, source, doc_type, file_path, score, and
@@ -95,9 +95,10 @@ def search_docs(
         limit=top_k * 3,
     ).points
 
-    # Re-rank: boosted_score = raw_score + source_boost (only applies when no source filter)
+    # Re-rank: boosted_score = raw_score + source_boost. Applies even under filters —
+    # a filter narrows the candidate set, boosting still orders within it.
     def boosted(r):
-        boost = 0.0 if (source or doc_type) else _SOURCE_BOOST.get(r.payload.get("source", ""), 0.0)
+        boost = _SOURCE_BOOST.get(r.payload.get("source", ""), 0.0)
         return r.score + boost
 
     candidates.sort(key=boosted, reverse=True)

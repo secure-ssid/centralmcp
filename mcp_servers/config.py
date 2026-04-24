@@ -46,6 +46,24 @@ def _exc_resp_text(exc: Exception) -> str:
     return getattr(getattr(exc, "response", None), "text", "") or ""
 
 
+# Name-spacing rules differ by target platform:
+#  - AOS-CX switches and Gateways FORBID spaces in role/policy/rule names.
+#  - Central NAC authz policies and their referenced roles REQUIRE spaces
+#    (no-condition catch-all pattern needs spaced names to match reliably).
+# See audit/FIX_PLAN.md Tier 2.1.
+_TARGETS_FORBIDDING_SPACES = {"SWITCH", "GATEWAY", "AOS_CX", "AOS_S"}
+
+
+def _validate_name_for_target(name: str, target: str | None) -> None:
+    """Raise ValueError when a name contains spaces but target forbids them."""
+    if target and target.upper() in _TARGETS_FORBIDDING_SPACES and " " in name:
+        raise ValueError(
+            f"Name '{name}' contains spaces but target={target} forbids them "
+            "(AOS-CX switches and Gateways reject spaces in role/policy/rule names). "
+            "Use dashes or underscores, or set target=NAC if this is a NAC policy/role."
+        )
+
+
 # ── VLANs ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -102,9 +120,7 @@ def create_vlan_interface(
 ) -> dict[str, Any]:
     """Create an L3 SVI at device scope (global L2 VLAN shell is auto-confirmed).
 
-    Args:
-        device_scope_id: Device's numeric scope-id (use find_device).
-        ip_address: CIDR notation e.g. "10.1.200.1/24". Omit for DHCP.
+    ip_address: CIDR e.g. "10.1.200.1/24". Omit for DHCP.
     """
     if dry_run:
         return {"vlan_id": vlan_id, "device_scope_id": device_scope_id, "dry_run": True}
@@ -129,13 +145,7 @@ def set_hostname(
     device_function: str = "CAMPUS_AP",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Set the hostname alias on a device.
-
-    Args:
-        device_scope_id: Device's numeric scope-id (use find_device).
-        device_function: Device persona — CAMPUS_AP (default), MOBILITY_GW,
-            ACCESS_SWITCH, AGG_SWITCH, or CORE_SWITCH.
-    """
+    """Set the hostname alias on a device."""
     if dry_run:
         return {"device_scope_id": device_scope_id, "hostname": hostname,
                 "device_function": device_function, "dry_run": True}
@@ -232,11 +242,7 @@ def set_firmware_compliance(
 ) -> dict[str, Any]:
     """Create or update a firmware compliance policy (triggers upgrade).
 
-    Args:
-        scope_id: Use get_global_scope_id() for org-wide, or list_scopes() for a site/group.
-        device_function: ACCESS_SWITCH, CAMPUS_AP, MOBILITY_GW, AGG_SWITCH, or CORE_SWITCH.
-        firmware_version: Target version e.g. "10.16.1030".
-        upgrade_mode: REGULAR (default) or LIVE.
+    firmware_version e.g. "10.16.1030". upgrade_mode: REGULAR or LIVE.
     """
     client = get_client()
     errors: list[str] = []
@@ -311,8 +317,7 @@ def trigger_device_upgrade(
 ) -> dict[str, Any]:
     """Trigger an immediate per-device firmware upgrade (bypasses compliance policy).
 
-    Args:
-        device_function: AUTO-detected if omitted; otherwise ACCESS_SWITCH, CAMPUS_AP, etc.
+    device_function auto-detected if omitted.
     """
     client = get_client()
     errors: list[str] = []
@@ -555,8 +560,11 @@ def build_underlay_ssid(
                   - MAC auth only (no password): OPEN (default) — do NOT use ENHANCED_OPEN; it causes Central NAC to misclassify the RADIUS request as Captive Portal and reject with "Unexpected Client Data"
                   - MAC auth + PSK (device must know key AND be registered): WPA3_SAE or WPA2_PERSONAL — ask user for passphrase
                   - WPA3 + WPA2 compatible PSK: WPA3_SAE with wpa3-transition-mode-enable=true
-                Valid API values: OPEN, ENHANCED_OPEN, WPA3_SAE, WPA2_PERSONAL, WPA2_ENTERPRISE,
-                WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL.
+                Valid API values: OPEN, ENHANCED_OPEN, WPA3_SAE, WPA2_PERSONAL,
+                WPA2_ENTERPRISE, WPA3_ENTERPRISE_CCM_128, WPA3_ENTERPRISE_GCM_256,
+                WPA3_ENTERPRISE_CNSA, WPA2_MPSK_AES, WPA2_MPSK_LOCAL, WPA3_MPSK_SAE,
+                BOTH_WPA_WPA2_PSK, BOTH_WPA_WPA2_DOT1X, and DPP variants
+                (see wlan OpenAPI spec for the full set).
                 NOT valid: OPEN_NETWORK, WPA3_SAE_AES.
         passphrase: Required for WPA2/WPA3-PSK modes — always ask the user for this, never generate or assume.
         vlan_id / vlan_ids: Single VLAN or list of VLAN IDs.
@@ -668,7 +676,16 @@ def build_overlay_ssid(
         cluster_name: Gateway cluster name (use list_gw_clusters).
         cluster_scope_id: Scope-id of the gateway cluster (use list_gw_clusters).
         vlan_ids: List of VLAN IDs (e.g. [200]).
-        opmode: Valid API values — OPEN (default for MAC auth), ENHANCED_OPEN, WPA3_SAE, WPA2_PERSONAL, WPA2_ENTERPRISE, WPA3_ENTERPRISE_CCM_128, WPA2_MPSK_AES, WPA2_MPSK_LOCAL. OPEN_NETWORK and WPA3_SAE_AES are NOT valid. Do NOT use ENHANCED_OPEN for MAC-auth-only SSIDs — it causes NAC to reject with "Unexpected Client Data".
+        opmode: ALWAYS confirm with the user before calling — never assume.
+                Common values: OPEN (default for MAC-auth only), ENHANCED_OPEN, WPA3_SAE,
+                WPA2_PERSONAL, WPA2_ENTERPRISE, WPA3_ENTERPRISE_CCM_128,
+                WPA3_ENTERPRISE_GCM_256, WPA3_ENTERPRISE_CNSA, WPA2_MPSK_AES,
+                WPA2_MPSK_LOCAL, WPA3_MPSK_SAE, BOTH_WPA_WPA2_PSK, BOTH_WPA_WPA2_DOT1X,
+                and DPP variants (see wlan OpenAPI spec for the full set).
+                NOT valid: OPEN_NETWORK, WPA3_SAE_AES.
+                Do NOT use ENHANCED_OPEN for MAC-auth-only SSIDs — it causes Central NAC
+                to misclassify the RADIUS request as Captive Portal and reject with
+                "Unexpected Client Data".
         passphrase: Required for WPA2/WPA3-PSK opmodes.
         mac_auth_server_group: If set, creates an AAA profile named after the SSID and enables MAC auth
                                against this Central NAC server group.
@@ -713,12 +730,9 @@ def delete_overlay_ssid(
     profile_name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete an overlay (tunneled/GRE) WLAN profile. Must be done before deleting the underlay SSID.
+    """Delete an overlay (tunneled/GRE) WLAN profile. Must precede underlay SSID deletion.
 
-    Args:
-        profile_name: The overlay-wlan profile name (visible in the gw-profile field of the SSID config,
-                      or use list_overlay_wlans to find it).
-        dry_run: If True, return the target without sending.
+    profile_name visible in gw-profile field or via list_overlay_wlans.
     """
     if dry_run:
         return {"dry_run": True, "profile_name": profile_name, "endpoint": f"/network-config/v1alpha1/overlay-wlan/{profile_name}"}
@@ -735,7 +749,14 @@ def create_allow_all_role(
     persona: str = "CAMPUS_AP",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a permit-all wireless role and scope-map it."""
+    """Create a permit-all wireless role and scope-map it.
+
+    persona CAMPUS_AP allows spaces in name (NAC-adjacent);
+    SWITCH/GW personas reject spaces.
+    """
+    persona_upper = (persona or "").upper()
+    if "SWITCH" in persona_upper or persona_upper.endswith("_GW"):
+        _validate_name_for_target(role_name, "SWITCH" if "SWITCH" in persona_upper else "GATEWAY")
     client = get_client()
     return _create_role(
         client,
@@ -764,12 +785,7 @@ def update_ssid(
     scope_id: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """PATCH an existing SSID — only provided fields are changed.
-
-    Args:
-        updates: Fields to change, e.g. {"enable": True, "wpa-passphrase": "newpass"}.
-        scope_id: Optional — for a scope-specific LOCAL override.
-    """
+    """PATCH an existing SSID — only provided fields change. scope_id for LOCAL override."""
     client = get_client()
     errors: list[str] = []
     url_name = quote(ssid_name, safe="")
@@ -808,7 +824,7 @@ def create_port_profile(
     persona: str = "ACCESS_SWITCH",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create (or update) a switch port profile and scope-map it.
+    """Create or update a switch port profile and scope-map it.
 
     Two-step: POST (shell) then PUT (full config body). Pass the nested config dict as body.
     """
@@ -844,6 +860,64 @@ def create_port_profile(
 
 
 @mcp.tool()
+def create_aaa_macauth_profile(
+    name: str,
+    body: dict[str, Any] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a device-side MAC-auth (MAB) profile via POST /macauth/{name}.
+
+    Device-enforcement profile referenced by sw-port-profiles. Distinct from
+    create_mac_auth_profile (Central NAC cloud-side). Omit body for shell.
+    """
+    endpoint = f"/network-config/v1/macauth/{quote(name, safe='')}"
+    payload = body or {}
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": payload}
+    resp = get_client()._request("POST", endpoint, json=payload)
+    return resp_json(resp)
+
+
+@mcp.tool()
+def create_aaa_dot1xauth_profile(
+    name: str,
+    body: dict[str, Any] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a device-side 802.1X profile via POST /dot1xauth/{name}.
+
+    Device-enforcement counterpart to create_dot1x_auth_profile (cloud-side).
+    Referenced by sw-port-profiles. Omit body for shell.
+    """
+    endpoint = f"/network-config/v1/dot1xauth/{quote(name, safe='')}"
+    payload = body or {}
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": payload}
+    resp = get_client()._request("POST", endpoint, json=payload)
+    return resp_json(resp)
+
+
+@mcp.tool()
+def set_port_auth(
+    profile_name: str,
+    port_access_body: dict[str, Any],
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """PATCH a sw-port-profile to bind mac-auth / dot1x / server-group / role.
+
+    GET the current profile first — port_access_body shape varies. Typical keys:
+    authenticator (dot1x ref), mac-auth (macauth ref), aaa-server-group,
+    initial-role, auth-vlan-id. Profile must already exist.
+    """
+    endpoint = f"/network-config/v1/sw-port-profiles/{quote(profile_name, safe='')}"
+    payload = {"port-access": port_access_body}
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": payload}
+    resp = get_client()._request("PATCH", endpoint, json=payload)
+    return resp_json(resp)
+
+
+@mcp.tool()
 def update_port_config(
     serial_number: str,
     interface_name: str,
@@ -853,10 +927,7 @@ def update_port_config(
 ) -> dict[str, Any]:
     """PATCH ethernet interface config on a CX switch at device scope.
 
-    Args:
-        interface_name: e.g. "1/1/6".
-        device_scope_id: Device's config-layer scope-id (use find_device).
-        updates: Fields to PATCH, e.g. {"port-profile": "ap-uplink", "admin-state": "UP"}.
+    interface_name e.g. "1/1/6". updates e.g. {"port-profile": "ap-uplink"}.
     """
     if dry_run:
         return {"dry_run": True, "serial_number": serial_number, "interface_name": interface_name,
@@ -898,11 +969,7 @@ def gateway_config_interface(
 ) -> dict[str, Any]:
     """PATCH ethernet interface config on an Aruba gateway at device scope.
 
-    Args:
-        interface_name: As shown in 'show interface', e.g. 'GE 0/0/1' (URL-encoded automatically).
-        device_scope_id: Use find_device → scopeId.
-        updates: Fields to PATCH, e.g. {"jumbo": True, "trusted": True, "mtu": 9216}.
-        dry_run: If True, return payload without sending.
+    interface_name e.g. 'GE 0/0/1' (auto URL-encoded).
     """
     if dry_run:
         return {
@@ -946,12 +1013,8 @@ def gateway_config_static_route(
 ) -> dict[str, Any]:
     """Create or replace a static route on an Aruba gateway at device scope.
 
-    Args:
-        destination: CIDR, e.g. '0.0.0.0/0'. Slashes become underscores in the URL path.
-        nexthop: Next-hop IP, e.g. '192.168.1.1'.
-        admin_distance: Default 1; use 50 for a default route.
-        device_scope_id: Use find_device → scopeId.
-        dry_run: If True, return payload without sending.
+    destination: CIDR e.g. '0.0.0.0/0' (slashes become underscores in URL).
+    admin_distance: default 1; use 50 for a default route.
     """
     route_name = destination.replace("/", "_")
     payload = {
@@ -991,6 +1054,39 @@ def gateway_config_static_route(
 
 
 @mcp.tool()
+def create_gw_cluster(
+    cluster_name: str,
+    scope_id: str,
+    description: str = "",
+    ipv6_enable: bool = False,
+    auto_cluster: bool = False,
+    device_function: str = "MOBILITY_GW",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create an empty gateway cluster profile shell (add members via gateway_join_cluster).
+
+    Name must not start with 'auto_' and must not contain spaces.
+    ipv6_enable cannot be toggled after creation. device_function:
+    MOBILITY_GW or BRANCH_GW.
+    """
+    payload: dict[str, Any] = {
+        "name": cluster_name,
+        "description": description,
+        "ipv6-enable": ipv6_enable,
+        "auto-cluster": auto_cluster,
+    }
+    endpoint = f"/network-config/v1alpha1/gateway-clusters/{cluster_name}"
+    params = {"object-type": "LOCAL", "scope-id": scope_id, "device-function": device_function}
+
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "params": params, "payload": payload}
+
+    client = get_client()
+    resp = client._request("POST", endpoint, params=params, json=payload)
+    return resp_json(resp)
+
+
+@mcp.tool()
 def gateway_join_cluster(
     cluster_name: str,
     scope_id: str,
@@ -1002,15 +1098,11 @@ def gateway_join_cluster(
     auto_cluster: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Add/update gateway cluster membership via API (POST to create, PATCH if duplicate).
+    """Add/update gateway cluster membership (POST to create, PATCH if duplicate).
 
-    Args:
-        scope_id: Group scope-id — use list_scopes or find_device → deviceGroupId.
-        gateways: List of dicts each with keys: ip, mac, priority (VRRP; higher = master), coa_vrrp_ip.
-        coa_vrrp_vlan: Required when coa_vrrp_ip is set.
-        dry_run: If True, return payload without sending.
-
-    Note: If creation fails, create the cluster in the GUI first — this tool will then PATCH it.
+    gateways: dicts with keys ip, mac, priority (higher=VRRP master), coa_vrrp_ip.
+    coa_vrrp_vlan required when coa_vrrp_ip is set. Call create_gw_cluster first
+    if the cluster shell doesn't exist.
     """
     payload: dict[str, Any] = {
         "name": cluster_name,
@@ -1097,17 +1189,42 @@ def gateway_join_cluster(
 # ── Device Management ─────────────────────────────────────────────────────────
 
 @mcp.tool()
+def create_site(
+    name: str,
+    address: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+    country: str | None = None,
+    zipcode: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a new site (mandatory geographic scope). Only `name` is required; name must be unique."""
+    payload: dict[str, Any] = {"name": name}
+    for key, val in [
+        ("address", address), ("city", city), ("state", state), ("country", country),
+        ("zipcode", zipcode), ("latitude", latitude), ("longitude", longitude),
+    ]:
+        if val is not None:
+            payload[key] = val
+
+    endpoint = "/network-monitoring/v1/sites"
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": payload}
+
+    client = get_client()
+    resp = client._request("POST", endpoint, json=payload)
+    return resp_json(resp)
+
+
+@mcp.tool()
 def assign_device_to_site(
     serial_number: str,
     site_id: str,
     device_type: str | None = None,
 ) -> dict[str, Any]:
-    """Assign or move a device to a site.
-
-    Args:
-        site_id: Target site ID (use list_sites).
-        device_type: Optional hint — "SWITCH", "AP", or "GATEWAY".
-    """
+    """Assign or move a device to a site. device_type hint: SWITCH/AP/GATEWAY."""
     client = get_client()
     errors: list[str] = []
 
@@ -1149,11 +1266,7 @@ def update_device_settings(
     device_scope_id: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Update device metadata or settings (name, location, notes, banner).
-
-    Args:
-        device_scope_id: Required for switch-system config path.
-    """
+    """Update device metadata (name, location, notes, banner). device_scope_id required for switch-system path."""
     if dry_run:
         return {"dry_run": True, "serial_number": serial_number, "settings": settings,
                 "device_scope_id": device_scope_id, "response": None, "errors": []}
@@ -1211,15 +1324,19 @@ def create_role(
     description: str | None = None,
     allow_all: bool = True,
     vlan_id: int | None = None,
+    target: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a wireless role in the Central Library (object-type=SHARED).
 
-    Args:
-        allow_all: If True (default), attaches the built-in 'sys_allow_all' policy.
-        vlan_id: Optional access VLAN for role members.
-        dry_run: If True, return payload without sending.
+    NAC note: insufficient alone for Central NAC wireless roles — also needs
+    scope-map (roles/ + role-gpids/) at global+site and a security policy in
+    the policy group. Prefer build_underlay_ssid for NAC MAB wireless.
+
+    allow_all=True attaches 'sys_allow_all'. target: NAC allows spaces;
+    SWITCH/GATEWAY/AOS_CX/AOS_S reject them; omit to skip validation.
     """
+    _validate_name_for_target(name, target)
     payload: dict[str, Any] = {}
     if description:
         payload["description"] = description
@@ -1246,18 +1363,11 @@ def update_role(
     description: str | None = None,
     allow_all: bool = True,
     vlan_id: int | None = None,
+    target: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Update an existing wireless role in the Central Library (object-type=SHARED) using PUT.
-
-    Use this when the role already exists and create_role returns a duplicate error.
-
-    Args:
-        name: Exact role name to update.
-        allow_all: If True (default), attaches the built-in 'sys_allow_all' policy.
-        vlan_id: Optional access VLAN for role members.
-        dry_run: If True, return payload without sending.
-    """
+    """PUT-update an existing wireless role in the Central Library. target: see create_role."""
+    _validate_name_for_target(name, target)
     payload: dict[str, Any] = {}
     if description:
         payload["description"] = description
@@ -1296,7 +1406,7 @@ def delete_role_acl(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a role ACL policy by name (from list_role_acls). Must precede delete_role."""
+    """Delete a role ACL policy by name. Must precede delete_role."""
     if dry_run:
         return {"dry_run": True, "name": name}
 
@@ -1326,12 +1436,12 @@ def create_gw_policy(
 ) -> dict[str, Any]:
     """Create a POLICY_TYPE_SECURITY GW policy and register it in the policy group.
 
-    Args:
-        name: Must be unique. Use SSID/role name for allow-all policies.
-        rules: Policy rule dicts (position, description, condition, action). If omitted,
-               creates a default allow-all rule sourced from the role named `name`.
-        dry_run: If True, return payload without sending.
+    Policy/rule names cannot contain spaces. GW source types: ADDRESS_ROLE,
+    ADDRESS_NETWORK, ADDRESS_HOST, ADDRESS_FQDN, ADDRESS_RANGE, ADDRESS_VLAN,
+    ADDRESS_PORT, ADDRESS_ANY. (AOS-CX supports only ADDRESS_ROLE — different endpoint.)
+    Omit rules to auto-create allow-all sourced from role `name`.
     """
+    _validate_name_for_target(name, "GATEWAY")
     if rules is None:
         rules = [{
             "position": 1,
@@ -1377,7 +1487,7 @@ def delete_gw_policy(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a GW security policy by name (from list_gw_policies)."""
+    """Delete a GW security policy by name."""
     if dry_run:
         return {"dry_run": True, "name": name}
 
@@ -1396,11 +1506,7 @@ def delete_config_assignment(
 ) -> dict[str, Any]:
     """Unassign a profile from a device function at a scope (required before delete_role).
 
-    Args:
-        scope_id: Use get_global_scope_id or list_scopes.
-        device_function: e.g. 'CAMPUS_AP', 'MOBILITY_GW'.
-        profile_type: e.g. 'roles'.
-        profile_instance: Profile name being unassigned.
+    profile_type e.g. 'roles'; profile_instance is the profile name.
     """
     endpoint = f"/network-config/v1alpha1/config-assignments/{scope_id}/{device_function}/{profile_type}/{profile_instance}"
 
@@ -1413,14 +1519,57 @@ def delete_config_assignment(
 
 
 @mcp.tool()
+def create_config_assignment(
+    scope_id: str,
+    device_function: str,
+    profile_type: str,
+    profile_instance: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Assign a library profile to a scope + device-function.
+
+    Binds library profile (role, ssid, vlan, policy, port-profile, etc.) to where
+    it applies. Config-authoring tools produce orphans without this.
+    profile_type: API endpoint segment ('roles', 'wlan-ssids', 'named-vlans',
+    'sw-port-profiles', 'policies', etc.). profile_instance: profile name/ID.
+    """
+    endpoint = f"/network-config/v1alpha1/config-assignments/{scope_id}/{device_function}/{profile_type}/{profile_instance}"
+
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint}
+
+    client = get_client()
+    resp = client._request("POST", endpoint)
+    return resp_json(resp)
+
+
+@mcp.tool()
+def list_config_assignments(
+    scope_id: str | None = None,
+    device_function: str | None = None,
+    profile_type: str | None = None,
+) -> dict[str, Any]:
+    """List config assignments (library profiles bound to scopes). Optional filters: scope / device-function / profile-type."""
+    params: dict[str, Any] = {}
+    if scope_id is not None:
+        params["scope-id"] = scope_id
+    if device_function is not None:
+        params["device-function"] = device_function
+    if profile_type is not None:
+        params["profile-type"] = profile_type
+    client = get_client()
+    resp = client._request("GET", "/network-config/v1alpha1/config-assignments", params=params or None)
+    return resp_json(resp)
+
+
+@mcp.tool()
 def delete_role(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a wireless/gateway role by name (from list_roles).
+    """Delete a wireless/gateway role by name.
 
-    Pre-requisites: delete associated ACLs (delete_role_acl) and unassign from all scopes
-    (delete_config_assignment) before calling this.
+    Pre-reqs: delete_role_acl then delete_config_assignment for all scopes.
     """
     if dry_run:
         return {"dry_run": True, "name": name}
@@ -1479,17 +1628,35 @@ def create_webhook(
     endpoint_url: str,
     auth_mechanism: str = "API_KEY",
     api_key: str | None = None,
+    oidc_client_id: str | None = None,
+    oidc_client_secret: str | None = None,
+    oidc_well_known_url: str | None = None,
 ) -> dict[str, Any]:
     """Create a new webhook.
 
     Args:
-        auth_mechanism: "API_KEY" (default) or "HMAC".
+        auth_mechanism: "API_KEY" or "OIDC". (Central UI exposes both;
+                        the current API reference only documents OIDC as the
+                        enum value — pass API_KEY if the default API-key flow
+                        is what the tenant uses. "HMAC" is not valid.)
+        api_key: Required when auth_mechanism="API_KEY".
+        oidc_client_id / oidc_client_secret / oidc_well_known_url:
+            Required when auth_mechanism="OIDC" (sent as the `oidcDetails`
+            object per the developer-docs schema).
     """
     client = get_client()
-    payload: dict[str, Any] = {"input": {"name": name, "endpoint": endpoint_url, "authMechanism": auth_mechanism}}
-    if api_key:
-        payload["input"]["apiKey"] = api_key
-    resp = client._request("POST", _WEBHOOKS_BASE, json=payload)
+    body: dict[str, Any] = {"name": name, "endpoint": endpoint_url, "authMechanism": auth_mechanism}
+    if auth_mechanism == "OIDC":
+        if not (oidc_client_id and oidc_client_secret and oidc_well_known_url):
+            return {"error": "OIDC requires oidc_client_id, oidc_client_secret, and oidc_well_known_url"}
+        body["oidcDetails"] = {
+            "clientId": oidc_client_id,
+            "clientSecret": oidc_client_secret,
+            "wellKnownUrl": oidc_well_known_url,
+        }
+    elif api_key:
+        body["apiKey"] = api_key
+    resp = client._request("POST", _WEBHOOKS_BASE, json={"input": body})
     return resp_json(resp)
 
 

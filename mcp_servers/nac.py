@@ -31,13 +31,7 @@ def list_mac_registrations(
     offset: int = 0,
     full_list: bool = False,
 ) -> dict[str, Any]:
-    """List Central NAC MAC address registrations (bounded by default).
-
-    Args:
-        limit: Max rows to return (1–200, default 50).
-        offset: Skip this many rows (pagination).
-        full_list: If True, return the full API JSON without slicing (may be large).
-    """
+    """List Central NAC MAC address registrations (bounded by default)."""
     data = get_client().get(f"{_CNAC_BASE}/cnac-mac-reg")
     if full_list:
         return data
@@ -52,14 +46,7 @@ def add_mac_registration(
     enable: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Register a MAC address for Central NAC authentication.
-
-    Args:
-        mac_address: MAC address to register (e.g. 'aa:bb:cc:dd:ee:ff').
-        display_name: Human-readable label.
-        tags: Optional static tag strings.
-        dry_run: If True, return payload without sending.
-    """
+    """Register a MAC address for Central NAC. mac_address e.g. 'aa:bb:cc:dd:ee:ff'."""
     payload: dict[str, Any] = {
         "input": {
             "macAddress": mac_address,
@@ -88,13 +75,7 @@ def update_mac_registration(
     enable: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Update an existing MAC registration by ID.
-
-    Args:
-        registration_id: From list_mac_registrations.
-        mac_address: Required even for updates.
-        dry_run: If True, return payload without sending.
-    """
+    """Update an existing MAC registration by ID. mac_address required even for updates."""
     payload: dict[str, Any] = {
         "input": {
             "macAddress": mac_address,
@@ -119,7 +100,7 @@ def delete_mac_registration(
     registration_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a MAC registration by ID (from list_mac_registrations)."""
+    """Delete a MAC registration by ID."""
     if dry_run:
         return {"dry_run": True, "registration_id": registration_id}
 
@@ -152,15 +133,7 @@ def add_mpsk_registration(
     enable: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a Named MPSK registration.
-
-    Args:
-        name: Unique name.
-        network: SSID this MPSK applies to.
-        user_role: Optional role to assign on connection.
-        password_policy: "WORDS" (default) or other supported values.
-        dry_run: If True, return payload without sending.
-    """
+    """Create a Named MPSK registration. network = SSID; password_policy default "WORDS"."""
     payload: dict[str, Any] = {
         "input": {
             "name": name,
@@ -185,7 +158,7 @@ def delete_mpsk_registration(
     registration_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a Named MPSK registration by ID (from list_mpsk_registrations)."""
+    """Delete a Named MPSK registration by ID."""
     if dry_run:
         return {"dry_run": True, "registration_id": registration_id}
 
@@ -220,14 +193,7 @@ def add_visitor(
     enable: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a Central NAC visitor account.
-
-    Args:
-        display_name: Display name shown in portal.
-        name: Login username.
-        expire_at: ISO 8601 expiry (e.g. '2026-05-01T00:00:00Z').
-        dry_run: If True, return payload without sending.
-    """
+    """Create a Central NAC visitor account. name=login username; expire_at ISO 8601."""
     payload: dict[str, Any] = {
         "input": {
             "displayName": display_name,
@@ -257,7 +223,7 @@ def delete_visitor(
     visitor_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a visitor account by ID (from list_visitors)."""
+    """Delete a visitor account by ID."""
     if dry_run:
         return {"dry_run": True, "visitor_id": visitor_id}
 
@@ -283,7 +249,7 @@ def list_auth_servers(
 
 @mcp.tool()
 def get_auth_server(name: str) -> dict[str, Any]:
-    """Get a single RADIUS/auth server profile by name (from list_auth_servers)."""
+    """Get a single RADIUS/auth server profile by name."""
     return get_client().get(f"{_CNAC_BASE}/auth-servers/{name}")
 
 
@@ -292,7 +258,12 @@ def create_auth_server(
     name: str,
     auth_server_address: str,
     shared_secret: str,
-    server_type: str = "RADIUS",
+    radius_server_mode: str = "AUTH_AND_COA",
+    enable_radsec: bool = False,
+    radsec_port: int = 2083,
+    radsec_client_cert: str | None = None,
+    radsec_trusted_cacert_name: str | None = None,
+    radsec_trusted_servercert_name: str | None = None,
     auth_port: int = 1812,
     acct_port: int = 1813,
     enable: bool = True,
@@ -300,15 +271,27 @@ def create_auth_server(
 ) -> dict[str, Any]:
     """Create a RADIUS auth server profile.
 
+    The endpoint only supports type=RADIUS. RadSec is a RADIUS variant enabled
+    via enable_radsec + cert fields (not a distinct `type`). LDAP / TACACS are
+    NOT supported on this endpoint.
+
     Args:
         auth_server_address: IP or hostname of the RADIUS server.
         shared_secret: Plaintext secret (stored securely by Central).
-        server_type: "RADIUS" (default), "RADSEC", "LDAP", or "TACACS".
+        radius_server_mode: AUTH_ONLY, COA_ONLY, or AUTH_AND_COA (default).
+        enable_radsec: If True, wrap RADIUS in TLS (RadSec) — requires
+                       radsec_client_cert and radsec_trusted_cacert_name.
+        radsec_port: TLS port (default 2083). Only used when enable_radsec=True.
+        radsec_client_cert: Client cert name for RadSec mutual auth.
+        radsec_trusted_cacert_name: Trusted CA cert name that signs the
+                                    RADIUS server's cert.
+        radsec_trusted_servercert_name: Optional pinned server cert name.
         dry_run: If True, return payload without sending (secret masked).
     """
     payload: dict[str, Any] = {
         "name": name,
-        "type": server_type,
+        "type": "RADIUS",
+        "radius-server-mode": radius_server_mode,
         "auth-server-address": auth_server_address,
         "auth-port": auth_port,
         "acct-port": acct_port,
@@ -318,6 +301,15 @@ def create_auth_server(
             "plaintext-value": shared_secret,
         },
     }
+    if enable_radsec:
+        payload["enable-radsec"] = True
+        payload["radsec-port"] = radsec_port
+        if radsec_client_cert is not None:
+            payload["radsec-client-cert"] = radsec_client_cert
+        if radsec_trusted_cacert_name is not None:
+            payload["radsec-trusted-cacert-name"] = radsec_trusted_cacert_name
+        if radsec_trusted_servercert_name is not None:
+            payload["radsec-trusted-servercert-name"] = radsec_trusted_servercert_name
 
     if dry_run:
         # Mask secret in dry-run output
@@ -334,7 +326,7 @@ def delete_auth_server(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a RADIUS/auth server profile by name (from list_auth_servers)."""
+    """Delete a RADIUS/auth server profile by name."""
     if dry_run:
         return {"dry_run": True, "name": name}
 
@@ -360,7 +352,7 @@ def list_aaa_profiles(
 
 @mcp.tool()
 def get_aaa_profile(name: str) -> dict[str, Any]:
-    """Get a single AAA profile by name (from list_aaa_profiles)."""
+    """Get a single AAA profile by name."""
     return get_client().get(f"{_CNAC_BASE}/aaa-profile/{name}")
 
 
@@ -373,14 +365,7 @@ def create_aaa_profile(
     description: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create an AAA profile.
-
-    Args:
-        auth_role: Role after successful authentication.
-        fallback_role: Role when auth server is unreachable.
-        acct_server_group: Accounting server group name.
-        dry_run: If True, return payload without sending.
-    """
+    """Create an AAA profile. fallback_role applies when auth server unreachable."""
     payload: dict[str, Any] = {"name": name}
     if description:
         payload["description"] = description
@@ -406,7 +391,7 @@ def delete_aaa_profile(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete an AAA profile by name (from list_aaa_profiles)."""
+    """Delete an AAA profile by name."""
     if dry_run:
         return {"dry_run": True, "name": name}
 
@@ -429,11 +414,7 @@ def test_aaa(
 ) -> dict[str, Any]:
     """Test AAA connectivity from an AP or CX switch (async, polls ~60s).
 
-    Args:
-        device_type: "AP" (default) or "CX".
-        server_name: Auth server profile name — required for AP tests.
-        radius_server_ip: RADIUS server IP — required for CX tests.
-        auth_method: CX only — "chap" (default) or "pap".
+    AP: server_name required. CX: radius_server_ip required; auth_method chap/pap.
     """
     errors: list[str] = []
     client = get_client()
@@ -478,7 +459,7 @@ def list_authz_policies(
 
 @mcp.tool()
 def get_authz_policy(policy_id: str) -> dict[str, Any]:
-    """Get a single CNAC authz policy by ID (from list_authz_policies)."""
+    """Get a single CNAC authz policy by ID."""
     return get_client().get(f"{_CNAC_BASE}/authz-policies/{policy_id}")
 
 
@@ -489,6 +470,7 @@ def create_authz_policy(
     role: str,
     tag_id: str | None = None,
     position: int = 1,
+    policy_type: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a CNAC authz policy that assigns a role to devices.
@@ -499,6 +481,10 @@ def create_authz_policy(
     Args:
         tag_id: UUID from list_static_tags. Omit for catch-all.
         position: Priority (lower = higher, default 1). Must be unique.
+        policy_type: Optional authorization-policy type enum (e.g. DEVICE, USER,
+                     VISITOR, NAMED_MPSK). If None, API chooses the default
+                     (DEVICE for MAC-auth flows). Only set when you need a
+                     non-device flow like user 802.1X or visitor policies.
         dry_run: If True, return payload without sending.
     """
     policy_id = str(uuid.uuid4())
@@ -549,6 +535,8 @@ def create_authz_policy(
         "enable": True,
         "rule": [rule],
     }
+    if policy_type is not None:
+        payload["policy-type"] = policy_type
 
     if dry_run:
         return {"dry_run": True, "policy_id": policy_id, "policy_name": policy_name, "payload": payload}
@@ -565,7 +553,7 @@ def delete_authz_policy(
     policy_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a CNAC authz policy by ID (from list_authz_policies)."""
+    """Delete a CNAC authz policy by ID."""
     if dry_run:
         return {"dry_run": True, "policy_id": policy_id}
 
@@ -583,10 +571,7 @@ def list_static_tags(
     offset: int = 0,
     full_list: bool = False,
 ) -> dict[str, Any]:
-    """List user-created static classification tags (bounded by default).
-
-    Note: system-generated tags (e.g. IoT) are not returned by this endpoint.
-    """
+    """List user-created static classification tags (bounded). System tags (e.g. IoT) not returned."""
     data = get_client().get(_STATIC_TAG_BASE)
     if full_list:
         return data
@@ -598,14 +583,7 @@ def create_static_tag(
     name: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create a static classification tag (tag-id is auto-generated).
-
-    Tags are used in authz policies to assign roles to classified clients.
-
-    Args:
-        name: Tag display name (e.g. 'AV', 'IoT', 'Console').
-        dry_run: If True, return payload without sending.
-    """
+    """Create a static classification tag (UUID auto-generated). Used in authz policies to assign roles."""
     tag_id = str(uuid.uuid4())
     payload = {"name": name}
     if dry_run:
@@ -619,7 +597,7 @@ def create_static_tag(
 
 @mcp.tool()
 def delete_static_tag(tag_id: str) -> dict[str, Any]:
-    """Delete a static classification tag by its UUID tag-id (from list_static_tags)."""
+    """Delete a static classification tag by UUID."""
     client = get_client()
     resp = client._request("DELETE", f"{_STATIC_TAG_BASE}/{tag_id}")
     return resp_json(resp)
@@ -652,7 +630,7 @@ def list_auth_profiles(
 
 @mcp.tool()
 def get_auth_profile(profile_id: str) -> dict[str, Any]:
-    """Get a single Central NAC auth profile by UUID (from list_auth_profiles)."""
+    """Get a single Central NAC auth profile by UUID."""
     return get_client().get(f"{_AUTH_PROFILE_BASE}/{profile_id}")
 
 
@@ -667,8 +645,13 @@ def create_mac_auth_profile(
 ) -> dict[str, Any]:
     """Create a Central NAC MAC authentication (MAB) profile for wireless SSIDs.
 
-    Each SSID can only belong to one auth profile. SSIDs must have cloud-auth=True and
-    mac-authentication=True.
+    Each SSID can only belong to one auth profile. SSIDs must have cloud-auth=True
+    and mac-authentication=True.
+
+    GOTCHA: API-created profiles sometimes lack hidden UI-side bindings and fail
+    at runtime. If you see "Unexpected Client Data" or silent auth failures after
+    creating via this tool, fall back to PATCHing an existing UI-created profile
+    (add SSID names to its `networks` list) — the documented workaround.
 
     Args:
         networks: SSID names to associate (e.g. ["Central-MacAuth"]).
@@ -700,11 +683,51 @@ def create_mac_auth_profile(
 
 
 @mcp.tool()
+def create_dot1x_auth_profile(
+    name: str,
+    networks: list[str],
+    identity_store_ids: list[str],
+    wired: bool = False,
+    description: str = "",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a Central NAC 802.1X auth profile (wireless or wired).
+
+    Counterpart to create_mac_auth_profile. Each SSID/port-profile binds to one
+    auth profile. Wireless SSIDs need cloud-auth=True and dot1x-authentication=True.
+    DOT1X typically uses LDAP/AD/external RADIUS stores (not MAC Address Store).
+
+    GOTCHA: API-created profiles may lack hidden UI bindings — if it misbehaves,
+    PATCH an existing UI-created profile instead (same workaround as MAB).
+    """
+    profile_id = str(uuid.uuid4())
+    payload: dict[str, Any] = {
+        "auth-profile-id": profile_id,
+        "name": name,
+        "description": description,
+        "auth-type": "DOT1X",
+        "networks": networks,
+        "wired": wired,
+        "organization-name": _CENTRAL_ORG_NAME,
+        "identity-stores": identity_store_ids,
+    }
+
+    if dry_run:
+        return {"dry_run": True, "profile_id": profile_id, "payload": payload}
+
+    client = get_client()
+    resp = client._request("POST", f"{_AUTH_PROFILE_BASE}/{profile_id}", json=payload)
+    result = resp_json(resp)
+    result["profile_id"] = profile_id
+    return result
+
+
+@mcp.tool()
 def delete_auth_profile(
     profile_id: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Delete a Central NAC authentication profile by UUID (from list_auth_profiles)."""
+    """Delete a Central NAC authentication profile by UUID."""
     if dry_run:
         return {"dry_run": True, "profile_id": profile_id}
 
