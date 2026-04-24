@@ -162,15 +162,7 @@ def aos_s_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
 
 @mcp.tool()
 def gateway_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
-    """Run 'show' commands on an Aruba gateway (9004, 7xxx, etc.) via async troubleshooting API.
-
-    Args:
-        serial_number: Gateway serial (e.g. 'CNJDKLB03G').
-        commands: List of show commands, each must start with 'show '.
-
-    Returns:
-        Async poll result with command output, or errors if the device is offline/unreachable.
-    """
+    """Run 'show' commands on an Aruba gateway via async troubleshooting API. Each must start with 'show '."""
     if not commands:
         return {"status": None, "errors": ["commands list cannot be empty"]}
     for i, cmd in enumerate(commands):
@@ -209,9 +201,7 @@ def poe_bounce(
 ) -> dict[str, Any]:
     """Power-cycle PoE on switch/gateway ports (async, polls ~60s).
 
-    Args:
-        ports: CX format "1/1/1", AOS-S "1", Gateway "GE 0/0/0".
-        device_type: "CX", "AOS-S", or "GATEWAY". Auto-detected if omitted.
+    ports format: CX "1/1/1", AOS-S "1", Gateway "GE 0/0/0". device_type auto-detected.
     """
     client = get_client()
     errors: list[str] = []
@@ -230,9 +220,7 @@ def port_bounce(
 ) -> dict[str, Any]:
     """Link-reset (bounce) switch/gateway ports (async, polls ~60s).
 
-    Args:
-        ports: CX format "1/1/1", AOS-S "1", Gateway "GE 0/0/0".
-        device_type: "CX", "AOS-S", or "GATEWAY". Auto-detected if omitted.
+    ports format: CX "1/1/1", AOS-S "1", Gateway "GE 0/0/0". device_type auto-detected.
     """
     client = get_client()
     errors: list[str] = []
@@ -269,11 +257,7 @@ def reboot_device(
     serial_number: str,
     device_type: str | None = None,
 ) -> dict[str, Any]:
-    """Reboot an AP, CX switch, AOS-S switch, or gateway.
-
-    Args:
-        device_type: "AP", "CX", "AOS-S", or "GATEWAY". Auto-detected if omitted.
-    """
+    """Reboot an AP, CX switch, AOS-S switch, or gateway. device_type auto-detected if omitted."""
     client = get_client()
     errors: list[str] = []
 
@@ -324,12 +308,7 @@ def disconnect_client(
     mac_address: str,
     ap_serial: str | None = None,
 ) -> dict[str, Any]:
-    """Force-disconnect a wireless client by MAC address.
-
-    Args:
-        mac_address: Client MAC (e.g. "aa:bb:cc:dd:ee:ff").
-        ap_serial:   Serial of the AP the client is connected to. Auto-looked up if omitted.
-    """
+    """Force-disconnect a wireless client by MAC address. ap_serial auto-looked up if omitted."""
     client = get_client()
     errors: list[str] = []
 
@@ -363,20 +342,10 @@ def acknowledge_alert(
     alert_id: str,
     action: str = "ACK",
 ) -> dict[str, Any]:
-    """Acknowledge, clear, or resolve an active alert.
+    """Acknowledge, clear, or resolve an active alert. action: ACK/CLEAR/RESOLVE.
 
-    NOTE: No peer MCP (pycentral, KarthikSKumar98/central-mcp-server,
-    nowireless4u/hpe-networking-mcp) wraps an acknowledge endpoint for New
-    Central alerts, and all three candidate paths below returned 404 on a
-    live lab in 2026-04. The real write path — if/when exposed — is likely
-    via the Central UI only, or on a separate service we haven't identified.
-
-    Today this tool is preserved so callers get a structured "not
-    available" answer (with probed paths in errors) rather than a silent
-    crash. All candidates are tried in turn; first 2xx wins.
-
-    Args:
-        action: "ACK" (default), "CLEAR", or "RESOLVE".
+    KNOWN ISSUE (2026-04): all candidate paths 404 on this tenant — no peer MCP
+    wraps this either. Tool preserved for structured 'not available' response.
     """
     client = get_client()
     errors: list[str] = []

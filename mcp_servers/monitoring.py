@@ -27,12 +27,7 @@ def list_sites(
     limit: int = 100,
     offset: int = 0,
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """Return sites with IDs, names, and location fields (paginated).
-
-    With ``CENTRALMCP_BOUND_LISTS=1`` returns
-    ``{"items": [...], "_pagination": {...}}``; otherwise returns the
-    raw ``list[dict]`` for back-compat.
-    """
+    """Return sites with IDs, names, and location fields (paginated)."""
     sites = get_mcp_client().get_sites(limit=clamp_limit(limit), offset=max(0, offset))
     return maybe_bound(sites, limit=limit, offset=offset)
 
@@ -65,15 +60,7 @@ def list_devices(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """List devices, optionally filtered by device_type (e.g. SWITCH, AP) or site_id.
-
-    ``offset`` is forwarded to the Central API (it supports server-side
-    pagination on devices).
-
-    With ``CENTRALMCP_BOUND_LISTS=1`` returns
-    ``{"items": [...], "_pagination": {...}}``; otherwise returns the
-    raw ``list[dict]`` for back-compat.
-    """
+    """List devices, optionally filtered by device_type (SWITCH/AP) or site_id. Server-side paginated."""
     filters: dict[str, Any] = {}
     if device_type:
         filters["deviceType"] = device_type
@@ -115,41 +102,12 @@ def list_clients(
     site_contains: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """List connected clients, with optional filters. ALWAYS filter before calling — unfiltered returns all clients.
+    """List connected clients. ALWAYS filter — unfiltered returns all clients.
 
-    Args:
-        site_id: Filter server-side by exact site ID.
-        serial_number: Filter by AP or switch serial (narrows to clients on that device).
-        ssid: Filter server-side by exact WLAN/SSID name (e.g. "aruba-home").
-        connection_type: "Wireless" or "Wired".
-        hostname_contains: Case-insensitive substring match on the client hostname /
-            display name (e.g. "roku", "iphone", "stephen-mbp"). Use this for natural-
-            language queries like "show me clients that are roku devices".
-        os_contains: Case-insensitive substring match on client OS
-            (e.g. "windows", "mac", "ios", "android", "linux"). Use for queries like
-            "show me windows clients".
-        device_type_contains: Case-insensitive substring match on client device type
-            / classification (e.g. "roku", "apple", "printer", "phone", "laptop").
-        ssid_contains: Case-insensitive substring match on SSID / WLAN name
-            (e.g. "aruba-home", "guest"). Prefer this over ``ssid`` for fuzzy
-            natural-language queries.
-        site_contains: Case-insensitive substring match on site name
-            (e.g. "headquarters", "home").
-
-    Prefer the ``*_contains`` filters for natural-language queries from end users
-    ("clients that are roku", "clients on aruba-home SSID", "windows clients at HQ").
-    Server-side filtering is used for ``site_id``, ``serial_number``, ``ssid``, and
-    ``connection_type``; the ``*_contains`` filters are applied client-side after
-    the fetch against whichever of these client fields are populated by Central:
-    ``hostname``/``name``, ``osType``/``os``, ``deviceType``/``clientType``,
-    ``network``/``wlanName``/``ssid``, ``siteName``/``site``.
-
-    NOTE: Central's clients endpoint doesn't expose server-side offset
-    pagination the way devices does — page by narrowing filters instead.
-
-    With ``CENTRALMCP_BOUND_LISTS=1`` returns
-    ``{"items": [...], "_pagination": {...}}``; otherwise returns the
-    raw ``list[dict]`` for back-compat.
+    Server-side: site_id, serial_number, ssid, connection_type (Wireless/Wired).
+    Client-side substring (case-insensitive, prefer for natural-language queries):
+    hostname_contains, os_contains, device_type_contains, ssid_contains, site_contains.
+    No server-side offset pagination — narrow filters to page.
     """
     clients = get_mcp_client().get_clients(
         site_id=site_id,
@@ -228,15 +186,7 @@ def list_alerts(
     severity: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """List active alerts, optionally filtered by site_id or severity (CRITICAL/MAJOR/MINOR).
-
-    NOTE: Central's alerts endpoint doesn't expose server-side offset
-    pagination — page by narrowing filters instead.
-
-    With ``CENTRALMCP_BOUND_LISTS=1`` returns
-    ``{"items": [...], "_pagination": {...}}``; otherwise returns the
-    raw ``list[dict]`` for back-compat.
-    """
+    """List active alerts. severity: CRITICAL/MAJOR/MINOR. No server-side offset pagination — narrow filters to page."""
     alerts = get_mcp_client().get_alerts(
         site_id=site_id, severity=severity, limit=clamp_limit(limit)
     )
@@ -251,11 +201,7 @@ def list_events(
     offset: int = 0,
     full_list: bool = False,
 ) -> dict[str, Any]:
-    """List events for a device over the past N hours (bounded by default).
-
-    Resolves AP vs switch (etc.) and site from device inventory when calling
-    ``GET /network-troubleshooting/v1/events``.
-    """
+    """List events for a device over the past N hours (bounded by default). Auto-resolves device type + site."""
     events = get_mcp_client().get_events(serial_number, hours=hours)
     if full_list:
         return {
@@ -274,15 +220,8 @@ def list_events(
 def get_events_count(serial_number: str, hours: int = 24) -> dict[str, Any]:
     """Count events for a device over the past N hours (default 24).
 
-    KNOWN ISSUE: the Central events endpoint is unstable on ``internal.api``
-    at the moment. The legacy path ``/network-monitoring/v1/events/count``
-    returns 404, and the peer-consensus replacement
-    ``/network-troubleshooting/v1/event-filters`` (used by
-    KarthikSKumar98/central-mcp-server and nowireless4u/hpe-networking-mcp)
-    returns 400 "Bad Request" for every reasonable param combination we've
-    tried. Until the required param shape is documented, this tool tries
-    both paths and surfaces the error body so callers can see what Central
-    wants.
+    KNOWN ISSUE: events endpoint unstable. Legacy /events/count 404s;
+    /event-filters 400s with unknown param shape. Tries both; surfaces errors.
     """
     client = get_client()
     errors: list[str] = []
@@ -439,12 +378,7 @@ def list_inventory(
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """List claimed/unprovisioned devices in inventory.
-
-    Args:
-        status: "Yes" = provisioned, "No" = claimed but unprovisioned.
-        device_type: e.g. "ACCESS_POINT", "SWITCH", "GATEWAY".
-    """
+    """List claimed/unprovisioned devices. status: "Yes"=provisioned, "No"=claimed-only. device_type e.g. ACCESS_POINT/SWITCH/GATEWAY."""
     client = get_client()
     errors: list[str] = []
     params: dict[str, Any] = {
@@ -477,12 +411,10 @@ def list_audit_logs(
     filter: str | None = None,
     sort: str | None = None,
 ) -> dict[str, Any]:
-    """List New Central audit log entries (config changes, user actions).
+    """List audit log entries (config changes, user actions).
 
-    Args:
-        start_at: Epoch milliseconds (defaults to 24h ago).
-        end_at: Epoch milliseconds (defaults to now).
-        filter: OData filter, e.g. "category eq 'NETWORK_CONFIG' and action eq 'UPDATE'".
+    start_at/end_at: epoch ms (default last 24h). filter: OData e.g.
+    "category eq 'NETWORK_CONFIG' and action eq 'UPDATE'".
     """
     client = get_client()
     errors: list[str] = []
@@ -532,13 +464,10 @@ def get_device_trends(
     site_id: str | None = None,
     device_type: str | None = None,
 ) -> dict[str, Any]:
-    """Fetch time-series utilization trends (cpu/memory/throughput) for an AP or switch.
+    """Time-series utilization trends for an AP or switch.
 
-    Args:
-        metric: "cpu", "memory", or "throughput".
-        start_time: ISO 8601 timestamp, e.g. "2024-01-01T00:00:00Z".
-        end_time: ISO 8601 timestamp.
-        device_type: "AP" or "SWITCH". Auto-detected if omitted.
+    metric: cpu/memory/throughput. start_time/end_time: ISO 8601.
+    device_type AP/SWITCH auto-detected if omitted.
     """
     client = get_client()
     errors: list[str] = []
@@ -615,12 +544,7 @@ def get_device_health(
     serial_number: str | None = None,
     device_scope_id: str | None = None,
 ) -> dict[str, Any]:
-    """Fetch config-health or monitoring health state for a device.
-
-    Args:
-        serial_number: Used to filter monitoring results.
-        device_scope_id: Filters the config-health response to one device.
-    """
+    """Fetch config-health or monitoring health state for a device."""
     client = get_client()
     errors: list[str] = []
 
@@ -695,11 +619,7 @@ def list_switch_ports(
     filter: str | None = None,
     search: str | None = None,
 ) -> dict[str, Any]:
-    """List switch interfaces with link state, speed, duplex, and VLAN info.
-
-    Args:
-        filter: OData filter, e.g. "speed eq '1000' and duplex in ('Full')".
-    """
+    """List switch interfaces (link state, speed, duplex, VLAN). filter: OData e.g. "speed eq '1000'"."""
     client = get_client()
     errors: list[str] = []
     params: dict[str, Any] = {
@@ -764,11 +684,7 @@ def get_switch_vlans(
     offset: int = 0,
     filter: str | None = None,
 ) -> dict[str, Any]:
-    """List VLANs active on a switch with status and membership details.
-
-    Args:
-        filter: OData filter, e.g. "status in ('Up') and voice in ('Disabled')".
-    """
+    """List VLANs active on a switch (status, membership). filter: OData e.g. "status in ('Up')"."""
     client = get_client()
     errors: list[str] = []
     params: dict[str, Any] = {
@@ -841,12 +757,9 @@ def get_switch_interface_trends(
     interface_id: str | None = None,
     uplink: bool | None = None,
 ) -> dict[str, Any]:
-    """Fetch throughput trends for switch interfaces over a time window.
+    """Throughput trends for switch interfaces over a time window.
 
-    Args:
-        start_time: ISO 8601 timestamp, e.g. "2024-01-01T00:00:00Z".
-        end_time: ISO 8601 timestamp.
-        interface_id: Filter to a specific interface, e.g. "7" or "1/1/6".
+    start_time/end_time ISO 8601. interface_id e.g. "7" or "1/1/6".
     """
     client = get_client()
     errors: list[str] = []
