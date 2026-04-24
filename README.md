@@ -11,9 +11,10 @@
 > client — **conversationally**.
 
 Python tooling for Aruba Central New-Central / NBAPI: monitoring, configuration,
-troubleshooting, NAC, GLP device lifecycle, and an 8-stage cross-account
-migration pipeline. Works as **5 FastMCP servers** for AI agents, and as
-**standalone CLI tools** for batch workflows.
+troubleshooting, NAC, GLP device lifecycle, doc-grounded RAG, and an 8-stage
+cross-account migration pipeline. Ships as **6 FastMCP domain servers plus a
+unified tool-router** for AI agents, and as **standalone CLI tools** for batch
+workflows.
 
 **Keywords** (for GitHub search):
 `aruba-central` · `new-central` · `nbapi` · `greenlake` · `hpe-greenlake` ·
@@ -28,16 +29,24 @@ migration pipeline. Works as **5 FastMCP servers** for AI agents, and as
 
 | Surface | Count | What |
 |---|---|---|
-| **MCP tool servers** | 5 | `aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`, `aruba-glp` |
-| **MCP tools** | ~140 | Read + write across Central and GLP |
+| **MCP tool servers** | 6 + router | `aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`, `aruba-glp`, `aruba-rag` — optionally fronted by `aruba-tool-router` |
+| **MCP tools** | ~140 | Read + write across Central and GLP, plus doc-grounded search |
 | **Migration pipeline stages** | 8 | Discover → verify → transfer → configure → attest |
 | **Supported device types** | AP / CX / AOS-S / Gateway | Full troubleshoot + provisioning surface |
 | **GLP operations** | Devices / Subscriptions / Users / Audit logs | v2beta1 PATCH writes behind a feature flag |
+| **RAG corpus** | Aruba/HPE docs | Dev docs, tech docs, NAC/VSG guides, OpenAPI specs indexed in Qdrant |
 
 ### Feature highlights
 
-- 🧰 **~140 MCP tools** across 5 FastMCP servers (`aruba-monitoring`,
-  `aruba-config`, `aruba-ops`, `aruba-nac`, `aruba-glp`)
+- 🧰 **~140 MCP tools** across 6 FastMCP servers (`aruba-monitoring`,
+  `aruba-config`, `aruba-ops`, `aruba-nac`, `aruba-glp`, `aruba-rag`)
+- 🔀 **`aruba-tool-router`** — a single MCP entrypoint that proxies to the 6
+  domain servers, reducing client tool-listing tokens from ~8k to a routed
+  interface. Use the router for day-to-day; fall back to `.cursor/mcp.dev.json`
+  for per-server introspection when debugging.
+- 📚 **Doc-grounded RAG** — `search_docs` over ingested Aruba/HPE developer
+  docs, tech docs, NAC/VSG guides, and OpenAPI specs (Qdrant + Ollama stack,
+  `docker-compose.yml` included; re-index via `scripts/ingest_tools.py`)
 - 🚀 **8-stage migration pipeline** — Discover → verify → push to New Central
 - 📶 **SSID build/delete** with scope-map targeting (org-wide, site,
   device-group)
