@@ -127,14 +127,9 @@ def glp_add_device(serial_number: str, mac_address: str | None = None) -> dict[s
 
 @mcp.tool()
 def glp_add_devices_bulk(devices: list[dict[str, str]]) -> dict[str, Any]:
-    """Add multiple network devices to GLP in a single API call.
+    """Bulk add devices to GLP. devices: dicts with 'serialNumber' and 'macAddress'.
 
-    Args:
-        devices: List of dicts, each with 'serialNumber' and 'macAddress'.
-                 Example: [{"serialNumber": "ABC123", "macAddress": "20:4C:03:E4:11:C8"}, ...]
-
-    Returns:
-        task_id, task_result (with successfulDevicesSerial / failedDevicesSerial), errors.
+    Returns task_id + task_result (successfulDevicesSerial / failedDevicesSerial).
     """
     glp = get_glp_client()
     errors: list[str] = []
