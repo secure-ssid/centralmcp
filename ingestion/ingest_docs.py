@@ -30,13 +30,15 @@ from pipeline.clients.qdrant_client import (
 
 SOURCES_DIR = Path(__file__).parent / "sources"
 
-# Maps source folder name → doc_type tag
+# Maps source folder name → doc_type tag.
+# Each source has a distinct doc_type so provenance survives filtering.
+# `doc_type` is kept for back-compat; new code should filter by `source`.
 SOURCE_META = {
     "developer_docs": "developer-docs",
     "tech_docs": "tech-docs",
     "nac_docs": "nac",
     "vsg_docs": "vsg",
-    "techdocs_html": "tech-docs",
+    "techdocs_html": "techdocs-html",
     "openapi_specs": "openapi",
 }
 
