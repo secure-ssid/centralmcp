@@ -40,6 +40,7 @@ SOURCE_META = {
     "vsg_docs": "vsg",
     "techdocs_html": "techdocs-html",
     "openapi_specs": "openapi",
+    "aos_techdocs": "aos-techdocs",
 }
 
 UPLOAD_BATCH = 100
