@@ -209,7 +209,7 @@ def poe_bounce(
     if dtype is None:
         errors.append("PoE bounce is not supported on Access Points.")
         return {"status": None, "errors": errors}
-    return troubleshoot_async(client, f"/network-troubleshooting/v1/{dtype}/{serial_number}/poeBounce", {"ports": ports}, errors)
+    return troubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/poeBounce", {"ports": ports}, errors)
 
 
 @mcp.tool()
@@ -228,7 +228,7 @@ def port_bounce(
     if dtype is None:
         errors.append("Port bounce is not supported on Access Points.")
         return {"status": None, "errors": errors}
-    return troubleshoot_async(client, f"/network-troubleshooting/v1/{dtype}/{serial_number}/portBounce", {"ports": ports}, errors)
+    return troubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/portBounce", {"ports": ports}, errors)
 
 
 @mcp.tool()
@@ -247,7 +247,7 @@ def cable_test(
     if dtype is None:
         errors.append("Cable test is not supported on Access Points.")
         return {"status": None, "errors": errors}
-    return troubleshoot_async(client, f"/network-troubleshooting/v1/{dtype}/{serial_number}/cableTest", {"ports": ports}, errors)
+    return troubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/cableTest", {"ports": ports}, errors)
 
 
 # ── Device Actions ────────────────────────────────────────────────────────────

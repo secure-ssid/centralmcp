@@ -127,7 +127,7 @@ Postman collections are in `resources/` (git-ignored — download with `python r
 | Clients list | `/clients` |
 | Config health | `/network-config/v1alpha1/config-health/devices` |
 
-**Troubleshooting base:** `POST /network-troubleshooting/v1/{device-type}/{serial}/{op}`
+**Troubleshooting base:** `POST /network-troubleshooting/v1alpha1/{device-type}/{serial}/{op}`
 - Device types: `cx`, `aos-s`, `gateways`, `aps`
 - Ops: `ping`, `traceroute`, `showCommands`, `reboot`, `poeBounce`, `portBounce`, `cableTest`
 - All async: POST returns 202 + Location header → poll `{endpoint}/async-operations/{task_id}`
