@@ -1,9 +1,9 @@
 """MCP server — Aruba tool router (lazy loading via semantic tool RAG).
 
 Exposes a lean surface (find_tool + invoke_tool + common discovery tools)
-and retrieves the full 145-tool catalog from Qdrant on demand. Backend
-servers (config/monitoring/nac/ops/glp/rag) are imported in-process and
-dispatched by name — no subprocess overhead.
+and retrieves the full 145-tool catalog on demand. Backend servers
+(config/monitoring/nac/ops/glp/rag) are imported in-process and dispatched
+by name — no subprocess overhead.
 
 Point MCP clients at THIS server instead of the 6 individual ones to cut
 context cost ~80% and let small local models pick tools reliably.
@@ -17,6 +17,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_servers.shared import READ_ONLY
 from pipeline.clients.ollama_client import OllamaClient
 
 try:
