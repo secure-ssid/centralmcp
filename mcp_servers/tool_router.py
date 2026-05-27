@@ -98,7 +98,7 @@ def _keyword_hits(query: str, limit: int) -> list[dict]:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
     """Find Aruba tools by query. Combines semantic search + tool-name keyword match.
 
@@ -150,7 +150,7 @@ def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
 
 # ── invoke_tool ──────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
     """Call an Aruba tool by name (from find_tool). Arguments is a kwargs dict.
 
@@ -174,43 +174,43 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
 
 # ── Always-available discovery tools (used in nearly every session) ──────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_scopes() -> dict[str, Any]:
     """List Central scopes (sites, groups, global) — ID + name."""
     return invoke_tool("list_scopes")
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_global_scope_id() -> dict[str, Any]:
     """Return the global (org-wide) scope-id."""
     return invoke_tool("get_global_scope_id")
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_sites(limit: int = 50, offset: int = 0, full_list: bool = False) -> dict[str, Any]:
     """List sites (paginated)."""
     return invoke_tool("list_sites", {"limit": limit, "offset": offset, "full_list": full_list})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_devices(limit: int = 50, offset: int = 0, full_list: bool = False) -> dict[str, Any]:
     """List devices (paginated)."""
     return invoke_tool("list_devices", {"limit": limit, "offset": offset, "full_list": full_list})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def find_device(query: str) -> dict[str, Any]:
     """Find a device by name / serial / MAC / IP."""
     return invoke_tool("find_device", {"query": query})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def find_client(query: str) -> dict[str, Any]:
     """Find a client by name / MAC / IP."""
     return invoke_tool("find_client", {"query": query})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def search_docs(query: str, top_k: int = 5, source: str | None = None) -> Any:
     """Search Aruba/HPE documentation (Central config, APIs, NAC, VSG)."""
     args: dict[str, Any] = {"query": query, "top_k": top_k}
@@ -228,4 +228,5 @@ if __name__ == "__main__":
     )
     stable_list_tools(mcp)
     install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
-    mcp.run()
+    from mcp_servers.shared import READ_ONLY, run_server
+    run_server(mcp)

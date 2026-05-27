@@ -10,6 +10,10 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import (
+    DESTRUCTIVE,
+    DIAGNOSTIC,
+    IDEMPOTENT_WRITE,
+    READ_ONLY,
     _CX_TROUBLESHOOTING_BASE,
     bound_collection_response,
     get_client,
@@ -25,7 +29,7 @@ _AP_TROUBLESHOOTING_BASE = "/network-troubleshooting/v1alpha1/aps"
 
 # ── MAC Registrations ─────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_mac_registrations(
     limit: int = 50,
     offset: int = 0,
@@ -38,7 +42,7 @@ def list_mac_registrations(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def add_mac_registration(
     mac_address: str,
     display_name: str | None = None,
@@ -66,7 +70,7 @@ def add_mac_registration(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def update_mac_registration(
     registration_id: str,
     mac_address: str,
@@ -95,7 +99,7 @@ def update_mac_registration(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_mac_registration(
     registration_id: str,
     dry_run: bool = False,
@@ -111,7 +115,7 @@ def delete_mac_registration(
 
 # ── Named MPSK Registrations ──────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_mpsk_registrations(
     limit: int = 50,
     offset: int = 0,
@@ -124,7 +128,7 @@ def list_mpsk_registrations(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def add_mpsk_registration(
     name: str,
     network: str,
@@ -153,7 +157,7 @@ def add_mpsk_registration(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_mpsk_registration(
     registration_id: str,
     dry_run: bool = False,
@@ -169,7 +173,7 @@ def delete_mpsk_registration(
 
 # ── Visitor Accounts ──────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_visitors(
     limit: int = 50,
     offset: int = 0,
@@ -182,7 +186,7 @@ def list_visitors(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def add_visitor(
     display_name: str,
     name: str,
@@ -218,7 +222,7 @@ def add_visitor(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_visitor(
     visitor_id: str,
     dry_run: bool = False,
@@ -234,7 +238,7 @@ def delete_visitor(
 
 # ── Auth Server Profiles ──────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_auth_servers(
     limit: int = 50,
     offset: int = 0,
@@ -247,13 +251,13 @@ def list_auth_servers(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_auth_server(name: str) -> dict[str, Any]:
     """Get a single RADIUS/auth server profile by name."""
     return get_client().get(f"{_CNAC_BASE}/auth-servers/{name}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_auth_server(
     name: str,
     auth_server_address: str,
@@ -321,7 +325,7 @@ def create_auth_server(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_auth_server(
     name: str,
     dry_run: bool = False,
@@ -337,7 +341,7 @@ def delete_auth_server(
 
 # ── AAA Profiles ──────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_aaa_profiles(
     limit: int = 50,
     offset: int = 0,
@@ -350,13 +354,13 @@ def list_aaa_profiles(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_aaa_profile(name: str) -> dict[str, Any]:
     """Get a single AAA profile by name."""
     return get_client().get(f"{_CNAC_BASE}/aaa-profile/{name}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_aaa_profile(
     name: str,
     auth_role: str | None = None,
@@ -386,7 +390,7 @@ def create_aaa_profile(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_aaa_profile(
     name: str,
     dry_run: bool = False,
@@ -402,7 +406,7 @@ def delete_aaa_profile(
 
 # ── AAA Test ──────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=DIAGNOSTIC)
 def test_aaa(
     serial_number: str,
     username: str,
@@ -444,7 +448,7 @@ def test_aaa(
 
 # ── Authz Policies ────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_authz_policies(
     limit: int = 50,
     offset: int = 0,
@@ -457,13 +461,13 @@ def list_authz_policies(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_authz_policy(policy_id: str) -> dict[str, Any]:
     """Get a single CNAC authz policy by ID."""
     return get_client().get(f"{_CNAC_BASE}/authz-policies/{policy_id}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_authz_policy(
     policy_name: str,
     rule_name: str,
@@ -548,7 +552,7 @@ def create_authz_policy(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_authz_policy(
     policy_id: str,
     dry_run: bool = False,
@@ -565,7 +569,7 @@ def delete_authz_policy(
 _STATIC_TAG_BASE = "/network-config/v1alpha1/static-tag"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_static_tags(
     limit: int = 50,
     offset: int = 0,
@@ -578,7 +582,7 @@ def list_static_tags(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_static_tag(
     name: str,
     dry_run: bool = False,
@@ -595,7 +599,7 @@ def create_static_tag(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_static_tag(tag_id: str) -> dict[str, Any]:
     """Delete a static classification tag by UUID."""
     client = get_client()
@@ -615,7 +619,7 @@ _MAC_ADDRESS_STORE_ID = "4c6c406a-7c1f-442a-8e43-c627090e8624"
 _CENTRAL_ORG_NAME = "SecureSSID-LAB"
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_auth_profiles(
     limit: int = 50,
     offset: int = 0,
@@ -628,13 +632,13 @@ def list_auth_profiles(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_auth_profile(profile_id: str) -> dict[str, Any]:
     """Get a single Central NAC auth profile by UUID."""
     return get_client().get(f"{_AUTH_PROFILE_BASE}/{profile_id}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_mac_auth_profile(
     name: str,
     networks: list[str],
@@ -682,7 +686,7 @@ def create_mac_auth_profile(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_dot1x_auth_profile(
     name: str,
     networks: list[str],
@@ -722,7 +726,7 @@ def create_dot1x_auth_profile(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_auth_profile(
     profile_id: str,
     dry_run: bool = False,
@@ -736,7 +740,7 @@ def delete_auth_profile(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_identity_stores(
     limit: int = 50,
     offset: int = 0,
@@ -758,4 +762,5 @@ if __name__ == "__main__":
     )
     stable_list_tools(mcp)
     install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
-    mcp.run()
+    from mcp_servers.shared import run_server
+    run_server(mcp)

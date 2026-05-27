@@ -12,19 +12,19 @@ mcp_servers/
   ops.py               Ops tools — reboots, ping, cable test, PoE bounce, GLP mgmt
   nac.py               NAC tools — MAC reg, MPSK, visitors, auth servers, AAA profiles, AAA test
   glp.py               GreenLake Platform tools — devices, subscriptions, users, audit logs
-  rag.py               RAG tools — search_docs over ingested Aruba/HPE docs (Qdrant + Ollama)
+  rag.py               RAG tools — search_docs over ingested Aruba/HPE docs (Redis Stack + Ollama)
   shared.py            Shared utilities and helpers
 pipeline/
-  clients/             CentralClient, GLPClient, MCPClient, TokenManager, OllamaClient, QdrantClient
+  clients/             CentralClient, GLPClient, MCPClient, TokenManager, OllamaClient, RedisClient
   stages/              s1_discover → s8_verify (migration pipeline)
   config.py            Credentials loader (config/credentials.yaml or env)
   create_ssid.py       SSID build/delete logic (underlay + overlay)
 ingestion/
-  ingest_docs.py       Scrape + chunk + embed Aruba/HPE docs into Qdrant
+  ingest_docs.py       Scrape + chunk + embed Aruba/HPE docs into Redis Stack
   sources/             Raw scraped docs (git-ignored — regenerable)
 scripts/
-  ingest_tools.py      Re-index the RAG corpus against the configured Qdrant/Ollama stack
-docker-compose.yml     Qdrant + Ollama runtime for the RAG server
+  ingest_tools.py      Re-index the RAG corpus against the configured Redis Stack/Ollama stack
+docker-compose.yml     Redis Stack (port 6379, RedisInsight UI port 8001) + Ollama runtime
 config/credentials.yaml  API credentials (never commit)
 resources/             Postman API collections (monitoring + config endpoints)
 inputs/                CSV files for batch migration
@@ -33,6 +33,7 @@ state/                 Pipeline state store (idempotent runs)
 .cursor/
   mcp.json             Router-only entry (aruba-tool-router) — low token overhead
   mcp.dev.json         All 6 domain servers directly — full introspection for debugging
+  obsidian-vault       Filesystem MCP over ~/Documents/Central-MCP-Obsidian (Aruba docs + customer notes)
 ```
 
 ## MCP tools (`mcp_servers/`)
@@ -93,7 +94,7 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 ## Adding new MCP tools
 
 1. Pick the right domain server: `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, or `rag.py`. The `tool_router.py` auto-exposes any tool registered on those servers — no router edits needed.
-2. Add `@mcp.tool()` with verb_noun naming, no prefix.
+2. Add `@mcp.tool(annotations=READ_ONLY|DIAGNOSTIC|DESTRUCTIVE|IDEMPOTENT_WRITE)` with verb_noun naming, no prefix. Import the annotation constant from `mcp_servers.shared`.
 3. Use thin wrapper — delegate to `pipeline/clients/` or inline API call.
 4. Docstring: what it does, key args, and any gotchas.
 5. Update the tool count in the module docstring.

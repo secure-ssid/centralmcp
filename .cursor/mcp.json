@@ -1,5 +1,13 @@
 {
   "mcpServers": {
+    "obsidian-vault": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/stephenchoate/Documents/Central-MCP-Obsidian"
+      ]
+    },
     "aruba-tool-router": {
       "command": "${workspaceFolder}/.venv/bin/python3",
       "args": ["${workspaceFolder}/mcp_servers/tool_router.py"],

@@ -1,10 +1,10 @@
-"""Embed all FastMCP tool definitions from the 6 Aruba servers into Qdrant.
+"""Embed all FastMCP tool definitions from the 6 Aruba servers into Redis Stack.
 
 Usage: uv run python scripts/ingest_tools.py
 
 Reads the servers by direct module import (no subprocess) and walks the
-`mcp._tool_manager._tools` registry. Each tool becomes one Qdrant point with:
-  payload: {server, name, description, schema, signature}
+`mcp._tool_manager._tools` registry. Each tool becomes one Redis JSON doc with:
+  payload: {server, name, description, schema_json, params}
   vector:  embedding of "name\\ndescription\\nparam_names"
 """
 import hashlib
@@ -16,12 +16,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from qdrant_client.models import Distance, PointStruct, VectorParams
-
 from pipeline.clients.ollama_client import OllamaClient
-from pipeline.clients.qdrant_client import EMBEDDING_DIMS, QDRANT_URL, get_client
-
-TOOLS_COLLECTION = "aruba_tools"
+from pipeline.clients.redis_client import (
+    TOOLS_INDEX,
+    ensure_tools_index,
+    get_client,
+    upsert_tools,
+)
 
 SERVERS = [
     ("aruba-config", "mcp_servers.config"),
@@ -66,40 +67,36 @@ def _embed_text(t: dict) -> str:
 
 def main() -> int:
     ollama = OllamaClient()
-    qc = get_client()
+    client = get_client()
 
-    existing = {c.name for c in qc.get_collections().collections}
-    if TOOLS_COLLECTION in existing:
-        qc.delete_collection(TOOLS_COLLECTION)
-    qc.create_collection(
-        collection_name=TOOLS_COLLECTION,
-        vectors_config=VectorParams(size=EMBEDDING_DIMS, distance=Distance.COSINE),
-    )
-    print(f"Created collection '{TOOLS_COLLECTION}'")
+    # Drop and recreate the index for a clean re-ingest
+    try:
+        client.ft(TOOLS_INDEX).dropindex(delete_documents=True)
+        print(f"Dropped existing index '{TOOLS_INDEX}'")
+    except Exception:
+        pass
+    ensure_tools_index(client)
 
-    points: list[PointStruct] = []
+    batch: list[dict] = []
     total = 0
     for server, module_path in SERVERS:
         tools = _extract_tools(module_path)
         print(f"  {server}: {len(tools)} tools")
         for t in tools:
             vec = ollama.embed(_embed_text(t))
-            points.append(PointStruct(
-                id=_stable_id(server, t["name"]),
-                vector=vec,
-                payload={
-                    "server": server,
-                    "name": t["name"],
-                    "description": t["description"],
-                    "schema": json.dumps(t["schema"]),
-                    "params": t["params"],
-                },
-            ))
+            batch.append({
+                "id": _stable_id(server, t["name"]),
+                "server": server,
+                "name": t["name"],
+                "description": t["description"],
+                "schema_json": json.dumps(t["schema"]),
+                "params": t["params"],
+                "embedding": vec,
+            })
         total += len(tools)
 
-    for i in range(0, len(points), 64):
-        qc.upsert(collection_name=TOOLS_COLLECTION, points=points[i:i + 64])
-    print(f"Ingested {total} tools into '{TOOLS_COLLECTION}' @ {QDRANT_URL}")
+    upsert_tools(client, batch)
+    print(f"Ingested {total} tools into '{TOOLS_INDEX}'")
     return 0
 
 

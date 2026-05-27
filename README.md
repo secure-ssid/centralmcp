@@ -34,7 +34,8 @@ workflows.
 | **Migration pipeline stages** | 8 | Discover → verify → transfer → configure → attest |
 | **Supported device types** | AP / CX / AOS-S / Gateway | Full troubleshoot + provisioning surface |
 | **GLP operations** | Devices / Subscriptions / Users / Audit logs | v2beta1 PATCH writes behind a feature flag |
-| **RAG corpus** | Aruba/HPE docs | Dev docs, tech docs, NAC/VSG guides, OpenAPI specs indexed in Qdrant |
+| **RAG corpus** | Aruba/HPE docs | Dev docs, tech docs, NAC/VSG guides, OpenAPI specs indexed in Redis Stack |
+| **Obsidian vault** | Personal knowledge | 2,900+ doc files + customer notes, browsable in Obsidian with MCP access |
 
 ### Feature highlights
 
@@ -45,8 +46,14 @@ workflows.
   interface. Use the router for day-to-day; fall back to `.cursor/mcp.dev.json`
   for per-server introspection when debugging.
 - 📚 **Doc-grounded RAG** — `search_docs` over ingested Aruba/HPE developer
-  docs, tech docs, NAC/VSG guides, and OpenAPI specs (Qdrant + Ollama stack,
+  docs, tech docs, NAC/VSG guides, and OpenAPI specs (**Redis Stack** + Ollama,
   `docker-compose.yml` included; re-index via `scripts/ingest_tools.py`)
+- 🗂️ **Obsidian vault MCP** — `obsidian-vault` server exposes 2,900+ Aruba doc
+  files + your own customer/runbook notes to any MCP client
+- 🏷️ **MCP ToolAnnotations** — all tools tagged `READ_ONLY`, `DIAGNOSTIC`, or
+  `DESTRUCTIVE` so clients can show safety hints
+- ⚠️ **Elicitation for destructive ops** — `reboot_device`, `poe_bounce`,
+  `port_bounce`, `disconnect_client` use `ctx.elicit()` to confirm before executing
 - 🚀 **8-stage migration pipeline** — Discover → verify → push to New Central
 - 📶 **SSID build/delete** with scope-map targeting (org-wide, site,
   device-group)
@@ -122,6 +129,9 @@ cp .mcp.json.example .mcp.json
 | `TOKEN_CACHE_DIR` | Override OAuth token cache directory | `~/.cache/centralmcp/` |
 | `CENTRALMCP_GLP_V2BETA1_WRITES` | Enable `PATCH /devices/v2beta1/devices` GLP writes | off |
 | `CENTRALMCP_BOUND_LISTS` | Wrap list tool responses as `{items, _pagination}` | off |
+| `MCP_TRANSPORT` | Server transport: `stdio` (default) or `streamable-http` | `stdio` |
+| `MCP_HOST` | Bind address for HTTP transport | `127.0.0.1` |
+| `MCP_PORT` | Port for HTTP transport | `8000` |
 | `GLP_TOKEN_URL` | Override SSO token endpoint | `https://sso.common.cloud.hpe.com/as/token.oauth2` |
 | `GLP_BASE_URL` | Override GLP API base URL | `https://global.api.greenlake.hpe.com` |
 
@@ -173,9 +183,11 @@ mcp_servers/
   ops.py                Ops tools (reboots, ping, cable test, PoE bounce)
   nac.py                NAC tools (MAC reg, MPSK, visitors, auth servers, AAA)
   glp.py                GreenLake Platform tools (aruba-glp server)
+  rag.py                RAG tools — search_docs over ingested Aruba/HPE docs (Redis Stack + Ollama)
+  tool_router.py        Unified router — proxies the 6 domain servers under one MCP entrypoint
   shared.py             Shared clients, helpers, pagination, feature flags
 pipeline/
-  clients/              CentralClient (429+5xx retry), GLPClient (v2beta1 PATCH), TokenManager
+  clients/              CentralClient (429+5xx retry), GLPClient (v2beta1 PATCH), TokenManager, RedisClient (vector search)
   stages/               s1_discover → s8_verify
   config.py             Credential loader (source_account + central_account aliases)
   create_ssid.py        SSID build/delete logic (underlay + overlay)

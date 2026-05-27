@@ -1,25 +1,27 @@
 """MCP server — Aruba/HPE documentation RAG tools (1 tool).
 
 Covers: semantic search over ingested Aruba Central developer docs,
-tech docs, NAC docs, VSG docs, and HTML tech docs via Qdrant + Ollama.
+tech docs, NAC docs, VSG docs, and HTML tech docs via Redis Stack + Ollama.
 """
 
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_servers.shared import READ_ONLY
 from pipeline.clients.ollama_client import OllamaClient
-from pipeline.clients.qdrant_client import DOCS_COLLECTION, QDRANT_URL
+from pipeline.clients.redis_client import DOCS_INDEX, REDIS_URL, get_client as _get_redis_client
+from pipeline.clients.redis_client import vector_search
 
 mcp = FastMCP("aruba-rag")
 
 _ollama = OllamaClient()
 
 try:
-    from qdrant_client import QdrantClient as _QdrantClient
-    _qdrant = _QdrantClient(url=QDRANT_URL)
+    _redis = _get_redis_client(REDIS_URL)
+    _redis.ping()
 except Exception:
-    _qdrant = None
+    _redis = None
 
 # Higher boost = preferred when scores are close.
 # openapi_specs: ground truth for field schemas and valid enum values.
@@ -36,8 +38,18 @@ _SOURCE_BOOST: dict[str, float] = {
     "techdocs_html": 0.0,
 }
 
+_DOC_TYPE_TO_SOURCE: dict[str, str] = {
+    "developer-docs": "developer_docs",
+    "tech-docs": "tech_docs",
+    "techdocs-html": "techdocs_html",
+    "nac": "nac_docs",
+    "vsg": "vsg_docs",
+    "openapi": "openapi_specs",
+    "aos-techdocs": "aos_techdocs",
+}
 
-@mcp.tool()
+
+@mcp.tool(annotations=READ_ONLY)
 def search_docs(
     query: str,
     top_k: int = 5,
@@ -66,51 +78,38 @@ def search_docs(
         List of chunks with text, source, doc_type, file_path, score, and
         boosted_score (used for ranking).
     """
-    if _qdrant is None:
-        return [{"error": "Qdrant not available — is Docker running?"}]
+    if _redis is None:
+        return [{"error": "Redis not available — is the Redis Stack server running?"}]
 
     top_k = min(top_k, 20)
     query_vector = _ollama.embed(query)
 
-    query_filter = None
-    conditions = []
-    if source or doc_type:
-        from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-        if source:
-            conditions.append(
-                FieldCondition(key="source", match=MatchValue(value=source))
-            )
-        if doc_type:
-            conditions.append(
-                FieldCondition(key="doc_type", match=MatchValue(value=doc_type))
-            )
-        query_filter = Filter(must=conditions)
+    # Map legacy doc_type to source name when source is not provided
+    source_filter = source
+    if not source_filter and doc_type:
+        source_filter = _DOC_TYPE_TO_SOURCE.get(doc_type)
 
     # Fetch more candidates so re-ranking has room to promote higher-priority sources
-    candidates = _qdrant.query_points(
-        collection_name=DOCS_COLLECTION,
-        query=query_vector,
-        query_filter=query_filter,
-        limit=top_k * 3,
-    ).points
+    candidates = vector_search(
+        _redis, query_vector, top_k=top_k * 3, source_filter=source_filter
+    )
 
     # Re-rank: boosted_score = raw_score + source_boost. Applies even under filters —
     # a filter narrows the candidate set, boosting still orders within it.
     def boosted(r):
-        boost = _SOURCE_BOOST.get(r.payload.get("source", ""), 0.0)
-        return r.score + boost
+        boost = _SOURCE_BOOST.get(r.get("source", ""), 0.0)
+        return r["score"] + boost
 
     candidates.sort(key=boosted, reverse=True)
 
     return [
         {
-            "text": r.payload.get("text", ""),
-            "source": r.payload.get("source"),
-            "doc_type": r.payload.get("doc_type"),
-            "file_path": r.payload.get("file_path"),
-            "chunk_index": r.payload.get("chunk_index"),
-            "score": round(r.score, 4),
+            "text": r["text"],
+            "source": r["source"],
+            "doc_type": r["doc_type"],
+            "file_path": r["file_path"],
+            "chunk_index": r.get("chunk_index"),
+            "score": r["score"],
             "boosted_score": round(boosted(r), 4),
         }
         for r in candidates[:top_k]
@@ -126,4 +125,5 @@ if __name__ == "__main__":
     )
     stable_list_tools(mcp)
     install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
-    mcp.run()
+    from mcp_servers.shared import run_server
+    run_server(mcp)

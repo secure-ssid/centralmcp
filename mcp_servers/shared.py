@@ -5,13 +5,72 @@ import time
 from typing import Any
 from urllib.parse import quote
 
+from mcp.types import ToolAnnotations
+
 from pipeline.clients.central_client import CentralClient
 from pipeline.clients.glp_client import GLPClient
 from pipeline.clients.mcp_client import MCPClient
 from pipeline.clients.token_manager import TokenManager
 from pipeline.config import build_account_contexts
 
+# ---------------------------------------------------------------------------
+# MCP Tool Annotations — safety hints for MCP clients
+# ---------------------------------------------------------------------------
+
+READ_ONLY = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+
+DIAGNOSTIC = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+
+DESTRUCTIVE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+
+IDEMPOTENT_WRITE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+# ---------------------------------------------------------------------------
+# Transport configuration
+# ---------------------------------------------------------------------------
+
+MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio")
+MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
+MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
+
+
+def run_server(mcp_instance, default_port: int | None = None) -> None:
+    """Run an MCP server with transport configured by environment.
+
+    MCP_TRANSPORT: 'stdio' (default) or 'streamable-http'
+    MCP_HOST: bind address (default 127.0.0.1)
+    MCP_PORT: port (default 8000, or default_port if provided)
+    """
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "stdio":
+        mcp_instance.run()
+    else:
+        host = os.environ.get("MCP_HOST", "127.0.0.1")
+        port = int(os.environ.get("MCP_PORT", str(default_port or 8000)))
+        mcp_instance.run(transport=transport, host=host, port=port)
+
 
 # ---------------------------------------------------------------------------
 # Lazy-initialised clients

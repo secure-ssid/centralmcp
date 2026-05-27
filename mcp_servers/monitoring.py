@@ -10,6 +10,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import (
+    READ_ONLY,
     bound_collection_response,
     clamp_limit,
     get_client,
@@ -19,10 +20,48 @@ from mcp_servers.shared import (
 
 mcp = FastMCP("aruba-monitoring")
 
+# ---------------------------------------------------------------------------
+# AP reboot reason translation
+# ---------------------------------------------------------------------------
+
+_REBOOT_REASON_MAP: dict[str, str] = {
+    "UNKNOWN": "Unknown",
+    "AP_RELOAD": "Reload",
+    "USER_REBOOT": "User reboot",
+    "WRITE_ERASE_REBOOT": "Write erase reboot",
+    "WRITE_ERASE_ALL_REBOOT": "Write erase all reboot",
+    "IMAGE_SYNC_FAILED": "Image sync failed",
+    "IMAGE_SYNC_SUCCESSFUL": "Image sync successful",
+    "IMAGE_UPGRADE": "Image upgrade successful",
+    "IMAGE_DOWNLOAD_FAILURE": "Image download failure",
+    "OUT_OF_MEMORY": "Reboot caused by out of memory",
+    "DOWN_UPLINK": "Current uplink down, no useable uplink",
+    "CONDUCTOR_TO_LOCAL": "Conductor transitioned to local",
+    "NETWORK_DISCONNECT_USB_RESET": "Internet connection lost, reset USB modem",
+    "NETWORK_DISCONNECT": "Internet connection lost",
+    "UNREACHABLE_GATEWAY": "Gateway unreachable",
+    "FATAL_EXCEPTION": "Kernel panic: fatal exception",
+    "FATAL_EXCEPTION_IN_INTERRUPT": "Kernel panic: fatal exception in interrupt",
+    "SOFTLOCKUP": "Kernel panic: softlockup/hung tasks",
+    "NTP_SYNC": "System clock too far ahead of NTP sync",
+    "BAD_MESH_LINK": "Mesh link bad — rebooting mesh point",
+}
+
+
+def _translate_reboot_reason(device: dict) -> dict:
+    """Translate raw reboot reason code to human-readable string in-place."""
+    reason = device.get("lastRebootReason") or device.get("last_reboot_reason")
+    if reason and reason in _REBOOT_REASON_MAP:
+        if "lastRebootReason" in device:
+            device["lastRebootReason"] = _REBOOT_REASON_MAP[reason]
+        elif "last_reboot_reason" in device:
+            device["last_reboot_reason"] = _REBOOT_REASON_MAP[reason]
+    return device
+
 
 # ── Sites ────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_sites(
     limit: int = 100,
     offset: int = 0,
@@ -32,7 +71,7 @@ def list_sites(
     return maybe_bound(sites, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_site(name: str) -> dict[str, Any] | None:
     """Find a site by name (case-insensitive). Returns None if not found."""
     name_lower = name.lower()
@@ -53,7 +92,7 @@ def get_site(name: str) -> dict[str, Any] | None:
 
 # ── Devices ──────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_devices(
     device_type: str | None = None,
     site_id: str | None = None,
@@ -75,21 +114,30 @@ def list_devices(
     # result (which would produce misleading pagination metadata).
     # The true offset is reflected in the _pagination block we attach
     # manually when the flag is on.
+    # Translate AP reboot reason codes
+    if isinstance(devices, list):
+        for d in devices:
+            if d.get("deviceType", "").upper() in ("AP", "ACCESS_POINT") or "AP" in d.get("deviceType", "").upper():
+                _translate_reboot_reason(d)
+
     wrapped = maybe_bound(devices, limit=limit, offset=0)
     if isinstance(wrapped, dict) and "_pagination" in wrapped:
         wrapped["_pagination"]["offset"] = off
     return wrapped
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def find_device(serial_number: str) -> dict[str, Any] | None:
     """Find a single device by serial number. Returns the device record or None."""
-    return get_mcp_client().get_device_by_serial(serial_number)
+    result = get_mcp_client().get_device_by_serial(serial_number)
+    if result and ("AP" in (result.get("deviceType") or "").upper()):
+        _translate_reboot_reason(result)
+    return result
 
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_clients(
     site_id: str | None = None,
     serial_number: str | None = None,
@@ -145,13 +193,13 @@ def list_clients(
     return maybe_bound(clients, limit=limit, offset=0)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def find_client(mac_or_ip: str) -> dict[str, Any] | None:
     """Find a connected client by MAC address or IP address."""
     return get_mcp_client().find_client(mac_or_ip)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_client_details(mac_address: str) -> dict[str, Any]:
     """Fetch detailed info (usage, bandwidth, auth) for a single client by MAC address."""
     client = get_client()
@@ -180,7 +228,7 @@ def get_client_details(mac_address: str) -> dict[str, Any]:
 
 # ── Alerts & Events ───────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_alerts(
     site_id: str | None = None,
     severity: str | None = None,
@@ -193,7 +241,7 @@ def list_alerts(
     return maybe_bound(alerts, limit=limit, offset=0)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_events(
     serial_number: str,
     hours: int = 24,
@@ -216,7 +264,7 @@ def list_events(
     return bound_collection_response(events, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_events_count(serial_number: str, hours: int = 24) -> dict[str, Any]:
     """Count events for a device over the past N hours (default 24).
 
@@ -255,7 +303,7 @@ def get_events_count(serial_number: str, hours: int = 24) -> dict[str, Any]:
 
 # ── Scopes ────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_scopes(
     limit: int = 100,
     offset: int = 0,
@@ -355,7 +403,7 @@ def list_scopes(
     return bound_collection_response(normalized, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_global_scope_id() -> dict[str, Any]:
     """Return the org-wide global scope_id — use this for 'everywhere'/'all APs' config."""
     from pipeline.stages.s6_configure import _fetch_global_scope_id
@@ -371,7 +419,7 @@ def get_global_scope_id() -> dict[str, Any]:
 
 # ── Inventory ─────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_inventory(
     status: str | None = None,
     device_type: str | None = None,
@@ -402,7 +450,7 @@ def list_inventory(
 
 # ── Audit Logs ────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_audit_logs(
     start_at: int | None = None,
     end_at: int | None = None,
@@ -440,7 +488,7 @@ def list_audit_logs(
         return {"items": [], "total": 0, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_audit_log(audit_id: str) -> dict[str, Any]:
     """Fetch a single audit log entry by its audit ID."""
     client = get_client()
@@ -455,7 +503,7 @@ def get_audit_log(audit_id: str) -> dict[str, Any]:
 
 # ── Device Health & Trends ────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_device_trends(
     serial_number: str,
     metric: str,
@@ -539,7 +587,7 @@ def get_device_trends(
     return {"serial_number": serial_number, "metric": metric, "trends": None, "endpoint_used": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_device_health(
     serial_number: str | None = None,
     device_scope_id: str | None = None,
@@ -583,7 +631,7 @@ def get_device_health(
     return {"serial_number": serial_number, "health": None, "endpoint_used": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_wireless_metrics(serial_number: str) -> dict[str, Any]:
     """Fetch AP wireless metrics: RF stats, client count, utilization, channel."""
     client = get_client()
@@ -611,7 +659,7 @@ def get_wireless_metrics(serial_number: str) -> dict[str, Any]:
 
 # ── Switch Monitoring ─────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_switch_ports(
     serial_number: str,
     limit: int = 100,
@@ -652,7 +700,7 @@ def list_switch_ports(
     return {"serial_number": serial_number, "interfaces": None, "endpoint_used": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_switch_details(serial_number: str) -> dict[str, Any]:
     """Fetch full monitoring details for a switch (status, uptime, CPU, memory, VLANs)."""
     client = get_client()
@@ -677,7 +725,7 @@ def get_switch_details(serial_number: str) -> dict[str, Any]:
     return {"serial_number": serial_number, "details": None, "endpoint_used": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_switch_vlans(
     serial_number: str,
     limit: int = 100,
@@ -715,7 +763,7 @@ def get_switch_vlans(
     return {"serial_number": serial_number, "vlans": None, "endpoint_used": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_switch_interface_poe(
     serial_number: str,
     site_id: str | None = None,
@@ -748,7 +796,7 @@ def get_switch_interface_poe(
     return {"serial_number": serial_number, "poe": None, "endpoint_used": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_switch_interface_trends(
     serial_number: str,
     start_time: str,
@@ -792,7 +840,7 @@ def get_switch_interface_trends(
 
 # ── AP Sub-Resources ──────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_ap_radios(serial_number: str) -> dict[str, Any]:
     """List radios on an AP with band, channel, power, utilization, and mode."""
     client = get_client()
@@ -819,7 +867,7 @@ def get_ap_radios(serial_number: str) -> dict[str, Any]:
     return {"serial_number": serial_number, "radios": None, "endpoint_used": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_ap_ports(serial_number: str) -> dict[str, Any]:
     """List wired ports on an AP with link state, speed, VLAN, and duplex."""
     client = get_client()
@@ -858,7 +906,7 @@ def get_ap_ports(serial_number: str) -> dict[str, Any]:
 
 # ── WLANs ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_wlans(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     """List all WLANs visible in New Central monitoring."""
     client = get_client()
@@ -867,14 +915,14 @@ def list_wlans(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     return client.get(f"/network-monitoring/v1/wlans?limit={lim}&offset={off}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_wlan(wlan_name: str) -> dict[str, Any]:
     """Fetch monitoring details for a single WLAN by name."""
     client = get_client()
     return client.get(f"/network-monitoring/v1/wlans/{wlan_name}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_ap_wlans(serial_number: str) -> dict[str, Any]:
     """List WLANs currently active on a specific AP."""
     client = get_client()
@@ -883,21 +931,21 @@ def list_ap_wlans(serial_number: str) -> dict[str, Any]:
 
 # ── Gateway Clusters ──────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_cluster_members(cluster_name: str) -> dict[str, Any]:
     """List members of a gateway cluster."""
     client = get_client()
     return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/members")
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_cluster_tunnels(cluster_name: str) -> dict[str, Any]:
     """List tunnels for a gateway cluster."""
     client = get_client()
     return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/tunnels")
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_cluster_tunnel_health(cluster_name: str) -> dict[str, Any]:
     """Get tunnel health summary (up/down counts) for a gateway cluster."""
     client = get_client()
@@ -913,4 +961,5 @@ if __name__ == "__main__":
     )
     stable_list_tools(mcp)
     install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
-    mcp.run()
+    from mcp_servers.shared import run_server
+    run_server(mcp)

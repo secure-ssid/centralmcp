@@ -7,12 +7,12 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_servers.shared import get_glp_client
+from mcp_servers.shared import DESTRUCTIVE, IDEMPOTENT_WRITE, READ_ONLY, get_glp_client
 
 mcp = FastMCP("aruba-glp")
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_glp_devices(limit: int = 100, filter: str | None = None) -> dict[str, Any]:
     """List devices in the GLP workspace (warranty, subscription state, lifecycle).
 
@@ -29,7 +29,7 @@ def list_glp_devices(limit: int = 100, filter: str | None = None) -> dict[str, A
         return {"items": [], "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_glp_device(serial_number: str) -> dict[str, Any]:
     """Fetch a single device from GLP by serial number."""
     glp = get_glp_client()
@@ -42,7 +42,7 @@ def get_glp_device(serial_number: str) -> dict[str, Any]:
         return {"device": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_glp_subscriptions(limit: int = 100) -> dict[str, Any]:
     """List subscriptions (license keys) in the GLP workspace (type, assigned device, expiry)."""
     glp = get_glp_client()
@@ -55,7 +55,7 @@ def list_glp_subscriptions(limit: int = 100) -> dict[str, Any]:
         return {"items": [], "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_glp_subscription(subscription_id: str) -> dict[str, Any]:
     """Fetch a single GLP subscription by ID."""
     glp = get_glp_client()
@@ -68,7 +68,7 @@ def get_glp_subscription(subscription_id: str) -> dict[str, Any]:
         return {"subscription": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_glp_users(limit: int = 300) -> dict[str, Any]:
     """List users with access to the GLP workspace."""
     glp = get_glp_client()
@@ -81,7 +81,7 @@ def list_glp_users(limit: int = 300) -> dict[str, Any]:
         return {"items": [], "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_glp_audit_logs(limit: int = 100, category: str | None = None) -> dict[str, Any]:
     """List GLP audit log entries (who did what and when).
 
@@ -98,7 +98,7 @@ def list_glp_audit_logs(limit: int = 100, category: str | None = None) -> dict[s
         return {"items": [], "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def glp_assign_subscription(serial_number: str, subscription_key: str) -> dict[str, Any]:
     """Assign a GLP subscription (license) to a device."""
     glp = get_glp_client()
@@ -111,7 +111,7 @@ def glp_assign_subscription(serial_number: str, subscription_key: str) -> dict[s
         return {"result": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def glp_add_device(serial_number: str, mac_address: str | None = None) -> dict[str, Any]:
     """Add a device to the GLP workspace (async task, polls until complete, ~5min max)."""
     glp = get_glp_client()
@@ -125,7 +125,7 @@ def glp_add_device(serial_number: str, mac_address: str | None = None) -> dict[s
         return {"task_id": None, "task_result": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def glp_add_devices_bulk(devices: list[dict[str, str]]) -> dict[str, Any]:
     """Bulk add devices to GLP. devices: dicts with 'serialNumber' and 'macAddress'.
 
@@ -142,7 +142,7 @@ def glp_add_devices_bulk(devices: list[dict[str, str]]) -> dict[str, Any]:
         return {"task_id": None, "task_result": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def glp_archive_device(serial_number: str) -> dict[str, Any]:
     """Archive a device in GLP (removes from Central, keeps in GLP inventory)."""
     glp = get_glp_client()
@@ -158,4 +158,5 @@ def glp_archive_device(serial_number: str) -> dict[str, Any]:
 if __name__ == "__main__":
     from mcp_servers._cache_hygiene import stable_list_tools
     stable_list_tools(mcp)
-    mcp.run()
+    from mcp_servers.shared import run_server
+    run_server(mcp)

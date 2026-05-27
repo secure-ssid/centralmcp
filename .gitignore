@@ -40,10 +40,14 @@ node_modules/
 
 # Scraped doc sources (regenerate with ingestion scrapers)
 ingestion/sources/
+ingestion/markdown/
+ingestion/markdown_techdocs/
 ingestion/markdown_vsg/
+ingestion/techdocs_urls.json
 
 # Local vector DB and model data (docker volumes)
 qdrant_data/
+redis_data/
 ollama_data/
 
 # Python

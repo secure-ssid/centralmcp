@@ -1,6 +1,14 @@
 {
   "_note": "Dev variant: exposes all 6 servers directly (full introspection, ~8k tool tokens). Copy over mcp.json while debugging a specific tool, or use alongside the router for raw access.",
   "mcpServers": {
+    "obsidian-vault": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/stephenchoate/Documents/Central-MCP-Obsidian"
+      ]
+    },
     "aruba-monitoring": {
       "command": "${workspaceFolder}/.venv/bin/python3",
       "args": ["${workspaceFolder}/mcp_servers/monitoring.py"],

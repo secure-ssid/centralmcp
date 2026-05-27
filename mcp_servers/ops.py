@@ -5,9 +5,11 @@ reboot, disconnect client, acknowledge alert.
 """
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_servers.shared import (
+    DIAGNOSTIC,
+    DESTRUCTIVE,
     _AOS_S_BASE,
     _CX_TROUBLESHOOTING_BASE,
     _GATEWAY_BASE,
@@ -24,7 +26,7 @@ mcp = FastMCP("aruba-ops")
 
 # ── CX Troubleshooting ────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=DIAGNOSTIC)
 def cx_ping(
     serial_number: str,
     destination: str,
@@ -62,7 +64,7 @@ def cx_ping(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=DIAGNOSTIC)
 def cx_traceroute(
     serial_number: str,
     destination: str,
@@ -94,7 +96,7 @@ def cx_traceroute(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=DIAGNOSTIC)
 def cx_show(
     serial_number: str,
     commands: list[str],
@@ -131,7 +133,7 @@ def cx_show(
 
 # ── AOS-S Troubleshooting ─────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=DIAGNOSTIC)
 def aos_s_ping(serial_number: str, destination: str) -> dict[str, Any]:
     """Ping a destination from an AOS-S switch (async, polls ~60s)."""
     client = get_client()
@@ -139,7 +141,7 @@ def aos_s_ping(serial_number: str, destination: str) -> dict[str, Any]:
     return troubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/ping", {"destination": destination}, errors)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DIAGNOSTIC)
 def aos_s_traceroute(serial_number: str, destination: str) -> dict[str, Any]:
     """Run a traceroute from an AOS-S switch (async, polls ~60s)."""
     client = get_client()
@@ -147,7 +149,7 @@ def aos_s_traceroute(serial_number: str, destination: str) -> dict[str, Any]:
     return troubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/traceroute", {"destination": destination}, errors)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DIAGNOSTIC)
 def aos_s_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
     """Run 'show' commands on an AOS-S switch (all must start with 'show ', async polls ~60s)."""
     if not commands:
@@ -160,7 +162,7 @@ def aos_s_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
     return troubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/showCommands", {"commands": commands}, errors)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DIAGNOSTIC)
 def gateway_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
     """Run 'show' commands on an Aruba gateway via async troubleshooting API. Each must start with 'show '."""
     if not commands:
@@ -173,7 +175,7 @@ def gateway_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
     return troubleshoot_async(client, f"{_GATEWAY_BASE}/{serial_number}/showCommands", {"commands": commands}, errors)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DIAGNOSTIC)
 def aos_s_arp(serial_number: str) -> dict[str, Any]:
     """Get the ARP table from an AOS-S switch (async, polls ~60s)."""
     client = get_client()
@@ -193,8 +195,9 @@ def aos_s_arp(serial_number: str) -> dict[str, Any]:
 
 # ── PoE / Port / Cable Ops ────────────────────────────────────────────────────
 
-@mcp.tool()
-def poe_bounce(
+@mcp.tool(annotations=DESTRUCTIVE)
+async def poe_bounce(
+    ctx: Context,
     serial_number: str,
     ports: list[str],
     device_type: str | None = None,
@@ -209,11 +212,23 @@ def poe_bounce(
     if dtype is None:
         errors.append("PoE bounce is not supported on Access Points.")
         return {"status": None, "errors": errors}
+
+    try:
+        result = await ctx.elicit(
+            message=f"⚠️ Confirm PoE BOUNCE on {serial_number} ports {ports}? Connected devices will temporarily lose power.",
+            schema={"type": "object", "properties": {"confirm": {"type": "boolean", "description": "Set true to proceed"}}, "required": ["confirm"]},
+        )
+        if not result or not getattr(result, "data", {}).get("confirm", False):
+            return {"serial_number": serial_number, "status": "CANCELLED", "message": "PoE bounce cancelled by user"}
+    except Exception:
+        pass  # If elicitation not supported by client, proceed
+
     return troubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/poeBounce", {"ports": ports}, errors)
 
 
-@mcp.tool()
-def port_bounce(
+@mcp.tool(annotations=DESTRUCTIVE)
+async def port_bounce(
+    ctx: Context,
     serial_number: str,
     ports: list[str],
     device_type: str | None = None,
@@ -228,10 +243,21 @@ def port_bounce(
     if dtype is None:
         errors.append("Port bounce is not supported on Access Points.")
         return {"status": None, "errors": errors}
+
+    try:
+        result = await ctx.elicit(
+            message=f"⚠️ Confirm PORT BOUNCE on {serial_number} ports {ports}? Connected devices will lose connectivity.",
+            schema={"type": "object", "properties": {"confirm": {"type": "boolean", "description": "Set true to proceed"}}, "required": ["confirm"]},
+        )
+        if not result or not getattr(result, "data", {}).get("confirm", False):
+            return {"serial_number": serial_number, "status": "CANCELLED", "message": "Port bounce cancelled by user"}
+    except Exception:
+        pass  # If elicitation not supported by client, proceed
+
     return troubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/portBounce", {"ports": ports}, errors)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DIAGNOSTIC)
 def cable_test(
     serial_number: str,
     ports: list[str],
@@ -252,8 +278,9 @@ def cable_test(
 
 # ── Device Actions ────────────────────────────────────────────────────────────
 
-@mcp.tool()
-def reboot_device(
+@mcp.tool(annotations=DESTRUCTIVE)
+async def reboot_device(
+    ctx: Context,
     serial_number: str,
     device_type: str | None = None,
 ) -> dict[str, Any]:
@@ -289,6 +316,16 @@ def reboot_device(
         return {"serial_number": serial_number, "device_type": device_type, "response": None, "errors": errors}
 
     try:
+        result = await ctx.elicit(
+            message=f"⚠️ Confirm REBOOT of {device_type} {serial_number}? This will cause a service interruption.",
+            schema={"type": "object", "properties": {"confirm": {"type": "boolean", "description": "Set true to proceed"}}, "required": ["confirm"]},
+        )
+        if not result or not getattr(result, "data", {}).get("confirm", False):
+            return {"serial_number": serial_number, "status": "CANCELLED", "message": "Reboot cancelled by user"}
+    except Exception:
+        pass  # If elicitation not supported by client, proceed
+
+    try:
         response = client._request("POST", endpoint, json={})
         if response.status_code not in (200, 201, 202):
             errors.append(compact_http_error(response))
@@ -303,8 +340,9 @@ def reboot_device(
         return {"serial_number": serial_number, "device_type": device_type, "response": None, "errors": errors}
 
 
-@mcp.tool()
-def disconnect_client(
+@mcp.tool(annotations=DESTRUCTIVE)
+async def disconnect_client(
+    ctx: Context,
     mac_address: str,
     ap_serial: str | None = None,
 ) -> dict[str, Any]:
@@ -320,6 +358,16 @@ def disconnect_client(
         ap_serial = cl.get("connectedDeviceSerial")
         if not ap_serial:
             return {"mac_address": mac_address, "response": None, "errors": ["Could not determine connected AP serial"]}
+
+    try:
+        result = await ctx.elicit(
+            message=f"⚠️ Confirm DISCONNECT of client {mac_address}? The client will be forced off the network.",
+            schema={"type": "object", "properties": {"confirm": {"type": "boolean", "description": "Set true to proceed"}}, "required": ["confirm"]},
+        )
+        if not result or not getattr(result, "data", {}).get("confirm", False):
+            return {"mac_address": mac_address, "status": "CANCELLED", "message": "Disconnect cancelled by user"}
+    except Exception:
+        pass  # If elicitation not supported by client, proceed
 
     endpoint = f"/network-troubleshooting/v1alpha1/aps/{ap_serial}/disconnectUserByMacAddress"
     try:
@@ -337,7 +385,7 @@ def disconnect_client(
         return {"mac_address": mac_address, "response": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def acknowledge_alert(
     alert_id: str,
     action: str = "ACK",
@@ -390,4 +438,5 @@ if __name__ == "__main__":
     )
     stable_list_tools(mcp)
     install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
-    mcp.run()
+    from mcp_servers.shared import run_server
+    run_server(mcp)

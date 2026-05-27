@@ -11,6 +11,9 @@ from urllib.parse import quote
 from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import (
+    DESTRUCTIVE,
+    IDEMPOTENT_WRITE,
+    READ_ONLY,
     bound_collection_response,
     clamp_limit,
     compact_http_error,
@@ -66,7 +69,7 @@ def _validate_name_for_target(name: str, target: str | None) -> None:
 
 # ── VLANs ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_vlan(
     vlan_id: int,
     vlan_name: str | None = None,
@@ -108,7 +111,7 @@ def create_vlan(
     return {"vlan_id": vlan_id, "vlan_name": name, "scope_id": scope_id, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_vlan_interface(
     vlan_id: int,
     device_scope_id: str,
@@ -138,7 +141,7 @@ def create_vlan_interface(
 
 # ── Hostname & Device Profiles ─────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def set_hostname(
     device_scope_id: str,
     hostname: str,
@@ -179,7 +182,7 @@ def set_hostname(
                 "device_function": device_function, "set": False, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def push_aruba_device_profiles(dry_run: bool = False) -> dict[str, Any]:
     """Ensure the four standard Aruba LLDP device profiles exist at library level (idempotent)."""
     if dry_run:
@@ -195,7 +198,7 @@ def push_aruba_device_profiles(dry_run: bool = False) -> dict[str, Any]:
 
 # ── Firmware ──────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_firmware(serial_number: str) -> dict[str, Any]:
     """Fetch current firmware details (version, compliance status, upgrades available) for a device."""
     client = get_client()
@@ -211,7 +214,7 @@ def get_firmware(serial_number: str) -> dict[str, Any]:
         return {"serial_number": serial_number, "items": [], "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_firmware_compliance(
     scope_id: str,
     device_function: str,
@@ -231,7 +234,7 @@ def get_firmware_compliance(
         return {"scope_id": scope_id, "device_function": device_function, "policy": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def set_firmware_compliance(
     scope_id: str,
     device_function: str,
@@ -283,7 +286,7 @@ def set_firmware_compliance(
                 "firmware_version": firmware_version, "response": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_firmware_upgrades(serial_number: str | None = None) -> dict[str, Any]:
     """List in-progress or recent firmware upgrade tasks."""
     client = get_client()
@@ -307,7 +310,7 @@ def list_firmware_upgrades(serial_number: str | None = None) -> dict[str, Any]:
         return {"items": [], "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def trigger_device_upgrade(
     serial_number: str,
     firmware_version: str,
@@ -375,7 +378,7 @@ def trigger_device_upgrade(
 
 # ── SSIDs ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_ssids(
     limit: int = 50,
     offset: int = 0,
@@ -389,13 +392,13 @@ def list_ssids(
     return bound_collection_response(data, limit=limit, offset=offset, list_key="wlan-ssid")
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_ssid(ssid_name: str) -> dict[str, Any] | None:
     """Fetch an existing SSID config by name. Returns None if not found."""
     return _get(get_client(), ssid_name)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_scope_maps(
     resource_filter: str | None = None,
     limit: int = 100,
@@ -424,7 +427,7 @@ def get_scope_maps(
     return bound_collection_response(data, limit=limit, offset=offset, list_key="scope_maps")
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_gw_clusters(
     limit: int = 50,
     offset: int = 0,
@@ -537,7 +540,7 @@ def _provision_nac_mac_auth(client, ssid_name: str, default_role: str | None, re
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def build_underlay_ssid(
     ssid_name: str,
     scope_id: str,
@@ -656,7 +659,7 @@ def build_underlay_ssid(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def build_overlay_ssid(
     ssid_name: str,
     scope_id: str,
@@ -712,7 +715,7 @@ def build_overlay_ssid(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_overlay_wlans(
     limit: int = 50,
     offset: int = 0,
@@ -725,7 +728,7 @@ def list_overlay_wlans(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_overlay_ssid(
     profile_name: str,
     dry_run: bool = False,
@@ -742,7 +745,7 @@ def delete_overlay_ssid(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_allow_all_role(
     role_name: str,
     scope_id: str,
@@ -767,7 +770,7 @@ def create_allow_all_role(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_underlay_ssid(
     ssid_name: str,
     scope_id: str | None = None,
@@ -778,7 +781,7 @@ def delete_underlay_ssid(
     return _delete(client, ssid_name=ssid_name, dry_run=dry_run)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def update_ssid(
     ssid_name: str,
     updates: dict[str, Any],
@@ -815,7 +818,7 @@ def update_ssid(
 
 # ── Switch Port Profiles & Interface Config ────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_port_profile(
     profile_name: str,
     body: dict[str, Any],
@@ -859,7 +862,7 @@ def create_port_profile(
     return {"profile_name": profile_name, "body": body, "scope_ids": scope_ids or [], "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_aaa_macauth_profile(
     name: str,
     body: dict[str, Any] | None = None,
@@ -878,7 +881,7 @@ def create_aaa_macauth_profile(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_aaa_dot1xauth_profile(
     name: str,
     body: dict[str, Any] | None = None,
@@ -897,7 +900,7 @@ def create_aaa_dot1xauth_profile(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def set_port_auth(
     profile_name: str,
     port_access_body: dict[str, Any],
@@ -917,7 +920,7 @@ def set_port_auth(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def update_port_config(
     serial_number: str,
     interface_name: str,
@@ -959,7 +962,7 @@ def update_port_config(
 
 # ── Gateway Interface & Routing Config ────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def gateway_config_interface(
     serial_number: str,
     interface_name: str,
@@ -1002,7 +1005,7 @@ def gateway_config_interface(
                 "updates": updates, "response": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def gateway_config_static_route(
     serial_number: str,
     destination: str,
@@ -1053,7 +1056,7 @@ def gateway_config_static_route(
                 "nexthop": nexthop, "response": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_gw_cluster(
     cluster_name: str,
     scope_id: str,
@@ -1086,7 +1089,7 @@ def create_gw_cluster(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def gateway_join_cluster(
     cluster_name: str,
     scope_id: str,
@@ -1188,7 +1191,7 @@ def gateway_join_cluster(
 
 # ── Device Management ─────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_site(
     name: str,
     address: str | None = None,
@@ -1218,7 +1221,7 @@ def create_site(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def assign_device_to_site(
     serial_number: str,
     site_id: str,
@@ -1259,7 +1262,7 @@ def assign_device_to_site(
     return {"serial_number": serial_number, "site_id": site_id, "response": None, "errors": errors}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def update_device_settings(
     serial_number: str,
     settings: dict[str, Any],
@@ -1305,7 +1308,7 @@ def update_device_settings(
 
 # ── Roles ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_roles(
     limit: int = 50,
     offset: int = 0,
@@ -1318,7 +1321,7 @@ def list_roles(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_role(
     name: str,
     description: str | None = None,
@@ -1357,7 +1360,7 @@ def create_role(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def update_role(
     name: str,
     description: str | None = None,
@@ -1388,7 +1391,7 @@ def update_role(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_role_acls(
     limit: int = 50,
     offset: int = 0,
@@ -1401,7 +1404,7 @@ def list_role_acls(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_role_acl(
     name: str,
     dry_run: bool = False,
@@ -1415,7 +1418,7 @@ def delete_role_acl(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_gw_policies(
     limit: int = 50,
     offset: int = 0,
@@ -1428,7 +1431,7 @@ def list_gw_policies(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_gw_policy(
     name: str,
     rules: list[dict] | None = None,
@@ -1482,7 +1485,7 @@ def create_gw_policy(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_gw_policy(
     name: str,
     dry_run: bool = False,
@@ -1496,7 +1499,7 @@ def delete_gw_policy(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_config_assignment(
     scope_id: str,
     device_function: str,
@@ -1518,7 +1521,7 @@ def delete_config_assignment(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_config_assignment(
     scope_id: str,
     device_function: str,
@@ -1543,7 +1546,7 @@ def create_config_assignment(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_config_assignments(
     scope_id: str | None = None,
     device_function: str | None = None,
@@ -1562,7 +1565,7 @@ def list_config_assignments(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_role(
     name: str,
     dry_run: bool = False,
@@ -1581,7 +1584,7 @@ def delete_role(
 
 # ── Device Fingerprinting ─────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_fingerprinting_profiles(
     limit: int = 50,
     offset: int = 0,
@@ -1594,7 +1597,7 @@ def list_fingerprinting_profiles(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_fingerprinting_switch_profiles(
     limit: int = 50,
     offset: int = 0,
@@ -1609,7 +1612,7 @@ def list_fingerprinting_switch_profiles(
 
 # ── Webhooks ──────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_webhooks(
     limit: int = 50,
     offset: int = 0,
@@ -1622,7 +1625,7 @@ def list_webhooks(
     return bound_collection_response(data, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_webhook(
     name: str,
     endpoint_url: str,
@@ -1660,13 +1663,13 @@ def create_webhook(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_webhook(webhook_id: str) -> dict[str, Any]:
     """Fetch details for a single webhook by ID."""
     return get_client().get(f"{_WEBHOOKS_BASE}/{webhook_id}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def update_webhook(
     webhook_id: str,
     name: str | None = None,
@@ -1689,7 +1692,7 @@ def update_webhook(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_webhook(webhook_id: str) -> dict[str, Any]:
     """Delete a webhook by ID."""
     client = get_client()
@@ -1701,7 +1704,7 @@ def delete_webhook(webhook_id: str) -> dict[str, Any]:
     return {"status_code": resp.status_code, "response": body}
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def rotate_webhook_key(webhook_id: str) -> dict[str, Any]:
     """Rotate the HMAC key for a webhook."""
     client = get_client()
@@ -1711,7 +1714,7 @@ def rotate_webhook_key(webhook_id: str) -> dict[str, Any]:
 
 # ── Device Groups ─────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def list_device_groups(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     """List all device groups (scopeId, scopeName, description)."""
     lim = clamp_limit(limit)
@@ -1719,7 +1722,7 @@ def list_device_groups(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     return get_client().get(f"{_DEVICE_GROUPS_BASE}?limit={lim}&offset={off}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_device_group(
     name: str,
     description: str = "",
@@ -1736,7 +1739,7 @@ def create_device_group(
     return resp_json(resp)
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def delete_device_groups(scope_ids: list[str]) -> dict[str, Any]:
     """Bulk-delete device groups by scope ID list."""
     client = get_client()
@@ -1749,7 +1752,7 @@ def delete_device_groups(scope_ids: list[str]) -> dict[str, Any]:
     return {"status_code": resp.status_code, "response": body}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def add_devices_to_group(scope_id: str, serial_numbers: list[str]) -> dict[str, Any]:
     """Add devices to an existing device group by scope ID."""
     client = get_client()
@@ -1762,7 +1765,7 @@ def add_devices_to_group(scope_id: str, serial_numbers: list[str]) -> dict[str, 
     return {"status_code": resp.status_code, "response": body}
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def remove_devices_from_group(serial_numbers: list[str]) -> dict[str, Any]:
     """Remove devices from their current device group."""
     client = get_client()
@@ -1783,4 +1786,5 @@ if __name__ == "__main__":
     )
     stable_list_tools(mcp)
     install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
-    mcp.run()
+    from mcp_servers.shared import run_server
+    run_server(mcp)

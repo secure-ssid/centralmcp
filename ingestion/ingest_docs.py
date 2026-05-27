@@ -1,5 +1,5 @@
 """
-Ingest Aruba/HPE docs into Qdrant.
+Ingest Aruba/HPE docs into Redis Stack.
 
 Usage:
     python ingestion/ingest_docs.py                     # all sources
@@ -18,14 +18,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from bs4 import BeautifulSoup
-from qdrant_client.models import PointStruct
 
 from ingestion.chunking import chunk_text
 from pipeline.clients.ollama_client import OllamaClient
-from pipeline.clients.qdrant_client import (
-    DOCS_COLLECTION,
-    ensure_collection,
+from pipeline.clients.redis_client import (
+    DOCS_INDEX,
+    ensure_index,
     get_client,
+    upsert_docs,
+    doc_count,
 )
 
 SOURCES_DIR = Path(__file__).parent / "sources"
@@ -201,34 +202,32 @@ def collect_points(source_dir: Path, doc_type: str) -> list[dict]:
     return records
 
 
-def _existing_ids(qdrant, collection: str, ids: list[str]) -> set[str]:
-    """Return subset of ids already in Qdrant."""
-    results = qdrant.retrieve(collection_name=collection, ids=ids, with_payload=False, with_vectors=False)
-    return {str(r.id) for r in results}
+def _existing_ids(client, ids: list[str]) -> set[str]:
+    """Return subset of ids already in Redis."""
+    pipe = client.pipeline(transaction=False)
+    for doc_id in ids:
+        pipe.exists(f"doc:{doc_id}")
+    results = pipe.execute()
+    return {doc_id for doc_id, exists in zip(ids, results) if exists}
 
 
-def upload(records: list[dict], ollama: OllamaClient, qdrant, collection: str):
+def upload(records: list[dict], ollama: OllamaClient, client):
     skipped = 0
     uploaded = 0
     for batch_start in range(0, len(records), UPLOAD_BATCH):
         batch = records[batch_start : batch_start + UPLOAD_BATCH]
-        # Skip records already in Qdrant (safe to re-run after failures)
-        existing = _existing_ids(qdrant, collection, [r["id"] for r in batch])
+        existing = _existing_ids(client, [r["id"] for r in batch])
         new = [r for r in batch if r["id"] not in existing]
         skipped += len(batch) - len(new)
         if not new:
             continue
         texts = [r["text"] for r in new]
         vectors = ollama.embed_batch(texts)
-        points = [
-            PointStruct(
-                id=r["id"],
-                vector=vec,
-                payload={k: v for k, v in r.items() if k != "id"},
-            )
+        docs = [
+            {**r, "embedding": vec}
             for r, vec in zip(new, vectors)
         ]
-        qdrant.upsert(collection_name=collection, points=points)
+        upsert_docs(client, docs)
         uploaded += len(new)
         print(f"    uploaded {uploaded} new / {skipped} skipped / {len(records)} total")
 
@@ -237,7 +236,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", help="Ingest one source folder only")
     parser.add_argument("--dry-run", action="store_true", help="Count chunks, no upload")
-    parser.add_argument("--collection", default=DOCS_COLLECTION)
+    parser.add_argument("--index", default=DOCS_INDEX, dest="index")
     args = parser.parse_args()
 
     sources = (
@@ -262,13 +261,13 @@ def main():
         print("Dry run — no upload.")
         return
 
-    print("\nConnecting to Qdrant + Ollama...")
-    qdrant = get_client()
-    ensure_collection(qdrant, args.collection)
+    print("\nConnecting to Redis Stack + Ollama...")
+    client = get_client()
+    ensure_index(client, args.index)
 
     with OllamaClient() as ollama:
-        print(f"Uploading to collection '{args.collection}'...")
-        upload(all_records, ollama, qdrant, args.collection)
+        print(f"Uploading to index '{args.index}'...")
+        upload(all_records, ollama, client)
 
     print("Done.")
 
