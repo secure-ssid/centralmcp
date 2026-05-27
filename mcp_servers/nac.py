@@ -254,7 +254,10 @@ def list_auth_servers(
 @mcp.tool(annotations=READ_ONLY)
 def get_auth_server(name: str) -> dict[str, Any]:
     """Get a single RADIUS/auth server profile by name."""
-    return get_client().get(f"{_CNAC_BASE}/auth-servers/{name}")
+    try:
+        return get_client().get(f"{_CNAC_BASE}/auth-servers/{name}")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -357,7 +360,10 @@ def list_aaa_profiles(
 @mcp.tool(annotations=READ_ONLY)
 def get_aaa_profile(name: str) -> dict[str, Any]:
     """Get a single AAA profile by name."""
-    return get_client().get(f"{_CNAC_BASE}/aaa-profile/{name}")
+    try:
+        return get_client().get(f"{_CNAC_BASE}/aaa-profile/{name}")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -464,7 +470,10 @@ def list_authz_policies(
 @mcp.tool(annotations=READ_ONLY)
 def get_authz_policy(policy_id: str) -> dict[str, Any]:
     """Get a single CNAC authz policy by ID."""
-    return get_client().get(f"{_CNAC_BASE}/authz-policies/{policy_id}")
+    try:
+        return get_client().get(f"{_CNAC_BASE}/authz-policies/{policy_id}")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -635,7 +644,10 @@ def list_auth_profiles(
 @mcp.tool(annotations=READ_ONLY)
 def get_auth_profile(profile_id: str) -> dict[str, Any]:
     """Get a single Central NAC auth profile by UUID."""
-    return get_client().get(f"{_AUTH_PROFILE_BASE}/{profile_id}")
+    try:
+        return get_client().get(f"{_AUTH_PROFILE_BASE}/{profile_id}")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)

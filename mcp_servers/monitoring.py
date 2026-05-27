@@ -455,7 +455,7 @@ def list_audit_logs(
     start_at: int | None = None,
     end_at: int | None = None,
     limit: int = 100,
-    offset: int = 1,
+    offset: int = 0,
     filter: str | None = None,
     sort: str | None = None,
 ) -> dict[str, Any]:
@@ -912,21 +912,30 @@ def list_wlans(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     client = get_client()
     lim = clamp_limit(limit)
     off = max(0, offset)
-    return client.get(f"/network-monitoring/v1/wlans?limit={lim}&offset={off}")
+    try:
+        return client.get(f"/network-monitoring/v1/wlans?limit={lim}&offset={off}")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @mcp.tool(annotations=READ_ONLY)
 def get_wlan(wlan_name: str) -> dict[str, Any]:
     """Fetch monitoring details for a single WLAN by name."""
     client = get_client()
-    return client.get(f"/network-monitoring/v1/wlans/{wlan_name}")
+    try:
+        return client.get(f"/network-monitoring/v1/wlans/{wlan_name}")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @mcp.tool(annotations=READ_ONLY)
 def list_ap_wlans(serial_number: str) -> dict[str, Any]:
     """List WLANs currently active on a specific AP."""
     client = get_client()
-    return client.get(f"/network-monitoring/v1/aps/{serial_number}/wlans")
+    try:
+        return client.get(f"/network-monitoring/v1/aps/{serial_number}/wlans")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 # ── Gateway Clusters ──────────────────────────────────────────────────────────
@@ -935,21 +944,30 @@ def list_ap_wlans(serial_number: str) -> dict[str, Any]:
 def get_cluster_members(cluster_name: str) -> dict[str, Any]:
     """List members of a gateway cluster."""
     client = get_client()
-    return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/members")
+    try:
+        return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/members")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @mcp.tool(annotations=READ_ONLY)
 def get_cluster_tunnels(cluster_name: str) -> dict[str, Any]:
     """List tunnels for a gateway cluster."""
     client = get_client()
-    return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/tunnels")
+    try:
+        return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/tunnels")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @mcp.tool(annotations=READ_ONLY)
 def get_cluster_tunnel_health(cluster_name: str) -> dict[str, Any]:
     """Get tunnel health summary (up/down counts) for a gateway cluster."""
     client = get_client()
-    return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/tunnels-health-summary")
+    try:
+        return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/tunnels-health-summary")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 if __name__ == "__main__":

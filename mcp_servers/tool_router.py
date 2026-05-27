@@ -20,13 +20,12 @@ from mcp.server.fastmcp import FastMCP
 from pipeline.clients.ollama_client import OllamaClient
 
 try:
-    from qdrant_client import QdrantClient as _QdrantClient
-    from pipeline.clients.qdrant_client import QDRANT_URL
-    _qdrant = _QdrantClient(url=QDRANT_URL)
+    from pipeline.clients.redis_client import TOOLS_INDEX, get_client as _get_redis
+    from pipeline.clients.redis_client import search_tools as _search_tools
+    _redis_tools = _get_redis()
+    _redis_tools.ping()
 except Exception:
-    _qdrant = None
-
-TOOLS_COLLECTION = "aruba_tools"
+    _redis_tools = None
 
 mcp = FastMCP("aruba-tool-router")
 _ollama = OllamaClient()
@@ -119,31 +118,29 @@ def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
     for h in _keyword_hits(query, kw_budget):
         by_name[h["name"]] = h
 
-    if _qdrant is not None:
+    if _redis_tools is not None:
         try:
             vec = _ollama.embed(query)
-            hits = _qdrant.query_points(
-                collection_name=TOOLS_COLLECTION, query=vec, limit=top_k * 2,
-            ).points
+            hits = _search_tools(_redis_tools, vec, top_k=top_k * 2, index_name=TOOLS_INDEX)
             added = 0
             for h in hits:
-                name = h.payload["name"]
-                if name in by_name or added >= sem_budget + (kw_budget - len(by_name)):
-                    if name in by_name:
-                        continue
+                name = h.get("name", "")
+                if not name or name in by_name:
+                    continue
+                if added >= sem_budget + max(0, kw_budget - len(by_name)):
                     break
                 by_name[name] = {
                     "name": name,
-                    "server": h.payload.get("server"),
-                    "description": h.payload["description"],
-                    "params": h.payload.get("params", []),
-                    "schema": json.loads(h.payload.get("schema") or "{}"),
-                    "score": round(h.score, 4),
+                    "server": h.get("server"),
+                    "description": h.get("description", ""),
+                    "params": [],
+                    "schema": json.loads(h.get("schema_json") or "{}"),
+                    "score": h.get("score", 0.0),
                     "match": "semantic",
                 }
                 added += 1
-        except Exception as exc:
-            return list(by_name.values()) or [{"error": f"Qdrant: {exc}"}]
+        except Exception:
+            pass  # fall back to keyword-only results
 
     return list(by_name.values())[:top_k]
 

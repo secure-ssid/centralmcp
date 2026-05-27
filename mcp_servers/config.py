@@ -558,21 +558,15 @@ def build_underlay_ssid(
     Args:
         scope_id: Use get_global_scope_id() for org-wide, or list_scopes() for site/group.
         persona: CAMPUS_AP (default), MOBILITY_GW, ACCESS_SWITCH, etc.
-        opmode: ALWAYS confirm with the user before calling — never assume.
-                Common combinations:
-                  - MAC auth only (no password): OPEN (default) — do NOT use ENHANCED_OPEN; it causes Central NAC to misclassify the RADIUS request as Captive Portal and reject with "Unexpected Client Data"
-                  - MAC auth + PSK (device must know key AND be registered): WPA3_SAE or WPA2_PERSONAL — ask user for passphrase
-                  - WPA3 + WPA2 compatible PSK: WPA3_SAE with wpa3-transition-mode-enable=true
-                Valid API values: OPEN, ENHANCED_OPEN, WPA3_SAE, WPA2_PERSONAL,
-                WPA2_ENTERPRISE, WPA3_ENTERPRISE_CCM_128, WPA3_ENTERPRISE_GCM_256,
-                WPA3_ENTERPRISE_CNSA, WPA2_MPSK_AES, WPA2_MPSK_LOCAL, WPA3_MPSK_SAE,
-                BOTH_WPA_WPA2_PSK, BOTH_WPA_WPA2_DOT1X, and DPP variants
-                (see wlan OpenAPI spec for the full set).
+        opmode: ALWAYS confirm — never assume. OPEN for MAC-auth only (do NOT use
+                ENHANCED_OPEN — causes NAC to reject with "Unexpected Client Data").
+                WPA3_SAE / WPA2_PERSONAL for PSK (ask user for passphrase).
                 NOT valid: OPEN_NETWORK, WPA3_SAE_AES.
-        passphrase: Required for WPA2/WPA3-PSK modes — always ask the user for this, never generate or assume.
+        passphrase: Required for PSK modes — always ask, never generate.
         vlan_id / vlan_ids: Single VLAN or list of VLAN IDs.
-        mac_auth_server_group: Central NAC server-group for MAC auth post-config. Set None to skip.
-        default_role: Override the default role for MAC-auth clients. Only set if the user explicitly requests a specific role — omit to keep the role auto-created by SSID creation (named after the SSID).
+        mac_auth_server_group: Central NAC server-group for MAC auth. None to skip.
+        default_role: Override default MAC-auth role (omit to use SSID name).
+        dry_run: Return payload without sending.
     """
     client = get_client()
     resolved_vlan_ids = vlan_ids or ([vlan_id] if vlan_id is not None else [1])
@@ -675,26 +669,17 @@ def build_overlay_ssid(
     """Create a tunneled (overlay/GRE) SSID via a gateway cluster.
 
     Args:
-        scope_id: Device group scope-id (use list_scopes() to find it — overlay WLANs cannot use global scope).
+        scope_id: Device group scope-id (overlay WLANs cannot use global scope).
         cluster_name: Gateway cluster name (use list_gw_clusters).
         cluster_scope_id: Scope-id of the gateway cluster (use list_gw_clusters).
         vlan_ids: List of VLAN IDs (e.g. [200]).
-        opmode: ALWAYS confirm with the user before calling — never assume.
-                Common values: OPEN (default for MAC-auth only), ENHANCED_OPEN, WPA3_SAE,
-                WPA2_PERSONAL, WPA2_ENTERPRISE, WPA3_ENTERPRISE_CCM_128,
-                WPA3_ENTERPRISE_GCM_256, WPA3_ENTERPRISE_CNSA, WPA2_MPSK_AES,
-                WPA2_MPSK_LOCAL, WPA3_MPSK_SAE, BOTH_WPA_WPA2_PSK, BOTH_WPA_WPA2_DOT1X,
-                and DPP variants (see wlan OpenAPI spec for the full set).
-                NOT valid: OPEN_NETWORK, WPA3_SAE_AES.
-                Do NOT use ENHANCED_OPEN for MAC-auth-only SSIDs — it causes Central NAC
-                to misclassify the RADIUS request as Captive Portal and reject with
-                "Unexpected Client Data".
-        passphrase: Required for WPA2/WPA3-PSK opmodes.
-        mac_auth_server_group: If set, creates an AAA profile named after the SSID and enables MAC auth
-                               against this Central NAC server group.
-        policy_name: Name of an existing GW security policy to attach (use list_gw_policies to find one).
-                     If omitted, an allow-all policy named after the SSID is created automatically.
-        dry_run: If True, return payload without sending.
+        opmode: ALWAYS confirm — never assume. OPEN for MAC-auth only (do NOT use
+                ENHANCED_OPEN — causes NAC to reject with "Unexpected Client Data").
+                WPA3_SAE / WPA2_PERSONAL for PSK. NOT valid: OPEN_NETWORK, WPA3_SAE_AES.
+        passphrase: Required for PSK opmodes — always ask, never generate.
+        mac_auth_server_group: If set, creates an AAA profile and enables MAC auth.
+        policy_name: Existing GW security policy to attach; auto-creates allow-all if omitted.
+        dry_run: Return payload without sending.
     """
     client = get_client()
     result = _build_overlay(
@@ -1115,7 +1100,7 @@ def gateway_join_cluster(
                 "ip": gw["ip"],
                 "mac": gw["mac"],
                 "priority": gw["priority"],
-                "coa-vrrp-ip": gw["coa_vrrp_ip"],
+                "coa-vrrp-ip": gw.get("coa_vrrp_ip"),
             }
             for gw in gateways
         ],
@@ -1651,7 +1636,7 @@ def create_webhook(
     body: dict[str, Any] = {"name": name, "endpoint": endpoint_url, "authMechanism": auth_mechanism}
     if auth_mechanism == "OIDC":
         if not (oidc_client_id and oidc_client_secret and oidc_well_known_url):
-            return {"error": "OIDC requires oidc_client_id, oidc_client_secret, and oidc_well_known_url"}
+            return {"errors": ["OIDC requires oidc_client_id, oidc_client_secret, and oidc_well_known_url"]}
         body["oidcDetails"] = {
             "clientId": oidc_client_id,
             "clientSecret": oidc_client_secret,

@@ -1,4 +1,5 @@
 """Shared clients, helpers, and constants for all MCP servers."""
+import asyncio
 import logging
 import os
 import time
@@ -297,6 +298,43 @@ def troubleshoot_async(
     return result
 
 
+async def atroubleshoot_poll(client: CentralClient, poll_url: str) -> dict[str, Any]:
+    """Async version of troubleshoot_poll — safe to call from async tools."""
+    result: dict[str, Any] = {}
+    for _ in range(_POLL_MAX):
+        await asyncio.sleep(_POLL_INTERVAL)
+        try:
+            result = client.get(poll_url)
+        except Exception as exc:
+            return {"status": "ERROR", "error": str(exc)}
+        if result.get("status", "") in ("COMPLETED", "FAILED"):
+            return result
+    return result
+
+
+async def atroubleshoot_async(
+    client: CentralClient,
+    endpoint: str,
+    payload: dict[str, Any],
+    errors: list[str],
+) -> dict[str, Any]:
+    """Async version of troubleshoot_async — use from async MCP tools to avoid blocking the event loop."""
+    try:
+        resp = client._request("POST", endpoint, json=payload)
+        if resp.status_code not in (200, 201, 202):
+            errors.append(compact_http_error(resp))
+            return {"status": None, "errors": errors}
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
+        poll_url = f"{endpoint}/async-operations/{task_id}"
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+    result = await atroubleshoot_poll(client, poll_url)
+    result["errors"] = errors
+    return result
+
+
 def resp_json(resp: Any) -> dict[str, Any]:
     """Return resp.json() or compact metadata if the body is not JSON."""
     try:
@@ -310,18 +348,32 @@ def resp_json(resp: Any) -> dict[str, Any]:
         }
 
 
+_DTYPE_MAP = {
+    "AP": "aps",
+    "ACCESS_POINT": "aps",
+    "SWITCH": "cx",
+    "CX": "cx",
+    "GATEWAY": "gateways",
+    "GW": "gateways",
+}
+
+
 def device_type_for_troubleshoot(serial_number: str, device_type: str | None) -> str | None:
-    """Auto-detect device type from inventory if not supplied."""
+    """Auto-detect device type from inventory if not supplied.
+
+    Returns lowercase URL-ready device type: "aps", "cx", "gateways", or None.
+    """
     if device_type:
-        return device_type.upper()
+        upper = device_type.upper()
+        return _DTYPE_MAP.get(upper, upper.lower())
     device = get_mcp_client().get_device_by_serial(serial_number)
     if not device:
         return None
     raw = device.get("deviceType", "")
     if "ACCESS_POINT" in raw or raw == "AP":
-        return "AP"
+        return "aps"
     if "SWITCH" in raw:
-        return "SWITCH"
+        return "cx"
     if "GATEWAY" in raw:
-        return "GATEWAY"
+        return "gateways"
     return None

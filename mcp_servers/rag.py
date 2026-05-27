@@ -56,27 +56,17 @@ def search_docs(
     source: str | None = None,
     doc_type: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Search Aruba/HPE network documentation for relevant content.
+    """Search Aruba/HPE network documentation.
 
-    Performs semantic search over ingested docs (developer guides, tech docs,
-    NAC docs, VSG docs). Use this before searching the web for any question
-    about Aruba Central configuration, APIs, or network features.
-
-    Results are re-ranked by source priority so that API schemas (openapi_specs)
-    and official developer guides (developer_docs) rank above UI-focused tech docs
-    when scores are close.
+    Semantic search over developer guides, tech docs, NAC/VSG guides, and OpenAPI specs.
+    Call this before searching the web for any Aruba Central config, API, or feature question.
 
     Args:
         query:    Natural language question or keywords.
-        top_k:    Number of results to return (default 5, max 20).
-        source:   Optional folder filter — one of: developer_docs, tech_docs,
-                  nac_docs, vsg_docs, techdocs_html, openapi_specs.
-        doc_type: DEPRECATED — prefer `source`. Still accepted: developer-docs,
-                  tech-docs, techdocs-html, nac, vsg, openapi.
-
-    Returns:
-        List of chunks with text, source, doc_type, file_path, score, and
-        boosted_score (used for ranking).
+        top_k:    Results to return (default 5, max 20).
+        source:   Filter by source folder — developer_docs, tech_docs, nac_docs,
+                  vsg_docs, techdocs_html, or openapi_specs.
+        doc_type: DEPRECATED — use source instead.
     """
     if _redis is None:
         return [{"error": "Redis not available — is the Redis Stack server running?"}]
@@ -104,13 +94,10 @@ def search_docs(
 
     return [
         {
-            "text": r["text"],
+            "text": r["text"][:600] + "…" if len(r["text"]) > 600 else r["text"],
             "source": r["source"],
-            "doc_type": r["doc_type"],
             "file_path": r["file_path"],
-            "chunk_index": r.get("chunk_index"),
-            "score": r["score"],
-            "boosted_score": round(boosted(r), 4),
+            "score": round(boosted(r), 4),
         }
         for r in candidates[:top_k]
     ]

@@ -13,6 +13,7 @@ from mcp_servers.shared import (
     _AOS_S_BASE,
     _CX_TROUBLESHOOTING_BASE,
     _GATEWAY_BASE,
+    atroubleshoot_async,
     compact_http_error,
     cx_poll,
     device_type_for_troubleshoot,
@@ -209,7 +210,7 @@ async def poe_bounce(
     client = get_client()
     errors: list[str] = []
     dtype = device_type_for_troubleshoot(serial_number, device_type)
-    if dtype is None:
+    if dtype is None or dtype == "aps":
         errors.append("PoE bounce is not supported on Access Points.")
         return {"status": None, "errors": errors}
 
@@ -223,7 +224,7 @@ async def poe_bounce(
     except Exception:
         pass  # If elicitation not supported by client, proceed
 
-    return troubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/poeBounce", {"ports": ports}, errors)
+    return await atroubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/poeBounce", {"ports": ports}, errors)
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -240,7 +241,7 @@ async def port_bounce(
     client = get_client()
     errors: list[str] = []
     dtype = device_type_for_troubleshoot(serial_number, device_type)
-    if dtype is None:
+    if dtype is None or dtype == "aps":
         errors.append("Port bounce is not supported on Access Points.")
         return {"status": None, "errors": errors}
 
@@ -254,7 +255,7 @@ async def port_bounce(
     except Exception:
         pass  # If elicitation not supported by client, proceed
 
-    return troubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/portBounce", {"ports": ports}, errors)
+    return await atroubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/portBounce", {"ports": ports}, errors)
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
@@ -270,7 +271,7 @@ def cable_test(
     if dtype == "gateways":
         errors.append("Cable test is not supported on gateways.")
         return {"status": None, "errors": errors}
-    if dtype is None:
+    if dtype is None or dtype == "aps":
         errors.append("Cable test is not supported on Access Points.")
         return {"status": None, "errors": errors}
     return troubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/cableTest", {"ports": ports}, errors)

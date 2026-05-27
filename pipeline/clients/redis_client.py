@@ -8,7 +8,7 @@ import json
 import numpy as np
 import redis
 from redis.commands.search.field import TextField, TagField, VectorField, NumericField
-from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 
 REDIS_URL = "redis://localhost:6379"
@@ -209,3 +209,36 @@ def upsert_tools(
         pipe.json().set(key, "$", payload)
     pipe.execute()
     return len(tools)
+
+
+def search_tools(
+    client: redis.Redis,
+    query_vector: list[float],
+    top_k: int = 10,
+    index_name: str = TOOLS_INDEX,
+) -> list[dict]:
+    """Search tool definitions using vector similarity.
+
+    Returns list of dicts with name, description, server, schema_json, score.
+    """
+    vec_bytes = np.array(query_vector, dtype=np.float32).tobytes()
+    q = (
+        Query(f"*=>[KNN {top_k} @embedding $vec AS score]")
+        .sort_by("score")
+        .return_fields("name", "description", "server", "schema_json", "score")
+        .paging(0, top_k)
+        .dialect(2)
+    )
+    results = client.ft(index_name).search(q, query_params={"vec": vec_bytes})
+    hits = []
+    for doc in results.docs:
+        raw_score = float(getattr(doc, "score", 1.0))
+        similarity = 1.0 - (raw_score / 2.0)
+        hits.append({
+            "name": getattr(doc, "name", ""),
+            "description": getattr(doc, "description", ""),
+            "server": getattr(doc, "server", ""),
+            "schema_json": getattr(doc, "schema_json", "{}"),
+            "score": round(similarity, 4),
+        })
+    return hits
