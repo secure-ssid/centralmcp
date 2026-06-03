@@ -11,23 +11,33 @@ context cost ~80% and let small local models pick tools reliably.
 
 import importlib
 import json
+import os
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_servers.shared import READ_ONLY
-from pipeline.clients.ollama_client import OllamaClient
 
-try:
-    from pipeline.clients.redis_client import TOOLS_INDEX, get_client as _get_redis
-    from pipeline.clients.redis_client import search_tools as _search_tools
-    _redis_tools = _get_redis()
-    _redis_tools.ping()
-except Exception:
-    _redis_tools = None
+_BACKEND = os.getenv("CENTRALMCP_RAG_BACKEND", "lancedb").strip().lower()
+
+if _BACKEND == "redis":
+    from pipeline.clients.ollama_client import OllamaClient
+
+    try:
+        from pipeline.clients.redis_client import TOOLS_INDEX, get_client as _get_redis
+        from pipeline.clients.redis_client import search_tools as _search_tools
+        _redis_tools = _get_redis()
+        _redis_tools.ping()
+    except Exception:
+        _redis_tools = None
+    _ollama = OllamaClient()
+else:
+    from pipeline.clients import lance_client as _lance
+    from pipeline.clients.embed_client import EmbedClient
+
+    _embedder = EmbedClient()  # lazy — the ONNX model loads on first query
 
 mcp = FastMCP("aruba-tool-router")
-_ollama = OllamaClient()
 
 # Backend MCP modules (loaded lazily on first invoke_tool).
 _BACKENDS = {
@@ -119,29 +129,34 @@ def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
     for h in _keyword_hits(query, kw_budget):
         by_name[h["name"]] = h
 
-    if _redis_tools is not None:
-        try:
-            vec = _ollama.embed(query)
-            hits = _search_tools(_redis_tools, vec, top_k=top_k * 2, index_name=TOOLS_INDEX)
-            added = 0
-            for h in hits:
-                name = h.get("name", "")
-                if not name or name in by_name:
-                    continue
-                if added >= sem_budget + max(0, kw_budget - len(by_name)):
-                    break
-                by_name[name] = {
-                    "name": name,
-                    "server": h.get("server"),
-                    "description": h.get("description", ""),
-                    "params": [],
-                    "schema": json.loads(h.get("schema_json") or "{}"),
-                    "score": h.get("score", 0.0),
-                    "match": "semantic",
-                }
-                added += 1
-        except Exception:
-            pass  # fall back to keyword-only results
+    try:
+        if _BACKEND == "redis":
+            hits = []
+            if _redis_tools is not None:
+                vec = _ollama.embed(query)
+                hits = _search_tools(_redis_tools, vec, top_k=top_k * 2, index_name=TOOLS_INDEX)
+        else:
+            vec = _embedder.embed_query(query)
+            hits = _lance.search_tools(_lance.connect(), query, vec, top_k=top_k * 2)
+        added = 0
+        for h in hits:
+            name = h.get("name", "")
+            if not name or name in by_name:
+                continue
+            if added >= sem_budget + max(0, kw_budget - len(by_name)):
+                break
+            by_name[name] = {
+                "name": name,
+                "server": h.get("server"),
+                "description": h.get("description", ""),
+                "params": [],
+                "schema": json.loads(h.get("schema_json") or "{}"),
+                "score": h.get("score", 0.0),
+                "match": "semantic",
+            }
+            added += 1
+    except Exception:
+        pass  # fall back to keyword-only results
 
     return list(by_name.values())[:top_k]
 

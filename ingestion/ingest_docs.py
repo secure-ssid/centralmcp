@@ -1,10 +1,15 @@
 """
-Ingest Aruba/HPE docs into Redis Stack.
+Ingest Aruba/HPE docs into the RAG backend.
+
+Default backend is the embedded stack (no servers): chunk prose -> fastembed
+(in-process ONNX, nomic prefixes) -> LanceDB at data/, plus parse OpenAPI
+specs -> SQLite (data/specs.sqlite). `--backend redis` keeps the legacy
+Redis Stack + Ollama path for the optional server deployment.
 
 Usage:
-    python ingestion/ingest_docs.py                     # all sources
-    python ingestion/ingest_docs.py --source nac_docs   # one source
-    python ingestion/ingest_docs.py --source openapi_specs
+    python ingestion/ingest_docs.py                     # all sources -> LanceDB (full rebuild)
+    python ingestion/ingest_docs.py --backend redis     # legacy Redis Stack path
+    python ingestion/ingest_docs.py --source nac_docs   # one source (redis only; lancedb always rebuilds all)
     python ingestion/ingest_docs.py --dry-run           # count chunks, no upload
 """
 
@@ -232,12 +237,53 @@ def upload(records: list[dict], ollama: OllamaClient, client):
         print(f"    uploaded {uploaded} new / {skipped} skipped / {len(records)} total")
 
 
+EMBED_BATCH_LANCE = 512
+
+
+def upload_lancedb(records: list[dict], ingested_sources: list[str]) -> None:
+    """Full rebuild of the LanceDB docs table: embed with fastembed, add in
+    batches, build the FTS index once at the end, then assert every ingested
+    source landed >0 chunks (R2 — a silently-empty source poisoned the old index).
+    """
+    from pipeline.clients import lance_client
+    from pipeline.clients.embed_client import EmbedClient
+
+    db = lance_client.connect()
+    embedder = EmbedClient()
+    table = None
+    done = 0
+    for start in range(0, len(records), EMBED_BATCH_LANCE):
+        batch = records[start : start + EMBED_BATCH_LANCE]
+        vectors = embedder.embed_document([r["text"] for r in batch])
+        rows = [{**r, "vector": vec} for r, vec in zip(batch, vectors)]
+        if table is None:
+            table = lance_client.create_docs_table(db, rows)
+        else:
+            table.add(rows)
+        done += len(rows)
+        print(f"    embedded+added {done}/{len(records)}")
+    if table is None:
+        raise SystemExit("No records to ingest — check ingestion/sources/")
+    print("  building FTS index...")
+    lance_client.build_fts_index(table)
+
+    counts = lance_client.source_counts(db)
+    print(f"  per-source counts: {counts}")
+    empty = [s for s in ingested_sources if counts.get(s, 0) == 0]
+    if empty:
+        raise SystemExit(f"FAIL: sources with 0 indexed chunks: {empty}")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", help="Ingest one source folder only")
+    parser.add_argument("--backend", choices=("lancedb", "redis"), default="lancedb")
+    parser.add_argument("--source", help="Ingest one source folder only (redis backend)")
     parser.add_argument("--dry-run", action="store_true", help="Count chunks, no upload")
     parser.add_argument("--index", default=DOCS_INDEX, dest="index")
     args = parser.parse_args()
+
+    if args.backend == "lancedb" and args.source:
+        parser.error("--source only applies to --backend redis; lancedb always rebuilds all sources")
 
     sources = (
         {args.source: SOURCE_META.get(args.source, "unknown")}
@@ -246,6 +292,7 @@ def main():
     )
 
     all_records: list[dict] = []
+    ingested_sources: list[str] = []
     for folder, doc_type in sources.items():
         source_dir = SOURCES_DIR / folder
         if not source_dir.exists():
@@ -253,6 +300,7 @@ def main():
             continue
         records = collect_points(source_dir, doc_type)
         all_records.extend(records)
+        ingested_sources.append(folder)
         print(f"  → {len(records)} chunks")
 
     print(f"\nTotal chunks: {len(all_records)}")
@@ -261,13 +309,21 @@ def main():
         print("Dry run — no upload.")
         return
 
-    print("\nConnecting to Redis Stack + Ollama...")
-    client = get_client()
-    ensure_index(client, args.index)
+    if args.backend == "lancedb":
+        print("\nRebuilding embedded indexes (LanceDB + specs SQLite)...")
+        upload_lancedb(all_records, ingested_sources)
+        if "openapi_specs" in ingested_sources:
+            from pipeline.clients import specs_index
+            print("  rebuilding specs.sqlite...")
+            print(f"  {specs_index.build()}")
+    else:
+        print("\nConnecting to Redis Stack + Ollama...")
+        client = get_client()
+        ensure_index(client, args.index)
 
-    with OllamaClient() as ollama:
-        print(f"Uploading to index '{args.index}'...")
-        upload(all_records, ollama, client)
+        with OllamaClient() as ollama:
+            print(f"Uploading to index '{args.index}'...")
+            upload(all_records, ollama, client)
 
     print("Done.")
 

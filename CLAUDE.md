@@ -15,16 +15,18 @@ mcp_servers/
   rag.py               RAG tools — search_docs (semantic, Redis Stack + Ollama) + lookup_api (exact OpenAPI lookup, SQLite)
   shared.py            Shared utilities and helpers
 pipeline/
-  clients/             CentralClient, GLPClient, MCPClient, TokenManager, OllamaClient, RedisClient
+  clients/             CentralClient, GLPClient, MCPClient, TokenManager, EmbedClient (fastembed),
+                       LanceClient (embedded store), SpecsIndex (SQLite), OllamaClient/RedisClient (optional server backend)
   stages/              s1_discover → s8_verify (migration pipeline)
   config.py            Credentials loader (config/credentials.yaml or env)
   create_ssid.py       SSID build/delete logic (underlay + overlay)
 ingestion/
-  ingest_docs.py       Scrape + chunk + embed Aruba/HPE docs into Redis Stack
+  ingest_docs.py       Chunk + embed docs → LanceDB + specs SQLite (default) or Redis Stack (--backend redis)
   sources/             Raw scraped docs (git-ignored — regenerable)
 scripts/
-  ingest_tools.py      Re-index the RAG corpus against the configured Redis Stack/Ollama stack
-docker-compose.yml     Redis Stack (port 6379, RedisInsight UI port 8001) + Ollama runtime
+  ingest_tools.py      Re-index the find_tool catalog → LanceDB (default) or Redis Stack (--backend redis)
+data/                  Embedded indexes (git-ignored): docs.lance, tools.lance, specs.sqlite — rebuild via ingest or download prebuilt
+docker-compose.yml     OPTIONAL server backend: Redis Stack + Ollama (set CENTRALMCP_RAG_BACKEND=redis)
 config/credentials.yaml  API credentials (never commit)
 resources/             Postman API collections (monitoring + config endpoints)
 inputs/                CSV files for batch migration

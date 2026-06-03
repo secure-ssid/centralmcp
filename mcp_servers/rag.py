@@ -1,30 +1,45 @@
 """MCP server — Aruba/HPE documentation RAG tools (2 tools).
 
-Covers: semantic search over ingested Aruba Central developer docs,
-tech docs, NAC docs, VSG docs, and HTML tech docs via Redis Stack + Ollama;
-exact API endpoint/schema/enum lookup via the SQLite specs index.
+Covers: hybrid (vector + BM25) search over ingested Aruba Central developer
+docs, tech docs, NAC docs, VSG docs, and HTML tech docs; exact API
+endpoint/schema/enum lookup via the SQLite specs index.
+
+Default backend is the embedded stack — LanceDB + fastembed, no servers
+needed (`clone -> uv sync -> run`). Set CENTRALMCP_RAG_BACKEND=redis for the
+optional Redis Stack + Ollama server deployment (vector-only + source boost).
 """
 
+import os
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import READ_ONLY
 from pipeline.clients import specs_index
-from pipeline.clients.ollama_client import OllamaClient
-from pipeline.clients.redis_client import DOCS_INDEX, get_client as _get_redis_client
-from pipeline.clients.redis_client import vector_search
 
 mcp = FastMCP("aruba-rag")
 
-_ollama = OllamaClient()
+_BACKEND = os.getenv("CENTRALMCP_RAG_BACKEND", "lancedb").strip().lower()
 
-try:
-    _redis = _get_redis_client()
-    _redis.ping()
-except Exception:
-    _redis = None
+if _BACKEND == "redis":
+    from pipeline.clients.ollama_client import OllamaClient
+    from pipeline.clients.redis_client import get_client as _get_redis_client
+    from pipeline.clients.redis_client import vector_search
 
+    _ollama = OllamaClient()
+    try:
+        _redis = _get_redis_client()
+        _redis.ping()
+    except Exception:
+        _redis = None
+else:
+    from pipeline.clients import lance_client
+    from pipeline.clients.embed_client import EmbedClient
+
+    _embedder = EmbedClient()  # lazy — the ONNX model loads on first query
+
+# Redis backend only — the LanceDB path replaces this static re-rank with
+# hybrid BM25+vector RRF fusion (R5).
 # Higher boost = preferred when scores are close.
 # openapi_specs: ground truth for field schemas and valid enum values.
 # developer_docs: official API reference and how-to guides (current product).
@@ -53,6 +68,48 @@ _DOC_TYPE_TO_SOURCE: dict[str, str] = {
 }
 
 
+def _shape(rows: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "text": r["text"][:600] + "…" if len(r["text"]) > 600 else r["text"],
+            "source": r["source"],
+            "file_path": r["file_path"],
+            "score": round(r["score"], 4),
+        }
+        for r in rows[:top_k]
+    ]
+
+
+def _search_lancedb(query: str, top_k: int, source_filter: str | None) -> list[dict[str, Any]]:
+    try:
+        db = lance_client.connect()
+        query_vector = _embedder.embed_query(query)
+        hits = lance_client.hybrid_search(
+            db, query, query_vector, top_k=top_k, source_filter=source_filter
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return [{"error": str(exc)}]
+    return _shape(hits, top_k)
+
+
+def _search_redis(query: str, top_k: int, source_filter: str | None) -> list[dict[str, Any]]:
+    if _redis is None:
+        return [{"error": "Redis not available — is the Redis Stack server running?"}]
+
+    query_vector = _ollama.embed_query(query)
+    # Fetch more candidates so re-ranking has room to promote higher-priority sources
+    candidates = vector_search(
+        _redis, query_vector, top_k=top_k * 3, source_filter=source_filter
+    )
+
+    # Re-rank: boosted_score = raw_score + source_boost. Applies even under filters —
+    # a filter narrows the candidate set, boosting still orders within it.
+    for r in candidates:
+        r["score"] = r["score"] + _SOURCE_BOOST.get(r.get("source", ""), 0.0)
+    candidates.sort(key=lambda r: r["score"], reverse=True)
+    return _shape(candidates, top_k)
+
+
 @mcp.tool(annotations=READ_ONLY)
 def search_docs(
     query: str,
@@ -62,49 +119,27 @@ def search_docs(
 ) -> list[dict[str, Any]]:
     """Search Aruba/HPE network documentation.
 
-    Semantic search over developer guides, tech docs, NAC/VSG guides, and OpenAPI specs.
-    Call this before searching the web for any Aruba Central config, API, or feature question.
+    Hybrid (vector + keyword) search over developer guides, tech docs, NAC/VSG
+    guides, and OpenAPI specs. Call this before searching the web for any Aruba
+    Central config, API, or feature question.
 
     Args:
         query:    Natural language question or keywords.
         top_k:    Results to return (default 5, max 20).
         source:   Filter by source folder — developer_docs, tech_docs, nac_docs,
-                  vsg_docs, techdocs_html, or openapi_specs.
+                  vsg_docs, techdocs_html, aos_techdocs, or openapi_specs.
         doc_type: DEPRECATED — use source instead.
     """
-    if _redis is None:
-        return [{"error": "Redis not available — is the Redis Stack server running?"}]
-
     top_k = min(top_k, 20)
-    query_vector = _ollama.embed_query(query)
 
     # Map legacy doc_type to source name when source is not provided
     source_filter = source
     if not source_filter and doc_type:
         source_filter = _DOC_TYPE_TO_SOURCE.get(doc_type)
 
-    # Fetch more candidates so re-ranking has room to promote higher-priority sources
-    candidates = vector_search(
-        _redis, query_vector, top_k=top_k * 3, source_filter=source_filter
-    )
-
-    # Re-rank: boosted_score = raw_score + source_boost. Applies even under filters —
-    # a filter narrows the candidate set, boosting still orders within it.
-    def boosted(r):
-        boost = _SOURCE_BOOST.get(r.get("source", ""), 0.0)
-        return r["score"] + boost
-
-    candidates.sort(key=boosted, reverse=True)
-
-    return [
-        {
-            "text": r["text"][:600] + "…" if len(r["text"]) > 600 else r["text"],
-            "source": r["source"],
-            "file_path": r["file_path"],
-            "score": round(boosted(r), 4),
-        }
-        for r in candidates[:top_k]
-    ]
+    if _BACKEND == "redis":
+        return _search_redis(query, top_k, source_filter)
+    return _search_lancedb(query, top_k, source_filter)
 
 
 @mcp.tool(annotations=READ_ONLY)
