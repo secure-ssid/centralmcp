@@ -89,8 +89,11 @@ cp .mcp.json.example .mcp.json
 #    Edit .mcp.json — replace /path/to/centralmcp with your clone path
 
 # 4. Get the RAG indexes (-> data/)
-#    Option A — download prebuilt from the GitHub Releases page (fast):
-#      https://github.com/secure-ssid/centralmcp/releases
+#    Option A — download prebuilt (fast):
+curl -L -o /tmp/rag-index.tar.gz \
+  https://github.com/secure-ssid/centralmcp/releases/download/v0.2.0/centralmcp-rag-index-v0.2.0.tar.gz
+tar -xzf /tmp/rag-index.tar.gz   # extracts data/ into the repo root
+
 #    Option B — rebuild locally (re-scrapes nothing; embeds 53k chunks
 #      in-process — several hours on CPU):
 uv run python scripts/ingest_tools.py     # find_tool catalog (~1 min)
