@@ -237,34 +237,47 @@ def upload(records: list[dict], ollama: OllamaClient, client):
         print(f"    uploaded {uploaded} new / {skipped} skipped / {len(records)} total")
 
 
-EMBED_BATCH_LANCE = 512
+WRITE_BATCH_LANCE = 512
 
 
-def upload_lancedb(records: list[dict], ingested_sources: list[str]) -> None:
-    """Full rebuild of the LanceDB docs table: embed with fastembed, add in
-    batches, build the FTS index once at the end, then assert every ingested
-    source landed >0 chunks (R2 — a silently-empty source poisoned the old index).
+def upload_lancedb(records: list[dict], ingested_sources: list[str],
+                   parallel: int | None = None) -> None:
+    """Full rebuild of the LanceDB docs table: stream embeddings from fastembed
+    (one embed pass so parallel workers spawn once), add rows in batches, build
+    the FTS index once at the end, then assert every ingested source landed
+    >0 chunks (R2 — a silently-empty source poisoned the old index).
     """
     from pipeline.clients import lance_client
     from pipeline.clients.embed_client import EmbedClient
 
     db = lance_client.connect()
     embedder = EmbedClient()
+    vectors = embedder.iter_embed_documents(
+        (r["text"] for r in records), parallel=parallel
+    )
     table = None
+    buf: list[dict] = []
     done = 0
-    for start in range(0, len(records), EMBED_BATCH_LANCE):
-        batch = records[start : start + EMBED_BATCH_LANCE]
-        vectors = embedder.embed_document([r["text"] for r in batch])
-        rows = [{**r, "vector": vec} for r, vec in zip(batch, vectors)]
+    for record, vec in zip(records, vectors):
+        buf.append({**record, "vector": vec})
+        if len(buf) >= WRITE_BATCH_LANCE:
+            if table is None:
+                table = lance_client.create_docs_table(db, buf)
+            else:
+                table.add(buf)
+            done += len(buf)
+            buf = []
+            print(f"    embedded+added {done}/{len(records)}", flush=True)
+    if buf:
         if table is None:
-            table = lance_client.create_docs_table(db, rows)
+            table = lance_client.create_docs_table(db, buf)
         else:
-            table.add(rows)
-        done += len(rows)
-        print(f"    embedded+added {done}/{len(records)}")
+            table.add(buf)
+        done += len(buf)
+        print(f"    embedded+added {done}/{len(records)}", flush=True)
     if table is None:
         raise SystemExit("No records to ingest — check ingestion/sources/")
-    print("  building FTS index...")
+    print("  building FTS index...", flush=True)
     lance_client.build_fts_index(table)
 
     counts = lance_client.source_counts(db)
@@ -280,6 +293,8 @@ def main():
     parser.add_argument("--source", help="Ingest one source folder only (redis backend)")
     parser.add_argument("--dry-run", action="store_true", help="Count chunks, no upload")
     parser.add_argument("--index", default=DOCS_INDEX, dest="index")
+    parser.add_argument("--parallel", type=int, default=None,
+                        help="fastembed worker processes (lancedb backend)")
     args = parser.parse_args()
 
     if args.backend == "lancedb" and args.source:
@@ -311,7 +326,7 @@ def main():
 
     if args.backend == "lancedb":
         print("\nRebuilding embedded indexes (LanceDB + specs SQLite)...")
-        upload_lancedb(all_records, ingested_sources)
+        upload_lancedb(all_records, ingested_sources, parallel=args.parallel)
         if "openapi_specs" in ingested_sources:
             from pipeline.clients import specs_index
             print("  rebuilding specs.sqlite...")
