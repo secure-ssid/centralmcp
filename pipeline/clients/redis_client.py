@@ -5,20 +5,26 @@ Redis Stack includes RediSearch, RedisJSON, and RedisInsight out of the box.
 """
 
 import json
+import os
 import numpy as np
 import redis
 from redis.commands.search.field import TextField, TagField, VectorField, NumericField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 
-REDIS_URL = "redis://localhost:6379"
+DEFAULT_REDIS_URL = "redis://localhost:6379"
+REDIS_URL = os.getenv("REDIS_URL", DEFAULT_REDIS_URL)
 DOCS_INDEX = "network_docs"
 EMBEDDING_DIMS = 768  # nomic-embed-text
 
 
-def get_client(url: str = REDIS_URL) -> redis.Redis:
+def get_redis_url() -> str:
+    return os.getenv("REDIS_URL", DEFAULT_REDIS_URL)
+
+
+def get_client(url: str | None = None) -> redis.Redis:
     """Return a Redis client connected to Redis Stack."""
-    return redis.from_url(url, decode_responses=False)
+    return redis.from_url(url or get_redis_url(), decode_responses=False)
 
 
 def ensure_index(

@@ -19,7 +19,7 @@ Python tooling for Aruba Central New-Central / NBAPI: monitoring, configuration,
 | Surface | Count | What |
 |---|---|---|
 | **MCP tool servers** | 6 + router | `aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`, `aruba-glp`, `aruba-rag` — optionally fronted by `aruba-tool-router` |
-| **MCP tools** | 145 | Read + write across Central and GLP, plus doc-grounded search |
+| **MCP tools** | 149 | Read + write across Central and GLP, plus doc-grounded search |
 | **Migration pipeline stages** | 8 | Discover → verify → transfer → configure → attest |
 | **Supported device types** | AP / CX / AOS-S / Gateway | Full troubleshoot + provisioning surface |
 | **GLP operations** | Devices / Subscriptions / Users / Audit logs | v2beta1 PATCH writes behind a feature flag |
@@ -28,7 +28,7 @@ Python tooling for Aruba Central New-Central / NBAPI: monitoring, configuration,
 
 ### Feature highlights
 
-- **145 MCP tools** across 6 FastMCP servers
+- **149 MCP tools** across 6 FastMCP servers
 - **`aruba-tool-router`** — single MCP entrypoint that proxies all 6 domain servers, reducing tool-listing overhead. Use the router day-to-day; switch to `.cursor/mcp.dev.json` for per-server debugging.
 - **Doc-grounded RAG** — `search_docs` over ingested Aruba/HPE developer docs, tech docs, NAC/VSG guides, and OpenAPI specs (Redis Stack + Ollama, `docker-compose.yml` included)
 - **Obsidian vault MCP** — local filesystem MCP server over a personal Obsidian vault for runbooks and reference docs
@@ -51,7 +51,7 @@ Python tooling for Aruba Central New-Central / NBAPI: monitoring, configuration,
 Aruba publishes [`pycentral`](https://github.com/aruba/pycentral) for classic Central, and HPE publishes [`gl-mcp`](https://github.com/HewlettPackard/gl-mcp) for the GreenLake Platform. There's no single MCP server that:
 
 1. Covers both **New Central** and **GLP** in one place,
-2. Wraps 145 concrete tools with proper FastMCP surfacing,
+2. Wraps 149 concrete tools with proper FastMCP surfacing,
 3. Ships with production-grade reliability middleware (rate-limit, retry, null-strip), **and**
 4. Includes a real cross-account migration pipeline.
 
@@ -108,6 +108,7 @@ python ingestion/ingest_docs.py
 | `MCP_PORT` | Port for HTTP transport | `8000` |
 | `GLP_TOKEN_URL` | Override SSO token endpoint | `https://sso.common.cloud.hpe.com/as/token.oauth2` |
 | `GLP_BASE_URL` | Override GLP API base URL | `https://global.api.greenlake.hpe.com` |
+| `REDIS_URL` | Override Redis Stack connection for tool/doc search | `redis://localhost:6379` |
 
 ---
 

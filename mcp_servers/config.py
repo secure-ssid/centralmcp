@@ -427,6 +427,175 @@ def get_scope_maps(
     return bound_collection_response(data, limit=limit, offset=offset, list_key="scope_maps")
 
 
+def _passpoint_read_params(
+    *,
+    view_type: str | None = None,
+    object_type: str | None = None,
+    scope_id: str | None = None,
+    device_function: str | None = None,
+    effective: bool | None = None,
+    detailed: bool | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> dict[str, Any]:
+    """Build query params for Passpoint read endpoints."""
+    params: dict[str, Any] = {}
+    if view_type is not None:
+        params["view-type"] = view_type
+    if object_type is not None:
+        params["object-type"] = object_type
+    if scope_id is not None:
+        params["scope-id"] = scope_id
+    if device_function is not None:
+        params["device-function"] = device_function
+    if effective is not None:
+        params["effective"] = effective
+    if detailed is not None:
+        params["detailed"] = detailed
+    if limit is not None:
+        params["limit"] = clamp_limit(limit)
+    if offset is not None:
+        params["offset"] = max(0, offset)
+    return params
+
+
+def _config_list_response(
+    endpoint: str,
+    *,
+    list_key: str,
+    limit: int,
+    offset: int,
+    full_list: bool,
+    **read_params: Any,
+) -> dict[str, Any]:
+    """Fetch a config collection with bounded output by default."""
+    client = get_client()
+    params = _passpoint_read_params(limit=limit, offset=offset, **read_params)
+    data = client.get(endpoint, params=params or None)
+    if isinstance(data, list):
+        payload = {list_key: data}
+    elif isinstance(data, dict):
+        items = data.get(list_key)
+        if not isinstance(items, list):
+            items = data.get("items", [])
+        if not isinstance(items, list):
+            items = []
+        payload = {**data, list_key: items}
+    else:
+        payload = {list_key: []}
+    if full_list:
+        return payload
+    return bound_collection_response(payload, limit=limit, offset=offset, list_key=list_key)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_passpoint_profiles(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+    view_type: str | None = None,
+    object_type: str | None = None,
+    scope_id: str | None = None,
+    device_function: str | None = None,
+    effective: bool | None = None,
+    detailed: bool | None = None,
+) -> dict[str, Any]:
+    """List Passpoint / 802.11u provider profiles (bounded by default)."""
+    return _config_list_response(
+        "/network-config/v1alpha1/passpoint",
+        list_key="passpoint-profile",
+        limit=limit,
+        offset=offset,
+        full_list=full_list,
+        view_type=view_type,
+        object_type=object_type,
+        scope_id=scope_id,
+        device_function=device_function,
+        effective=effective,
+        detailed=detailed,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_passpoint_profile(
+    name: str,
+    view_type: str | None = None,
+    object_type: str | None = None,
+    scope_id: str | None = None,
+    device_function: str | None = None,
+    effective: bool | None = None,
+    detailed: bool | None = None,
+) -> dict[str, Any]:
+    """Fetch a Passpoint / 802.11u provider profile by name."""
+    client = get_client()
+    params = _passpoint_read_params(
+        view_type=view_type,
+        object_type=object_type,
+        scope_id=scope_id,
+        device_function=device_function,
+        effective=effective,
+        detailed=detailed,
+    )
+    resp = client._request("GET", f"/network-config/v1alpha1/passpoint/{quote(name, safe='')}", params=params or None)
+    return resp_json(resp)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_passpoint_identity_profiles(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+    view_type: str | None = None,
+    object_type: str | None = None,
+    scope_id: str | None = None,
+    device_function: str | None = None,
+    effective: bool | None = None,
+    detailed: bool | None = None,
+) -> dict[str, Any]:
+    """List Passpoint identity / ANQP NAI realm profiles (bounded by default)."""
+    return _config_list_response(
+        "/network-config/v1alpha1/passpoint-identity",
+        list_key="passpoint-identity-profile",
+        limit=limit,
+        offset=offset,
+        full_list=full_list,
+        view_type=view_type,
+        object_type=object_type,
+        scope_id=scope_id,
+        device_function=device_function,
+        effective=effective,
+        detailed=detailed,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_passpoint_identity_profile(
+    name: str,
+    view_type: str | None = None,
+    object_type: str | None = None,
+    scope_id: str | None = None,
+    device_function: str | None = None,
+    effective: bool | None = None,
+    detailed: bool | None = None,
+) -> dict[str, Any]:
+    """Fetch a Passpoint identity / ANQP NAI realm profile by name."""
+    client = get_client()
+    params = _passpoint_read_params(
+        view_type=view_type,
+        object_type=object_type,
+        scope_id=scope_id,
+        device_function=device_function,
+        effective=effective,
+        detailed=detailed,
+    )
+    resp = client._request(
+        "GET",
+        f"/network-config/v1alpha1/passpoint-identity/{quote(name, safe='')}",
+        params=params or None,
+    )
+    return resp_json(resp)
+
+
 @mcp.tool(annotations=READ_ONLY)
 def list_gw_clusters(
     limit: int = 50,

@@ -1,58 +1,15 @@
 {
   "mcpServers": {
-    "aruba-monitoring": {
+    "aruba-tool-router": {
       "command": "/path/to/API-Central/.venv/bin/python3",
       "args": [
-        "/path/to/API-Central/mcp_servers/monitoring.py"
+        "/path/to/API-Central/mcp_servers/tool_router.py"
       ],
       "cwd": "/path/to/API-Central",
       "env": {
         "PYTHONPATH": "/path/to/API-Central",
-        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml"
-      }
-    },
-    "aruba-config": {
-      "command": "/path/to/API-Central/.venv/bin/python3",
-      "args": [
-        "/path/to/API-Central/mcp_servers/config.py"
-      ],
-      "cwd": "/path/to/API-Central",
-      "env": {
-        "PYTHONPATH": "/path/to/API-Central",
-        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml"
-      }
-    },
-    "aruba-ops": {
-      "command": "/path/to/API-Central/.venv/bin/python3",
-      "args": [
-        "/path/to/API-Central/mcp_servers/ops.py"
-      ],
-      "cwd": "/path/to/API-Central",
-      "env": {
-        "PYTHONPATH": "/path/to/API-Central",
-        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml"
-      }
-    },
-    "aruba-nac": {
-      "command": "/path/to/API-Central/.venv/bin/python3",
-      "args": [
-        "/path/to/API-Central/mcp_servers/nac.py"
-      ],
-      "cwd": "/path/to/API-Central",
-      "env": {
-        "PYTHONPATH": "/path/to/API-Central",
-        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml"
-      }
-    },
-    "aruba-glp": {
-      "command": "/path/to/API-Central/.venv/bin/python3",
-      "args": [
-        "/path/to/API-Central/mcp_servers/glp.py"
-      ],
-      "cwd": "/path/to/API-Central",
-      "env": {
-        "PYTHONPATH": "/path/to/API-Central",
-        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml"
+        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml",
+        "REDIS_URL": "redis://localhost:6379"
       }
     }
   }

@@ -1,7 +1,7 @@
 """MCP server — Aruba tool router (lazy loading via semantic tool RAG).
 
 Exposes a lean surface (find_tool + invoke_tool + common discovery tools)
-and retrieves the full 145-tool catalog on demand. Backend servers
+and retrieves the full 149-tool catalog on demand. Backend servers
 (config/monitoring/nac/ops/glp/rag) are imported in-process and dispatched
 by name — no subprocess overhead.
 

@@ -101,6 +101,17 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 
 **Before editing:** use `Grep` to find the line, then `Read` only that slice.
 
+## RAG-first rule
+
+**Always call `search_docs` before answering any question about Aruba/HPE config, APIs, or features.**
+This applies whether the question is about how to use a tool, what a field value should be, what an API endpoint does, or how to configure a feature. The RAG corpus (53K+ chunks of developer docs, tech docs, NAC/VSG guides, and OpenAPI specs) is authoritative and must be consulted first.
+
+Skip `search_docs` only when:
+- The question is purely about live device/client state (use monitoring tools directly).
+- You already retrieved matching RAG results earlier in the same conversation turn.
+
+When `search_docs` returns relevant hits, cite the `file_path` and use the content to inform your answer before calling any config/ops tool.
+
 ## API reference
 
 Postman collections are in `resources/` (git-ignored — download with `python resources/download_collections.py` or import directly from the [HPE Aruba Networking Postman workspace](https://www.postman.com/hpe-aruba-networking/new-hpe-aruba-networking-central/collection/32717089-1d8b9f9e-2137-4a7d-b735-1b3c06f87e70)):

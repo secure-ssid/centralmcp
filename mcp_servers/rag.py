@@ -1,7 +1,7 @@
 """MCP server — Aruba/HPE documentation RAG tools (1 tool).
 
 Covers: semantic search over ingested Aruba Central developer docs,
-tech docs, NAC docs, VSG docs, and HTML tech docs via Qdrant + Ollama.
+tech docs, NAC docs, VSG docs, and HTML tech docs via Redis Stack + Ollama.
 """
 
 from typing import Any
@@ -10,17 +10,18 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import READ_ONLY
 from pipeline.clients.ollama_client import OllamaClient
-from pipeline.clients.qdrant_client import DOCS_COLLECTION, QDRANT_URL, get_client as _get_qdrant_client
+from pipeline.clients.redis_client import DOCS_INDEX, get_client as _get_redis_client
+from pipeline.clients.redis_client import vector_search
 
 mcp = FastMCP("aruba-rag")
 
 _ollama = OllamaClient()
 
 try:
-    _qdrant = _get_qdrant_client(QDRANT_URL)
-    _qdrant.get_collections()
+    _redis = _get_redis_client()
+    _redis.ping()
 except Exception:
-    _qdrant = None
+    _redis = None
 
 # Higher boost = preferred when scores are close.
 # openapi_specs: ground truth for field schemas and valid enum values.
