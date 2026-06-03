@@ -50,6 +50,10 @@ qdrant_data/
 redis_data/
 ollama_data/
 
+# Built indexes — regenerate (python -m pipeline.clients.specs_index --build)
+# or download prebuilt from GitHub Releases
+data/
+
 # Python
 __pycache__/
 *.py[cod]

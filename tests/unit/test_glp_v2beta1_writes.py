@@ -191,11 +191,32 @@ class TestPayloadShapes:
         body = inner._request.call_args.kwargs["json"]
         assert body == {"archived": False}
 
-    def test_assign_subscription_body(self, clean_env, writes_on):
+    def test_assign_subscription_body_uuid_passthrough(self, clean_env, writes_on):
+        """A real UUID is used as-is — no key-resolution GET for it."""
         glp, inner = _make_glp_client()
-        glp.assign_subscription("SERIAL1", subscription_id="sub-uuid-456")
+        sub_uuid = "123e4567-e89b-12d3-a456-426614174000"
+        glp.assign_subscription("SERIAL1", subscription_id=sub_uuid)
         body = inner._request.call_args.kwargs["json"]
-        assert body == {"subscription": [{"id": "sub-uuid-456"}]}
+        assert body == {"subscription": [{"id": sub_uuid}]}
+        # only the serial→device-id GET happened, not a subscription lookup
+        get_urls = [c.args[0] for c in inner.get.call_args_list]
+        assert all("/subscriptions/" not in u for u in get_urls)
+
+    def test_assign_subscription_resolves_key_to_uuid(self, clean_env, writes_on):
+        """A non-UUID subscription key is resolved via the subscriptions API."""
+        glp, inner = _make_glp_client()
+        glp.assign_subscription("SERIAL1", subscription_id="EVAL-KEY-789")
+        body = inner._request.call_args.kwargs["json"]
+        assert body == {"subscription": [{"id": "uuid-abc-123"}]}
+        get_urls = [c.args[0] for c in inner.get.call_args_list]
+        assert any("/subscriptions/v1/subscriptions" in u for u in get_urls)
+
+    def test_assign_subscription_unresolvable_key_raises(self, clean_env, writes_on):
+        """Key that resolves to nothing → ValueError, no PATCH sent."""
+        glp, inner = _make_glp_client(list_devices_response={"items": []})
+        with pytest.raises(ValueError, match="Could not resolve subscription key"):
+            glp.assign_subscription("SERIAL1", subscription_id="BOGUS-KEY")
+        inner._request.assert_not_called()
 
     def test_unassign_subscription_body_is_empty_list(self, clean_env, writes_on):
         glp, inner = _make_glp_client()

@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central NAC and authentication tools (31 tools).
+"""MCP server — Aruba Central NAC and authentication tools (32 tools).
 
 Covers: CNAC MAC registrations, Named MPSK registrations, visitor accounts,
 RADIUS/auth server profiles, AAA profiles, AAA connectivity testing, authorization
@@ -16,6 +16,7 @@ from mcp_servers.shared import (
     READ_ONLY,
     _CX_TROUBLESHOOTING_BASE,
     bound_collection_response,
+    compact_http_error,
     get_client,
     resp_json,
     troubleshoot_async,
@@ -65,9 +66,13 @@ def add_mac_registration(
     if dry_run:
         return {"dry_run": True, "payload": payload}
 
+    endpoint = f"{_CNAC_BASE}/cnac-mac-reg"
     client = get_client()
-    resp = client._request("POST", f"{_CNAC_BASE}/cnac-mac-reg", json=payload)
-    return resp_json(resp)
+    resp = client._request("POST", endpoint, json=payload)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -79,7 +84,12 @@ def update_mac_registration(
     enable: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Update an existing MAC registration by ID. mac_address required even for updates."""
+    """Update an existing MAC registration. mac_address required even for updates.
+
+    registration_id is deprecated/unused: the documented operation is a PUT on the
+    collection with the record keyed by macAddress in the body. The parameter is
+    retained for backward compatibility only.
+    """
     payload: dict[str, Any] = {
         "input": {
             "macAddress": mac_address,
@@ -94,9 +104,13 @@ def update_mac_registration(
     if dry_run:
         return {"dry_run": True, "registration_id": registration_id, "payload": payload}
 
+    endpoint = f"{_CNAC_BASE}/cnac-mac-reg"
     client = get_client()
-    resp = client._request("PUT", f"{_CNAC_BASE}/cnac-mac-reg/{registration_id}", json=payload)
-    return resp_json(resp)
+    resp = client._request("PUT", endpoint, json=payload)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -108,9 +122,13 @@ def delete_mac_registration(
     if dry_run:
         return {"dry_run": True, "registration_id": registration_id}
 
+    endpoint = f"{_CNAC_BASE}/cnac-mac-reg/{registration_id}"
     client = get_client()
-    resp = client._request("DELETE", f"{_CNAC_BASE}/cnac-mac-reg/{registration_id}")
-    return resp_json(resp)
+    resp = client._request("DELETE", endpoint)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 # ── Named MPSK Registrations ──────────────────────────────────────────────────
@@ -152,9 +170,13 @@ def add_mpsk_registration(
     if dry_run:
         return {"dry_run": True, "payload": payload}
 
+    endpoint = f"{_CNAC_BASE}/cnac-named-mpsk-reg"
     client = get_client()
-    resp = client._request("POST", f"{_CNAC_BASE}/cnac-named-mpsk-reg", json=payload)
-    return resp_json(resp)
+    resp = client._request("POST", endpoint, json=payload)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -166,9 +188,13 @@ def delete_mpsk_registration(
     if dry_run:
         return {"dry_run": True, "registration_id": registration_id}
 
+    endpoint = f"{_CNAC_BASE}/cnac-named-mpsk-reg/{registration_id}"
     client = get_client()
-    resp = client._request("DELETE", f"{_CNAC_BASE}/cnac-named-mpsk-reg/{registration_id}")
-    return resp_json(resp)
+    resp = client._request("DELETE", endpoint)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 # ── Visitor Accounts ──────────────────────────────────────────────────────────
@@ -217,9 +243,13 @@ def add_visitor(
     if dry_run:
         return {"dry_run": True, "payload": payload}
 
+    endpoint = f"{_CNAC_BASE}/cnac-visitor"
     client = get_client()
-    resp = client._request("POST", f"{_CNAC_BASE}/cnac-visitor", json=payload)
-    return resp_json(resp)
+    resp = client._request("POST", endpoint, json=payload)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -231,9 +261,13 @@ def delete_visitor(
     if dry_run:
         return {"dry_run": True, "visitor_id": visitor_id}
 
+    endpoint = f"{_CNAC_BASE}/cnac-visitor/{visitor_id}"
     client = get_client()
-    resp = client._request("DELETE", f"{_CNAC_BASE}/cnac-visitor/{visitor_id}")
-    return resp_json(resp)
+    resp = client._request("DELETE", endpoint)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 # ── Auth Server Profiles ──────────────────────────────────────────────────────
@@ -302,7 +336,7 @@ def create_auth_server(
         "auth-server-address": auth_server_address,
         "auth-port": auth_port,
         "acct-port": acct_port,
-        "enable": str(enable).lower(),
+        "enable": enable,
         "shared-secret-config": {
             "secret-type": "PLAIN_TEXT",
             "plaintext-value": shared_secret,
@@ -323,9 +357,13 @@ def create_auth_server(
         safe = {**payload, "shared-secret-config": {"secret-type": "PLAIN_TEXT", "plaintext-value": "***"}}
         return {"dry_run": True, "name": name, "payload": safe}
 
+    endpoint = f"{_CNAC_BASE}/auth-servers/{name}"
     client = get_client()
-    resp = client._request("POST", f"{_CNAC_BASE}/auth-servers/{name}", json=payload)
-    return resp_json(resp)
+    resp = client._request("POST", endpoint, json=payload)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -337,9 +375,13 @@ def delete_auth_server(
     if dry_run:
         return {"dry_run": True, "name": name}
 
+    endpoint = f"{_CNAC_BASE}/auth-servers/{name}"
     client = get_client()
-    resp = client._request("DELETE", f"{_CNAC_BASE}/auth-servers/{name}")
-    return resp_json(resp)
+    resp = client._request("DELETE", endpoint)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 # ── AAA Profiles ──────────────────────────────────────────────────────────────
@@ -391,9 +433,13 @@ def create_aaa_profile(
     if dry_run:
         return {"dry_run": True, "name": name, "payload": payload}
 
+    endpoint = f"{_CNAC_BASE}/aaa-profile/{name}"
     client = get_client()
-    resp = client._request("POST", f"{_CNAC_BASE}/aaa-profile/{name}", json=payload)
-    return resp_json(resp)
+    resp = client._request("POST", endpoint, json=payload)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -405,9 +451,13 @@ def delete_aaa_profile(
     if dry_run:
         return {"dry_run": True, "name": name}
 
+    endpoint = f"{_CNAC_BASE}/aaa-profile/{name}"
     client = get_client()
-    resp = client._request("DELETE", f"{_CNAC_BASE}/aaa-profile/{name}")
-    return resp_json(resp)
+    resp = client._request("DELETE", endpoint)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 # ── AAA Test ──────────────────────────────────────────────────────────────────
@@ -554,10 +604,13 @@ def create_authz_policy(
     if dry_run:
         return {"dry_run": True, "policy_id": policy_id, "policy_name": policy_name, "payload": payload}
 
+    endpoint = f"{_CNAC_BASE}/authz-policies/{policy_id}"
     client = get_client()
-    resp = client._request("POST", f"{_CNAC_BASE}/authz-policies/{policy_id}", json=payload)
+    resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
     result["policy_id"] = policy_id
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
 
@@ -570,9 +623,13 @@ def delete_authz_policy(
     if dry_run:
         return {"dry_run": True, "policy_id": policy_id}
 
+    endpoint = f"{_CNAC_BASE}/authz-policies/{policy_id}"
     client = get_client()
-    resp = client._request("DELETE", f"{_CNAC_BASE}/authz-policies/{policy_id}")
-    return resp_json(resp)
+    resp = client._request("DELETE", endpoint)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 _STATIC_TAG_BASE = "/network-config/v1alpha1/static-tag"
@@ -601,19 +658,26 @@ def create_static_tag(
     payload = {"name": name}
     if dry_run:
         return {"payload": payload, "tag_id": tag_id, "url": f"{_STATIC_TAG_BASE}/{tag_id}"}
+    endpoint = f"{_STATIC_TAG_BASE}/{tag_id}"
     client = get_client()
-    resp = client._request("POST", f"{_STATIC_TAG_BASE}/{tag_id}", json=payload)
+    resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
     result["tag_id"] = tag_id
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
 def delete_static_tag(tag_id: str) -> dict[str, Any]:
     """Delete a static classification tag by UUID."""
+    endpoint = f"{_STATIC_TAG_BASE}/{tag_id}"
     client = get_client()
-    resp = client._request("DELETE", f"{_STATIC_TAG_BASE}/{tag_id}")
-    return resp_json(resp)
+    resp = client._request("DELETE", endpoint)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 # ── Auth Profiles ─────────────────────────────────────────────────────────────
@@ -691,10 +755,13 @@ def create_mac_auth_profile(
     if dry_run:
         return {"dry_run": True, "profile_id": profile_id, "payload": payload}
 
+    endpoint = f"{_AUTH_PROFILE_BASE}/{profile_id}"
     client = get_client()
-    resp = client._request("POST", f"{_AUTH_PROFILE_BASE}/{profile_id}", json=payload)
+    resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
     result["profile_id"] = profile_id
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
 
@@ -721,7 +788,7 @@ def create_dot1x_auth_profile(
         "auth-profile-id": profile_id,
         "name": name,
         "description": description,
-        "auth-type": "DOT1X",
+        "auth-type": "EAP",
         "networks": networks,
         "wired": wired,
         "organization-name": _CENTRAL_ORG_NAME,
@@ -731,10 +798,13 @@ def create_dot1x_auth_profile(
     if dry_run:
         return {"dry_run": True, "profile_id": profile_id, "payload": payload}
 
+    endpoint = f"{_AUTH_PROFILE_BASE}/{profile_id}"
     client = get_client()
-    resp = client._request("POST", f"{_AUTH_PROFILE_BASE}/{profile_id}", json=payload)
+    resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
     result["profile_id"] = profile_id
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
 
@@ -747,9 +817,13 @@ def delete_auth_profile(
     if dry_run:
         return {"dry_run": True, "profile_id": profile_id}
 
+    endpoint = f"{_AUTH_PROFILE_BASE}/{profile_id}"
     client = get_client()
-    resp = client._request("DELETE", f"{_AUTH_PROFILE_BASE}/{profile_id}")
-    return resp_json(resp)
+    resp = client._request("DELETE", endpoint)
+    result = resp_json(resp)
+    if not resp.ok:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
 
 
 @mcp.tool(annotations=READ_ONLY)

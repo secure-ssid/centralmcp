@@ -222,7 +222,7 @@ def upload(records: list[dict], ollama: OllamaClient, client):
         if not new:
             continue
         texts = [r["text"] for r in new]
-        vectors = ollama.embed_batch(texts)
+        vectors = ollama.embed_document(texts)
         docs = [
             {**r, "embedding": vec}
             for r, vec in zip(new, vectors)

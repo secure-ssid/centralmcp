@@ -250,6 +250,8 @@ def set_firmware_compliance(
     client = get_client()
     errors: list[str] = []
     payload: dict[str, Any] = {
+        "name": f"compliance-{device_function.lower()}",
+        "enable": True,
         "version-chart": {"version": firmware_version},
         "upgrade-mode": upgrade_mode,
         "enforcement-schedule": {
@@ -288,23 +290,38 @@ def set_firmware_compliance(
 
 @mcp.tool(annotations=READ_ONLY)
 def list_firmware_upgrades(serial_number: str | None = None) -> dict[str, Any]:
-    """List in-progress or recent firmware upgrade tasks."""
+    """List devices with firmware upgrade activity (in-progress or recent).
+
+    Sourced from GET /network-services/v1alpha1/firmware-details (the same endpoint
+    get_firmware uses) — the legacy /firmware/v1/upgrade endpoint 404s on New Central.
+    That endpoint ignores serialNumber server-side, so serial_number is filtered
+    client-side. By default only devices whose upgradeStatus is set are returned,
+    each surfacing upgradeStatus, recommendedVersion, firmwareClassification,
+    lastUpgradedTimeAt, deviceName, and serialNumber.
+    """
     client = get_client()
     errors: list[str] = []
-    params: dict[str, Any] = {}
-    if serial_number:
-        params["serialNumber"] = serial_number
     try:
-        response = client._request("GET", "/firmware/v1/upgrade", params=params or None)
-        if response.status_code == 404:
-            errors.append("GET /firmware/v1/upgrade returned 404 — not available on this instance.")
-            return {"items": [], "errors": errors}
-        response.raise_for_status()
-        data = response.json() if response.text else {}
-        items = data.get("items", data) if isinstance(data, dict) else data
-        if not isinstance(items, list):
-            items = [items] if items else []
-        return {"items": items, "errors": errors}
+        result = client.get("/network-services/v1alpha1/firmware-details")
+        items = result.get("items", []) if isinstance(result, dict) else []
+        if serial_number:
+            items = [
+                it for it in items
+                if str(it.get("serialNumber", "")).lower() == serial_number.lower()
+            ]
+        upgrades = [
+            {
+                "serialNumber": it.get("serialNumber"),
+                "deviceName": it.get("deviceName"),
+                "upgradeStatus": it.get("upgradeStatus"),
+                "recommendedVersion": it.get("recommendedVersion"),
+                "firmwareClassification": it.get("firmwareClassification"),
+                "lastUpgradedTimeAt": it.get("lastUpgradedTimeAt"),
+            }
+            for it in items
+            if it.get("upgradeStatus") is not None
+        ]
+        return {"items": upgrades, "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "errors": errors}
@@ -318,15 +335,19 @@ def trigger_device_upgrade(
     reboot_schedule_mode: str = "IMMEDIATE",
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Trigger an immediate per-device firmware upgrade (bypasses compliance policy).
+    """Trigger a per-device firmware upgrade at the device's local scope.
 
-    device_function auto-detected if omitted.
+    POSTs the version-chart body to /network-config/v1alpha1/device-firmware with
+    object-type=LOCAL plus the device's scope-id and device-function (the per-device
+    local-object equivalent of set_firmware_compliance). The scope-id and persona are
+    resolved from device inventory; device_function is auto-detected if omitted.
     """
     client = get_client()
     errors: list[str] = []
+    mcp_client = get_mcp_client()
 
     if not device_function:
-        device = get_mcp_client().get_device_by_serial(serial_number)
+        device = mcp_client.get_device_by_serial(serial_number)
         if device:
             raw = device.get("deviceType", "")
             if "ACCESS_POINT" in raw or raw == "AP":
@@ -340,40 +361,49 @@ def trigger_device_upgrade(
         errors.append(f"Could not determine device_function for {serial_number}.")
         return {"serial_number": serial_number, "firmware_version": firmware_version, "response": None, "errors": errors}
 
+    scope_id = mcp_client.get_device_scope_id(serial_number)
+    if not scope_id:
+        errors.append(f"Could not resolve scope-id for {serial_number}.")
+        return {"serial_number": serial_number, "firmware_version": firmware_version,
+                "device_function": device_function, "response": None, "errors": errors}
+
+    endpoint = "/network-config/v1alpha1/device-firmware"
+    params = {"object-type": "LOCAL", "scope-id": scope_id, "device-function": device_function}
+    # Version-chart body mirrors set_firmware_compliance (see CFG note below): the
+    # device-firmware spec schema only formally declares issu/site-distribution, but the
+    # firmware version is driven through the version-chart enforcement payload.
     payload: dict[str, Any] = {
-        "firmware-version": firmware_version,
-        "device-function": device_function,
-        "reboot-schedule-mode": reboot_schedule_mode,
-        "devices": [{"serial-number": serial_number}],
+        "version-chart": {"version": firmware_version},
+        "enforcement-schedule": {
+            "upgrade-schedule": {"upgrade-schedule-mode": "IMMEDIATE"},
+            "reboot-schedule": {"reboot-schedule-mode": reboot_schedule_mode},
+        },
     }
 
     if dry_run:
         return {"dry_run": True, "serial_number": serial_number, "firmware_version": firmware_version,
-                "device_function": device_function, "payload": payload, "errors": []}
+                "device_function": device_function, "scope_id": scope_id, "endpoint": endpoint,
+                "params": params, "payload": payload, "errors": []}
 
-    for endpoint in [
-        "/network-config/v1alpha1/device-firmware-upgrade",
-        "/network-config/v1/device-firmware-upgrade",
-    ]:
-        try:
-            response = client._request("POST", endpoint, json=payload)
-            if response.status_code == 404:
-                errors.append(f"404 at {endpoint}")
-                continue
-            if response.status_code not in (200, 201, 202):
-                errors.append(compact_http_error(response, endpoint=endpoint))
-                continue
-            try:
-                resp_body = response.json()
-            except Exception:
-                resp_body = {}
+    try:
+        response = client._request("POST", endpoint, json=payload, params=params)
+        if response.status_code == 412:
+            response = client._request("PATCH", endpoint, json=payload, params=params)
+        if response.status_code not in (200, 201, 202):
+            errors.append(compact_http_error(response, endpoint=endpoint))
             return {"serial_number": serial_number, "firmware_version": firmware_version,
-                    "device_function": device_function, "endpoint_used": endpoint,
-                    "response": resp_body, "errors": errors}
-        except Exception as exc:
-            errors.append(str(exc))
-
-    return {"serial_number": serial_number, "firmware_version": firmware_version, "response": None, "errors": errors}
+                    "device_function": device_function, "scope_id": scope_id, "response": None, "errors": errors}
+        try:
+            resp_body = response.json()
+        except Exception:
+            resp_body = {}
+        return {"serial_number": serial_number, "firmware_version": firmware_version,
+                "device_function": device_function, "scope_id": scope_id, "endpoint_used": endpoint,
+                "response": resp_body, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"serial_number": serial_number, "firmware_version": firmware_version,
+                "device_function": device_function, "scope_id": scope_id, "response": None, "errors": errors}
 
 
 # ── SSIDs ─────────────────────────────────────────────────────────────────────
@@ -449,9 +479,10 @@ def _passpoint_read_params(
     if device_function is not None:
         params["device-function"] = device_function
     if effective is not None:
-        params["effective"] = effective
+        # requests serializes Python bools as 'True'/'False'; the API expects 'true'/'false'.
+        params["effective"] = str(effective).lower()
     if detailed is not None:
-        params["detailed"] = detailed
+        params["detailed"] = str(detailed).lower()
     if limit is not None:
         params["limit"] = clamp_limit(limit)
     if offset is not None:
@@ -503,7 +534,7 @@ def list_passpoint_profiles(
     """List Passpoint / 802.11u provider profiles (bounded by default)."""
     return _config_list_response(
         "/network-config/v1alpha1/passpoint",
-        list_key="passpoint-profile",
+        list_key="profile",
         limit=limit,
         offset=offset,
         full_list=full_list,
@@ -555,7 +586,7 @@ def list_passpoint_identity_profiles(
     """List Passpoint identity / ANQP NAI realm profiles (bounded by default)."""
     return _config_list_response(
         "/network-config/v1alpha1/passpoint-identity",
-        list_key="passpoint-identity-profile",
+        list_key="profile",
         limit=limit,
         offset=offset,
         full_list=full_list,
@@ -1094,7 +1125,7 @@ def update_port_config(
     errors: list[str] = []
     encoded_iface = quote(interface_name, safe="")
     endpoint = f"/network-config/v1/ethernet-interfaces/{encoded_iface}"
-    params = {"viewtype": "LOCAL", "scope-id": device_scope_id}
+    params = {"object-type": "LOCAL", "scope-id": device_scope_id}
 
     try:
         response = client._request("PATCH", endpoint, json=updates, params=params)
@@ -1139,7 +1170,7 @@ def gateway_config_interface(
     errors: list[str] = []
     encoded_iface = quote(interface_name, safe="")
     endpoint = f"/network-config/v1/ethernet-interfaces/{encoded_iface}"
-    params = {"viewtype": "LOCAL", "scope-id": device_scope_id}
+    params = {"object-type": "LOCAL", "scope-id": device_scope_id}
 
     try:
         response = client._request("PATCH", endpoint, json=updates, params=params)
@@ -1190,7 +1221,7 @@ def gateway_config_static_route(
     client = get_client()
     errors: list[str] = []
     endpoint = f"/network-config/v1/static-route/{route_name}"
-    params = {"viewtype": "LOCAL", "scope-id": device_scope_id}
+    params = {"object-type": "LOCAL", "scope-id": device_scope_id}
 
     try:
         response = client._request("PUT", endpoint, json=payload, params=params)
@@ -1436,7 +1467,7 @@ def update_device_settings(
     if device_scope_id:
         candidates.append((
             "PATCH", f"/network-config/v1/switch-system/{serial_number}", settings,
-            {"viewtype": "LOCAL", "scope-id": device_scope_id},
+            {"object-type": "LOCAL", "scope-id": device_scope_id},
         ))
 
     for method, endpoint, payload, params in candidates:

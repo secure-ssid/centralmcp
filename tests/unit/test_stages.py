@@ -226,14 +226,15 @@ def test_s6_vlan_interface_push(record_unmanaged, source_ctx, target_ctx, state,
     assert result.data["vlan_interfaces_pushed"] == 2
 
     post_calls = [str(c) for c in target_ctx.central_client.post.call_args_list]
-    # L3 VLAN interface endpoint was called
-    assert any("vlan-interfaces" in c for c in post_calls)
+    # L3 VLAN interface endpoint was called for each interface
+    assert any("vlan-interfaces/5" in c for c in post_calls)
+    assert any("vlan-interfaces/50" in c for c in post_calls)
     # Layer2-vlan was created for each interface
     assert any("layer2-vlan/5" in c for c in post_calls)
     assert any("layer2-vlan/50" in c for c in post_calls)
-    # IPv4 alias created for static-IP vlan, not for dhcp vlan
-    assert any("v_5_ipv4" in c for c in post_calls)
-    assert not any("v_50_ipv4" in c for c in post_calls)
+    # IPv4 address pushed (LOCAL scope) for the static-IP vlan, not for the dhcp vlan
+    assert any("vlan-interfaces/5" in c and "ipv4" in c and "LOCAL" in c for c in post_calls)
+    assert not any("vlan-interfaces/50" in c and "ipv4" in c for c in post_calls)
 
 
 def test_s6_vlan_interface_skipped_when_no_file(record_unmanaged, source_ctx, target_ctx, state, run_id):
@@ -257,12 +258,17 @@ def test_s6_device_profiles_created(record_unmanaged, source_ctx, target_ctx, st
 
     assert result.status == StageStatus.SUCCESS
     post_calls = [str(c) for c in target_ctx.central_client.post.call_args_list]
+    # Every device-profile reference: 4 profile creates + 8 scope-map posts (4 profiles x 2 scopes).
     profile_calls = [c for c in post_calls if "device-profile" in c]
-    assert len(profile_calls) == 4
-    assert any("arubaAP" in c for c in profile_calls)
-    assert any("arubaGW" in c for c in profile_calls)
-    assert any("arubaSW" in c for c in profile_calls)
-    assert any("arubaAOS" in c for c in profile_calls)
+    creates = [c for c in profile_calls if "device-profile/" in c and "scope-maps" not in c]
+    scope_maps = [c for c in profile_calls if "scope-maps" in c]
+    assert len(creates) == 4
+    assert len(scope_maps) == 8
+    assert len(profile_calls) == 12
+    assert any("arubaAP" in c for c in creates)
+    assert any("arubaGW" in c for c in creates)
+    assert any("arubaSW" in c for c in creates)
+    assert any("arubaAOS" in c for c in creates)
     assert target_ctx.device_profiles_created is True
 
 

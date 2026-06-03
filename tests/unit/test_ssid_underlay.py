@@ -40,7 +40,7 @@ def test_build_ssid_body_essid_matches_ssid():
 def test_build_ssid_body_defaults():
     body = _build_ssid_body("X", ["1"])
     assert body["enable"] is True
-    assert body["opmode"] == "ENHANCED_OPEN"
+    assert body["opmode"] == "OPEN"
     assert body["hide-ssid"] is False
     assert body["client-isolation"] is False
     assert body["high-efficiency"]["enable"] is True

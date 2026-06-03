@@ -121,9 +121,9 @@ def vector_search(
 
     hits = []
     for doc in results.docs:
-        # Redis cosine distance: 0 = identical, 2 = opposite. Convert to similarity.
+        # Redis cosine distance: 0 = identical, 1 = orthogonal. Convert to similarity.
         raw_score = float(getattr(doc, "score", 1.0))
-        similarity = 1.0 - (raw_score / 2.0)
+        similarity = max(0.0, min(1.0, 1.0 - raw_score))
         hits.append({
             "text": getattr(doc, "text", ""),
             "source": getattr(doc, "source", ""),
@@ -238,8 +238,9 @@ def search_tools(
     results = client.ft(index_name).search(q, query_params={"vec": vec_bytes})
     hits = []
     for doc in results.docs:
+        # Redis cosine distance: 0 = identical, 1 = orthogonal. Convert to similarity.
         raw_score = float(getattr(doc, "score", 1.0))
-        similarity = 1.0 - (raw_score / 2.0)
+        similarity = max(0.0, min(1.0, 1.0 - raw_score))
         hits.append({
             "name": getattr(doc, "name", ""),
             "description": getattr(doc, "description", ""),

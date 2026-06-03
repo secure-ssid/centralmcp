@@ -17,7 +17,7 @@ def list_glp_devices(limit: int = 100, filter: str | None = None) -> dict[str, A
     """List devices in the GLP workspace (warranty, subscription state, lifecycle).
 
     Args:
-        filter: OData filter, e.g. "serial eq 'SG30LMR164'".
+        filter: OData filter, e.g. "serialNumber eq 'SG30LMR164'".
     """
     glp = get_glp_client()
     errors: list[str] = []
@@ -100,7 +100,11 @@ def list_glp_audit_logs(limit: int = 100, category: str | None = None) -> dict[s
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
 def glp_assign_subscription(serial_number: str, subscription_key: str) -> dict[str, Any]:
-    """Assign a GLP subscription (license) to a device."""
+    """Assign a GLP subscription (license) to a device.
+
+    subscription_key accepts either a subscription key string or its GLP UUID;
+    a key is resolved to its UUID internally before assignment.
+    """
     glp = get_glp_client()
     errors: list[str] = []
     try:

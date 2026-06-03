@@ -10,7 +10,7 @@ from mcp_servers import config
 def test_list_passpoint_profiles_bounds_and_filters(monkeypatch):
     client = MagicMock()
     client.get.return_value = {
-        "passpoint-profile": [
+        "profile": [
             {"name": "sys_cnac_air_pass"},
             {"name": "guest-passpoint"},
         ]
@@ -33,27 +33,27 @@ def test_list_passpoint_profiles_bounds_and_filters(monkeypatch):
             "view-type": "LOCAL",
             "scope-id": "79244870000394240",
             "device-function": "CAMPUS_AP",
-            "effective": True,
-            "detailed": True,
+            "effective": "true",
+            "detailed": "true",
             "limit": 1,
             "offset": 1,
         },
     )
-    assert result["passpoint-profile"] == [{"name": "guest-passpoint"}]
+    assert result["profile"] == [{"name": "guest-passpoint"}]
     assert result["_pagination"]["total"] == 2
 
 
 def test_list_passpoint_profiles_full_list_preserves_payload(monkeypatch):
     client = MagicMock()
     client.get.return_value = {
-        "passpoint-profile": [{"name": "sys_cnac_air_pass"}],
+        "profile": [{"name": "sys_cnac_air_pass"}],
         "meta": {"source": "library"},
     }
     monkeypatch.setattr(config, "get_client", lambda: client)
 
     result = config.list_passpoint_profiles(full_list=True, object_type="SHARED")
 
-    assert result["passpoint-profile"] == [{"name": "sys_cnac_air_pass"}]
+    assert result["profile"] == [{"name": "sys_cnac_air_pass"}]
     assert result["meta"] == {"source": "library"}
 
 
@@ -91,7 +91,7 @@ def test_list_passpoint_identity_profiles_accepts_items_shape(monkeypatch):
 
     result = config.list_passpoint_identity_profiles(limit=10)
 
-    assert result["passpoint-identity-profile"] == [{"name": "example.com"}]
+    assert result["profile"] == [{"name": "example.com"}]
 
 
 def test_get_passpoint_identity_profile_requests_named_endpoint(monkeypatch):

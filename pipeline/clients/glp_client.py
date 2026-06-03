@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from typing import Any, Optional
 
 from pipeline.clients.token_manager import TokenManager
@@ -74,7 +75,7 @@ class GLPClient:
         try:
             result = self._client.get(
                 "/devices/v1/devices",
-                params={"filter": f"serial eq '{serial_number}'"},
+                params={"filter": f"serialNumber eq '{serial_number}'"},
             )
             items = result.get("items", result.get("devices", []))
             return items[0] if items else None
@@ -95,6 +96,9 @@ class GLPClient:
         Returns:
             Async-operation ID for polling with poll_task().
         """
+        for d in devices:
+            if not d.get("macAddress"):
+                raise ValueError("macAddress is required for network devices")
         network = [
             {k: v for k, v in d.items() if v is not None}
             for d in devices
@@ -128,9 +132,9 @@ class GLPClient:
             result = self._client.get(f"/devices/v1/async-operations/{task_id}")
             status = result.get("status", "").lower()
             logger.debug("GLP async-op %s status=%s", task_id, status)
-            if status in ("completed", "success"):
+            if status in ("completed", "success", "succeeded"):
                 return result
-            if status in ("failed", "error"):
+            if status in ("failed", "error", "timeout", "cancelled"):
                 raise RuntimeError(f"GLP async-op {task_id} failed: {result}")
             time.sleep(interval)
         raise RuntimeError(f"GLP async-op {task_id} timed out after {timeout}s")
@@ -272,6 +276,31 @@ class GLPClient:
         except Exception:
             return {"status": "completed", "rawResponse": resp.text[:500]}
 
+    def _resolve_subscription_id(self, subscription: str) -> str:
+        """Return a subscription UUID for ``subscription``.
+
+        Accepts either a GLP subscription UUID (returned as-is) or a
+        subscription key string, which is resolved to its UUID via
+        ``GET /subscriptions/v1/subscriptions?filter=key eq '<key>'``.
+        Raises ValueError if a key can't be resolved.
+        """
+        try:
+            uuid.UUID(subscription)
+            return subscription
+        except (ValueError, AttributeError, TypeError):
+            pass
+        result = self._client.get(
+            "/subscriptions/v1/subscriptions",
+            params={"filter": f"key eq '{subscription}'"},
+        )
+        items = result.get("items", result.get("subscriptions", []))
+        if not items:
+            raise ValueError(
+                f"Could not resolve subscription key {subscription!r} to a GLP "
+                "subscription ID. Check the key exists in this workspace."
+            )
+        return items[0]["id"]
+
     def assign_subscription(
         self,
         serial_number: str,
@@ -281,14 +310,16 @@ class GLPClient:
 
         Args:
             serial_number: Device serial (resolved to GLP UUID internally).
-            subscription_id: The GLP subscription **UUID** (not the key string).
-                Use ``list_subscriptions()`` to find it.
+            subscription_id: The GLP subscription UUID, or a subscription key
+                string (resolved to its UUID internally). Use
+                ``list_subscriptions()`` to find either.
 
         Guarded by ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
         """
+        resolved_id = self._resolve_subscription_id(subscription_id)
         return self._patch_devices_v2beta1(
             serial_number,
-            {"subscription": [{"id": subscription_id}]},
+            {"subscription": [{"id": resolved_id}]},
         )
 
     def unassign_subscription(self, serial_number: str) -> dict[str, Any]:

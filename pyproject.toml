@@ -28,6 +28,9 @@ dependencies = [
 run-pipeline = "run_pipeline:main"
 run-ssid = "run_ssid:main"
 
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
 [tool.setuptools.packages.find]
 include = ["pipeline*", "mcp_servers*"]
 

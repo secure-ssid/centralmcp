@@ -9,13 +9,11 @@ Point MCP clients at THIS server instead of the 6 individual ones to cut
 context cost ~80% and let small local models pick tools reliably.
 """
 
-import asyncio
 import importlib
-import inspect
 import json
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_servers.shared import READ_ONLY
 from pipeline.clients.ollama_client import OllamaClient
@@ -41,6 +39,7 @@ _BACKENDS = {
     "aruba-rag": "mcp_servers.rag",
 }
 _tool_index: dict[str, Any] = {}  # name -> FastMCP Tool
+_tool_servers: dict[str, Any] = {}  # name -> owning FastMCP backend (for dispatch)
 
 
 def _load_all_backends() -> None:
@@ -51,6 +50,7 @@ def _load_all_backends() -> None:
         mod = importlib.import_module(module_path)
         for name, tool in mod.mcp._tool_manager._tools.items():
             _tool_index[name] = tool
+            _tool_servers[name] = mod.mcp
 
 
 # ── find_tool ────────────────────────────────────────────────────────────────
@@ -149,23 +149,29 @@ def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
 # ── invoke_tool ──────────────────────────────────────────────────────────────
 
 @mcp.tool(annotations=READ_ONLY)
-def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
+async def invoke_tool(
+    ctx: Context,
+    name: str,
+    arguments: dict[str, Any] | None = None,
+) -> Any:
     """Call an Aruba tool by name (from find_tool). Arguments is a kwargs dict.
 
     Example: invoke_tool("create_vlan", {"vlan_id": 200, "vlan_name": "Guest"})
+
+    Dispatches through the owning backend's FastMCP tool manager, so arguments
+    get FastMCP validation/coercion and the router's request Context is forwarded
+    — this is what lets the async, ctx-requiring destructive ops tools
+    (reboot_device/port_bounce/poe_bounce/disconnect_client) reach their
+    confirmation elicitation. (FastMCP injects `ctx` here and strips it from the
+    published schema, so callers only pass name + arguments.)
     """
     _load_all_backends()
-    tool = _tool_index.get(name)
-    if tool is None:
+    backend = _tool_servers.get(name)
+    if backend is None:
         return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
     args = arguments or {}
     try:
-        result = tool.fn(**args)
-        if inspect.iscoroutine(result):
-            result = asyncio.get_event_loop().run_until_complete(result)
-        return result
-    except TypeError as e:
-        return {"error": f"Bad arguments for {name}: {e}"}
+        return await backend._tool_manager.call_tool(name, args, context=ctx)
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
 
@@ -173,48 +179,56 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
 # ── Always-available discovery tools (used in nearly every session) ──────────
 
 @mcp.tool(annotations=READ_ONLY)
-def list_scopes() -> dict[str, Any]:
+async def list_scopes(ctx: Context) -> dict[str, Any]:
     """List Central scopes (sites, groups, global) — ID + name."""
-    return invoke_tool("list_scopes")
+    return await invoke_tool(ctx, "list_scopes")
 
 
 @mcp.tool(annotations=READ_ONLY)
-def get_global_scope_id() -> dict[str, Any]:
+async def get_global_scope_id(ctx: Context) -> dict[str, Any]:
     """Return the global (org-wide) scope-id."""
-    return invoke_tool("get_global_scope_id")
+    return await invoke_tool(ctx, "get_global_scope_id")
 
 
 @mcp.tool(annotations=READ_ONLY)
-def list_sites(limit: int = 50, offset: int = 0, full_list: bool = False) -> dict[str, Any]:
+async def list_sites(
+    ctx: Context, limit: int = 50, offset: int = 0, full_list: bool = False
+) -> dict[str, Any]:
     """List sites (paginated)."""
-    return invoke_tool("list_sites", {"limit": limit, "offset": offset, "full_list": full_list})
+    return await invoke_tool(
+        ctx, "list_sites", {"limit": limit, "offset": offset, "full_list": full_list}
+    )
 
 
 @mcp.tool(annotations=READ_ONLY)
-def list_devices(limit: int = 50, offset: int = 0, full_list: bool = False) -> dict[str, Any]:
+async def list_devices(
+    ctx: Context, limit: int = 50, offset: int = 0, full_list: bool = False
+) -> dict[str, Any]:
     """List devices (paginated)."""
-    return invoke_tool("list_devices", {"limit": limit, "offset": offset, "full_list": full_list})
+    return await invoke_tool(
+        ctx, "list_devices", {"limit": limit, "offset": offset, "full_list": full_list}
+    )
 
 
 @mcp.tool(annotations=READ_ONLY)
-def find_device(query: str) -> dict[str, Any]:
+async def find_device(ctx: Context, query: str) -> dict[str, Any]:
     """Find a device by name / serial / MAC / IP."""
-    return invoke_tool("find_device", {"query": query})
+    return await invoke_tool(ctx, "find_device", {"query": query})
 
 
 @mcp.tool(annotations=READ_ONLY)
-def find_client(query: str) -> dict[str, Any]:
+async def find_client(ctx: Context, query: str) -> dict[str, Any]:
     """Find a client by name / MAC / IP."""
-    return invoke_tool("find_client", {"query": query})
+    return await invoke_tool(ctx, "find_client", {"query": query})
 
 
 @mcp.tool(annotations=READ_ONLY)
-def search_docs(query: str, top_k: int = 5, source: str | None = None) -> Any:
+async def search_docs(ctx: Context, query: str, top_k: int = 5, source: str | None = None) -> Any:
     """Search Aruba/HPE documentation (Central config, APIs, NAC, VSG)."""
     args: dict[str, Any] = {"query": query, "top_k": top_k}
     if source:
         args["source"] = source
-    return invoke_tool("search_docs", args)
+    return await invoke_tool(ctx, "search_docs", args)
 
 
 if __name__ == "__main__":

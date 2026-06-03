@@ -4,7 +4,6 @@ import logging
 import os
 import time
 from typing import Any
-from urllib.parse import quote
 
 from mcp.types import ToolAnnotations
 
@@ -288,6 +287,9 @@ def troubleshoot_async(
             errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
         location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        if not location:
+            errors.append("no Location header in async response")
+            return {"status": None, "errors": errors}
         task_id = location.rstrip("/").split("/")[-1]
         poll_url = f"{endpoint}/async-operations/{task_id}"
     except Exception as exc:
@@ -325,6 +327,9 @@ async def atroubleshoot_async(
             errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
         location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        if not location:
+            errors.append("no Location header in async response")
+            return {"status": None, "errors": errors}
         task_id = location.rstrip("/").split("/")[-1]
         poll_url = f"{endpoint}/async-operations/{task_id}"
     except Exception as exc:
@@ -351,17 +356,79 @@ def resp_json(resp: Any) -> dict[str, Any]:
 _DTYPE_MAP = {
     "AP": "aps",
     "ACCESS_POINT": "aps",
-    "SWITCH": "cx",
     "CX": "cx",
+    "AOS_CX": "cx",
+    "AOS-CX": "cx",
+    "AOSCX": "cx",
+    "AOS_S": "aos-s",
+    "AOS-S": "aos-s",
+    "AOSS": "aos-s",
     "GATEWAY": "gateways",
     "GW": "gateways",
 }
+
+# Model-series prefixes used to disambiguate generic SWITCH deviceTypes when
+# firmware/softwareVersion is unavailable. AOS-CX vs AOS-S.
+_CX_MODEL_SERIES = (
+    "4100", "6000", "6100", "6200", "6300", "6400",
+    "8100", "8320", "8325", "8360", "8400", "9300", "10000",
+)
+_AOS_S_MODEL_SERIES = ("2530", "2540", "2620", "2920", "2930", "3810", "5400")
+
+
+def _classify_switch(device: dict[str, Any]) -> str:
+    """Classify a generic SWITCH inventory record as 'cx' or 'aos-s'.
+
+    Firmware/softwareVersion prefix is the strongest signal: AOS-CX versions
+    look like 'FL.10.x'/'10.x'; AOS-S look like 'WC.16.x'/'KB.16.x'/'YA/YB/RA...'.
+    Falls back to the model series, then a conservative default of 'cx' with a
+    warning when ambiguous.
+    """
+    fw = (
+        device.get("firmwareVersion")
+        or device.get("softwareVersion")
+        or device.get("swVersion")
+        or ""
+    )
+    fw_upper = str(fw).upper()
+    if fw_upper:
+        # Strip any platform prefix like "FL." / "WC." to inspect the version.
+        # AOS-CX versions have major "10" (e.g. "FL.10.16" / "10.16"); AOS-S
+        # versions have major "16" (e.g. "WC.16.11" / "KB.16.10"). The numeric
+        # major is the strongest signal, so check it before the prefix.
+        parts = fw_upper.split(".")
+        prefix = parts[0]
+        # The major version is the first part that is all digits.
+        major = next((p for p in parts if p.isdigit()), "")
+        if major == "10":
+            return "cx"
+        if major == "16":
+            return "aos-s"
+        # No recognisable major: a two-letter alpha platform prefix
+        # (YA/YB/RA/...) is AOS-S styling.
+        if prefix and len(prefix) == 2 and prefix.isalpha():
+            return "aos-s"
+
+    model = str(device.get("model") or device.get("deviceModel") or "")
+    if any(series in model for series in _CX_MODEL_SERIES):
+        return "cx"
+    if any(series in model for series in _AOS_S_MODEL_SERIES):
+        return "aos-s"
+
+    logging.getLogger(__name__).warning(
+        "Ambiguous switch type for serial=%s (firmware=%r model=%r); defaulting to 'cx'",
+        device.get("serialNumber", ""),
+        fw,
+        model,
+    )
+    return "cx"
 
 
 def device_type_for_troubleshoot(serial_number: str, device_type: str | None) -> str | None:
     """Auto-detect device type from inventory if not supplied.
 
-    Returns lowercase URL-ready device type: "aps", "cx", "gateways", or None.
+    Returns lowercase URL-ready device type: "aps", "cx", "aos-s", "gateways",
+    or None.
     """
     if device_type:
         upper = device_type.upper()
@@ -373,7 +440,8 @@ def device_type_for_troubleshoot(serial_number: str, device_type: str | None) ->
     if "ACCESS_POINT" in raw or raw == "AP":
         return "aps"
     if "SWITCH" in raw:
-        return "cx"
+        # SWITCH covers both AOS-CX and AOS-S; disambiguate from the record.
+        return _classify_switch(device)
     if "GATEWAY" in raw:
         return "gateways"
     return None

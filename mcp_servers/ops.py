@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central ops: troubleshooting and device actions (15 tools).
+"""MCP server — Aruba Central ops: troubleshooting and device actions (14 tools).
 
 Covers: CX/AOS-S/Gateway ping/traceroute/show, PoE bounce, port bounce, cable test,
 reboot, disconnect client, acknowledge alert.
@@ -6,10 +6,12 @@ reboot, disconnect client, acknowledge alert.
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from pydantic import BaseModel
 
 from mcp_servers.shared import (
     DIAGNOSTIC,
     DESTRUCTIVE,
+    IDEMPOTENT_WRITE,
     _AOS_S_BASE,
     _CX_TROUBLESHOOTING_BASE,
     _GATEWAY_BASE,
@@ -23,6 +25,10 @@ from mcp_servers.shared import (
 )
 
 mcp = FastMCP("aruba-ops")
+
+
+class _ConfirmAction(BaseModel):
+    confirm: bool = False
 
 
 # ── CX Troubleshooting ────────────────────────────────────────────────────────
@@ -51,11 +57,11 @@ def cx_ping(
 
     try:
         resp = client._request("POST", f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/ping", json=payload)
-        if resp.status_code != 202:
+        if resp.status_code not in (200, 201, 202):
             errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
-        location = resp.json().get("location", "")
-        task_id = location.split("/")[-1]
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
     except Exception as exc:
         errors.append(str(exc))
         return {"status": None, "errors": errors}
@@ -83,11 +89,11 @@ def cx_traceroute(
 
     try:
         resp = client._request("POST", f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/traceroute", json=payload)
-        if resp.status_code != 202:
+        if resp.status_code not in (200, 201, 202):
             errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
-        location = resp.json().get("location", "")
-        task_id = location.split("/")[-1]
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
     except Exception as exc:
         errors.append(str(exc))
         return {"status": None, "errors": errors}
@@ -118,11 +124,11 @@ def cx_show(
         resp = client._request(
             "POST", f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands", json={"commands": commands}
         )
-        if resp.status_code != 202:
+        if resp.status_code not in (200, 201, 202):
             errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
-        location = resp.json().get("location", "")
-        task_id = location.split("/")[-1]
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
     except Exception as exc:
         errors.append(str(exc))
         return {"status": None, "errors": errors}
@@ -217,12 +223,12 @@ async def poe_bounce(
     try:
         result = await ctx.elicit(
             message=f"⚠️ Confirm PoE BOUNCE on {serial_number} ports {ports}? Connected devices will temporarily lose power.",
-            schema={"type": "object", "properties": {"confirm": {"type": "boolean", "description": "Set true to proceed"}}, "required": ["confirm"]},
+            schema=_ConfirmAction,
         )
-        if not result or not getattr(result, "data", {}).get("confirm", False):
-            return {"serial_number": serial_number, "status": "CANCELLED", "message": "PoE bounce cancelled by user"}
-    except Exception:
-        pass  # If elicitation not supported by client, proceed
+    except Exception as exc:
+        return {"status": "CONFIRMATION_UNAVAILABLE", "error": f"client does not support elicitation; operation NOT performed: {exc}"}
+    if result.action != "accept" or not result.data.confirm:
+        return {"status": "CANCELLED", "detail": "user declined confirmation"}
 
     return await atroubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/poeBounce", {"ports": ports}, errors)
 
@@ -248,12 +254,12 @@ async def port_bounce(
     try:
         result = await ctx.elicit(
             message=f"⚠️ Confirm PORT BOUNCE on {serial_number} ports {ports}? Connected devices will lose connectivity.",
-            schema={"type": "object", "properties": {"confirm": {"type": "boolean", "description": "Set true to proceed"}}, "required": ["confirm"]},
+            schema=_ConfirmAction,
         )
-        if not result or not getattr(result, "data", {}).get("confirm", False):
-            return {"serial_number": serial_number, "status": "CANCELLED", "message": "Port bounce cancelled by user"}
-    except Exception:
-        pass  # If elicitation not supported by client, proceed
+    except Exception as exc:
+        return {"status": "CONFIRMATION_UNAVAILABLE", "error": f"client does not support elicitation; operation NOT performed: {exc}"}
+    if result.action != "accept" or not result.data.confirm:
+        return {"status": "CANCELLED", "detail": "user declined confirmation"}
 
     return await atroubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/portBounce", {"ports": ports}, errors)
 
@@ -319,12 +325,12 @@ async def reboot_device(
     try:
         result = await ctx.elicit(
             message=f"⚠️ Confirm REBOOT of {device_type} {serial_number}? This will cause a service interruption.",
-            schema={"type": "object", "properties": {"confirm": {"type": "boolean", "description": "Set true to proceed"}}, "required": ["confirm"]},
+            schema=_ConfirmAction,
         )
-        if not result or not getattr(result, "data", {}).get("confirm", False):
-            return {"serial_number": serial_number, "status": "CANCELLED", "message": "Reboot cancelled by user"}
-    except Exception:
-        pass  # If elicitation not supported by client, proceed
+    except Exception as exc:
+        return {"status": "CONFIRMATION_UNAVAILABLE", "error": f"client does not support elicitation; operation NOT performed: {exc}"}
+    if result.action != "accept" or not result.data.confirm:
+        return {"status": "CANCELLED", "detail": "user declined confirmation"}
 
     try:
         response = client._request("POST", endpoint, json={})
@@ -363,12 +369,12 @@ async def disconnect_client(
     try:
         result = await ctx.elicit(
             message=f"⚠️ Confirm DISCONNECT of client {mac_address}? The client will be forced off the network.",
-            schema={"type": "object", "properties": {"confirm": {"type": "boolean", "description": "Set true to proceed"}}, "required": ["confirm"]},
+            schema=_ConfirmAction,
         )
-        if not result or not getattr(result, "data", {}).get("confirm", False):
-            return {"mac_address": mac_address, "status": "CANCELLED", "message": "Disconnect cancelled by user"}
-    except Exception:
-        pass  # If elicitation not supported by client, proceed
+    except Exception as exc:
+        return {"status": "CONFIRMATION_UNAVAILABLE", "error": f"client does not support elicitation; operation NOT performed: {exc}"}
+    if result.action != "accept" or not result.data.confirm:
+        return {"status": "CANCELLED", "detail": "user declined confirmation"}
 
     endpoint = f"/network-troubleshooting/v1alpha1/aps/{ap_serial}/disconnectUserByMacAddress"
     try:
@@ -386,7 +392,7 @@ async def disconnect_client(
         return {"mac_address": mac_address, "response": None, "errors": errors}
 
 
-@mcp.tool(annotations=DESTRUCTIVE)
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
 def acknowledge_alert(
     alert_id: str,
     action: str = "ACK",

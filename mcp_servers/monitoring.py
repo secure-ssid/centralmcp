@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central read-only monitoring tools (32 tools).
+"""MCP server — Aruba Central read-only monitoring tools (31 tools).
 
 Covers: sites, devices, clients, alerts, events, scopes, inventory,
 audit logs, device health/trends, switch ports/VLANs/PoE, AP radios/ports,
@@ -82,7 +82,8 @@ def get_site(name: str) -> dict[str, Any] | None:
         if not sites:
             break
         for site in sites:
-            if site.get("siteName", site.get("name", "")).lower() == name_lower:
+            site_name = site.get("scopeName") or site.get("siteName") or site.get("name", "")
+            if site_name.lower() == name_lower:
                 return site
         if len(sites) < page_size:
             break
@@ -114,6 +115,12 @@ def list_devices(
     # result (which would produce misleading pagination metadata).
     # The true offset is reflected in the _pagination block we attach
     # manually when the flag is on.
+    # deviceType query param is ignored server-side; apply client-side post-filter.
+    if device_type and isinstance(devices, list):
+        want = device_type.upper()
+        if want == "AP":
+            want = "ACCESS_POINT"
+        devices = [d for d in devices if want in (d.get("deviceType") or "").upper()]
     # Translate AP reboot reason codes
     if isinstance(devices, list):
         for d in devices:
@@ -130,8 +137,10 @@ def list_devices(
 def find_device(serial_number: str) -> dict[str, Any] | None:
     """Find a single device by serial number. Returns the device record or None."""
     result = get_mcp_client().get_device_by_serial(serial_number)
-    if result and ("AP" in (result.get("deviceType") or "").upper()):
-        _translate_reboot_reason(result)
+    if result:
+        dt = (result.get("deviceType") or "").upper()
+        if "ACCESS_POINT" in dt or dt == "AP":
+            _translate_reboot_reason(result)
     return result
 
 
@@ -177,11 +186,11 @@ def list_clients(
 
     filters: list[tuple[str, tuple[str, ...]]] = []
     if hostname_contains:
-        filters.append((hostname_contains, ("hostname", "name", "clientHostname")))
+        filters.append((hostname_contains, ("hostName", "clientName", "hostname", "name")))
     if os_contains:
-        filters.append((os_contains, ("osType", "os_type", "os", "operatingSystem")))
+        filters.append((os_contains, ("clientOperatingSystem", "osType")))
     if device_type_contains:
-        filters.append((device_type_contains, ("deviceType", "device_type", "clientType", "client_type", "classification")))
+        filters.append((device_type_contains, ("connectedDeviceType", "clientFunction", "clientCategory")))
     if ssid_contains:
         filters.append((ssid_contains, ("network", "wlanName", "ssid", "SSID")))
     if site_contains:
@@ -440,6 +449,12 @@ def list_inventory(
         items = result.get("items", result.get("devices", []))
         if not isinstance(items, list):
             items = []
+        # deviceType query param is ignored server-side; apply client-side post-filter.
+        if device_type:
+            want = device_type.upper()
+            if want == "AP":
+                want = "ACCESS_POINT"
+            items = [d for d in items if want in (d.get("deviceType") or "").upper()]
         if status:
             items = [d for d in items if d.get("isProvisioned") == status]
         return {"items": items, "total": len(items), "errors": errors}
@@ -459,46 +474,34 @@ def list_audit_logs(
     filter: str | None = None,
     sort: str | None = None,
 ) -> dict[str, Any]:
-    """List audit log entries (config changes, user actions).
+    """Audit logs are not available on New Central instances.
 
-    start_at/end_at: epoch ms (default last 24h). filter: OData e.g.
-    "category eq 'NETWORK_CONFIG' and action eq 'UPDATE'".
+    The audit-log endpoint 404s and is absent from all OpenAPI specs. Use
+    list_glp_audit_logs (aruba-glp) for GreenLake Platform audit trails instead.
     """
-    client = get_client()
-    errors: list[str] = []
-    now_ms = int(time.time() * 1000)
-    params: dict[str, Any] = {
-        "start-at": start_at if start_at is not None else now_ms - 86_400_000,
-        "end-at": end_at if end_at is not None else now_ms,
-        "limit": clamp_limit(limit),
-        "offset": max(0, offset),
+    return {
+        "items": [],
+        "errors": [
+            "audit-log endpoint not available on New Central instances — "
+            "use list_glp_audit_logs (aruba-glp) instead"
+        ],
     }
-    if filter:
-        params["filter"] = filter
-    if sort:
-        params["sort"] = sort
-    try:
-        result = client.get("/network-services/v1alpha1/audits", params=params)
-        items = result.get("items", result.get("audits", result.get("logs", [])))
-        if not isinstance(items, list):
-            items = []
-        return {"items": items, "total": result.get("total", len(items)), "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"items": [], "total": 0, "errors": errors}
 
 
 @mcp.tool(annotations=READ_ONLY)
 def get_audit_log(audit_id: str) -> dict[str, Any]:
-    """Fetch a single audit log entry by its audit ID."""
-    client = get_client()
-    errors: list[str] = []
-    try:
-        result = client.get(f"/network-services/v1alpha1/audit/{audit_id}")
-        return {"audit": result, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"audit": None, "errors": errors}
+    """Audit logs are not available on New Central instances.
+
+    The audit-log endpoint 404s and is absent from all OpenAPI specs. Use
+    list_glp_audit_logs (aruba-glp) for GreenLake Platform audit trails instead.
+    """
+    return {
+        "items": [],
+        "errors": [
+            "audit-log endpoint not available on New Central instances — "
+            "use list_glp_audit_logs (aruba-glp) instead"
+        ],
+    }
 
 
 # ── Device Health & Trends ────────────────────────────────────────────────────
@@ -605,7 +608,7 @@ def get_device_health(
             data = response.json()
             items = data.get("items", data.get("devices", [data] if data else []))
             if serial_number and isinstance(items, list):
-                matches = [i for i in items if i.get("serialNumber", "").lower() == serial_number.lower()]
+                matches = [i for i in items if (i.get("serial") or i.get("serialNumber") or "").lower() == serial_number.lower()]
                 items = matches if matches else items
             return {"serial_number": serial_number, "health": items, "endpoint_used": "/network-config/v1alpha1/config-health/devices", "errors": errors}
         errors.append(f"config-health: HTTP {response.status_code}")

@@ -29,11 +29,13 @@ except Exception:
 # vsg_docs: design guides — conceptually stable, best-practice focused.
 # nac_docs: dedicated NAC portal docs.
 # tech_docs / techdocs_html: product UI docs — useful but may lag API changes.
+# Recalibrated (doubled) after the H13 cosine fix: similarity now spans the full
+# 0–1 range (was effectively halved), so boosts double to keep the same relative gaps.
 _SOURCE_BOOST: dict[str, float] = {
-    "openapi_specs": 0.08,
-    "developer_docs": 0.05,
-    "vsg_docs": 0.03,
-    "nac_docs": 0.02,
+    "openapi_specs": 0.16,
+    "developer_docs": 0.10,
+    "vsg_docs": 0.06,
+    "nac_docs": 0.04,
     "tech_docs": 0.0,
     "techdocs_html": 0.0,
 }
@@ -72,7 +74,7 @@ def search_docs(
         return [{"error": "Redis not available — is the Redis Stack server running?"}]
 
     top_k = min(top_k, 20)
-    query_vector = _ollama.embed(query)
+    query_vector = _ollama.embed_query(query)
 
     # Map legacy doc_type to source name when source is not provided
     source_filter = source

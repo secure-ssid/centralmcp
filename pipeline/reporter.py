@@ -47,7 +47,20 @@ def _overall_status(stage_statuses: dict[str, str]) -> OverallStatus:
         return OverallStatus.DONE
     if any(v == StageStatus.SUCCESS.value for v in stage_statuses.values()):
         return OverallStatus.PARTIAL
-    return OverallStatus.PENDING
+    # No failures, not all skipped, no successes yet → still in progress.
+    return OverallStatus.PARTIAL
+
+
+def _stage_error_message(state: StateStore, serial: str, run_id: str, stage: str) -> str:
+    """Read the error_message column for a stage (StateStore has no public getter)."""
+    with state._conn() as conn:
+        row = conn.execute(
+            "SELECT error_message FROM device_state WHERE serial_number=? AND run_id=? AND stage=?",
+            (serial, run_id, stage),
+        ).fetchone()
+    if row and row["error_message"]:
+        return str(row["error_message"])
+    return ""
 
 
 def write_report(
@@ -76,12 +89,20 @@ def write_report(
             # Pull verify data for final fields
             verify_data = state.get_stage_data(record.serial_number, run_id, "s8_verify")
 
-            # Find first failure message
+            # Find first failure message. The error string lives in the
+            # device_state.error_message column (StageResult.failed(error=...)),
+            # not in result_data. Some stages also stash a list of failed
+            # checks in result_data (e.g. s8_verify "checks_failed") — fall
+            # back to that if the column is empty.
             error_detail = ""
             for stage in STAGES:
                 if stage_statuses.get(stage) == StageStatus.FAILED.value:
-                    stage_data = state.get_stage_data(record.serial_number, run_id, stage)
-                    error_detail = stage_data.get("error", "") or ""
+                    error_detail = _stage_error_message(state, record.serial_number, run_id, stage) or ""
+                    if not error_detail:
+                        stage_data = state.get_stage_data(record.serial_number, run_id, stage)
+                        checks = stage_data.get("checks_failed") or stage_data.get("errors")
+                        if isinstance(checks, list):
+                            error_detail = "; ".join(str(c) for c in checks)
                     break
 
             row: dict = {
