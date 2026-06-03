@@ -100,16 +100,18 @@ A small, labeled question set + runner so the backend swap is **proven**, not as
 
 Metrics: `recall@5` (did an expected source appear in top-5), `mrr` (rank of first correct), `api_exact` (did `lookup_api` return the exact enum/field). Target: api-lookup `api_exact` = 100% (it's structured), howto `recall@5` ≥ today's baseline.
 
-**Baseline measured 2026-06-03** (current Redis, vector-only, no prefixes, specs missing from index):
+**Baseline measured 2026-06-03** (current Redis, vector-only, no prefixes, specs missing from index), and **re-measured the same day after wiring `lookup_api`** (SQLite specs index, H13 cosine fix + boost recalibration, query/document prefixes):
 
-| Metric | Baseline | Target after redesign |
-|---|---|---|
-| `howto_recall@5` (prose) | 0.80 | ≥ 0.80 (hold or improve) |
-| `api_exact` (API lookups) | **0.50** | **1.00** (structured `lookup_api`) |
-| `source_hit@5` (overall) | 0.50 | ≥ 0.75 |
-| `mrr` | 0.339 | ≥ 0.50 |
+| Metric | Baseline | After `lookup_api` (2026-06-03) | Target after redesign |
+|---|---|---|---|
+| `howto_recall@5` (prose) | 0.80 | **0.80** (held) | ≥ 0.80 (hold or improve) |
+| `api_exact` (API lookups) | **0.50** | **0.90** | **1.00** (structured `lookup_api`) |
+| `source_hit@5` (overall) | 0.50 | **0.80** | ≥ 0.75 ✅ |
+| `mrr` | 0.339 | **0.679** | ≥ 0.50 ✅ |
 
-The API-lookup rows almost all miss the spec sources — direct empirical evidence of **R2** (OpenAPI specs absent from the active index). `howto` retrieval is already decent, confirming the redesign's value is concentrated in (a) structured API lookup and (b) hybrid+rerank for exact identifiers, not in replacing vector search wholesale. Re-run `uv run --with pyyaml python tests/eval/run_eval.py` after each change.
+The API-lookup rows almost all missed the spec sources at baseline — direct empirical evidence of **R2** (OpenAPI specs absent from the active index). `howto` retrieval is already decent, confirming the redesign's value is concentrated in (a) structured API lookup and (b) hybrid+rerank for exact identifiers, not in replacing vector search wholesale. Re-run `uv run --with pyyaml python tests/eval/run_eval.py` after each change.
+
+The remaining `api_exact` miss is `mac-reg-update-url`: the CNAC MAC-registration API is **not in the 212 ingested config specs** (it's a separate CNAC service API), and the prose fallback misses it too. Closing it requires adding the CNAC/NAC OpenAPI specs to `ingestion/sources/openapi_specs/` and rebuilding the index — a data gap, not a retrieval gap.
 
 ---
 

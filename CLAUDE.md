@@ -12,7 +12,7 @@ mcp_servers/
   ops.py               Ops tools — reboots, ping, cable test, PoE bounce, GLP mgmt
   nac.py               NAC tools — MAC reg, MPSK, visitors, auth servers, AAA profiles, AAA test
   glp.py               GreenLake Platform tools — devices, subscriptions, users, audit logs
-  rag.py               RAG tools — search_docs over ingested Aruba/HPE docs (Redis Stack + Ollama)
+  rag.py               RAG tools — search_docs (semantic, Redis Stack + Ollama) + lookup_api (exact OpenAPI lookup, SQLite)
   shared.py            Shared utilities and helpers
 pipeline/
   clients/             CentralClient, GLPClient, MCPClient, TokenManager, OllamaClient, RedisClient
@@ -103,14 +103,16 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 
 ## RAG-first rule
 
-**Always call `search_docs` before answering any question about Aruba/HPE config, APIs, or features.**
-This applies whether the question is about how to use a tool, what a field value should be, what an API endpoint does, or how to configure a feature. The RAG corpus (40,900+ chunks of developer docs, tech docs, NAC/VSG guides, and OpenAPI specs) is authoritative and must be consulted first.
+**Always consult the RAG tools before answering any question about Aruba/HPE config, APIs, or features.**
 
-Skip `search_docs` only when:
+- **Exact API questions** (what enum values does field X accept, which endpoint configures Y, what fields does schema Z have) → call `lookup_api` first. It reads the parsed OpenAPI specs — lossless and authoritative. If it returns `[]`, fall back to `search_docs`.
+- **Everything else** (how-to, concepts, design guidance) → call `search_docs`. The corpus (40,900+ chunks of developer docs, tech docs, NAC/VSG guides) is authoritative and must be consulted first.
+
+Skip both only when:
 - The question is purely about live device/client state (use monitoring tools directly).
 - You already retrieved matching RAG results earlier in the same conversation turn.
 
-When `search_docs` returns relevant hits, cite the `file_path` and use the content to inform your answer before calling any config/ops tool.
+When the tools return relevant hits, cite the `file_path` and use the content to inform your answer before calling any config/ops tool.
 
 ## API reference
 

@@ -1,7 +1,8 @@
-"""MCP server — Aruba/HPE documentation RAG tools (1 tool).
+"""MCP server — Aruba/HPE documentation RAG tools (2 tools).
 
 Covers: semantic search over ingested Aruba Central developer docs,
-tech docs, NAC docs, VSG docs, and HTML tech docs via Redis Stack + Ollama.
+tech docs, NAC docs, VSG docs, and HTML tech docs via Redis Stack + Ollama;
+exact API endpoint/schema/enum lookup via the SQLite specs index.
 """
 
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import READ_ONLY
+from pipeline.clients import specs_index
 from pipeline.clients.ollama_client import OllamaClient
 from pipeline.clients.redis_client import DOCS_INDEX, get_client as _get_redis_client
 from pipeline.clients.redis_client import vector_search
@@ -103,6 +105,27 @@ def search_docs(
         }
         for r in candidates[:top_k]
     ]
+
+
+@mcp.tool(annotations=READ_ONLY)
+def lookup_api(query: str, top_k: int = 10) -> list[dict[str, Any]]:
+    """Exact Aruba Central API lookup — endpoints, schemas, fields, enum values.
+
+    Authoritative, lossless answers from the parsed OpenAPI specs (SQLite, no
+    server needed). Use this INSTEAD of search_docs for questions like "what
+    enum values does field X accept", "which endpoint configures Y and with
+    what method", or "what fields does schema Z have". Returns [] when the
+    specs hold no confident answer — fall back to search_docs in that case.
+
+    Args:
+        query: Natural language question or keywords (e.g. "auth-type enum
+               values for an auth profile", "firmware compliance endpoint").
+        top_k: Results to return (default 10, max 20).
+    """
+    try:
+        return specs_index.lookup(query, top_k=min(top_k, 20))
+    except FileNotFoundError as exc:
+        return [{"error": str(exc)}]
 
 
 if __name__ == "__main__":

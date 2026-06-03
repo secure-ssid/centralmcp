@@ -13,6 +13,7 @@ Query:   python -m pipeline.clients.specs_index --query "auth-type"
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -251,12 +252,235 @@ def get_enum(field_name: str, schema_contains: str | None = None,
     ]
 
 
+# ---------------------------------------------------------------------------
+# High-level natural-language lookup (backs the lookup_api MCP tool)
+# ---------------------------------------------------------------------------
+
+# Question scaffolding + terms so generic in an API-spec corpus they only add
+# noise ("config", "endpoint", "value" appear in nearly every row).
+_STOPWORDS = frozenset("""
+a an the is are was were be been being do does did can could should would will
+what which who whose when where why how there here this that these those it its
+i you we they my your of for to in on at by with from into over under about as
+and or not no if then than but exist exists existing available use used uses
+using new central api apis valid value values field fields enum enums key keys
+required need needed needs http https method methods url uri endpoint endpoints
+response request list lists get read set sets type types kind name names
+configure configures configured configuration config
+""".split())
+
+_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-._]*")
+
+
+def _stem_variants(word: str) -> list[str]:
+    """Singular-fold variants of a word. "policies" needs both spellings since
+    neither "policy" nor "policie" alone covers the other as a token prefix;
+    a plain trailing-s plural folds to one prefix-safe stem."""
+    if word.endswith("ies") and len(word) > 4:
+        return [word[:-3] + "y", word[:-1]]
+    if word.endswith("s") and len(word) > 3:
+        return [word[:-1]]
+    return [word]
+
+
+def _query_groups(query: str) -> list[list[str]]:
+    """Concept groups of lightly-stemmed terms from a natural-language query.
+
+    Each non-stopword token becomes ONE group holding the whole token plus, for
+    hyphenated tokens, its components ("device-firmware-upgrade" also yields
+    device/firmware/upgrade for recall when the corpus spells it differently).
+    Scoring counts GROUPS hit, not raw stems — otherwise a single hyphenated
+    concept would corroborate itself through its own components and defeat the
+    relevance threshold.
+    """
+    groups: list[list[str]] = []
+    seen_tokens: set[str] = set()
+    for tok in _TOKEN_RE.findall(query.lower()):
+        tok = tok.strip("-._")
+        if not tok or tok in seen_tokens:
+            continue
+        seen_tokens.add(tok)
+        stems: list[str] = []
+        for part in [tok] + (tok.split("-") if "-" in tok else []):
+            for v in _stem_variants(part):
+                if len(v) < 3 or v.isdigit() or v in _STOPWORDS or v in stems:
+                    continue
+                stems.append(v)
+        if stems:
+            groups.append(stems)
+    return groups
+
+
+def _fmt_endpoint(row: dict[str, Any]) -> str:
+    url = f"{row['server']}{row['path']}" if row.get("server") else row["path"]
+    desc = (row.get("description") or "")[:300]
+    return f"{row['method']} {url} — {row.get('summary', '')} {desc}".strip()
+
+
+def _fmt_enum_field(row: dict[str, Any]) -> str:
+    enums = row.get("enums") or []
+    text = (f"{row['schema_name']}.{row['path']} ({row['spec_name']}) "
+            f"type={row.get('type', '')}: {(row.get('description') or '')[:200]} "
+            f"Enum: {', '.join(map(str, enums[:24]))}")
+    return text.strip()
+
+
+def lookup(query: str, top_k: int = 10, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    """Exact API lookup for a natural-language question. Returns [] when the
+    specs have no confident answer (caller should fall back to prose search).
+
+    Three strategies, merged and de-duplicated:
+      1. exact enum/field match for field-like terms (get_enum)
+      2. exact endpoint match for hyphenated path-like tokens, with one
+         progressive right-trim (device-firmware-upgrade -> device-firmware)
+      3. FTS prefix search re-ranked by how many distinct query terms the row
+         actually contains (bm25 alone ranks short generic rows too high)
+
+    Hits are {"text", "source", "file_path", "kind", "score"} — file_path is a
+    precise locator (openapi_specs/<spec_file>#<ref>) for source attribution.
+    """
+    if not Path(db_path).exists():
+        raise FileNotFoundError(
+            f"specs index missing at {db_path} — build it with "
+            "`python -m pipeline.clients.specs_index --build`"
+        )
+    try:
+        return _lookup(query, top_k, db_path)
+    except sqlite3.Error as exc:
+        # A present-but-unreadable DB (corrupt file, or the empty/schemaless
+        # window an interrupted --build leaves behind) must not crash the MCP
+        # tool — surface it the same way as a missing index.
+        raise FileNotFoundError(
+            f"specs index at {db_path} is unreadable ({exc}) — rebuild it with "
+            "`python -m pipeline.clients.specs_index --build`"
+        ) from exc
+
+
+def _lookup(query: str, top_k: int, db_path: Path) -> list[dict[str, Any]]:
+    groups = _query_groups(query)
+    if not groups:
+        return []
+    n_terms = len(groups)
+    threshold = 1 if n_terms == 1 else (2 if n_terms <= 3 else 3)
+    flat: list[str] = []
+    for g in groups:
+        for s in g:
+            if s not in flat:
+                flat.append(s)
+
+    def _present(stem: str, low: str) -> bool:
+        # Short stems are substring-fragile ("mac" is inside "machine") —
+        # require a full word. Longer stems keep substring semantics so
+        # "layer2" finds Layer2VlanSchema and "personal" finds WPA2_PERSONAL.
+        if len(stem) <= 3:
+            return bool(re.search(rf"\b{re.escape(stem)}\b", low))
+        return stem in low
+
+    def matched(blob: str) -> int:
+        low = blob.lower()
+        return sum(1 for g in groups if any(_present(s, low) for s in g))
+
+    hits: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def add(kind: str, spec_file: str, ref: str, text: str, score: int, exact: bool) -> None:
+        cur = hits.get((spec_file, ref))
+        if cur is None:
+            hits[(spec_file, ref)] = {
+                "text": text,
+                "source": "openapi_specs",
+                "file_path": f"openapi_specs/{spec_file}#{ref}",
+                "kind": kind,
+                "score": score,
+                "_exact": exact,
+            }
+        else:
+            # Same row reached by two strategies: keep the best evidence of each
+            cur["score"] = max(cur["score"], score)
+            cur["_exact"] = cur["_exact"] or exact
+
+    # 1. Exact enum/field lookups for field-like terms
+    for term in flat:
+        if len(term) < 4:
+            continue
+        for row in get_enum(term, limit=4, db_path=db_path):
+            blob = (f"{row['spec_file']} {row['schema_name']} {row['path']} "
+                    f"{row.get('description') or ''} {' '.join(map(str, row.get('enums') or []))} "
+                    f"{row.get('enum_descriptions') or ''}")
+            add("enum", row["spec_file"], f"{row['schema_name']}.{row['path']}",
+                _fmt_enum_field(row), matched(blob), exact=True)
+
+    # 2. Exact endpoint lookups for hyphenated tokens (one progressive trim)
+    for term in (g[0] for g in groups if "-" in g[0]):
+        for candidate in (term, term.rsplit("-", 1)[0]):
+            if "-" not in candidate:  # trimmed to a single bare word — too generic
+                continue
+            rows = get_endpoint(candidate, limit=6, db_path=db_path)
+            if rows:
+                for row in rows:
+                    blob = (f"{row['spec_file']} {row['method']} {row['path']} "
+                            f"{row.get('summary') or ''} {row.get('description') or ''}")
+                    add("endpoint", row["spec_file"], f"{row['method']} {row['path']}",
+                        _fmt_endpoint(row), matched(blob), exact=True)
+                break
+
+    # 3. FTS prefix search, re-ranked by distinct-concept coverage
+    conn = connect(db_path)
+    try:
+        match_expr = " OR ".join(f'"{s}"*' for s in flat)
+        rows = conn.execute(
+            "SELECT kind, spec_file, ref, body FROM fts WHERE fts MATCH ? "
+            "ORDER BY bm25(fts) LIMIT 60",
+            (match_expr,),
+        ).fetchall()
+        for r in rows:
+            score = matched(f"{r['spec_file']} {r['body']}")
+            if score < threshold:
+                continue
+            if r["kind"] == "endpoint":
+                method, _, path = r["ref"].partition(" ")
+                ep = get_endpoint(path, method=method, limit=1, db_path=db_path)
+                text = _fmt_endpoint(ep[0]) if ep else r["ref"]
+            else:
+                # Schema hit: surface only the fields the query actually asked about
+                fields = conn.execute(
+                    "SELECT field_name, path, type, description, enums FROM fields "
+                    "WHERE schema_name = ? AND spec_file = ? LIMIT 400",
+                    (r["ref"], r["spec_file"]),
+                ).fetchall()
+                parts = []
+                for f in fields:
+                    enums = json.loads(f["enums"]) if f["enums"] else []
+                    fblob = f"{f['field_name']} {f['description'] or ''} {' '.join(map(str, enums))}"
+                    if matched(fblob):
+                        enum_sfx = f" enum: {', '.join(map(str, enums[:24]))}" if enums else ""
+                        parts.append(f"{f['path']} ({f['type']}){enum_sfx}")
+                    if len(parts) >= 8:
+                        break
+                text = f"Schema {r['ref']} [{r['spec_file']}]: " + "; ".join(parts)
+            add(r["kind"], r["spec_file"], r["ref"], text, score, exact=False)
+    finally:
+        conn.close()
+
+    # Exact hits first, then by concept coverage. Non-exact hits must clear the
+    # full threshold; exact hits are trusted but still need one corroborating
+    # concept beyond the name that matched them (a lone field-name collision on
+    # a multi-term query is noise, e.g. MVRP "registration" for "MAC registration").
+    exact_floor = min(2, n_terms)
+    out = [h for h in hits.values()
+           if (h["_exact"] and h["score"] >= exact_floor) or h["score"] >= threshold]
+    out.sort(key=lambda h: (not h["_exact"], -h["score"]))
+    for h in out:
+        h.pop("_exact")
+    return out[:top_k]
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", action="store_true")
     ap.add_argument("--query")
     ap.add_argument("--enum")
+    ap.add_argument("--lookup", help="natural-language lookup (as the MCP tool runs it)")
     args = ap.parse_args()
     if args.build:
         print(json.dumps(build(), indent=2))
@@ -264,3 +488,5 @@ if __name__ == "__main__":
         print(json.dumps(search(args.query), indent=2))
     if args.enum:
         print(json.dumps(get_enum(args.enum), indent=2))
+    if args.lookup:
+        print(json.dumps(lookup(args.lookup), indent=2))

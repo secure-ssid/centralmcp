@@ -69,6 +69,10 @@ def run(k: int, verbose: bool) -> dict:
                 results = lookup_api(q["query"])
             except Exception:
                 results = None
+            # Empty or error-only -> specs hold no confident answer; fall back
+            # to prose search (mirrors how an agent uses the two tools).
+            if not results or all("error" in h for h in results if isinstance(h, dict)):
+                results = None
         if results is None:
             try:
                 results = search_docs(q["query"], top_k=k)
