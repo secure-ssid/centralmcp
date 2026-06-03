@@ -1,0 +1,127 @@
+# RAG evaluation set for centralmcp — run before/after any backend or retrieval change.
+# type: api-lookup  -> expects an exact field/enum/endpoint (ideally via lookup_api over the specs)
+#       howto       -> expects a relevant prose chunk (via search_docs)
+# expect_sources    -> substrings; at least one must appear in a top-k result's file_path/source
+# expect_keywords   -> substrings; at least one must appear in the returned text (case-insensitive)
+# See docs/RAG-ARCHITECTURE.md.
+
+questions:
+  - id: dot1x-auth-type
+    type: api-lookup
+    query: "What auth-type value does a CDA 802.1X (dot1x) auth profile use?"
+    expect_sources: ["cda-auth-profile", "auth-profile"]
+    expect_keywords: ["EAP"]
+
+  - id: auth-type-enum
+    type: api-lookup
+    query: "What are the valid auth-type enum values for an auth profile?"
+    expect_sources: ["cda-auth-profile", "auth-profile"]
+    expect_keywords: ["MPSK", "EAP", "CAPTIVE_PORTAL", "MAB", "AIRPASS"]
+
+  - id: passpoint-list-key
+    type: api-lookup
+    query: "What is the response list key for the passpoint profiles GET endpoint?"
+    expect_sources: ["passpoint"]
+    expect_keywords: ["profile"]
+
+  - id: firmware-compliance-endpoint
+    type: api-lookup
+    query: "Which endpoint sets firmware compliance in New Central and what HTTP method?"
+    expect_sources: ["firmware-compliance"]
+    expect_keywords: ["firmware-compliance", "PATCH"]
+
+  - id: firmware-no-upgrade-path
+    type: api-lookup
+    query: "Is there a device-firmware-upgrade endpoint in the New Central config API?"
+    expect_sources: ["firmware-management", "firmware-compliance"]
+    expect_keywords: ["device-firmware"]
+
+  - id: ssid-security-enum
+    type: api-lookup
+    query: "What WPA security enum values are available for an SSID (personal/enterprise)?"
+    expect_sources: ["ssid", "wlan"]
+    expect_keywords: ["WPA3", "WPA2"]
+
+  - id: mac-reg-update-url
+    type: api-lookup
+    query: "What URL and method updates a CNAC MAC registration?"
+    expect_sources: ["mac-reg", "cnac"]
+    expect_keywords: ["cnac-mac-reg", "PUT"]
+
+  - id: scope-levels
+    type: api-lookup
+    query: "What scope levels exist when assigning a profile (global, site, group)?"
+    expect_sources: ["scope", "profile"]
+    expect_keywords: ["scope"]
+
+  - id: vlan-create-fields
+    type: api-lookup
+    query: "What fields are required to create a layer2 VLAN?"
+    expect_sources: ["vlan", "layer2"]
+    expect_keywords: ["vlan"]
+
+  - id: igmp-lookup-enum
+    type: api-lookup
+    query: "What are the valid values for the IGMP forwarding lookup mode field?"
+    expect_sources: ["mgmd", "igmp"]
+    expect_keywords: ["LOOKUP_MAC", "LOOKUP_IP", "LOOKUP_NONE"]
+
+  - id: howto-create-ssid
+    type: howto
+    query: "How do I create a wireless SSID with WPA3 personal security in New Central?"
+    expect_sources: ["ssid", "wlan", "developer", "tech"]
+    expect_keywords: ["SSID", "WPA3"]
+
+  - id: howto-onboard-device
+    type: howto
+    query: "How do I onboard a device into a group and assign it to a site?"
+    expect_sources: ["developer", "tech", "scope", "device"]
+    expect_keywords: ["group", "site"]
+
+  - id: howto-passpoint
+    type: howto
+    query: "How does Passpoint / Hotspot 2.0 work and how is an identity profile assigned?"
+    expect_sources: ["passpoint", "tech", "vsg"]
+    expect_keywords: ["passpoint"]
+
+  - id: howto-nac-mpsk
+    type: howto
+    query: "How do I register an MPSK device for client onboarding?"
+    expect_sources: ["mpsk", "nac", "tech"]
+    expect_keywords: ["MPSK"]
+
+  - id: howto-firmware-compliance
+    type: howto
+    query: "How do I set a firmware compliance policy for access points?"
+    expect_sources: ["firmware", "tech", "developer"]
+    expect_keywords: ["firmware", "compliance"]
+
+  - id: howto-proxy-profile
+    type: howto
+    query: "How do I assign a proxy profile to a scope?"
+    expect_sources: ["proxy", "techdocs"]
+    expect_keywords: ["proxy", "scope"]
+
+  - id: howto-gateway-cluster
+    type: howto
+    query: "How do I configure a gateway cluster in New Central?"
+    expect_sources: ["gateway", "cluster", "tech", "vsg"]
+    expect_keywords: ["gateway", "cluster"]
+
+  - id: howto-port-profile
+    type: howto
+    query: "How do I create a switch port profile and apply it to an interface?"
+    expect_sources: ["port", "profile", "switch"]
+    expect_keywords: ["port", "profile"]
+
+  - id: howto-aaa-server
+    type: howto
+    query: "How do I add a RADIUS authentication server for AAA?"
+    expect_sources: ["aaa", "auth-server", "radius", "nac"]
+    expect_keywords: ["RADIUS"]
+
+  - id: howto-vsg-design
+    type: howto
+    query: "What is the recommended VLAN/overlay design for a campus wireless deployment?"
+    expect_sources: ["vsg"]
+    expect_keywords: ["VLAN", "overlay"]
