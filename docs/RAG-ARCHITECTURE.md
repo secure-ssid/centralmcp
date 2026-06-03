@@ -102,12 +102,15 @@ Metrics: `recall@5` (did an expected source appear in top-5), `mrr` (rank of fir
 
 **Baseline measured 2026-06-03** (current Redis, vector-only, no prefixes, specs missing from index), and **re-measured the same day after wiring `lookup_api`** (SQLite specs index, H13 cosine fix + boost recalibration, query/document prefixes):
 
-| Metric | Baseline | After `lookup_api` (2026-06-03) | Target after redesign |
-|---|---|---|---|
-| `howto_recall@5` (prose) | 0.80 | **0.80** (held) | ≥ 0.80 (hold or improve) |
-| `api_exact` (API lookups) | **0.50** | **0.90** | **1.00** (structured `lookup_api`) |
-| `source_hit@5` (overall) | 0.50 | **0.80** | ≥ 0.75 ✅ |
-| `mrr` | 0.339 | **0.679** | ≥ 0.50 ✅ |
+| Metric | Baseline (Redis, vector-only) | After `lookup_api` (2026-06-03) | **Final: embedded LanceDB hybrid (2026-06-03)** | Target |
+|---|---|---|---|---|
+| `howto_recall@5` (prose) | 0.80 | 0.80 | **0.90** | ≥ 0.80 ✅ |
+| `api_exact` (API lookups) | **0.50** | 0.90 | **1.00** | 1.00 ✅ |
+| `source_hit@5` (overall) | 0.50 | 0.80 | **0.90** | ≥ 0.75 ✅ |
+| `mrr` | 0.339 | 0.679 | **0.90** | ≥ 0.50 ✅ |
+| `keyword_hit` | — | 0.80 | **1.00** | — |
+
+**Final corpus (full rebuild):** 53,052 chunks / 7 sources (Redis index had 40,900 and was missing `aos_techdocs`, `openapi_specs`, and most of `techdocs_html`) + 213-spec SQLite index + 150-tool index. 18/20 eval questions hit at rank 1. Shippable artifacts: `data/docs.lance` (190 MB), `data/specs.sqlite` (18 MB), `data/tools.lance` (0.6 MB).
 
 The API-lookup rows almost all missed the spec sources at baseline — direct empirical evidence of **R2** (OpenAPI specs absent from the active index). `howto` retrieval is already decent, confirming the redesign's value is concentrated in (a) structured API lookup and (b) hybrid+rerank for exact identifiers, not in replacing vector search wholesale. Re-run `uv run --with pyyaml python tests/eval/run_eval.py` after each change.
 
