@@ -8,8 +8,7 @@
       "cwd": "/path/to/API-Central",
       "env": {
         "PYTHONPATH": "/path/to/API-Central",
-        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml",
-        "REDIS_URL": "redis://localhost:6379"
+        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml"
       }
     }
   }

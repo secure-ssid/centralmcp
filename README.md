@@ -19,18 +19,19 @@ Python tooling for Aruba Central New-Central / NBAPI: monitoring, configuration,
 | Surface | Count | What |
 |---|---|---|
 | **MCP tool servers** | 6 + router | `aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`, `aruba-glp`, `aruba-rag` — optionally fronted by `aruba-tool-router` |
-| **MCP tools** | 149 | Read + write across Central and GLP, plus doc-grounded search |
+| **MCP tools** | 150 | Read + write across Central and GLP, plus doc-grounded search and exact API lookup |
 | **Migration pipeline stages** | 8 | Discover → verify → transfer → configure → attest |
 | **Supported device types** | AP / CX / AOS-S / Gateway | Full troubleshoot + provisioning surface |
 | **GLP operations** | Devices / Subscriptions / Users / Audit logs | v2beta1 PATCH writes behind a feature flag |
-| **RAG corpus** | Aruba/HPE docs | Dev docs, tech docs, NAC/VSG guides, OpenAPI specs indexed in Redis Stack |
+| **RAG corpus** | 53k chunks + 213 API specs | Dev docs, tech docs, NAC/VSG guides, OpenAPI specs — **fully embedded** (LanceDB + SQLite + fastembed), no servers |
 | **Local knowledge vault** | Obsidian MCP | Aruba docs + personal runbooks, locally accessible to any MCP client |
 
 ### Feature highlights
 
-- **149 MCP tools** across 6 FastMCP servers
+- **150 MCP tools** across 6 FastMCP servers
 - **`aruba-tool-router`** — single MCP entrypoint that proxies all 6 domain servers, reducing tool-listing overhead. Use the router day-to-day; switch to `.cursor/mcp.dev.json` for per-server debugging.
-- **Doc-grounded RAG** — `search_docs` over ingested Aruba/HPE developer docs, tech docs, NAC/VSG guides, and OpenAPI specs (Redis Stack + Ollama, `docker-compose.yml` included)
+- **Embedded doc-grounded RAG — no Docker, no servers** — `search_docs` runs hybrid (vector + BM25) retrieval over 53k chunks of Aruba/HPE developer docs, tech docs, NAC/VSG guides, and OpenAPI specs via LanceDB + in-process fastembed embeddings. Measured: `recall@5` 0.90, `mrr` 0.90 on the bundled eval set.
+- **`lookup_api` — exact API answers** — endpoint/schema/enum questions answered losslessly from a SQLite index over 213 parsed OpenAPI specs (1,071 endpoints, 29k fields). Measured: 10/10 exact on the bundled eval set. Vector search guesses; this doesn't.
 - **Obsidian vault MCP** — local filesystem MCP server over a personal Obsidian vault for runbooks and reference docs
 - **MCP ToolAnnotations** — all tools tagged `READ_ONLY`, `DIAGNOSTIC`, or `DESTRUCTIVE` so clients can display safety hints
 - **Elicitation for destructive ops** — `reboot_device`, `poe_bounce`, `port_bounce`, `disconnect_client` prompt for confirmation before executing
@@ -63,9 +64,10 @@ centralmcp fills that gap.
 
 - Python >= 3.10
 - [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`
-- Docker (for Redis Stack + Ollama RAG stack)
 - HPE Aruba Central account with API credentials (OAuth2 client ID + secret)
 - (Optional) HPE GreenLake Platform client credentials for GLP tools
+
+No Docker, no database servers — the RAG stack is fully embedded (LanceDB + SQLite + in-process fastembed embeddings).
 
 ---
 
@@ -86,12 +88,17 @@ cp config/credentials.yaml.example config/credentials.yaml
 cp .mcp.json.example .mcp.json
 #    Edit .mcp.json — replace /path/to/centralmcp with your clone path
 
-# 4. Start the RAG stack (Redis Stack + Ollama)
-docker-compose up -d
-
-# 5. Index docs into Redis
-python ingestion/ingest_docs.py
+# 4. Get the RAG indexes (-> data/)
+#    Option A — download prebuilt from the GitHub Releases page (fast):
+#      https://github.com/secure-ssid/centralmcp/releases
+#    Option B — rebuild locally (re-scrapes nothing; embeds 53k chunks
+#      in-process — several hours on CPU):
+uv run python scripts/ingest_tools.py     # find_tool catalog (~1 min)
+uv run python ingestion/ingest_docs.py    # docs + API specs (slow)
 ```
+
+The embedding model (`nomic-embed-text-v1.5`, ~250 MB ONNX) downloads to the
+Hugging Face cache on first use.
 
 > **Security:** `config/credentials.yaml` and `.mcp.json` are git-ignored. Never commit them. Token caches live in `~/.cache/centralmcp/` (`0600` perms) by default.
 
@@ -108,7 +115,9 @@ python ingestion/ingest_docs.py
 | `MCP_PORT` | Port for HTTP transport | `8000` |
 | `GLP_TOKEN_URL` | Override SSO token endpoint | `https://sso.common.cloud.hpe.com/as/token.oauth2` |
 | `GLP_BASE_URL` | Override GLP API base URL | `https://global.api.greenlake.hpe.com` |
-| `REDIS_URL` | Override Redis Stack connection for tool/doc search | `redis://localhost:6379` |
+| `CENTRALMCP_RAG_BACKEND` | RAG backend: `lancedb` (embedded) or `redis` (server) | `lancedb` |
+| `CENTRALMCP_EMBED_PROVIDERS` | ONNX execution providers for embedding (e.g. `cuda`) | CPU |
+| `REDIS_URL` | Redis Stack connection (only with `CENTRALMCP_RAG_BACKEND=redis`) | `redis://localhost:6379` |
 
 ---
 
@@ -124,6 +133,7 @@ Example prompts:
 - *"Build a WPA3 SSID called `Corp-WiFi` on VLAN 100 for all APs."*
 - *"Ping 8.8.8.8 from switch SN123456."*
 - *"Show me active alerts at sites in Frankfurt."*
+- *"What enum values does the SSID `opmode` field accept?"* (exact answer via `lookup_api`)
 - *"Assign subscription `sub-uuid-123` to device `SG30LMR164`."* (requires the GLP writes flag)
 
 ### CLI — Migration pipeline
@@ -153,25 +163,50 @@ mcp_servers/
   ops.py                Ops tools (reboots, ping, cable test, PoE bounce)
   nac.py                NAC tools (MAC reg, MPSK, visitors, auth servers, AAA)
   glp.py                GreenLake Platform tools
-  rag.py                RAG tools — search_docs over ingested Aruba/HPE docs
+  rag.py                RAG tools — search_docs (hybrid) + lookup_api (exact)
   tool_router.py        Unified router — proxies the 6 domain servers
   shared.py             Shared clients, helpers, pagination, feature flags
 pipeline/
-  clients/              CentralClient, GLPClient, TokenManager, RedisClient
+  clients/              CentralClient, GLPClient, TokenManager, EmbedClient,
+                        LanceClient, SpecsIndex (+ optional Ollama/Redis clients)
   stages/               s1_discover → s8_verify
   config.py             Credential loader
   create_ssid.py        SSID build/delete logic (underlay + overlay)
 ingestion/
-  ingest_docs.py        Chunk + embed Aruba/HPE docs into Redis Stack
+  ingest_docs.py        Chunk + embed docs → LanceDB + specs SQLite (default)
   sources/              Scraped docs (git-ignored — regenerate with scrapers)
+data/                   RAG indexes (git-ignored): docs.lance, tools.lance,
+                        specs.sqlite — rebuild via ingest or download prebuilt
 config/
   credentials.yaml.example   Template — copy to credentials.yaml and fill in
-docker-compose.yml      Redis Stack (port 6379, RedisInsight port 8001) + Ollama
-docs/                   Reference documents
+docker-compose.yml      OPTIONAL server RAG backend (Redis Stack + Ollama)
+docs/                   Reference documents (audit, RAG architecture, eval)
 resources/              Postman download script (collections git-ignored)
 inputs/                 CSV templates for batch migration
-tests/                  Unit + integration tests
+tests/                  Unit tests + RAG eval harness (tests/eval/)
 ```
+
+---
+
+## RAG stack
+
+The default RAG backend is **fully embedded** — nothing to install or run:
+
+| Index | File | Backs | What |
+|---|---|---|---|
+| Docs | `data/docs.lance` (190 MB) | `search_docs` | 53,052 chunks across 7 sources, hybrid vector + BM25 search (RRF-fused), nomic task prefixes |
+| API specs | `data/specs.sqlite` (18 MB) | `lookup_api` | 213 OpenAPI specs parsed to 1,071 endpoints / 4,958 schemas / 29k fields with FTS5 — exact, lossless answers for "what enum values / which endpoint / what fields" questions |
+| Tools | `data/tools.lance` (0.6 MB) | `find_tool` | the 150-tool catalog for the router's semantic tool search |
+
+Measured on the bundled eval set (`tests/eval/`) vs the previous Redis vector-only stack: `api_exact` 0.50 → **1.00**, `howto_recall@5` 0.80 → **0.90**, `mrr` 0.34 → **0.90**.
+
+### Optional server backend (Redis Stack + Ollama)
+
+The pre-migration server stack remains supported for deployments that want a
+shared index: `docker-compose up -d`, ingest with
+`python ingestion/ingest_docs.py --backend redis` and
+`python scripts/ingest_tools.py --backend redis`, then run the MCP servers
+with `CENTRALMCP_RAG_BACKEND=redis`.
 
 ---
 
