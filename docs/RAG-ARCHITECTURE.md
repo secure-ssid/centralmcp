@@ -111,7 +111,7 @@ Metrics: `recall@5` (did an expected source appear in top-5), `mrr` (rank of fir
 
 The API-lookup rows almost all missed the spec sources at baseline — direct empirical evidence of **R2** (OpenAPI specs absent from the active index). `howto` retrieval is already decent, confirming the redesign's value is concentrated in (a) structured API lookup and (b) hybrid+rerank for exact identifiers, not in replacing vector search wholesale. Re-run `uv run --with pyyaml python tests/eval/run_eval.py` after each change.
 
-The remaining `api_exact` miss is `mac-reg-update-url`: the CNAC MAC-registration API is **not in the 212 ingested config specs** (it's a separate CNAC service API), and the prose fallback misses it too. Closing it requires adding the CNAC/NAC OpenAPI specs to `ingestion/sources/openapi_specs/` and rebuilding the index — a data gap, not a retrieval gap.
+~~The remaining `api_exact` miss was `mac-reg-update-url`: the CNAC MAC-registration API was not in the 212 ingested config specs.~~ **Closed 2026-06-03:** the Central NAC Service spec (25 paths, 60 schemas — cnac-mac-reg/visitor/named-mpsk/dpp/certificates/jobs) is not served by the internal-ui cnxconfig docs host, but the readme.io reference pages embed the full OAS document; `ingestion/scrape_cnac_spec.py` extracts it to `cnac-client-registration.json` (213 specs total). With it indexed, **`api_exact` = 1.00** — all 10 api-lookup questions resolve through `lookup_api` with the correct spec at rank 1, no prose fallback needed.
 
 ---
 
