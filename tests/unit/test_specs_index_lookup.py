@@ -132,6 +132,22 @@ class TestQueryGroups:
         assert flat.count("dot1x") == 1
         assert all(len(s) >= 3 and not s.isdigit() for s in flat)
 
+    def test_stopwords_checked_before_stemming(self):
+        # Regression: "does" stemmed to "doe" BEFORE the stopword check and
+        # survived as a junk concept group polluting FTS and the threshold.
+        groups = specs_index._query_groups("What does the opmode field accept?")
+        flat = [s for g in groups for s in g]
+        assert "doe" not in flat and "does" not in flat
+        assert flat == ["opmode"]  # only the real concept survives
+
+    def test_domain_synonyms_join_the_same_group(self):
+        # Regression: users say "SSID", the specs say "wlan"/"essid" — the
+        # synonym must corroborate within ONE group, not add a new concept.
+        groups = specs_index._query_groups("ssid opmode")
+        assert len(groups) == 2
+        ssid_group = next(g for g in groups if "ssid" in g)
+        assert "wlan" in ssid_group and "essid" in ssid_group
+
 
 # ---------------------------------------------------------------------------
 # lookup

@@ -267,9 +267,21 @@ using new central api apis valid value values field fields enum enums key keys
 required need needed needs http https method methods url uri endpoint endpoints
 response request list lists get read set sets type types kind name names
 configure configures configured configuration config
+accept accepts allow allows allowed support supports supported
 """.split())
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-._]*")
+
+# Tight, curated domain synonyms — Aruba docs use these interchangeably
+# (specs say "wlan"/"essid" where users say "SSID"). Synonyms join the SAME
+# concept group, so they corroborate a match without inflating the
+# distinct-concept count that the relevance threshold counts.
+_SYNONYMS: dict[str, list[str]] = {
+    "ssid": ["wlan", "essid"],
+    "wlan": ["ssid", "essid"],
+    "gw": ["gateway"],
+    "gateway": ["gw"],
+}
 
 
 def _stem_variants(word: str) -> list[str]:
@@ -302,10 +314,18 @@ def _query_groups(query: str) -> list[list[str]]:
         seen_tokens.add(tok)
         stems: list[str] = []
         for part in [tok] + (tok.split("-") if "-" in tok else []):
+            # Check the RAW word against stopwords too — stemming first would
+            # let scaffolding sneak through ("does" -> "doe" is not a stopword).
+            if part in _STOPWORDS:
+                continue
             for v in _stem_variants(part):
                 if len(v) < 3 or v.isdigit() or v in _STOPWORDS or v in stems:
                     continue
                 stems.append(v)
+        for s in list(stems):
+            for syn in _SYNONYMS.get(s, []):
+                if syn not in stems:
+                    stems.append(syn)
         if stems:
             groups.append(stems)
     return groups
@@ -398,11 +418,14 @@ def _lookup(query: str, top_k: int, db_path: Path) -> list[dict[str, Any]]:
             cur["score"] = max(cur["score"], score)
             cur["_exact"] = cur["_exact"] or exact
 
-    # 1. Exact enum/field lookups for field-like terms
+    # 1. Exact enum/field lookups for field-like terms. Generous limit — the
+    # same field often appears in near-duplicate Get/non-Get schema pairs per
+    # spec, and a tight limit crowds out the spec file the query is about
+    # (e.g. limit=4 returned only ap-uplink/mesh "opmode", never wlan's).
     for term in flat:
         if len(term) < 4:
             continue
-        for row in get_enum(term, limit=4, db_path=db_path):
+        for row in get_enum(term, limit=16, db_path=db_path):
             blob = (f"{row['spec_file']} {row['schema_name']} {row['path']} "
                     f"{row.get('description') or ''} {' '.join(map(str, row.get('enums') or []))} "
                     f"{row.get('enum_descriptions') or ''}")
@@ -426,10 +449,13 @@ def _lookup(query: str, top_k: int, db_path: Path) -> list[dict[str, Any]]:
     # 3. FTS prefix search, re-ranked by distinct-concept coverage
     conn = connect(db_path)
     try:
+        # Deep candidate fetch: bm25 penalizes long bodies, so with a shallow
+        # cap the big multi-term schema rows (the ones that actually clear the
+        # coverage threshold) get starved by hundreds of short single-term rows.
         match_expr = " OR ".join(f'"{s}"*' for s in flat)
         rows = conn.execute(
             "SELECT kind, spec_file, ref, body FROM fts WHERE fts MATCH ? "
-            "ORDER BY bm25(fts) LIMIT 60",
+            "ORDER BY bm25(fts) LIMIT 400",
             (match_expr,),
         ).fetchall()
         for r in rows:

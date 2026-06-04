@@ -239,11 +239,28 @@ async def find_client(ctx: Context, query: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=READ_ONLY)
 async def search_docs(ctx: Context, query: str, top_k: int = 5, source: str | None = None) -> Any:
-    """Search Aruba/HPE documentation (Central config, APIs, NAC, VSG)."""
+    """Search Aruba/HPE documentation (Central config, APIs, NAC, VSG).
+
+    For EXACT API questions (enum values, endpoints, schema fields) prefer
+    lookup_api — it is lossless; this is fuzzy retrieval.
+    """
     args: dict[str, Any] = {"query": query, "top_k": top_k}
     if source:
         args["source"] = source
     return await invoke_tool(ctx, "search_docs", args)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def lookup_api(ctx: Context, query: str, top_k: int = 10) -> Any:
+    """Exact Aruba Central API lookup — endpoints, schemas, fields, enum values.
+
+    Use INSTEAD of search_docs for "what enum values does field X accept",
+    "which endpoint configures Y and with what method", or "what fields does
+    schema Z have". Authoritative answers from the parsed OpenAPI specs.
+    Returns [] when the specs hold no confident answer — fall back to
+    search_docs in that case.
+    """
+    return await invoke_tool(ctx, "lookup_api", {"query": query, "top_k": top_k})
 
 
 if __name__ == "__main__":
