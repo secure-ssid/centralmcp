@@ -1,7 +1,8 @@
-"""MCP server — Aruba Central ops: troubleshooting and device actions (14 tools).
+"""MCP server — Aruba Central ops: troubleshooting and device actions (22 tools).
 
 Covers: CX/AOS-S/Gateway ping/traceroute/show, PoE bounce, port bounce, cable test,
-reboot, disconnect client, acknowledge alert.
+reboot, disconnect client, acknowledge alert, LLDP neighbors, ARP table, MAC table,
+speed test, find MAC on switch, port error counters, spanning tree, interface counters.
 """
 from typing import Any
 
@@ -434,6 +435,252 @@ def acknowledge_alert(
         "https://developer.arubanetworks.com/new-central/reference for updates."
     )
     return {"alert_id": alert_id, "action": action, "response": None, "errors": errors}
+
+
+# ── CX Switch Intelligence ────────────────────────────────────────────────────
+
+@mcp.tool(annotations=DIAGNOSTIC)
+def get_lldp_neighbors(serial_number: str) -> dict[str, Any]:
+    """Get LLDP neighbor table from a CX switch.
+
+    Shows what device is connected to each port — hostname, port ID, system
+    capabilities, and management address. Useful for instantly identifying what's
+    plugged into a port without guessing from MAC or client data.
+    """
+    client = get_client()
+    errors: list[str] = []
+    try:
+        resp = client._request(
+            "POST",
+            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
+            json={"commands": ["show lldp neighbors"]},
+        )
+        if resp.status_code not in (200, 201, 202):
+            errors.append(compact_http_error(resp))
+            return {"status": None, "errors": errors}
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+    result = cx_poll(client, serial_number, "showCommands", task_id)
+    result["errors"] = errors
+    return result
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+def get_cx_arp_table(serial_number: str) -> dict[str, Any]:
+    """Get the ARP table from a CX switch.
+
+    Returns IP-to-MAC mappings with interface and VLAN. Useful for resolving
+    an IP to a MAC when a client doesn't appear in Central's client list.
+    """
+    client = get_client()
+    errors: list[str] = []
+    try:
+        resp = client._request(
+            "POST",
+            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
+            json={"commands": ["show arp"]},
+        )
+        if resp.status_code not in (200, 201, 202):
+            errors.append(compact_http_error(resp))
+            return {"status": None, "errors": errors}
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+    result = cx_poll(client, serial_number, "showCommands", task_id)
+    result["errors"] = errors
+    return result
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+def get_cx_mac_table(
+    serial_number: str,
+    interface: str | None = None,
+) -> dict[str, Any]:
+    """Get the MAC address table from a CX switch.
+
+    Shows which MAC addresses are learned on which ports and VLANs. When
+    interface is provided (e.g. '1/1/16'), filters to that port only.
+    Useful for tracing exactly which port a device is connected to.
+    """
+    cmd = f"show mac-address-table interface {interface}" if interface else "show mac-address-table"
+    client = get_client()
+    errors: list[str] = []
+    try:
+        resp = client._request(
+            "POST",
+            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
+            json={"commands": [cmd]},
+        )
+        if resp.status_code not in (200, 201, 202):
+            errors.append(compact_http_error(resp))
+            return {"status": None, "errors": errors}
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+    result = cx_poll(client, serial_number, "showCommands", task_id)
+    result["errors"] = errors
+    return result
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+def find_mac_on_switch(serial_number: str, mac_address: str) -> dict[str, Any]:
+    """Find which port a MAC address is learned on for a CX switch.
+
+    Runs 'show mac-address-table address <mac>' and returns the port, VLAN,
+    and entry type. The fastest way to answer "what port is device X on?"
+    """
+    mac_clean = mac_address.replace("-", ":").lower()
+    client = get_client()
+    errors: list[str] = []
+    try:
+        resp = client._request(
+            "POST",
+            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
+            json={"commands": [f"show mac-address-table address {mac_clean}"]},
+        )
+        if resp.status_code not in (200, 201, 202):
+            errors.append(compact_http_error(resp))
+            return {"status": None, "errors": errors}
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+    result = cx_poll(client, serial_number, "showCommands", task_id)
+    result["mac_address"] = mac_address
+    result["errors"] = errors
+    return result
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+def get_switch_port_errors(serial_number: str, interface: str | None = None) -> dict[str, Any]:
+    """Get error counters for CX switch ports.
+
+    Returns CRC errors, input errors, output errors, runts, giants, and
+    collisions. When interface is given (e.g. '1/1/5') only that port is
+    queried; otherwise all interfaces. First thing to check for a flapping
+    or slow port.
+    """
+    cmd = (
+        f"show interface {interface} statistics"
+        if interface
+        else "show interface statistics"
+    )
+    client = get_client()
+    errors: list[str] = []
+    try:
+        resp = client._request(
+            "POST",
+            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
+            json={"commands": [cmd]},
+        )
+        if resp.status_code not in (200, 201, 202):
+            errors.append(compact_http_error(resp))
+            return {"status": None, "errors": errors}
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+    result = cx_poll(client, serial_number, "showCommands", task_id)
+    result["errors"] = errors
+    return result
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+def get_switch_spanning_tree(
+    serial_number: str,
+    interface: str | None = None,
+) -> dict[str, Any]:
+    """Get spanning tree topology for a CX switch.
+
+    Returns bridge ID, root bridge, port roles (Root/Designated/Alternate/
+    Backup), port states (Forwarding/Blocking/Learning), and timers.
+    When interface is provided only that port's STP detail is returned.
+    Essential for diagnosing broadcast storms, topology changes, and loops.
+    """
+    cmd = (
+        f"show spanning-tree detail interface {interface}"
+        if interface
+        else "show spanning-tree detail"
+    )
+    client = get_client()
+    errors: list[str] = []
+    try:
+        resp = client._request(
+            "POST",
+            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
+            json={"commands": [cmd]},
+        )
+        if resp.status_code not in (200, 201, 202):
+            errors.append(compact_http_error(resp))
+            return {"status": None, "errors": errors}
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+    result = cx_poll(client, serial_number, "showCommands", task_id)
+    result["errors"] = errors
+    return result
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+def get_switch_interface_counters(
+    serial_number: str,
+    interface: str | None = None,
+) -> dict[str, Any]:
+    """Get Tx/Rx byte and packet counters for CX switch interfaces.
+
+    Returns transmitted/received bytes, unicast/multicast/broadcast packet
+    counts and rates. When interface is provided (e.g. '1/1/1') only that
+    port is returned. Use for capacity analysis and saturation detection.
+    """
+    cmd = (
+        f"show interface {interface} counters"
+        if interface
+        else "show interface counters"
+    )
+    client = get_client()
+    errors: list[str] = []
+    try:
+        resp = client._request(
+            "POST",
+            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
+            json={"commands": [cmd]},
+        )
+        if resp.status_code not in (200, 201, 202):
+            errors.append(compact_http_error(resp))
+            return {"status": None, "errors": errors}
+        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        task_id = location.rstrip("/").split("/")[-1]
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"status": None, "errors": errors}
+    result = cx_poll(client, serial_number, "showCommands", task_id)
+    result["errors"] = errors
+    return result
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+def run_speed_test(serial_number: str) -> dict[str, Any]:
+    """Run a speed test from an AP to measure uplink bandwidth.
+
+    Uses the Central async troubleshooting API. Returns download/upload
+    throughput and latency from the AP's perspective. Useful for verifying
+    whether a slow client experience is a radio issue or an uplink issue.
+    """
+    _AP_TROUBLESHOOTING_BASE = "/network-troubleshooting/v1alpha1/aps"
+    client = get_client()
+    errors: list[str] = []
+    return troubleshoot_async(client, f"{_AP_TROUBLESHOOTING_BASE}/{serial_number}/speedtest", {}, errors)
 
 
 if __name__ == "__main__":

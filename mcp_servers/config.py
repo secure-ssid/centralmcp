@@ -1962,6 +1962,114 @@ def remove_devices_from_group(serial_numbers: list[str]) -> dict[str, Any]:
     return {"status_code": resp.status_code, "response": body}
 
 
+# ── Config Templates ──────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_config_templates(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List configuration templates defined in Central.
+
+    Returns template names, types, and scope assignments. Tries multiple
+    known New Central endpoints and surfaces whichever responds.
+    """
+    client = get_client()
+    lim = clamp_limit(limit)
+    off = max(0, offset)
+    errors: list[str] = []
+    for endpoint in (
+        "/network-config/v1/templates",
+        "/network-config/v1alpha1/templates",
+        "/configuration/v1/templates",
+        "/configuration/v2/templates",
+    ):
+        try:
+            resp = client._request("GET", endpoint, params={"limit": lim, "offset": off})
+            if resp.status_code in (400, 404):
+                errors.append(f"HTTP {resp.status_code} at {endpoint}")
+                continue
+            if resp.status_code not in (200, 201, 202):
+                errors.append(compact_http_error(resp, endpoint))
+                continue
+            data = resp.json()
+            items = data if isinstance(data, list) else data.get("items", data.get("templates", []))
+            return bound_collection_response(items, limit=lim, offset=off)
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"items": [], "errors": errors, "_note": "No template endpoint responded — may not be exposed in New Central yet"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_device_running_config(serial_number: str) -> dict[str, Any]:
+    """Download the running configuration for a device.
+
+    Tries multiple Central endpoints for device config backup/export.
+    Returns the raw config text when available.
+    """
+    client = get_client()
+    errors: list[str] = []
+    for endpoint in (
+        f"/network-config/v1/devices/{serial_number}/configuration",
+        f"/network-config/v1alpha1/devices/{serial_number}/configuration",
+        f"/configuration/v1/devices/{serial_number}/configuration",
+        f"/configuration/v1/devices/template/{serial_number}/config",
+    ):
+        try:
+            resp = client._request("GET", endpoint)
+            if resp.status_code in (400, 404):
+                errors.append(f"HTTP {resp.status_code} at {endpoint}")
+                continue
+            if resp.status_code not in (200, 201, 202):
+                errors.append(compact_http_error(resp, endpoint))
+                continue
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"config": resp.text}
+            return {"serial_number": serial_number, "endpoint_used": endpoint, "config": data, "errors": errors}
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"serial_number": serial_number, "config": None, "errors": errors, "_note": "Config export may not be available in New Central"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_named_vlans(scope_id: str | None = None) -> dict[str, Any]:
+    """List named VLANs configured at the group/scope level in Central.
+
+    These are the config-layer VLAN definitions (name + ID mappings) as
+    distinct from the live VLANs reported by monitoring on a specific switch.
+    scope_id defaults to global scope when omitted.
+    """
+    client = get_client()
+    errors: list[str] = []
+
+    if not scope_id:
+        try:
+            global_resp = client.get("/network-monitoring/v1/globalScopeId")
+            scope_id = global_resp.get("scopeId") or global_resp.get("id")
+        except Exception as exc:
+            errors.append(f"Could not resolve global scope: {exc}")
+
+    for endpoint in (
+        "/network-config/v1/named-vlan",
+        f"/network-config/v1/node_list/{scope_id}/config/aruba_wired_cx/vlans/config",
+        "/network-config/v1alpha1/named-vlan",
+        f"/network-config/v1/scopes/{scope_id}/named-vlans",
+    ):
+        try:
+            resp = client._request("GET", endpoint)
+            if resp.status_code in (400, 404):
+                errors.append(f"HTTP {resp.status_code} at {endpoint}")
+                continue
+            if resp.status_code not in (200, 201, 202):
+                errors.append(compact_http_error(resp, endpoint))
+                continue
+            data = resp.json()
+            items = data if isinstance(data, list) else data.get("items", data.get("vlans", data.get("named_vlans", [])))
+            return {"scope_id": scope_id, "endpoint_used": endpoint, "vlans": items, "errors": errors}
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"scope_id": scope_id, "vlans": [], "errors": errors, "_note": "Named VLAN endpoint not found — use get_switch_vlans for live switch VLANs"}
+
+
 if __name__ == "__main__":
     from mcp_servers._cache_hygiene import stable_list_tools
     from mcp_servers._middleware import (

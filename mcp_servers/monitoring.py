@@ -1,8 +1,11 @@
-"""MCP server — Aruba Central read-only monitoring tools (31 tools).
+"""MCP server — Aruba Central read-only monitoring tools (43 tools).
 
 Covers: sites, devices, clients, alerts, events, scopes, inventory,
 audit logs, device health/trends, switch ports/VLANs/PoE, AP radios/ports,
-SLE metrics, WLANs, gateway clusters.
+SLE metrics, WLANs, gateway clusters, anomaly detection (client flapping,
+SSH brute force), site health summary, client roaming history, switch stacking,
+rogue APs, AP neighbors, channel utilization, client signal history, air quality,
+SSID clients, client location.
 """
 import time
 from typing import Any
@@ -971,6 +974,527 @@ def get_cluster_tunnel_health(cluster_name: str) -> dict[str, Any]:
         return client.get(f"/network-monitoring/v1/clusters/{cluster_name}/tunnels-health-summary")
     except Exception as exc:
         return {"error": str(exc)}
+
+
+# ── Switch Extended Monitoring ───────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def get_switch_stacking_info(serial_number: str) -> dict[str, Any]:
+    """Get stacking status for a CX switch stack.
+
+    Returns stack members, roles (conductor/standby/member), serial numbers,
+    MAC addresses, and forwarding-plane health. Returns a not-applicable
+    response for standalone switches. Note: stacking sub-path endpoints
+    are not yet exposed in New Central — use get_switch_details which
+    includes stackId and switchRole fields.
+    """
+    client = get_client()
+    errors: list[str] = []
+    for endpoint in [
+        f"/network-monitoring/v1/switches/{serial_number}/stack",
+        f"/network-monitoring/v1alpha1/switch/{serial_number}/stack",
+        f"/network-monitoring/v1/switches/{serial_number}/stack-members",
+    ]:
+        try:
+            resp = client._request("GET", endpoint)
+            if resp.status_code in (400, 404):
+                errors.append(f"HTTP {resp.status_code} at {endpoint}")
+                continue
+            if resp.status_code not in (200, 201, 202):
+                errors.append(compact_http_error(resp, endpoint))
+                continue
+            data = resp.json()
+            return {"serial_number": serial_number, "stack": data, "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"serial_number": serial_number, "stack": None, "errors": errors,
+            "_note": "Stack endpoint not found — switch may be standalone or endpoint not yet available"}
+
+
+# ── Wireless Extended Monitoring ─────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def get_channel_utilization(serial_number: str) -> dict[str, Any]:
+    """Get per-radio channel utilization and noise floor for an AP.
+
+    Returns busy percentage, noise floor (dBm), channel number, and
+    interference score for each radio. The first metric to check when
+    clients are slow but signal is good.
+    """
+    client = get_client()
+    errors: list[str] = []
+    for endpoint in [
+        f"/network-monitoring/v1/aps/{serial_number}/radios",
+        f"/network-monitoring/v1alpha1/aps/{serial_number}/rf-stats",
+        f"/network-monitoring/v1/aps/{serial_number}/channel-utilization",
+    ]:
+        try:
+            resp = client._request("GET", endpoint)
+            if resp.status_code in (400, 404):
+                errors.append(f"HTTP {resp.status_code} at {endpoint}")
+                continue
+            if resp.status_code not in (200, 201, 202):
+                errors.append(compact_http_error(resp, endpoint))
+                continue
+            data = resp.json()
+            radios = data.get("radios", data.get("items", data if isinstance(data, list) else [data]))
+            summary = []
+            for r in (radios if isinstance(radios, list) else []):
+                summary.append({
+                    "band": r.get("band") or r.get("radio_band"),
+                    "channel": r.get("channel") or r.get("primary_channel"),
+                    "utilization_pct": r.get("utilization") or r.get("channel_utilization"),
+                    "noise_floor_dbm": r.get("noise") or r.get("noise_floor"),
+                    "tx_power_dbm": r.get("txPower") or r.get("tx_power"),
+                    "client_count": r.get("clientCount") or r.get("client_count"),
+                })
+            return {"serial_number": serial_number, "endpoint_used": endpoint,
+                    "radios": summary, "raw": data, "errors": errors}
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"serial_number": serial_number, "radios": None, "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_rogue_aps(
+    site_id: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """List rogue and interfering APs detected by the wireless infrastructure.
+
+    Returns rogue BSSID, SSID, channel, RSSI, classification (rogue/interfering/
+    neighbour), and detecting AP. Note: rogue AP endpoints (/rogues, /rogue-aps)
+    are not yet exposed in New Central — this tool will return an empty result
+    with an explanatory note until the endpoint is available.
+    """
+    client = get_client()
+    errors: list[str] = []
+    params: dict[str, Any] = {"limit": clamp_limit(limit)}
+    if site_id:
+        params["site-id"] = site_id
+    for endpoint in [
+        "/network-monitoring/v1/rogues",
+        "/network-monitoring/v1alpha1/rogues",
+        "/network-monitoring/v1/rogue-aps",
+    ]:
+        try:
+            resp = client._request("GET", endpoint, params=params)
+            if resp.status_code in (400, 404):
+                errors.append(f"HTTP {resp.status_code} at {endpoint}")
+                continue
+            if resp.status_code not in (200, 201, 202):
+                errors.append(compact_http_error(resp, endpoint))
+                continue
+            data = resp.json()
+            items = data.get("rogues", data.get("items", data if isinstance(data, list) else []))
+            return bound_collection_response(items, limit=limit, offset=0)
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"items": [], "errors": errors, "_note": "Rogue AP endpoint not found or no rogues detected"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_ap_neighbors(serial_number: str) -> dict[str, Any]:
+    """Get neighboring APs visible to this AP with RSSI and channel.
+
+    Returns BSSIDs, SSIDs, channels, and signal strength of APs heard by
+    this AP. Useful for coverage overlap analysis and co-channel interference
+    identification.
+    """
+    client = get_client()
+    errors: list[str] = []
+    for endpoint in [
+        f"/network-monitoring/v1/aps/{serial_number}/neighbors",
+        f"/network-monitoring/v1alpha1/aps/{serial_number}/neighbors",
+        f"/network-monitoring/v1/aps/{serial_number}/rf-neighbors",
+    ]:
+        try:
+            resp = client._request("GET", endpoint)
+            if resp.status_code in (400, 404):
+                errors.append(f"HTTP {resp.status_code} at {endpoint}")
+                continue
+            if resp.status_code not in (200, 201, 202):
+                errors.append(compact_http_error(resp, endpoint))
+                continue
+            data = resp.json()
+            neighbors = data.get("neighbors", data.get("items", data if isinstance(data, list) else []))
+            return {"serial_number": serial_number, "neighbors": neighbors,
+                    "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"serial_number": serial_number, "neighbors": None, "errors": errors,
+            "_note": "Neighbor endpoint not found — may not be available in New Central yet"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_client_signal_history(
+    mac_address: str,
+    hours: int = 24,
+) -> dict[str, Any]:
+    """Get RSSI and SNR history for a wireless client over the past N hours.
+
+    Returns signal strength trends showing whether a client's poor performance
+    is due to degrading signal or is intermittent. Note: client sub-path
+    endpoints (signal-history, trends) are not yet exposed in New Central.
+    Use get_client_roaming_history for event-based connection history instead.
+    """
+    client = get_client()
+    errors: list[str] = []
+    mac_clean = mac_address.replace(":", "").replace("-", "").lower()
+
+    for endpoint in [
+        f"/network-monitoring/v1/clients/{mac_clean}/signal-history",
+        f"/network-monitoring/v1/clients/{mac_address}/signal-history",
+        f"/network-monitoring/v1alpha1/clients/{mac_clean}/signal-history",
+        f"/network-monitoring/v1/clients/{mac_clean}/trends",
+    ]:
+        try:
+            resp = client._request("GET", endpoint)
+            if resp.status_code in (400, 404):
+                errors.append(f"HTTP {resp.status_code} at {endpoint}")
+                continue
+            if resp.status_code not in (200, 201, 202):
+                errors.append(compact_http_error(resp, endpoint))
+                continue
+            data = resp.json()
+            return {"mac_address": mac_address, "history": data,
+                    "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"mac_address": mac_address, "history": None, "errors": errors,
+            "_note": "Signal history endpoint not found — use get_client_roaming_history for event-based history"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_ssid_clients(
+    ssid_name: str,
+    site_id: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """List all clients currently connected to a specific SSID.
+
+    Returns client MAC, IP, hostname, signal, band, and connected AP.
+    Useful for per-SSID capacity checks and isolating SSID-specific issues.
+    """
+    clients = get_mcp_client().get_clients(
+        site_id=site_id,
+        ssid=ssid_name,
+        limit=clamp_limit(limit),
+    )
+    return bound_collection_response(clients, limit=limit, offset=0)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def locate_client(mac_address: str) -> dict[str, Any]:
+    """Get the approximate physical location of a client.
+
+    Returns floor plan coordinates, building, floor, and nearest AP where
+    available. Note: location endpoints (/location/v1) require a separate
+    location services licence and are not available on all Central instances.
+    """
+    client = get_client()
+    errors: list[str] = []
+    mac_clean = mac_address.replace(":", "").replace("-", "").lower()
+
+    for endpoint in [
+        f"/network-monitoring/v1/clients/{mac_clean}/location",
+        f"/network-monitoring/v1/clients/{mac_address}/location",
+        f"/network-monitoring/v1alpha1/clients/{mac_clean}/location",
+        f"/location/v1/clients/{mac_clean}",
+    ]:
+        try:
+            resp = client._request("GET", endpoint)
+            if resp.status_code in (400, 404):
+                errors.append(f"HTTP {resp.status_code} at {endpoint}")
+                continue
+            if resp.status_code not in (200, 201, 202):
+                errors.append(compact_http_error(resp, endpoint))
+                continue
+            return {"mac_address": mac_address, "location": resp.json(),
+                    "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"mac_address": mac_address, "location": None, "errors": errors,
+            "_note": "Location endpoint not found — location services may require a separate licence"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_air_quality(serial_number: str) -> dict[str, Any]:
+    """Get air quality and interference metrics for an AP.
+
+    Returns interference score, non-Wi-Fi interference sources, duty cycle,
+    and air quality index per radio. Note: air-quality and rf-health sub-paths
+    are not yet exposed in New Central — use get_channel_utilization (AP radios
+    endpoint) for available RF metrics in the meantime.
+    """
+    client = get_client()
+    errors: list[str] = []
+    for endpoint in [
+        f"/network-monitoring/v1/aps/{serial_number}/air-quality",
+        f"/network-monitoring/v1alpha1/aps/{serial_number}/air-quality",
+        f"/network-monitoring/v1/aps/{serial_number}/rf-health",
+    ]:
+        try:
+            resp = client._request("GET", endpoint)
+            if resp.status_code in (400, 404):
+                errors.append(f"HTTP {resp.status_code} at {endpoint}")
+                continue
+            if resp.status_code not in (200, 201, 202):
+                errors.append(compact_http_error(resp, endpoint))
+                continue
+            return {"serial_number": serial_number, "air_quality": resp.json(),
+                    "endpoint_used": endpoint, "errors": errors}
+        except Exception as exc:
+            errors.append(f"{endpoint}: {exc}")
+    return {"serial_number": serial_number, "air_quality": None, "errors": errors,
+            "_note": "Air quality endpoint not found — may not be available in New Central yet"}
+
+
+# ── Client History ───────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def get_client_roaming_history(
+    mac_address: str,
+    hours: int = 24,
+) -> dict[str, Any]:
+    """Show where a client has roamed across switches/APs over the past N hours.
+
+    Queries Client Onboarding events across all switches and APs in the
+    environment, filtered to the given MAC. Returns a chronological list of
+    connections showing which device/port/VLAN the client was seen on and when.
+    Useful for tracing connectivity issues that follow a user around.
+    """
+    client = get_mcp_client()
+
+    devices = client.get_devices(limit=200)
+    switches = [d for d in devices if "SWITCH" in (d.get("deviceType") or "").upper()]
+    aps = [d for d in devices if d.get("deviceType") in ("AP", "ACCESS_POINT")]
+
+    mac_lower = mac_address.lower()
+    history: list[dict[str, Any]] = []
+
+    for device in switches + aps:
+        serial = device.get("serialNumber") or device.get("id", "")
+        if not serial:
+            continue
+        events = client.get_events(serial, hours=hours, api_limit=500)
+        for e in events:
+            if (e.get("clientMacAddress") or "").lower() == mac_lower:
+                history.append({
+                    "time": e.get("timeAt"),
+                    "event": e.get("eventName"),
+                    "device_name": device.get("deviceName") or serial,
+                    "device_serial": serial,
+                    "device_type": device.get("deviceType"),
+                    "description": e.get("description"),
+                })
+
+    history.sort(key=lambda x: x.get("time") or "", reverse=True)
+
+    return {
+        "mac_address": mac_address,
+        "hours_analyzed": hours,
+        "devices_scanned": len(switches) + len(aps),
+        "event_count": len(history),
+        "history": history,
+    }
+
+
+# ── Intelligence / Anomaly Detection ─────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def detect_client_flapping(
+    serial_number: str,
+    hours: int = 24,
+    min_events: int = 5,
+) -> dict[str, Any]:
+    """Detect wired/wireless clients re-onboarding abnormally often on a switch.
+
+    Fetches Client Onboarding events for the device over the past N hours and
+    flags any MAC address that appears >= min_events times. Useful for catching
+    VMware NIC resets, 802.1X re-auth loops, or flapping endpoints that Central
+    does not surface as a port-flapping alert.
+
+    Returns flagged clients sorted by event count descending, plus a summary.
+    """
+    events = get_mcp_client().get_events(serial_number, hours=hours, api_limit=1000)
+
+    onboard_events = [
+        e for e in events
+        if e.get("eventName") == "Client Onboarding" and e.get("clientMacAddress")
+    ]
+
+    counts: dict[str, list[str]] = {}
+    for e in onboard_events:
+        mac = e["clientMacAddress"]
+        ts = e.get("timeAt", "")
+        counts.setdefault(mac, []).append(ts)
+
+    flagged = [
+        {
+            "mac": mac,
+            "event_count": len(timestamps),
+            "first_seen": min(timestamps) if timestamps else None,
+            "last_seen": max(timestamps) if timestamps else None,
+            "source_name": next(
+                (e.get("sourceName") for e in onboard_events if e.get("clientMacAddress") == mac),
+                None,
+            ),
+        }
+        for mac, timestamps in counts.items()
+        if len(timestamps) >= min_events
+    ]
+    flagged.sort(key=lambda x: x["event_count"], reverse=True)
+
+    return {
+        "serial_number": serial_number,
+        "hours_analyzed": hours,
+        "min_events_threshold": min_events,
+        "total_onboard_events": len(onboard_events),
+        "flagged_clients": flagged,
+        "flagged_count": len(flagged),
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def detect_ssh_brute_force(
+    serial_number: str,
+    hours: int = 24,
+    min_failures: int = 3,
+) -> dict[str, Any]:
+    """Detect SSH brute-force or misconfigured clients targeting a switch.
+
+    Scans switch events for SSH login failures (eventId 5210) and SSH session
+    denials (eventId 5214), groups by source IP, and flags any IP that hits
+    >= min_failures within the time window.
+
+    Returns flagged IPs sorted by failure count descending.
+    """
+    import re
+
+    events = get_mcp_client().get_events(serial_number, hours=hours, api_limit=1000)
+
+    ssh_events = [
+        e for e in events
+        if str(e.get("eventId", "")) in ("5210", "5214")
+    ]
+
+    _ip_re = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
+
+    ip_failures: dict[str, list[dict[str, Any]]] = {}
+    for e in ssh_events:
+        desc = e.get("description", "")
+        match = _ip_re.search(desc)
+        ip = match.group(1) if match else "unknown"
+        ip_failures.setdefault(ip, []).append({
+            "event_id": e.get("eventId"),
+            "event_name": e.get("eventName"),
+            "description": desc,
+            "time": e.get("timeAt"),
+        })
+
+    flagged = [
+        {
+            "source_ip": ip,
+            "failure_count": len(evts),
+            "first_seen": min(e["time"] for e in evts if e["time"]) if evts else None,
+            "last_seen": max(e["time"] for e in evts if e["time"]) if evts else None,
+            "event_types": list({e["event_name"] for e in evts}),
+        }
+        for ip, evts in ip_failures.items()
+        if len(evts) >= min_failures
+    ]
+    flagged.sort(key=lambda x: x["failure_count"], reverse=True)
+
+    return {
+        "serial_number": serial_number,
+        "hours_analyzed": hours,
+        "min_failures_threshold": min_failures,
+        "total_ssh_failure_events": len(ssh_events),
+        "flagged_sources": flagged,
+        "flagged_count": len(flagged),
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_site_health_summary(
+    site_id: str | None = None,
+    site_name: str | None = None,
+) -> dict[str, Any]:
+    """Return a single-view health summary for a site.
+
+    Aggregates: device status counts, client count, active alert counts by
+    severity, and recent notable switch/AP events (last 24h). Either site_id
+    or site_name must be provided.
+    """
+    client = get_mcp_client()
+
+    if not site_id and site_name:
+        site = client.get_site_by_name(site_name)
+        if not site:
+            return {"error": f"Site not found: {site_name}"}
+        site_id = site.get("scopeId") or site.get("siteId") or site.get("id")
+        resolved_name = site.get("scopeName") or site.get("siteName") or site_name
+    elif site_id:
+        resolved_name = site_id
+    else:
+        return {"error": "Provide site_id or site_name"}
+
+    devices = client.get_devices(filters={"site-id": site_id} if site_id else {}, limit=200)
+    clients = client.get_clients(site_id=site_id, limit=200)
+    alerts = client.get_alerts(site_id=site_id, limit=200)
+
+    device_status: dict[str, int] = {}
+    device_type_counts: dict[str, int] = {}
+    for d in devices:
+        status = (d.get("status") or "UNKNOWN").upper()
+        device_status[status] = device_status.get(status, 0) + 1
+        dtype = (d.get("deviceType") or "UNKNOWN").upper()
+        device_type_counts[dtype] = device_type_counts.get(dtype, 0) + 1
+
+    alert_severity: dict[str, int] = {}
+    for a in alerts:
+        sev = (a.get("severity") or "UNKNOWN").upper()
+        alert_severity[sev] = alert_severity.get(sev, 0) + 1
+
+    notable_event_names = {
+        "INTERFACE", "Device Down", "Device Up", "Client Onboarding",
+        "SSH User Login Failure", "SSH Failure", "PoE",
+    }
+    recent_events: list[dict[str, Any]] = []
+    switches = [d for d in devices if "SWITCH" in (d.get("deviceType") or "").upper()]
+    for sw in switches[:5]:
+        serial = sw.get("serialNumber") or sw.get("id", "")
+        if not serial:
+            continue
+        evts = client.get_events(serial, hours=24, api_limit=200)
+        for e in evts:
+            if e.get("eventName") in notable_event_names:
+                recent_events.append({
+                    "device": sw.get("deviceName") or serial,
+                    "event": e.get("eventName"),
+                    "description": e.get("description"),
+                    "time": e.get("timeAt"),
+                })
+    recent_events.sort(key=lambda x: x.get("time") or "", reverse=True)
+
+    return {
+        "site": resolved_name,
+        "site_id": site_id,
+        "devices": {
+            "total": len(devices),
+            "by_status": device_status,
+            "by_type": device_type_counts,
+        },
+        "clients": {
+            "total": len(clients),
+        },
+        "alerts": {
+            "total": len(alerts),
+            "by_severity": alert_severity,
+        },
+        "recent_notable_events": recent_events[:20],
+    }
 
 
 if __name__ == "__main__":
