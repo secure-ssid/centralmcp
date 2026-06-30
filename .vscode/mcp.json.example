@@ -1,0 +1,15 @@
+{
+  "servers": {
+    "aruba-tool-router": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/.venv/bin/python3",
+      "args": ["${workspaceFolder}/mcp_servers/tool_router.py"],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "CREDS_PATH": "${workspaceFolder}/config/credentials.yaml",
+        "CENTRALMCP_ROUTER_MODE": "minimal",
+        "CENTRALMCP_TOOLSETS": "central,glp,rag"
+      }
+    }
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "_note": "Dev variant: exposes all 6 servers directly (full introspection, ~8k tool tokens). Copy over mcp.json while debugging a specific tool, or use alongside the router for raw access.",
+  "_note": "Dev variant: exposes the 6 core Aruba servers directly (full introspection, ~8k tool tokens). Optional product starters stay opt-in through the router. Copy over mcp.json while debugging a specific tool, or use alongside the router for raw access.",
   "mcpServers": {
     "obsidian-vault": {
       "command": "npx",

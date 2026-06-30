@@ -142,6 +142,9 @@ docs/
   audits/               Historical audits and remediation notes
   operations/           Endpoint/runbook notes
   plans/                Planning documents
+
+.vscode/
+  mcp.json.example      VS Code MCP example using the minimal router profile
 ```
 
 ## RAG and API lookup

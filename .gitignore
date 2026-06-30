@@ -7,7 +7,7 @@ config/credentials.yaml
 .claude/settings.local.json
 
 # Local MCP client configs (often include absolute paths/secrets)
-# Keep shared settings in .mcp.json.example only.
+# Keep shared settings in .mcp.json.example and editor-specific *.example files only.
 .mcp.json
 .claude/mcp.json
 .vscode/mcp.json

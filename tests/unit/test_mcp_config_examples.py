@@ -5,12 +5,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CLIENT_CONFIGS = [
     REPO_ROOT / ".mcp.json.example",
     REPO_ROOT / ".cursor" / "mcp.json",
+    REPO_ROOT / ".vscode" / "mcp.json.example",
 ]
 
 
 def _router_env(path: Path) -> dict[str, str]:
     data = json.loads(path.read_text())
-    servers = data.get("mcpServers", {})
+    servers = data.get("mcpServers") or data.get("servers", {})
     router = servers.get("centralmcp") or servers.get("aruba-tool-router")
     assert router is not None, f"{path.relative_to(REPO_ROOT)} must define the centralmcp router"
     return router.get("env", {})

@@ -51,6 +51,7 @@ cp .mcp.json.example .mcp.json
 ```
 
 Edit `.mcp.json` and replace `/path/to/centralmcp` with your local clone path.
+For VS Code, copy `.vscode/mcp.json.example` to `.vscode/mcp.json`.
 
 Recommended default:
 
