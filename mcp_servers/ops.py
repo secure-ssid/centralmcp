@@ -35,7 +35,7 @@ class _ConfirmAction(BaseModel):
 # ── CX Troubleshooting ────────────────────────────────────────────────────────
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def cx_ping(
+async def cx_ping(
     serial_number: str,
     destination: str,
     count: int | None = None,
@@ -56,24 +56,16 @@ def cx_ping(
     if use_management_interface is not None:
         payload["useManagementInterface"] = use_management_interface
 
-    try:
-        resp = client._request("POST", f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/ping", json=payload)
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        task_id = location.rstrip("/").split("/")[-1]
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-
-    result = cx_poll(client, serial_number, "ping", task_id)
-    result["errors"] = errors
-    return result
+    return await atroubleshoot_async(
+        client,
+        f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/ping",
+        payload,
+        errors,
+    )
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def cx_traceroute(
+async def cx_traceroute(
     serial_number: str,
     destination: str,
     vrf_name: str | None = None,
@@ -88,24 +80,16 @@ def cx_traceroute(
     if use_management_interface is not None:
         payload["useManagementInterface"] = use_management_interface
 
-    try:
-        resp = client._request("POST", f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/traceroute", json=payload)
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        task_id = location.rstrip("/").split("/")[-1]
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-
-    result = cx_poll(client, serial_number, "traceroute", task_id)
-    result["errors"] = errors
-    return result
+    return await atroubleshoot_async(
+        client,
+        f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/traceroute",
+        payload,
+        errors,
+    )
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def cx_show(
+async def cx_show(
     serial_number: str,
     commands: list[str],
 ) -> dict[str, Any]:
@@ -121,22 +105,12 @@ def cx_show(
         if not cmd.strip().lower().startswith("show "):
             return {"status": None, "errors": [f"Command {i} must start with 'show ': '{cmd}'"]}
 
-    try:
-        resp = client._request(
-            "POST", f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands", json={"commands": commands}
-        )
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        task_id = location.rstrip("/").split("/")[-1]
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-
-    result = cx_poll(client, serial_number, "showCommands", task_id)
-    result["errors"] = errors
-    return result
+    return await atroubleshoot_async(
+        client,
+        f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
+        {"commands": commands},
+        errors,
+    )
 
 
 # ── AOS-S Troubleshooting ─────────────────────────────────────────────────────
