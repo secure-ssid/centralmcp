@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import mcp_servers.tool_router as router
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_build_backends_default_has_core_only(monkeypatch):
@@ -58,6 +61,19 @@ def test_build_backends_toolsets_all_includes_known_optional(monkeypatch):
     assert "apstra-core" in backends
     assert "aos8-core" in backends
     assert "edgeconnect-core" in backends
+
+
+def test_public_docs_list_router_products_and_toolsets():
+    readme = (REPO_ROOT / "README.md").read_text()
+    getting_started = (REPO_ROOT / "docs" / "getting-started.md").read_text()
+    tool_router = (REPO_ROOT / "docs" / "tool-router.md").read_text()
+    optional_products = ",".join(router._OPTIONAL_BACKENDS)
+
+    assert f"CENTRALMCP_PRODUCTS={optional_products}" in readme
+    assert f"CENTRALMCP_PRODUCTS={optional_products}" in getting_started
+
+    for toolset in {*router._TOOLSET_BACKENDS, "all"}:
+        assert f"`{toolset}`" in tool_router
 
 
 def test_find_tool_filters_semantic_hits_from_disabled_backends(monkeypatch):
