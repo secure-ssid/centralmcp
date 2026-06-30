@@ -7,7 +7,7 @@
 
 ## TL;DR decision
 
-> **Target backend = embedded, no Docker, no background services:**
+> **Current default backend = embedded, no Docker, no background services:**
 > - **LanceDB** — prose docs (developer/tech/NAC/VSG/aos), with native **hybrid (vector + BM25) + reranking**.
 > - **SQLite** — OpenAPI specs as **exact structured lookup** (endpoints / schemas / fields / enums), *not* embeddings.
 > - **fastembed** — embeddings in-process (ONNX); no Ollama required. Can run the same `nomic-embed-text-v1.5`.
@@ -21,7 +21,7 @@ The audit recommended **Redis Stack** — correctly, *for its scope*: "two backe
 
 But the project's primary goal is **"anyone can download the repo and run it,"** with the portal as a *consumer of the MCP*. Against that goal, a Redis/Docker service is the exact friction we want to remove. LanceDB delivers the same capabilities the audit credited to Redis (hybrid BM25+vector, one store for docs+tools, metadata filtering) **without a server**, and uniquely allows shipping a prebuilt index file. `fastembed` removes the last service (Ollama).
 
-| Axis | Redis Stack (audit pick) | **LanceDB + fastembed (target)** |
+| Axis | Redis Stack (audit pick) | **LanceDB + fastembed (current default)** |
 |---|---|---|
 | Docker / services | Redis container (or local install) + Ollama | **none** (in-process) |
 | "clone → run" UX | install Docker, start Redis, ingest 40k docs | **`uv sync` → run** (ship prebuilt index) |
