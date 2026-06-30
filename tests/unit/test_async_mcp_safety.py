@@ -28,7 +28,7 @@ def _async_functions(tree: ast.AST):
 def test_async_mcp_tools_do_not_call_sync_http_or_blocking_sleep():
     violations: list[str] = []
 
-    for path in sorted(MCP_SERVER_DIR.glob("*.py")):
+    for path in sorted(MCP_SERVER_DIR.rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
         for func in _async_functions(tree):
             for node in ast.walk(func):
