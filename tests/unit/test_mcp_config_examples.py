@@ -7,6 +7,10 @@ CLIENT_CONFIGS = [
     REPO_ROOT / ".cursor" / "mcp.json",
     REPO_ROOT / ".vscode" / "mcp.json.example",
 ]
+COMMITTED_CONFIGS = [
+    *CLIENT_CONFIGS,
+    REPO_ROOT / ".cursor" / "mcp.dev.json",
+]
 
 
 def _router_env(path: Path) -> dict[str, str]:
@@ -24,3 +28,13 @@ def test_committed_mcp_client_configs_use_low_token_router_profile():
         assert env.get("CENTRALMCP_ROUTER_MODE") == "minimal"
         assert env.get("CENTRALMCP_TOOLSETS") == "central,glp,rag"
         assert "CENTRALMCP_PRODUCTS" not in env
+
+
+def test_committed_mcp_configs_do_not_include_local_filesystem_servers():
+    for path in COMMITTED_CONFIGS:
+        text = path.read_text()
+        data = json.loads(text)
+        servers = data.get("mcpServers") or data.get("servers", {})
+
+        assert "obsidian-vault" not in servers
+        assert "/Users/" not in text

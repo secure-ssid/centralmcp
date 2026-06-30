@@ -1,14 +1,6 @@
 {
   "_note": "Dev variant: exposes the 6 core Aruba servers directly (full introspection, ~8k tool tokens). Optional product starters stay opt-in through the router. Copy over mcp.json while debugging a specific tool, or use alongside the router for raw access.",
   "mcpServers": {
-    "obsidian-vault": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/Users/stephenchoate/Documents/Central-MCP-Obsidian"
-      ]
-    },
     "aruba-monitoring": {
       "command": "${workspaceFolder}/.venv/bin/python3",
       "args": ["${workspaceFolder}/mcp_servers/monitoring.py"],

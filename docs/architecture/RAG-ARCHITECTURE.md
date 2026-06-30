@@ -1,7 +1,7 @@
 # centralmcp — RAG Architecture & Decision (2026-06-03)
 
 **Repo:** https://github.com/secure-ssid/centralmcp
-**Companion:** [../audits/AUDIT-2026-06-03.md](../audits/AUDIT-2026-06-03.md) · **Obsidian:** `Central-MCP-Obsidian/Projects/centralmcp — Audit & RAG Redesign (2026-06-03)`
+**Companion:** [../audits/AUDIT-2026-06-03.md](../audits/AUDIT-2026-06-03.md)
 
 ---
 

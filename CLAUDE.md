@@ -43,7 +43,6 @@ state/                 Pipeline state store (idempotent runs)
 .cursor/
   mcp.json             Router-only entry (aruba-tool-router) — low token overhead
   mcp.dev.json         6 core Aruba servers directly — full introspection for debugging
-  obsidian-vault       Filesystem MCP over ~/Documents/Central-MCP-Obsidian (Aruba docs + customer notes)
 .vscode/mcp.json.example  VS Code MCP example — router minimal mode
 ```
 
