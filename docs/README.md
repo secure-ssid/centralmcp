@@ -20,7 +20,7 @@ Use this directory as the organized documentation hub for setup, architecture, o
 | [architecture/](architecture/) | System design, RAG architecture, data stores, eval rationale |
 | [audits/](audits/) | Time-bound reviews, findings, and remediation history |
 | [operations/](operations/) | Endpoint notes and operator-facing runbook material |
-| [plans/](plans/) | Implementation plans and future work |
+| [plans/](plans/) | Historical plans and larger implementation tracks |
 
 ## Repo map
 

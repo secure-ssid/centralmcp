@@ -78,7 +78,9 @@ No `docker-compose.yml` requirement for the default path. `redis-stack` stays do
 
 ---
 
-## Migration sequence
+## Implemented migration sequence
+
+This sequence is complete for the default local path. Redis remains optional; Qdrant is historical context only.
 
 1. Add deps: `lancedb`, `fastembed` (drop `qdrant-client`; keep `redis` only if shipping the interim server option).
 2. `embed_client.py` (fastembed, `nomic-embed-text-v1.5`, `embed_document`/`embed_query` with prefixes — R3).
@@ -86,8 +88,8 @@ No `docker-compose.yml` requirement for the default path. `redis-stack` stays do
 4. `specs_index.py`: parse `ingestion/sources/openapi_specs/*.json` → SQLite (`endpoints`, `schemas`, `fields` tables) with FTS; query helpers (R2 resolved).
 5. Rewrite `ingest_docs.py`: prose → LanceDB (header-aware chunking R6, batched embeds R4); specs → SQLite. Emit `data/docs.lance` + `data/specs.sqlite`.
 6. `rag.py`: `search_docs` (hybrid), `lookup_api` (exact), `ask_docs` (cited R7). Point `tool_router`'s `aruba_tools` index at LanceDB too.
-7. Re-ingest once; run the eval harness (below) to confirm quality ≥ current before deleting Redis/Qdrant.
-8. Attach `data/*` to a GitHub Release; document `clone → uv sync → run`. Move Redis to an optional appendix.
+7. Re-ingest once; run the eval harness (below) to confirm quality ≥ current.
+8. Keep generated `data/*` out of git; use release assets or local ingest for prebuilt indexes. Redis remains an optional backend.
 
 ---
 
@@ -124,4 +126,4 @@ These questions were captured during the migration decision. The current reposit
 
 1. **Embedding model:** keep `nomic-embed-text-v1.5` (via fastembed) for identical semantics, or move to `bge-base-en-v1.5`? (Both good; nomic = no quality change, just drops Ollama.)
 2. **Ship prebuilt index in-repo or as a Release asset?** Release asset keeps the repo small; in-repo is zero-step but bloats clones.
-3. **Keep a Redis "server option" appendix**, or go all-in embedded and delete Redis/Qdrant entirely?
+3. **Keep a Redis "server option" appendix**, or go all-in embedded and remove Redis entirely? Current default: embedded LanceDB + SQLite, with Redis still available as an optional backend.
