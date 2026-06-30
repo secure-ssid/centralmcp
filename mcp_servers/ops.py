@@ -186,9 +186,8 @@ async def aos_s_arp(serial_number: str) -> dict[str, Any]:
     return await atroubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/getArpTable", {}, errors)
 
 
-# aos_s_locate was removed: per pycentral's
-# TROUBLESHOOTING_METHOD_DEVICE_MAPPING, `locate` is only supported on
-# cx / aps / gateways, not aos-s. Hitting /network-troubleshooting/v1alpha1/
+# aos_s_locate was removed: Central's troubleshooting mapping only supports
+# `locate` on cx / aps / gateways, not aos-s. Hitting /network-troubleshooting/v1alpha1/
 # aos-s/{serial}/locate always returns "Device not found" — it's not a
 # real endpoint.
 #

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Scrape New Central docs and convert to markdown for RAG.
-Uses requests to fetch rendered-enough HTML (ReadMe docs are mostly SSR),
+Uses Python's standard urllib client to fetch rendered-enough HTML (ReadMe docs are mostly SSR),
 then pandoc to convert to clean markdown.
 """
 import os

@@ -45,7 +45,7 @@ _DEVICE_GROUPS_BASE = "/network-config/v1/device-groups"
 
 
 def _exc_resp_text(exc: Exception) -> str:
-    """Extract response body text from a requests exception, or '' if unavailable."""
+    """Extract response body text from an HTTP exception, or '' if unavailable."""
     return getattr(getattr(exc, "response", None), "text", "") or ""
 
 
@@ -479,7 +479,7 @@ def _passpoint_read_params(
     if device_function is not None:
         params["device-function"] = device_function
     if effective is not None:
-        # requests serializes Python bools as 'True'/'False'; the API expects 'true'/'false'.
+        # Query encoders serialize Python bools as 'True'/'False'; the API expects 'true'/'false'.
         params["effective"] = str(effective).lower()
     if detailed is not None:
         params["detailed"] = str(detailed).lower()

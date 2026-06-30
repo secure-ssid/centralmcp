@@ -1357,8 +1357,7 @@ def get_ap_ports(serial_number: str) -> dict[str, Any]:
 # get_sle_metrics was removed: neither /network-monitoring/v1/sle nor
 # /network-monitoring/v1alpha1/sle nor any sibling variant
 # (/service-level, /wireless-service-level, /connectivity/sle) exist in the
-# New Central API. No peer MCP (pycentral, KarthikSKumar98/central-mcp-server,
-# nowireless4u/hpe-networking-mcp, gl-mcp) wraps SLE either. Bring it back
+# New Central API. No reviewed peer MCP wraps SLE either. Bring it back
 # here only when the official API exposes a real path.
 
 
