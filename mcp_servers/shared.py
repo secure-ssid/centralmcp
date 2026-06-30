@@ -322,6 +322,20 @@ async def atroubleshoot_poll(client: CentralClient, poll_url: str) -> dict[str, 
     return result
 
 
+def _async_response_location(resp: Any) -> str:
+    location = resp.headers.get("Location", "")
+    if location:
+        return location
+    try:
+        body = resp.json()
+    except Exception:
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    location = body.get("location") or body.get("Location")
+    return location if isinstance(location, str) else ""
+
+
 async def atroubleshoot_async(
     client: CentralClient,
     endpoint: str,
@@ -334,7 +348,7 @@ async def atroubleshoot_async(
         if resp.status_code not in (200, 201, 202):
             errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
+        location = _async_response_location(resp)
         if not location:
             errors.append("no Location header in async response")
             return {"status": None, "errors": errors}

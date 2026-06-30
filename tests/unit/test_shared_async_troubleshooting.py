@@ -12,6 +12,14 @@ class _Response:
         return {}
 
 
+class _BodyLocationResponse:
+    status_code = 202
+    headers = {}
+
+    def json(self):
+        return {"location": "/network-troubleshooting/v1alpha1/cx/CX1/ping/async-operations/task-2"}
+
+
 def test_atroubleshoot_async_uses_async_client_methods(monkeypatch):
     sleeps: list[float] = []
 
@@ -62,6 +70,47 @@ def test_atroubleshoot_async_uses_async_client_methods(monkeypatch):
         "/network-troubleshooting/v1alpha1/cx/CX1/ping/async-operations/task-1"
     ]
     assert sleeps == [0.01]
+
+
+def test_atroubleshoot_async_accepts_location_from_json_body(monkeypatch):
+    async def fake_sleep(seconds):
+        pass
+
+    class FakeClient:
+        def __init__(self):
+            self.get_calls = []
+
+        async def _arequest(self, method, endpoint, **kwargs):
+            return _BodyLocationResponse()
+
+        async def aget(self, endpoint):
+            self.get_calls.append(endpoint)
+            return {"status": "COMPLETED"}
+
+    monkeypatch.setattr(shared.asyncio, "sleep", fake_sleep)
+
+    client = FakeClient()
+    result = asyncio.run(shared.atroubleshoot_async(client, "/x", {}, []))
+
+    assert result == {"status": "COMPLETED", "errors": []}
+    assert client.get_calls == ["/x/async-operations/task-2"]
+
+
+def test_atroubleshoot_async_reports_missing_location_without_json_parse_noise():
+    class BadJsonResponse:
+        status_code = 202
+        headers = {}
+
+        def json(self):
+            raise ValueError("not json")
+
+    class FakeClient:
+        async def _arequest(self, method, endpoint, **kwargs):
+            return BadJsonResponse()
+
+    result = asyncio.run(shared.atroubleshoot_async(FakeClient(), "/x", {}, []))
+
+    assert result == {"status": None, "errors": ["no Location header in async response"]}
 
 
 def test_atroubleshoot_async_preserves_http_error_compaction():
