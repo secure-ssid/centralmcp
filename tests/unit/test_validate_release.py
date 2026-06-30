@@ -4,6 +4,9 @@ from pathlib import Path
 
 from scripts import validate_release
 
+README = validate_release.ROOT / "README.md"
+RAG_ARCHITECTURE = validate_release.ROOT / "docs" / "architecture" / "RAG-ARCHITECTURE.md"
+
 
 def test_rag_indexes_available_false_when_missing(tmp_path: Path):
     assert validate_release._rag_indexes_available(tmp_path) is False
@@ -18,6 +21,16 @@ def test_rag_indexes_available_true_when_present(tmp_path: Path):
 
 def test_tool_catalog_count_includes_optional_products():
     assert validate_release._tool_catalog_count("all") >= 204
+
+
+def test_public_docs_tool_counts_match_catalog():
+    core_count = validate_release._tool_catalog_count(None)
+    optional_count = validate_release._tool_catalog_count("all")
+    expected = f"{core_count} core tools, or {optional_count} with optional product starters"
+    compact_expected = f"{core_count} core tools / {optional_count} with optional product starters"
+
+    assert expected in README.read_text()
+    assert compact_expected in RAG_ARCHITECTURE.read_text()
 
 
 def test_validate_tool_count_accepts_count_at_floor():
