@@ -1,5 +1,11 @@
 # Agentic RAG - Plan for MCP Project
 
+> **Historical note:** this was the original Qdrant/Ollama planning draft. The
+> current `centralmcp` implementation uses embedded LanceDB + SQLite by default,
+> with Redis only as an optional backend. See
+> [`../architecture/RAG-ARCHITECTURE.md`](../architecture/RAG-ARCHITECTURE.md)
+> for the active architecture.
+
 Built for: Aruba/HPE network engineering use case
 Stack: Python MCP server + Qdrant + Ollama (all self-hosted in Docker)
 
