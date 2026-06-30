@@ -10,12 +10,12 @@ from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel
 
 from mcp_servers.shared import (
-    DIAGNOSTIC,
-    DESTRUCTIVE,
-    IDEMPOTENT_WRITE,
     _AOS_S_BASE,
     _CX_TROUBLESHOOTING_BASE,
     _GATEWAY_BASE,
+    DESTRUCTIVE,
+    DIAGNOSTIC,
+    IDEMPOTENT_WRITE,
     atroubleshoot_async,
     compact_http_error,
     device_type_for_troubleshoot,
@@ -334,7 +334,7 @@ async def reboot_device(
         return {"status": "CANCELLED", "detail": "user declined confirmation"}
 
     try:
-        response = client._request("POST", endpoint, json={})
+        response = await client._arequest("POST", endpoint, json={})
         if response.status_code not in (200, 201, 202):
             errors.append(compact_http_error(response))
             return {"serial_number": serial_number, "device_type": device_type, "response": None, "errors": errors}
@@ -379,7 +379,7 @@ async def disconnect_client(
 
     endpoint = f"/network-troubleshooting/v1alpha1/aps/{ap_serial}/disconnectUserByMacAddress"
     try:
-        response = client._request("POST", endpoint, json={"userMacAddress": mac_address})
+        response = await client._arequest("POST", endpoint, json={"userMacAddress": mac_address})
         if response.status_code not in (200, 201, 202):
             errors.append(compact_http_error(response))
             return {"mac_address": mac_address, "response": None, "errors": errors}
