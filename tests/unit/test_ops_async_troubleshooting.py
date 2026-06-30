@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 import mcp_servers.ops as ops
 
 
@@ -116,5 +118,92 @@ def test_cx_show_uses_async_troubleshooting_helper(monkeypatch):
             "/network-troubleshooting/v1alpha1/cx/SERIAL1/showCommands",
             {"commands": ["show version"]},
             [],
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("func", "args", "expected_commands"),
+    [
+        (ops.get_lldp_neighbors, ("SERIAL1",), ["show lldp neighbors"]),
+        (ops.get_cx_arp_table, ("SERIAL1",), ["show arp"]),
+        (ops.get_cx_mac_table, ("SERIAL1",), ["show mac-address-table"]),
+        (
+            ops.get_cx_mac_table,
+            ("SERIAL1", "1/1/16"),
+            ["show mac-address-table interface 1/1/16"],
+        ),
+        (
+            ops.get_switch_port_errors,
+            ("SERIAL1",),
+            ["show interface statistics"],
+        ),
+        (
+            ops.get_switch_port_errors,
+            ("SERIAL1", "1/1/5"),
+            ["show interface 1/1/5 statistics"],
+        ),
+        (
+            ops.get_switch_spanning_tree,
+            ("SERIAL1",),
+            ["show spanning-tree detail"],
+        ),
+        (
+            ops.get_switch_spanning_tree,
+            ("SERIAL1", "1/1/5"),
+            ["show spanning-tree detail interface 1/1/5"],
+        ),
+        (
+            ops.get_switch_interface_counters,
+            ("SERIAL1",),
+            ["show interface counters"],
+        ),
+        (
+            ops.get_switch_interface_counters,
+            ("SERIAL1", "1/1/5"),
+            ["show interface 1/1/5 counters"],
+        ),
+    ],
+)
+def test_cx_switch_intelligence_tools_use_async_show_helper(
+    monkeypatch,
+    func,
+    args,
+    expected_commands,
+):
+    calls = []
+
+    async def fake_cx_show_commands(serial_number, commands):
+        calls.append((serial_number, commands))
+        return {"status": "COMPLETED", "errors": []}
+
+    monkeypatch.setattr(ops, "_cx_show_commands", fake_cx_show_commands)
+
+    result = asyncio.run(func(*args))
+
+    assert result == {"status": "COMPLETED", "errors": []}
+    assert calls == [("SERIAL1", expected_commands)]
+
+
+def test_find_mac_on_switch_preserves_input_mac_metadata(monkeypatch):
+    calls = []
+
+    async def fake_cx_show_commands(serial_number, commands):
+        calls.append((serial_number, commands))
+        return {"status": "COMPLETED", "errors": []}
+
+    monkeypatch.setattr(ops, "_cx_show_commands", fake_cx_show_commands)
+
+    result = asyncio.run(ops.find_mac_on_switch("SERIAL1", "AA-BB-CC-DD-EE-FF"))
+
+    assert result == {
+        "status": "COMPLETED",
+        "errors": [],
+        "mac_address": "AA-BB-CC-DD-EE-FF",
+    }
+    assert calls == [
+        (
+            "SERIAL1",
+            ["show mac-address-table address aa:bb:cc:dd:ee:ff"],
         )
     ]

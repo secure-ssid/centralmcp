@@ -18,7 +18,6 @@ from mcp_servers.shared import (
     _GATEWAY_BASE,
     atroubleshoot_async,
     compact_http_error,
-    cx_poll,
     device_type_for_troubleshoot,
     get_client,
     get_mcp_client,
@@ -30,6 +29,17 @@ mcp = FastMCP("aruba-ops")
 
 class _ConfirmAction(BaseModel):
     confirm: bool = False
+
+
+async def _cx_show_commands(serial_number: str, commands: list[str]) -> dict[str, Any]:
+    client = get_client()
+    errors: list[str] = []
+    return await atroubleshoot_async(
+        client,
+        f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
+        {"commands": commands},
+        errors,
+    )
 
 
 # ── CX Troubleshooting ────────────────────────────────────────────────────────
@@ -94,9 +104,6 @@ async def cx_show(
     commands: list[str],
 ) -> dict[str, Any]:
     """Run 'show' commands on a CX switch (all must start with 'show ', max 20, async polls ~60s)."""
-    client = get_client()
-    errors: list[str] = []
-
     if not commands:
         return {"status": None, "errors": ["commands list cannot be empty"]}
     if len(commands) > 20:
@@ -105,12 +112,7 @@ async def cx_show(
         if not cmd.strip().lower().startswith("show "):
             return {"status": None, "errors": [f"Command {i} must start with 'show ': '{cmd}'"]}
 
-    return await atroubleshoot_async(
-        client,
-        f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
-        {"commands": commands},
-        errors,
-    )
+    return await _cx_show_commands(serial_number, commands)
 
 
 # ── AOS-S Troubleshooting ─────────────────────────────────────────────────────
@@ -414,64 +416,28 @@ def acknowledge_alert(
 # ── CX Switch Intelligence ────────────────────────────────────────────────────
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def get_lldp_neighbors(serial_number: str) -> dict[str, Any]:
+async def get_lldp_neighbors(serial_number: str) -> dict[str, Any]:
     """Get LLDP neighbor table from a CX switch.
 
     Shows what device is connected to each port — hostname, port ID, system
     capabilities, and management address. Useful for instantly identifying what's
     plugged into a port without guessing from MAC or client data.
     """
-    client = get_client()
-    errors: list[str] = []
-    try:
-        resp = client._request(
-            "POST",
-            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
-            json={"commands": ["show lldp neighbors"]},
-        )
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        task_id = location.rstrip("/").split("/")[-1]
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-    result = cx_poll(client, serial_number, "showCommands", task_id)
-    result["errors"] = errors
-    return result
+    return await _cx_show_commands(serial_number, ["show lldp neighbors"])
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def get_cx_arp_table(serial_number: str) -> dict[str, Any]:
+async def get_cx_arp_table(serial_number: str) -> dict[str, Any]:
     """Get the ARP table from a CX switch.
 
     Returns IP-to-MAC mappings with interface and VLAN. Useful for resolving
     an IP to a MAC when a client doesn't appear in Central's client list.
     """
-    client = get_client()
-    errors: list[str] = []
-    try:
-        resp = client._request(
-            "POST",
-            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
-            json={"commands": ["show arp"]},
-        )
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        task_id = location.rstrip("/").split("/")[-1]
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-    result = cx_poll(client, serial_number, "showCommands", task_id)
-    result["errors"] = errors
-    return result
+    return await _cx_show_commands(serial_number, ["show arp"])
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def get_cx_mac_table(
+async def get_cx_mac_table(
     serial_number: str,
     interface: str | None = None,
 ) -> dict[str, Any]:
@@ -482,59 +448,24 @@ def get_cx_mac_table(
     Useful for tracing exactly which port a device is connected to.
     """
     cmd = f"show mac-address-table interface {interface}" if interface else "show mac-address-table"
-    client = get_client()
-    errors: list[str] = []
-    try:
-        resp = client._request(
-            "POST",
-            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
-            json={"commands": [cmd]},
-        )
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        task_id = location.rstrip("/").split("/")[-1]
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-    result = cx_poll(client, serial_number, "showCommands", task_id)
-    result["errors"] = errors
-    return result
+    return await _cx_show_commands(serial_number, [cmd])
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def find_mac_on_switch(serial_number: str, mac_address: str) -> dict[str, Any]:
+async def find_mac_on_switch(serial_number: str, mac_address: str) -> dict[str, Any]:
     """Find which port a MAC address is learned on for a CX switch.
 
     Runs 'show mac-address-table address <mac>' and returns the port, VLAN,
     and entry type. The fastest way to answer "what port is device X on?"
     """
     mac_clean = mac_address.replace("-", ":").lower()
-    client = get_client()
-    errors: list[str] = []
-    try:
-        resp = client._request(
-            "POST",
-            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
-            json={"commands": [f"show mac-address-table address {mac_clean}"]},
-        )
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        task_id = location.rstrip("/").split("/")[-1]
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-    result = cx_poll(client, serial_number, "showCommands", task_id)
+    result = await _cx_show_commands(serial_number, [f"show mac-address-table address {mac_clean}"])
     result["mac_address"] = mac_address
-    result["errors"] = errors
     return result
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def get_switch_port_errors(serial_number: str, interface: str | None = None) -> dict[str, Any]:
+async def get_switch_port_errors(serial_number: str, interface: str | None = None) -> dict[str, Any]:
     """Get error counters for CX switch ports.
 
     Returns CRC errors, input errors, output errors, runts, giants, and
@@ -547,29 +478,11 @@ def get_switch_port_errors(serial_number: str, interface: str | None = None) -> 
         if interface
         else "show interface statistics"
     )
-    client = get_client()
-    errors: list[str] = []
-    try:
-        resp = client._request(
-            "POST",
-            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
-            json={"commands": [cmd]},
-        )
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        task_id = location.rstrip("/").split("/")[-1]
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-    result = cx_poll(client, serial_number, "showCommands", task_id)
-    result["errors"] = errors
-    return result
+    return await _cx_show_commands(serial_number, [cmd])
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def get_switch_spanning_tree(
+async def get_switch_spanning_tree(
     serial_number: str,
     interface: str | None = None,
 ) -> dict[str, Any]:
@@ -585,29 +498,11 @@ def get_switch_spanning_tree(
         if interface
         else "show spanning-tree detail"
     )
-    client = get_client()
-    errors: list[str] = []
-    try:
-        resp = client._request(
-            "POST",
-            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
-            json={"commands": [cmd]},
-        )
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        task_id = location.rstrip("/").split("/")[-1]
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-    result = cx_poll(client, serial_number, "showCommands", task_id)
-    result["errors"] = errors
-    return result
+    return await _cx_show_commands(serial_number, [cmd])
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def get_switch_interface_counters(
+async def get_switch_interface_counters(
     serial_number: str,
     interface: str | None = None,
 ) -> dict[str, Any]:
@@ -622,25 +517,7 @@ def get_switch_interface_counters(
         if interface
         else "show interface counters"
     )
-    client = get_client()
-    errors: list[str] = []
-    try:
-        resp = client._request(
-            "POST",
-            f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/showCommands",
-            json={"commands": [cmd]},
-        )
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        task_id = location.rstrip("/").split("/")[-1]
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-    result = cx_poll(client, serial_number, "showCommands", task_id)
-    result["errors"] = errors
-    return result
+    return await _cx_show_commands(serial_number, [cmd])
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
