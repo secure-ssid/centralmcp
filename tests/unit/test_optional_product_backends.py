@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import mcp_servers.aos8 as aos8
@@ -48,7 +50,7 @@ def test_apstra_get_rejects_non_api_path(monkeypatch):
     monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
     monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
 
-    out = apstra.apstra_get("/bad/path")
+    out = asyncio.run(apstra.apstra_get("/bad/path"))
 
     assert "error" in out
     assert "/api/*" in out["error"]
@@ -58,7 +60,7 @@ def test_apstra_get_rejects_dot_segment_bypass(monkeypatch):
     monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
     monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
 
-    out = apstra.apstra_get("/api/../admin")
+    out = asyncio.run(apstra.apstra_get("/api/../admin"))
 
     assert "error" in out
     assert "dot segments" in out["error"]
@@ -68,7 +70,7 @@ def test_apstra_get_rejects_double_encoded_dot_segment_bypass(monkeypatch):
     monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
     monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
 
-    out = apstra.apstra_get("/api/%252e%252e/admin")
+    out = asyncio.run(apstra.apstra_get("/api/%252e%252e/admin"))
 
     assert "error" in out
     assert "double-encoded" in out["error"]
@@ -77,18 +79,27 @@ def test_apstra_get_rejects_double_encoded_dot_segment_bypass(monkeypatch):
 def test_apstra_get_calls_httpx(monkeypatch):
     called = {}
 
-    def _fake_get(url, headers=None, params=None, timeout=None):
-        called["url"] = url
-        called["headers"] = headers or {}
-        called["params"] = params or {}
-        called["timeout"] = timeout
-        return _Resp()
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            called["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            return _Resp()
 
     monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
     monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
-    monkeypatch.setattr(apstra.httpx, "get", _fake_get)
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
 
-    out = apstra.apstra_get("/api/blueprints", {"limit": 1})
+    out = asyncio.run(apstra.apstra_get("/api/blueprints", {"limit": 1}))
 
     assert out["status_code"] == 200
     assert out["data"] == {"ok": True}
@@ -100,7 +111,7 @@ def test_aos8_get_rejects_non_v1_path(monkeypatch):
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
 
-    out = aos8.aos8_get("/api/bad")
+    out = asyncio.run(aos8.aos8_get("/api/bad"))
 
     assert "error" in out
     assert "/v1/*" in out["error"]
@@ -110,7 +121,7 @@ def test_aos8_get_rejects_dot_segment_bypass(monkeypatch):
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
 
-    out = aos8.aos8_get("/v1/../admin")
+    out = asyncio.run(aos8.aos8_get("/v1/../admin"))
 
     assert "error" in out
     assert "dot segments" in out["error"]
@@ -120,7 +131,7 @@ def test_aos8_get_rejects_double_encoded_dot_segment_bypass(monkeypatch):
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
 
-    out = aos8.aos8_get("/v1/%252e%252e/admin")
+    out = asyncio.run(aos8.aos8_get("/v1/%252e%252e/admin"))
 
     assert "error" in out
     assert "double-encoded" in out["error"]
@@ -129,18 +140,27 @@ def test_aos8_get_rejects_double_encoded_dot_segment_bypass(monkeypatch):
 def test_aos8_get_calls_httpx(monkeypatch):
     called = {}
 
-    def _fake_get(url, headers=None, params=None, timeout=None):
-        called["url"] = url
-        called["headers"] = headers or {}
-        called["params"] = params or {}
-        called["timeout"] = timeout
-        return _Resp()
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            called["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            return _Resp()
 
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
-    monkeypatch.setattr(aos8.httpx, "get", _fake_get)
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
 
-    out = aos8.aos8_get("/v1/configuration/object", {"limit": 1})
+    out = asyncio.run(aos8.aos8_get("/v1/configuration/object", {"limit": 1}))
 
     assert out["status_code"] == 200
     assert out["data"] == {"ok": True}
@@ -152,7 +172,7 @@ def test_edgeconnect_get_rejects_unknown_path(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
 
-    out = edgeconnect.edgeconnect_get("/api/bad")
+    out = asyncio.run(edgeconnect.edgeconnect_get("/api/bad"))
 
     assert "error" in out
     assert "/gms/rest/*" in out["error"]
@@ -162,7 +182,7 @@ def test_edgeconnect_get_rejects_dot_segment_bypass(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
 
-    out = edgeconnect.edgeconnect_get("/gms/rest/../admin")
+    out = asyncio.run(edgeconnect.edgeconnect_get("/gms/rest/../admin"))
 
     assert "error" in out
     assert "dot segments" in out["error"]
@@ -172,7 +192,7 @@ def test_edgeconnect_get_rejects_double_encoded_dot_segment_bypass(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
 
-    out = edgeconnect.edgeconnect_get("/gms/rest/%252e%252e/admin")
+    out = asyncio.run(edgeconnect.edgeconnect_get("/gms/rest/%252e%252e/admin"))
 
     assert "error" in out
     assert "double-encoded" in out["error"]
@@ -181,19 +201,28 @@ def test_edgeconnect_get_rejects_double_encoded_dot_segment_bypass(monkeypatch):
 def test_edgeconnect_get_calls_httpx_with_custom_auth_header(monkeypatch):
     called = {}
 
-    def _fake_get(url, headers=None, params=None, timeout=None):
-        called["url"] = url
-        called["headers"] = headers or {}
-        called["params"] = params or {}
-        called["timeout"] = timeout
-        return _Resp()
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            called["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            return _Resp()
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
     monkeypatch.setenv("EDGECONNECT_AUTH_HEADER", "X-Auth-Token")
-    monkeypatch.setattr(edgeconnect.httpx, "get", _fake_get)
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
-    out = edgeconnect.edgeconnect_get("/gms/rest/appliance", {"limit": 1})
+    out = asyncio.run(edgeconnect.edgeconnect_get("/gms/rest/appliance", {"limit": 1}))
 
     assert out["status_code"] == 200
     assert out["data"] == {"ok": True}

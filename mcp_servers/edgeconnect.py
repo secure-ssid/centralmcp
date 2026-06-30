@@ -43,7 +43,7 @@ def edgeconnect_status() -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_ONLY)
-def edgeconnect_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+async def edgeconnect_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Perform a read-only GET request to EdgeConnect Orchestrator API.
 
     Safety guard: only allows paths beginning with `/gms/rest/` or `/rest/json/`.
@@ -63,7 +63,8 @@ def edgeconnect_get(path: str, params: dict[str, Any] | None = None) -> dict[str
     auth_value = f"Bearer {token}" if header.lower() == "authorization" else token
     headers = {header: auth_value, "Accept": "application/json"}
     try:
-        resp = httpx.get(url, headers=headers, params=params or {}, timeout=30.0)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers, params=params or {})
         try:
             payload: Any = resp.json()
         except Exception:

@@ -40,7 +40,7 @@ def mist_status() -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_ONLY)
-def mist_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+async def mist_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Perform a read-only GET request to Mist API.
 
     Safety guard: only allows paths beginning with `/api/v1/`.
@@ -56,7 +56,8 @@ def mist_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     url = f"{host}{path}"
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
     try:
-        resp = httpx.get(url, headers=headers, params=params or {}, timeout=30.0)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers, params=params or {})
         try:
             payload: Any = resp.json()
         except Exception:

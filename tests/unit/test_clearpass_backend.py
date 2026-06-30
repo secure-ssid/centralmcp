@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import mcp_servers.clearpass as clearpass
 
 
@@ -14,7 +16,7 @@ def test_clearpass_status_unconfigured(monkeypatch):
 def test_clearpass_get_rejects_non_api_path(monkeypatch):
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
-    out = clearpass.clearpass_get("/bad/path")
+    out = asyncio.run(clearpass.clearpass_get("/bad/path"))
     assert "error" in out
     assert "/api/*" in out["error"]
 
@@ -22,7 +24,7 @@ def test_clearpass_get_rejects_non_api_path(monkeypatch):
 def test_clearpass_get_rejects_dot_segment_bypass(monkeypatch):
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
-    out = clearpass.clearpass_get("/api/../admin")
+    out = asyncio.run(clearpass.clearpass_get("/api/../admin"))
     assert "error" in out
     assert "dot segments" in out["error"]
 
@@ -30,7 +32,7 @@ def test_clearpass_get_rejects_dot_segment_bypass(monkeypatch):
 def test_clearpass_get_rejects_double_encoded_dot_segment_bypass(monkeypatch):
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
-    out = clearpass.clearpass_get("/api/%252e%252e/admin")
+    out = asyncio.run(clearpass.clearpass_get("/api/%252e%252e/admin"))
     assert "error" in out
     assert "double-encoded" in out["error"]
 
@@ -45,18 +47,27 @@ def test_clearpass_get_calls_httpx(monkeypatch):
 
     called = {}
 
-    def _fake_get(url, headers=None, params=None, timeout=None):
-        called["url"] = url
-        called["headers"] = headers or {}
-        called["params"] = params or {}
-        called["timeout"] = timeout
-        return _Resp()
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            called["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            return _Resp()
 
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
-    monkeypatch.setattr(clearpass.httpx, "get", _fake_get)
+    monkeypatch.setattr(clearpass.httpx, "AsyncClient", _FakeAsyncClient)
 
-    out = clearpass.clearpass_get("/api/session", {"limit": 1})
+    out = asyncio.run(clearpass.clearpass_get("/api/session", {"limit": 1}))
     assert out["status_code"] == 200
     assert out["data"] == {"ok": True}
     assert called["url"] == "https://cp.example.com/api/session"
