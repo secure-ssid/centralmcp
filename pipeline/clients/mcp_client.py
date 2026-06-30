@@ -128,14 +128,11 @@ class MCPClient:
         per the runbook, as it is the only endpoint that includes the scopeId field.
         """
         try:
-            # Use the session directly — CentralClient.get() re-encodes pre-built query strings
-            from urllib.parse import quote
-            filter_str = quote(f"scopeName eq '{serial_number}'")
-            url = f"{self._client.base_url}/network-config/v1alpha1/devices?filter={filter_str}"
-            self._client._ensure_valid_token()
-            resp = self._client.session.get(url)
-            resp.raise_for_status()
-            items = resp.json().get("items", [])
+            result = self._client.get(
+                "/network-config/v1alpha1/devices",
+                params={"filter": f"scopeName eq '{serial_number}'"},
+            )
+            items = result.get("items", [])
             return items[0].get("scopeId") if items else None
         except Exception as exc:
             logger.warning("MCPClient.get_device_scope_id(%s) failed: %s", serial_number, exc)
