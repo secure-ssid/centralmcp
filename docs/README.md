@@ -1,54 +1,56 @@
-# centralmcp — docs
+# centralmcp documentation
 
-| Section | Doc | What |
-|-----|------|------|
-| Audits | [audits/AUDIT-2026-06-03.md](audits/AUDIT-2026-06-03.md) | Full verified deep-dive audit — 92 findings (2 critical, 20 high, 27 medium, 43 low), with file:line and fixes. |
-| Architecture | [architecture/RAG-ARCHITECTURE.md](architecture/RAG-ARCHITECTURE.md) | RAG backend decision (embedded LanceDB + SQLite lookup + fastembed, no Docker), migration plan, eval harness + measured results. **Shipped 2026-06-03** — final eval: `api_exact` 1.00, `howto_recall@5` 0.90, `mrr` 0.90 (vs 0.50/0.80/0.34 Redis baseline). |
-| Operations | [operations/hpe-support-events-endpoint.md](operations/hpe-support-events-endpoint.md) | HPE support events endpoint notes. |
-| Plans | [plans/agentic-rag-plan.md](plans/agentic-rag-plan.md) | Agentic RAG implementation plan and milestones. |
-| Eval harness | `../tests/eval/` | RAG eval set (`rag_eval.yaml`) + runner (`run_eval.py`) — measure retrieval quality before/after changes. |
-| CI | `../.github/workflows/ci.yml` | GitHub Actions unit-test gate plus conditional RAG/API eval gate when local indexes are available. |
+Use this directory as the organized documentation hub for setup, architecture, operations, audits, and planning notes.
 
-**Mirror / index in Obsidian:** `Central-MCP-Obsidian/Projects/centralmcp — Audit & RAG Redesign (2026-06-03)`
-**Repo:** https://github.com/secure-ssid/centralmcp
+## Start here
 
-## Current repo structure
+| Doc | Use it for |
+|---|---|
+| [getting-started.md](getting-started.md) | Install, configure credentials, connect an MCP client, and build indexes |
+| [tool-router.md](tool-router.md) | Low-token router modes, toolsets, optional products, and safe dispatch |
+| [architecture/RAG-ARCHITECTURE.md](architecture/RAG-ARCHITECTURE.md) | Embedded RAG design, eval results, and migration rationale |
+| [operations/hpe-support-events-endpoint.md](operations/hpe-support-events-endpoint.md) | HPE support events endpoint notes |
+| [audits/AUDIT-2026-06-03.md](audits/AUDIT-2026-06-03.md) | Historical deep audit and remediation notes |
+| [plans/agentic-rag-plan.md](plans/agentic-rag-plan.md) | Agentic RAG implementation plan |
+
+## Documentation sections
+
+| Section | Contents |
+|---|---|
+| [architecture/](architecture/) | System design, RAG architecture, data stores, eval rationale |
+| [audits/](audits/) | Time-bound reviews, findings, and remediation history |
+| [operations/](operations/) | Endpoint notes and operator-facing runbook material |
+| [plans/](plans/) | Implementation plans and future work |
+
+## Repo map
 
 | Path | Purpose |
 |---|---|
-| `mcp_servers/` | FastMCP domain servers, optional product starter backends, router, prompts, and middleware. |
-| `pipeline/` | Migration pipeline, typed clients, credentials loading, state store, and SSID helpers. |
-| `ingestion/` | Docs/API ingestion into LanceDB + SQLite. |
-| `scripts/` | Tool-catalog ingestion, release validation, and local sync helpers. |
-| `docs/audits/` | Deep audits and remediation findings. |
-| `docs/architecture/` | Architecture decisions, especially embedded RAG. |
-| `docs/operations/` | Operational endpoint notes and runbook-style docs. |
-| `docs/plans/` | Implementation plans and future work. |
-| `tests/unit/` | Mocked unit coverage for tools, clients, middleware, routing, RAG, and release gates. |
-| `tests/eval/` | RAG/API quality eval data and runner. |
-| `.github/workflows/` | GitHub Actions validation for unit tests, catalog floor, and optional RAG eval. |
+| `mcp_servers/` | FastMCP servers, low-token router, prompts, middleware, optional product starters |
+| `pipeline/` | Migration pipeline, typed clients, credentials loading, state store, SSID helpers |
+| `ingestion/` | Docs/API ingestion into LanceDB and SQLite |
+| `scripts/` | Tool-catalog ingestion, release validation, local sync helpers |
+| `tests/unit/` | Mocked unit coverage for tools, clients, middleware, routing, RAG, release gates |
+| `tests/eval/` | RAG/API eval data and runner |
+| `data/` | Local built indexes, git-ignored |
 
-Run the eval baseline:
-```bash
-uv run --with pyyaml python tests/eval/run_eval.py --k 5 --verbose
-```
+## Common commands
 
-Run the release/CI gate:
 ```bash
-uv run --with pyyaml python tests/eval/run_eval.py --ci
-```
+# Install dependencies
+uv sync
 
-Run the same unit-test gate used by GitHub Actions:
-```bash
+# Build the router tool catalog
+uv run python scripts/ingest_tools.py
+
+# Include optional product starters in the tool catalog
+uv run python scripts/ingest_tools.py --products all
+
+# Run unit tests
 uv run pytest tests/unit -q
-```
 
-Run the local release validation helper:
-```bash
+# Run the full local release gate
 uv run python scripts/validate_release.py
 ```
 
-The helper enforces the documented tool catalog floor by default; use
-`--min-tools <count>` only when intentionally changing catalog scope. If a local
-LanceDB tool index exists, the helper also verifies it is not stale relative to
-the registered tools.
+The release helper enforces the documented tool catalog floor and checks local LanceDB tool-index freshness when `data/tools.lance` exists.

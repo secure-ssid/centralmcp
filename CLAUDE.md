@@ -1,4 +1,4 @@
-# API-Central — Aruba New Central Automation
+# centralmcp — Aruba Central and GreenLake MCP automation
 
 HPE Aruba Central API tooling for network device migration, SSID config, switch provisioning, and GreenLake Platform management.
 
@@ -44,8 +44,6 @@ state/                 Pipeline state store (idempotent runs)
   mcp.json             Router-only entry (aruba-tool-router) — low token overhead
   mcp.dev.json         All 6 domain servers directly — full introspection for debugging
   obsidian-vault       Filesystem MCP over ~/Documents/Central-MCP-Obsidian (Aruba docs + customer notes)
-.github/workflows/
-  ci.yml               GitHub Actions unit/RAG/catalog validation
 ```
 
 ## MCP tools (`mcp_servers/`)

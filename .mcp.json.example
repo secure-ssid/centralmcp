@@ -1,14 +1,14 @@
 {
   "mcpServers": {
     "aruba-tool-router": {
-      "command": "/path/to/API-Central/.venv/bin/python3",
+      "command": "/path/to/centralmcp/.venv/bin/python3",
       "args": [
-        "/path/to/API-Central/mcp_servers/tool_router.py"
+        "/path/to/centralmcp/mcp_servers/tool_router.py"
       ],
-      "cwd": "/path/to/API-Central",
+      "cwd": "/path/to/centralmcp",
       "env": {
-        "PYTHONPATH": "/path/to/API-Central",
-        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml",
+        "PYTHONPATH": "/path/to/centralmcp",
+        "CREDS_PATH": "/path/to/centralmcp/config/credentials.yaml",
         "CENTRALMCP_ROUTER_MODE": "minimal",
         "CENTRALMCP_TOOLSETS": "central,glp,rag"
       }
