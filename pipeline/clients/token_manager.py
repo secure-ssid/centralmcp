@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -82,7 +83,16 @@ class TokenManager:
 
         self.access_token: Optional[str] = None
         self.token_expires_at: Optional[float] = None
+        self._refresh_lock = threading.Lock()
         self._load_cached_token()
+
+    def _needs_refresh(self, force_refresh: bool = False) -> bool:
+        return (
+            force_refresh
+            or not self.access_token
+            or not self.token_expires_at
+            or time.time() >= (self.token_expires_at - self.expiry_buffer)
+        )
 
     def _load_cached_token(self) -> None:
         if not self.cache_file.exists():
@@ -151,14 +161,10 @@ class TokenManager:
             raise RuntimeError(f"Token refresh failed: {exc}") from exc
 
     def get_access_token(self, force_refresh: bool = False) -> str:
-        needs_refresh = (
-            force_refresh
-            or not self.access_token
-            or not self.token_expires_at
-            or time.time() >= (self.token_expires_at - self.expiry_buffer)
-        )
-        if needs_refresh:
-            self._refresh_token()
+        if self._needs_refresh(force_refresh):
+            with self._refresh_lock:
+                if self._needs_refresh(force_refresh):
+                    self._refresh_token()
         return self.access_token  # type: ignore[return-value]
 
     def is_token_valid(self) -> bool:
