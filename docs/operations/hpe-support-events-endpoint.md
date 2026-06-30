@@ -127,7 +127,8 @@ the real response.
 
 ## Environment details (if useful)
 
-- Python 3.13.2, ``requests`` 2.x
+- Python 3.13.2 with the repo's current `httpx` client stack
+- Original ad-hoc reproduction was also seen with `requests`; active code no longer uses `requests`
 - No proxy or corporate MITM involved
 - Token re-minted fresh between each failing request to rule out
   staleness
