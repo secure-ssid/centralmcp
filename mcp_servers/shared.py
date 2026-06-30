@@ -314,7 +314,7 @@ async def atroubleshoot_poll(client: CentralClient, poll_url: str) -> dict[str, 
     for _ in range(_POLL_MAX):
         await asyncio.sleep(_POLL_INTERVAL)
         try:
-            result = client.get(poll_url)
+            result = await client.aget(poll_url)
         except Exception as exc:
             return {"status": "ERROR", "error": str(exc)}
         if result.get("status", "") in ("COMPLETED", "FAILED"):
@@ -330,7 +330,7 @@ async def atroubleshoot_async(
 ) -> dict[str, Any]:
     """Start and poll a Central troubleshooting task without blocking the event loop."""
     try:
-        resp = client._request("POST", endpoint, json=payload)
+        resp = await client._arequest("POST", endpoint, json=payload)
         if resp.status_code not in (200, 201, 202):
             errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}

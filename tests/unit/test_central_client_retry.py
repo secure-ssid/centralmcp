@@ -9,16 +9,19 @@ Covers the cautious-review test bar:
 
 from __future__ import annotations
 
+import asyncio
+import datetime
+import email.utils
 import time
 from unittest.mock import MagicMock
 
 import httpx
 
+from pipeline.clients import central_client
 from pipeline.clients.central_client import (
     CentralClient,
     _parse_retry_after,
 )
-
 
 # ---------------------------------------------------------------------------
 # Retry-After parser
@@ -37,7 +40,6 @@ class TestParseRetryAfter:
 
     def test_http_date_in_future(self):
         # Build a date ~10s in the future; allow 2s slop for test timing.
-        import email.utils, datetime
         future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=10)
         header = email.utils.format_datetime(future)
         parsed = _parse_retry_after(header)
@@ -193,3 +195,82 @@ class TestRetryBehavior:
         ])
 
         assert client.post_async("/x") == "/task/1"
+
+
+class TestAsyncRetryBehavior:
+    def test_arequest_uses_async_httpx_and_async_sleep(self, monkeypatch):
+        sleeps: list[float] = []
+        calls: list[dict] = []
+        responses = iter(
+            [
+                _make_httpx_response(429, headers={"Retry-After": "2"}),
+                _make_httpx_response(200),
+            ]
+        )
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                self.kwargs = kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def request(self, method, url, **kwargs):
+                calls.append({"method": method, "url": url, "kwargs": kwargs})
+                return next(responses)
+
+        monkeypatch.setattr(central_client.asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(central_client.httpx, "AsyncClient", FakeAsyncClient)
+
+        client = _make_client([])
+        resp = asyncio.run(client._arequest("GET", "/x"))
+
+        assert resp.status_code == 200
+        assert sleeps == [2.0]
+        assert [call["method"] for call in calls] == ["GET", "GET"]
+        assert calls[0]["url"] == "https://test.example.com/x"
+        assert calls[0]["kwargs"]["headers"]["Authorization"] == "Bearer fake-token"
+
+    def test_aget_parses_json_response(self, monkeypatch):
+        calls: list[dict] = []
+        responses = iter([_make_httpx_response(200, text='{"ok": true}')])
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def request(self, method, url, **kwargs):
+                calls.append({"method": method, "url": url, "kwargs": kwargs})
+                return next(responses)
+
+        monkeypatch.setattr(central_client.httpx, "AsyncClient", FakeAsyncClient)
+
+        client = _make_client([])
+        result = asyncio.run(client.aget("/poll/1", params={"limit": 1}))
+
+        assert result == {"ok": True}
+        assert calls == [
+            {
+                "method": "GET",
+                "url": "https://test.example.com/poll/1",
+                "kwargs": {
+                    "headers": {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer fake-token",
+                    },
+                    "params": {"limit": 1},
+                },
+            }
+        ]

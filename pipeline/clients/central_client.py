@@ -7,6 +7,7 @@ Ported from aruba-central-portal/utils/central_api_client.py.
 
 from __future__ import annotations
 
+import asyncio
 import email.utils
 import logging
 import random
@@ -63,7 +64,8 @@ class CentralClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.token_manager = token_manager
-        self.session = httpx.Client(timeout=30.0)
+        self.timeout = 30.0
+        self.session = httpx.Client(timeout=self.timeout)
         self.session.headers.update({"Content-Type": "application/json"})
         self._refresh_auth_header()
 
@@ -155,6 +157,74 @@ class CentralClient:
 
         return response  # last response after all retries
 
+    async def _arequest(
+        self,
+        method: str,
+        endpoint: str,
+        max_retries: int = 3,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Async counterpart to ``_request`` for MCP tools running on an event loop."""
+        retry_5xx = kwargs.pop("retry_5xx", None)
+        if retry_5xx is None:
+            retry_5xx = method.upper() in ("GET", "HEAD")
+
+        url = f"{self.base_url}{endpoint}"
+        retry_429_delay = _INITIAL_RETRY_DELAY
+        retry_5xx_delay = _SERVER_ERROR_INITIAL_DELAY
+        extra_headers = kwargs.pop("headers", None)
+
+        async with httpx.AsyncClient(timeout=self.timeout) as session:
+            for attempt in range(max_retries + 1):
+                token = await asyncio.to_thread(self.token_manager.get_access_token)
+                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+                if extra_headers:
+                    headers.update(extra_headers)
+
+                response = await session.request(method, url, headers=headers, **kwargs)
+
+                if response.status_code == 429 and attempt < max_retries:
+                    hint = _parse_retry_after(response.headers.get("Retry-After", ""))
+                    wait = hint if hint is not None else retry_429_delay
+                    wait = min(wait, _MAX_RETRY_DELAY)
+                    logger.warning(
+                        "Rate limit (429) on %s %s — waiting %.1fs (attempt %d/%d, Retry-After=%r)",
+                        method,
+                        url,
+                        wait,
+                        attempt + 1,
+                        max_retries,
+                        response.headers.get("Retry-After"),
+                    )
+                    await asyncio.sleep(wait)
+                    retry_429_delay = min(int(retry_429_delay * 1.5), _MAX_RETRY_DELAY)
+                    continue
+
+                if (
+                    retry_5xx
+                    and response.status_code in (502, 503, 504)
+                    and attempt < max_retries
+                ):
+                    jitter = 1.0 + random.uniform(-0.2, 0.2)
+                    wait = min(retry_5xx_delay * jitter, _SERVER_ERROR_MAX_DELAY)
+                    logger.warning(
+                        "Transient server error %d on %s %s — waiting %.2fs "
+                        "(attempt %d/%d)",
+                        response.status_code,
+                        method,
+                        url,
+                        wait,
+                        attempt + 1,
+                        max_retries,
+                    )
+                    await asyncio.sleep(wait)
+                    retry_5xx_delay = min(retry_5xx_delay * 2, _SERVER_ERROR_MAX_DELAY)
+                    continue
+
+                return response
+
+        return response
+
     def get(self, endpoint: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         logger.debug(
             "GET %s%s params_keys=%s",
@@ -163,6 +233,17 @@ class CentralClient:
             sorted((params or {}).keys()),
         )
         response = self._request("GET", endpoint, params=params)
+        response.raise_for_status()
+        return _parse_json(response)
+
+    async def aget(self, endpoint: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        logger.debug(
+            "GET(async) %s%s params_keys=%s",
+            self.base_url,
+            endpoint,
+            sorted((params or {}).keys()),
+        )
+        response = await self._arequest("GET", endpoint, params=params)
         response.raise_for_status()
         return _parse_json(response)
 
