@@ -21,7 +21,6 @@ from mcp_servers.shared import (
     device_type_for_troubleshoot,
     get_client,
     get_mcp_client,
-    troubleshoot_async,
 )
 
 mcp = FastMCP("aruba-ops")
@@ -118,23 +117,33 @@ async def cx_show(
 # ── AOS-S Troubleshooting ─────────────────────────────────────────────────────
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def aos_s_ping(serial_number: str, destination: str) -> dict[str, Any]:
+async def aos_s_ping(serial_number: str, destination: str) -> dict[str, Any]:
     """Ping a destination from an AOS-S switch (async, polls ~60s)."""
     client = get_client()
     errors: list[str] = []
-    return troubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/ping", {"destination": destination}, errors)
+    return await atroubleshoot_async(
+        client,
+        f"{_AOS_S_BASE}/{serial_number}/ping",
+        {"destination": destination},
+        errors,
+    )
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def aos_s_traceroute(serial_number: str, destination: str) -> dict[str, Any]:
+async def aos_s_traceroute(serial_number: str, destination: str) -> dict[str, Any]:
     """Run a traceroute from an AOS-S switch (async, polls ~60s)."""
     client = get_client()
     errors: list[str] = []
-    return troubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/traceroute", {"destination": destination}, errors)
+    return await atroubleshoot_async(
+        client,
+        f"{_AOS_S_BASE}/{serial_number}/traceroute",
+        {"destination": destination},
+        errors,
+    )
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def aos_s_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
+async def aos_s_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
     """Run 'show' commands on an AOS-S switch (all must start with 'show ', async polls ~60s)."""
     if not commands:
         return {"status": None, "errors": ["commands list cannot be empty"]}
@@ -143,11 +152,16 @@ def aos_s_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
             return {"status": None, "errors": [f"Command {i} must start with 'show ': '{cmd}'"]}
     client = get_client()
     errors: list[str] = []
-    return troubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/showCommands", {"commands": commands}, errors)
+    return await atroubleshoot_async(
+        client,
+        f"{_AOS_S_BASE}/{serial_number}/showCommands",
+        {"commands": commands},
+        errors,
+    )
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def gateway_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
+async def gateway_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
     """Run 'show' commands on an Aruba gateway via async troubleshooting API. Each must start with 'show '."""
     if not commands:
         return {"status": None, "errors": ["commands list cannot be empty"]}
@@ -156,15 +170,20 @@ def gateway_show(serial_number: str, commands: list[str]) -> dict[str, Any]:
             return {"status": None, "errors": [f"Command {i} must start with 'show ': '{cmd}'"]}
     client = get_client()
     errors: list[str] = []
-    return troubleshoot_async(client, f"{_GATEWAY_BASE}/{serial_number}/showCommands", {"commands": commands}, errors)
+    return await atroubleshoot_async(
+        client,
+        f"{_GATEWAY_BASE}/{serial_number}/showCommands",
+        {"commands": commands},
+        errors,
+    )
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def aos_s_arp(serial_number: str) -> dict[str, Any]:
+async def aos_s_arp(serial_number: str) -> dict[str, Any]:
     """Get the ARP table from an AOS-S switch (async, polls ~60s)."""
     client = get_client()
     errors: list[str] = []
-    return troubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/getArpTable", {}, errors)
+    return await atroubleshoot_async(client, f"{_AOS_S_BASE}/{serial_number}/getArpTable", {}, errors)
 
 
 # aos_s_locate was removed: per pycentral's
@@ -242,7 +261,7 @@ async def port_bounce(
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def cable_test(
+async def cable_test(
     serial_number: str,
     ports: list[str],
     device_type: str | None = None,
@@ -257,7 +276,12 @@ def cable_test(
     if dtype is None or dtype == "aps":
         errors.append("Cable test is not supported on Access Points.")
         return {"status": None, "errors": errors}
-    return troubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/cableTest", {"ports": ports}, errors)
+    return await atroubleshoot_async(
+        client,
+        f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/cableTest",
+        {"ports": ports},
+        errors,
+    )
 
 
 # ── Device Actions ────────────────────────────────────────────────────────────
@@ -521,7 +545,7 @@ async def get_switch_interface_counters(
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def run_speed_test(serial_number: str) -> dict[str, Any]:
+async def run_speed_test(serial_number: str) -> dict[str, Any]:
     """Run a speed test from an AP to measure uplink bandwidth.
 
     Uses the Central async troubleshooting API. Returns download/upload
@@ -531,7 +555,12 @@ def run_speed_test(serial_number: str) -> dict[str, Any]:
     _AP_TROUBLESHOOTING_BASE = "/network-troubleshooting/v1alpha1/aps"
     client = get_client()
     errors: list[str] = []
-    return troubleshoot_async(client, f"{_AP_TROUBLESHOOTING_BASE}/{serial_number}/speedtest", {}, errors)
+    return await atroubleshoot_async(
+        client,
+        f"{_AP_TROUBLESHOOTING_BASE}/{serial_number}/speedtest",
+        {},
+        errors,
+    )
 
 
 if __name__ == "__main__":

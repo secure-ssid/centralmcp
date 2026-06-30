@@ -3,7 +3,6 @@ import asyncio
 import logging
 import os
 import re
-import time
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -309,60 +308,8 @@ def maybe_bound(
     return bound_collection_response(data, limit=limit, offset=offset, list_key=list_key)
 
 
-def cx_poll(client: CentralClient, serial: str, operation: str, task_id: str) -> dict[str, Any]:
-    endpoint = f"{_CX_TROUBLESHOOTING_BASE}/{serial}/{operation}/async-operations/{task_id}"
-    result: dict[str, Any] = {}
-    for _ in range(_POLL_MAX):
-        time.sleep(_POLL_INTERVAL)
-        try:
-            result = client.get(endpoint)
-        except Exception as exc:
-            return {"status": "ERROR", "error": str(exc)}
-        if result.get("status", "") in ("COMPLETED", "FAILED"):
-            return result
-    return result
-
-
-def troubleshoot_poll(client: CentralClient, poll_url: str) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for _ in range(_POLL_MAX):
-        time.sleep(_POLL_INTERVAL)
-        try:
-            result = client.get(poll_url)
-        except Exception as exc:
-            return {"status": "ERROR", "error": str(exc)}
-        if result.get("status", "") in ("COMPLETED", "FAILED"):
-            return result
-    return result
-
-
-def troubleshoot_async(
-    client: CentralClient,
-    endpoint: str,
-    payload: dict[str, Any],
-    errors: list[str],
-) -> dict[str, Any]:
-    try:
-        resp = client._request("POST", endpoint, json=payload)
-        if resp.status_code not in (200, 201, 202):
-            errors.append(compact_http_error(resp))
-            return {"status": None, "errors": errors}
-        location = resp.headers.get("Location", "") or resp.json().get("location", "")
-        if not location:
-            errors.append("no Location header in async response")
-            return {"status": None, "errors": errors}
-        task_id = location.rstrip("/").split("/")[-1]
-        poll_url = f"{endpoint}/async-operations/{task_id}"
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"status": None, "errors": errors}
-    result = troubleshoot_poll(client, poll_url)
-    result["errors"] = errors
-    return result
-
-
 async def atroubleshoot_poll(client: CentralClient, poll_url: str) -> dict[str, Any]:
-    """Async version of troubleshoot_poll — safe to call from async tools."""
+    """Poll a Central troubleshooting async-operation without blocking the event loop."""
     result: dict[str, Any] = {}
     for _ in range(_POLL_MAX):
         await asyncio.sleep(_POLL_INTERVAL)
@@ -381,7 +328,7 @@ async def atroubleshoot_async(
     payload: dict[str, Any],
     errors: list[str],
 ) -> dict[str, Any]:
-    """Async version of troubleshoot_async — use from async MCP tools to avoid blocking the event loop."""
+    """Start and poll a Central troubleshooting task without blocking the event loop."""
     try:
         resp = client._request("POST", endpoint, json=payload)
         if resp.status_code not in (200, 201, 202):

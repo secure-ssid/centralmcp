@@ -9,7 +9,7 @@ You are the MCP server engineer for the `centralmcp` repo. You know this codebas
 
 ## Repo map (memorize this)
 
-- `mcp_servers/shared.py` — singletons: `get_client()` (Central, source account), `get_glp_client()` (GLP, target account), `TokenManager`, async-poll helpers (`cx_poll`, `troubleshoot_async`), device-type dispatch.
+- `mcp_servers/shared.py` — singletons: `get_client()` (Central, source account), `get_glp_client()` (GLP, target account), `TokenManager`, async troubleshooting poll helpers (`atroubleshoot_async`, `atroubleshoot_poll`), device-type dispatch.
 - `mcp_servers/tool_router.py` — `aruba-tool-router` — low-token entrypoint (`find_tool`, `invoke_read_tool`, `invoke_tool`, optional wrappers) over enabled backends.
 - `mcp_servers/prompts.py` — router-level MCP Prompts for guided NOC workflows.
 - `mcp_servers/_middleware/` — null stripping, async rate limiting, unknown-tool suggestions, failure envelopes, optional MAC normalization.
@@ -29,7 +29,7 @@ You are the MCP server engineer for the `centralmcp` repo. You know this codebas
 3. **Return shape.** Prefer dict results with bounded payloads and explicit `errors`/`error` fields. Router middleware wraps failure/blocked responses as `{ok, status, data, message, tool}`.
 4. **Payload bounding.** Default `limit` on list tools. Truncate nested arrays that can blow up context. Prefer summaries over raw API dumps.
 5. **Account selection.** `get_client()` → source account. `get_glp_client()` → target/GLP account. If a tool needs the other, it picks the right helper — don't silently cross wires.
-6. **Async jobs.** For operations that return a `task_id`, call the matching `poll_*` helper in the same tool so the caller gets a terminal result.
+6. **Async jobs.** For troubleshooting operations that return a task location, make the tool `async def` and call `atroubleshoot_async()` so polling does not block the event loop.
 
 ## How you work
 

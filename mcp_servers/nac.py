@@ -15,11 +15,11 @@ from mcp_servers.shared import (
     IDEMPOTENT_WRITE,
     READ_ONLY,
     _CX_TROUBLESHOOTING_BASE,
+    atroubleshoot_async,
     bound_collection_response,
     compact_http_error,
     get_client,
     resp_json,
-    troubleshoot_async,
 )
 
 mcp = FastMCP("aruba-nac")
@@ -463,7 +463,7 @@ def delete_aaa_profile(
 # ── AAA Test ──────────────────────────────────────────────────────────────────
 
 @mcp.tool(annotations=DIAGNOSTIC)
-def test_aaa(
+async def test_aaa(
     serial_number: str,
     username: str,
     password: str,
@@ -499,7 +499,7 @@ def test_aaa(
             "password": password,
         }
 
-    return troubleshoot_async(client, endpoint, payload, errors)
+    return await atroubleshoot_async(client, endpoint, payload, errors)
 
 
 # ── Authz Policies ────────────────────────────────────────────────────────────
