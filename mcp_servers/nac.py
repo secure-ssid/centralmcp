@@ -70,7 +70,7 @@ def add_mac_registration(
     client = get_client()
     resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -108,7 +108,7 @@ def update_mac_registration(
     client = get_client()
     resp = client._request("PUT", endpoint, json=payload)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -126,7 +126,7 @@ def delete_mac_registration(
     client = get_client()
     resp = client._request("DELETE", endpoint)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -174,7 +174,7 @@ def add_mpsk_registration(
     client = get_client()
     resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -192,7 +192,7 @@ def delete_mpsk_registration(
     client = get_client()
     resp = client._request("DELETE", endpoint)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -247,7 +247,7 @@ def add_visitor(
     client = get_client()
     resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -265,7 +265,7 @@ def delete_visitor(
     client = get_client()
     resp = client._request("DELETE", endpoint)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -361,7 +361,7 @@ def create_auth_server(
     client = get_client()
     resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -379,7 +379,7 @@ def delete_auth_server(
     client = get_client()
     resp = client._request("DELETE", endpoint)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -437,7 +437,7 @@ def create_aaa_profile(
     client = get_client()
     resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -455,7 +455,7 @@ def delete_aaa_profile(
     client = get_client()
     resp = client._request("DELETE", endpoint)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -609,7 +609,7 @@ def create_authz_policy(
     resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
     result["policy_id"] = policy_id
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -627,7 +627,7 @@ def delete_authz_policy(
     client = get_client()
     resp = client._request("DELETE", endpoint)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -663,7 +663,7 @@ def create_static_tag(
     resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
     result["tag_id"] = tag_id
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -675,7 +675,7 @@ def delete_static_tag(tag_id: str) -> dict[str, Any]:
     client = get_client()
     resp = client._request("DELETE", endpoint)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -760,7 +760,7 @@ def create_mac_auth_profile(
     resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
     result["profile_id"] = profile_id
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -803,7 +803,7 @@ def create_dot1x_auth_profile(
     resp = client._request("POST", endpoint, json=payload)
     result = resp_json(resp)
     result["profile_id"] = profile_id
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 
@@ -821,7 +821,7 @@ def delete_auth_profile(
     client = get_client()
     resp = client._request("DELETE", endpoint)
     result = resp_json(resp)
-    if not resp.ok:
+    if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
     return result
 

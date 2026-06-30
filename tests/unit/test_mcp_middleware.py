@@ -32,7 +32,10 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_servers._middleware import (
     NullStripMiddleware,
+    MacNormalizeMiddleware,
     RateLimitMiddleware,
+    ResponseEnvelopeMiddleware,
+    UnknownToolSuggestMiddleware,
     install_middleware,
 )
 
@@ -53,6 +56,10 @@ def _call(srv: FastMCP, name: str, args: dict[str, Any]):
     """Call a tool and block for the result — handles ToolManager.call_tool
     being an async coroutine."""
     return asyncio.run(srv._tool_manager.call_tool(name, args))
+
+
+def _call_converted(srv: FastMCP, name: str, args: dict[str, Any]):
+    return asyncio.run(srv._tool_manager.call_tool(name, args, convert_result=True))
 
 
 # ---------------------------------------------------------------------------
@@ -115,12 +122,19 @@ class TestNullStrip:
 
 
 class TestRateLimit:
+    @staticmethod
+    def _acquire_many(mw: RateLimitMiddleware, count: int) -> None:
+        async def _run() -> None:
+            for _ in range(count):
+                await mw._acquire()
+
+        asyncio.run(_run())
+
     def test_allows_burst(self):
         """Burst of N calls where N == burst should not wait at all."""
         mw = RateLimitMiddleware(rate=100.0, burst=5)
         t0 = time.monotonic()
-        for _ in range(5):
-            mw._acquire()
+        self._acquire_many(mw, 5)
         elapsed = time.monotonic() - t0
         assert elapsed < 0.1, f"burst took {elapsed:.3f}s, expected <0.1s"
 
@@ -129,8 +143,7 @@ class TestRateLimit:
         burst of 2 fires instantly, remaining 8 take ~8/20 = 0.4s."""
         mw = RateLimitMiddleware(rate=20.0, burst=2)
         t0 = time.monotonic()
-        for _ in range(10):
-            mw._acquire()
+        self._acquire_many(mw, 10)
         elapsed = time.monotonic() - t0
         # Loose bounds to avoid flakes; expected ~0.4s steady-state.
         assert 0.3 < elapsed < 1.0, f"elapsed={elapsed:.3f}s, want ~0.4s"
@@ -138,14 +151,29 @@ class TestRateLimit:
     def test_refills_after_idle(self):
         """After an idle period the bucket should be full again."""
         mw = RateLimitMiddleware(rate=50.0, burst=3)
-        for _ in range(3):
-            mw._acquire()  # drain
+        self._acquire_many(mw, 3)  # drain
         time.sleep(0.1)  # 0.1s * 50/s = 5 tokens (capped at burst=3)
         t0 = time.monotonic()
-        for _ in range(3):
-            mw._acquire()
+        self._acquire_many(mw, 3)
         elapsed = time.monotonic() - t0
         assert elapsed < 0.05, f"post-idle burst took {elapsed:.3f}s"
+
+    def test_wait_does_not_block_event_loop(self):
+        async def _run() -> float:
+            mw = RateLimitMiddleware(rate=1.0, burst=1)
+            await mw._acquire()  # drain the only token
+            marker = asyncio.create_task(asyncio.sleep(0.01))
+            waiter = asyncio.create_task(mw.before_call("slow_tool", {}))
+            t0 = time.monotonic()
+            await marker
+            marker_elapsed = time.monotonic() - t0
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            return marker_elapsed
+
+        elapsed = asyncio.run(_run())
+        assert elapsed < 0.2, f"rate-limit wait blocked event loop for {elapsed:.3f}s"
 
     def test_no_deadlock_on_exception(self):
         """If the wrapped tool raises, subsequent calls must still pass."""
@@ -279,3 +307,113 @@ class TestInstallMiddleware:
         # Fail-open: the tool still runs.
         result = _call(srv, "ok", {})
         assert "ok" in str(result)
+
+
+class TestUnknownToolSuggest:
+    def test_unknown_tool_returns_structured_hint(self):
+        def list_devices() -> str:
+            return "ok"
+
+        srv = _make_server_with_tool(list_devices)
+        install_middleware(
+            srv,
+            [UnknownToolSuggestMiddleware(lambda: srv._tool_manager._tools)],
+        )
+
+        result = _call(srv, "get_devices", {})
+
+        assert "Unknown tool: get_devices" in str(result)
+        assert "find_tool" in str(result)
+        assert "list_devices" in str(result)
+
+    def test_custom_suggestion_provider(self):
+        def find_tool() -> str:
+            return "ok"
+
+        srv = _make_server_with_tool(find_tool)
+        install_middleware(
+            srv,
+            [
+                UnknownToolSuggestMiddleware(
+                    lambda: srv._tool_manager._tools,
+                    suggestion_provider=lambda name, limit: [{"name": "create_vlan", "score": 1.0}],
+                )
+            ],
+        )
+
+        result = _call(srv, "create_vlan", {})
+
+        assert "create_vlan" in str(result)
+
+
+class TestResponseEnvelope:
+    def test_wraps_error_dict(self):
+        mw = ResponseEnvelopeMiddleware()
+
+        result = mw.after_call("clearpass_get", {}, {"error": "not configured"})
+
+        assert result == {
+            "ok": False,
+            "status": 500,
+            "data": {"error": "not configured"},
+            "message": "not configured",
+            "tool": "clearpass_get",
+            "platform": None,
+        }
+
+    def test_wraps_cancelled_status(self):
+        mw = ResponseEnvelopeMiddleware()
+
+        result = mw.after_call("reboot_device", {}, {"status": "CANCELLED", "detail": "user declined confirmation"})
+
+        assert result is not None
+        assert result["ok"] is False
+        assert result["status"] == 409
+        assert result["message"] == "user declined confirmation"
+
+    def test_success_dict_passes_through(self):
+        mw = ResponseEnvelopeMiddleware()
+
+        assert mw.after_call("list_devices", {}, {"items": []}) is None
+
+    def test_already_enveloped_passes_through(self):
+        mw = ResponseEnvelopeMiddleware()
+        result = {"ok": False, "data": {}, "tool": "x"}
+
+        assert mw.after_call("x", {}, result) is None
+
+    def test_envelope_runs_before_fastmcp_conversion(self):
+        def bad() -> dict[str, str]:
+            return {"error": "nope"}
+
+        srv = _make_server_with_tool(bad)
+        install_middleware(srv, [ResponseEnvelopeMiddleware()])
+
+        result = _call_converted(srv, "bad", {})
+
+        rendered = str(result)
+        assert '"ok": false' in rendered
+        assert '"tool": "bad"' in rendered
+
+
+class TestMacNormalize:
+    def test_normalizes_common_mac_formats(self):
+        mw = MacNormalizeMiddleware()
+        payload = {
+            "clientMac": "AA-BB-CC-DD-EE-FF",
+            "ap": {"mac": "aabb.ccdd.eeff"},
+            "text": "client 11:22:33:44:55:66 connected",
+        }
+
+        result = mw.after_call("find_client", {}, payload)
+
+        assert result == {
+            "clientMac": "aa:bb:cc:dd:ee:ff",
+            "ap": {"mac": "aa:bb:cc:dd:ee:ff"},
+            "text": "client 11:22:33:44:55:66 connected",
+        }
+
+    def test_leaves_non_mac_strings_unchanged(self):
+        mw = MacNormalizeMiddleware()
+
+        assert mw.after_call("x", {}, {"serial": "CN1234567890"}) is None

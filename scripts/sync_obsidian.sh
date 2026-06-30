@@ -9,14 +9,14 @@ DEST="$VAULT/Projects/Central MCP"
 mkdir -p "$DEST"
 
 # Core docs
-for f in README.md CLAUDE.md agentic-rag-plan.md; do
+for f in README.md CLAUDE.md; do
   [ -f "$PROJECT/$f" ] && cp "$PROJECT/$f" "$DEST/$f" && echo "synced $f"
 done
 
 # docs/ folder
 if [ -d "$PROJECT/docs" ]; then
   mkdir -p "$DEST/docs"
-  cp "$PROJECT"/docs/*.md "$DEST/docs/" 2>/dev/null
+  cp -R "$PROJECT"/docs/. "$DEST/docs/"
   echo "synced docs/"
 fi
 

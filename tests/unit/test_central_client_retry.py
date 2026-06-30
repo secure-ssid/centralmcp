@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock
 
-import pytest
+import httpx
 
 from pipeline.clients.central_client import (
     CentralClient,
@@ -63,8 +63,17 @@ def _make_response(status_code, headers=None, text="{}"):
     r.headers = headers or {}
     r.text = text
     r.json.return_value = {}
-    r.ok = 200 <= status_code < 300
+    r.is_success = 200 <= status_code < 300
     return r
+
+
+def _make_httpx_response(status_code, headers=None, text="{}"):
+    return httpx.Response(
+        status_code,
+        headers=headers or {},
+        content=text,
+        request=httpx.Request("POST", "https://test.example.com/x"),
+    )
 
 
 def _make_client(responses):
@@ -170,3 +179,17 @@ class TestRetryBehavior:
         ])
         client._request("GET", "/x")
         assert sleeps == [300.0]
+
+    def test_post_accepts_real_httpx_success_response(self):
+        client = _make_client([
+            _make_httpx_response(200, text='{"accepted": true}'),
+        ])
+
+        assert client.post("/x") == {"accepted": True}
+
+    def test_post_async_accepts_real_httpx_success_response(self):
+        client = _make_client([
+            _make_httpx_response(202, headers={"Location": "/task/1"}),
+        ])
+
+        assert client.post_async("/x") == "/task/1"

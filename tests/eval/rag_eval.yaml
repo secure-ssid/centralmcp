@@ -3,7 +3,7 @@
 #       howto       -> expects a relevant prose chunk (via search_docs)
 # expect_sources    -> substrings; at least one must appear in a top-k result's file_path/source
 # expect_keywords   -> substrings; at least one must appear in the returned text (case-insensitive)
-# See docs/RAG-ARCHITECTURE.md.
+# See docs/architecture/RAG-ARCHITECTURE.md.
 
 questions:
   - id: dot1x-auth-type

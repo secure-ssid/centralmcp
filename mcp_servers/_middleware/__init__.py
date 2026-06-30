@@ -21,6 +21,12 @@ See individual modules for details:
   ``nowireless4u/hpe-networking-mcp`` (MIT).
 - :mod:`mcp_servers._middleware.rate_limit` — token-bucket limiter to
   keep total call rate under the Central account-wide cap (10/s).
+- :mod:`mcp_servers._middleware.unknown_tool_suggest` — structured
+  "did you mean" hints for guessed tool names.
+- :mod:`mcp_servers._middleware.response_envelope` — failure-only
+  `{ok, status, data, message, tool}` wrapping.
+- :mod:`mcp_servers._middleware.mac_normalizer` — optional outbound MAC
+  normalization for model consistency.
 
 Retry lives one layer down in
 :mod:`pipeline.clients.central_client` (``_request`` honors
@@ -32,12 +38,18 @@ mid-poll would restart the whole ping instead of resuming.
 from __future__ import annotations
 
 from .install import Middleware, install_middleware
+from .mac_normalizer import MacNormalizeMiddleware
 from .null_strip import NullStripMiddleware
 from .rate_limit import RateLimitMiddleware
+from .response_envelope import ResponseEnvelopeMiddleware
+from .unknown_tool_suggest import UnknownToolSuggestMiddleware
 
 __all__ = [
     "Middleware",
+    "MacNormalizeMiddleware",
     "NullStripMiddleware",
     "RateLimitMiddleware",
+    "ResponseEnvelopeMiddleware",
+    "UnknownToolSuggestMiddleware",
     "install_middleware",
 ]

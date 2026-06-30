@@ -1,10 +1,9 @@
 """Stage 8 — Verify: confirm all "definition of done" criteria are met.
 
 Passing criteria:
-  1. is_provisioned = True (pycentral scopes)
-  2. isProvisioned = "YES" (MCP cross-check — string, not bool)
-  3. status = ONLINE
-  4. softwareVersion starts with "10." (AOS-CX only; AOS-S skipped)
+  1. isProvisioned = "YES" (MCP cross-check — string, not bool)
+  2. status = ONLINE (warning-only if OFFLINE)
+  3. softwareVersion starts with "10." (AOS-CX only; AOS-S skipped)
 """
 
 from __future__ import annotations
@@ -43,7 +42,6 @@ class VerifyStage(Stage):
         if device is None:
             failures.append("device not found in target Central via MCP")
         else:
-            is_provisioned_str = str(device.get("isProvisioned", "")).upper()
             status = str(device.get("status", "")).upper()
 
             if str(device.get("isProvisioned", "")).lower() != "yes":
@@ -54,22 +52,7 @@ class VerifyStage(Stage):
                     record.serial_number, status,
                 )
 
-        # 2. pycentral provisioned_status check (non-blocking — MCP is primary gate)
-        try:
-            conn = central.get_pycentral_conn()
-            from pycentral.scopes import Device as PyDevice  # type: ignore[import]
-            # Try both possible method names across pycentral versions
-            prov_fn = getattr(PyDevice, "provisioned_status", None) or getattr(PyDevice, "get_provisioned_status", None)
-            if prov_fn:
-                prov_status = prov_fn(central_conn=conn, serial_number=record.serial_number)
-                if not prov_status:
-                    logger.warning("pycentral provisioned_status returned False for %s", record.serial_number)
-            else:
-                logger.debug("pycentral Device has no provisioned_status method — skipping pycentral check")
-        except Exception as exc:
-            logger.warning("pycentral provisioned_status check failed: %s", exc)
-
-        # 3. Firmware version check (AOS-CX only)
+        # 2. Firmware version check (AOS-CX only)
         # softwareVersion/firmwareVersion may have platform prefix like "PL.10.16.1006"
         fw_version = (device or {}).get("firmwareVersion", "") or ""
         if (
@@ -98,7 +81,7 @@ class VerifyStage(Stage):
                     f"firmwareVersion={fw_version!r} does not contain '10.'"
                 )
 
-        # 4. Config-health: configStatus must be SYNCHRONIZED
+        # 3. Config-health: configStatus must be SYNCHRONIZED
         try:
             health = central.get(
                 "/network-config/v1alpha1/config-health/devices",

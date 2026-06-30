@@ -12,8 +12,8 @@ import time
 import uuid
 from typing import Any, Optional
 
-from pipeline.clients.token_manager import TokenManager
 from pipeline.clients.central_client import CentralClient
+from pipeline.clients.token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,8 @@ def _compact_exception_message(exc: Exception, max_chars: int = 240) -> str:
     body_text = str(body or "").strip()
     if len(body_text) > max_chars:
         body_text = f"{body_text[:max_chars]}... [truncated {len(body_text) - max_chars} chars]"
-    return f"HTTP {response.status_code} {response.reason}: {body_text}"
+    reason = getattr(response, "reason_phrase", None) or getattr(response, "reason", "")
+    return f"HTTP {response.status_code} {reason}: {body_text}"
 
 
 class GLPClient:

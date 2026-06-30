@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import requests
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ class TokenManager:
     def _refresh_token(self) -> None:
         logger.info("Refreshing token (url=%s)", self.token_url)
         try:
-            response = requests.post(
+            response = httpx.post(
                 self.token_url,
                 data={
                     "grant_type": "client_credentials",
@@ -147,7 +147,7 @@ class TokenManager:
                 "Token refreshed. Expires at %s",
                 datetime.fromtimestamp(self.token_expires_at).strftime("%Y-%m-%d %H:%M:%S"),
             )
-        except requests.RequestException as exc:
+        except httpx.HTTPError as exc:
             raise RuntimeError(f"Token refresh failed: {exc}") from exc
 
     def get_access_token(self, force_refresh: bool = False) -> str:

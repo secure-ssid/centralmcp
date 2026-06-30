@@ -1,9 +1,14 @@
 """MCP server — Aruba tool router (lazy loading via semantic tool RAG).
 
-Exposes a lean surface (find_tool + invoke_tool + common discovery tools)
-and retrieves the full 149-tool catalog on demand. Backend servers
-(config/monitoring/nac/ops/glp/rag) are imported in-process and dispatched
-by name — no subprocess overhead.
+Exposes a lean surface (find_tool + invoke_read_tool + invoke_tool + optional
+discovery wrappers) and retrieves the full tool catalog on demand. Backend
+servers are imported in-process and dispatched by name — no subprocess overhead.
+
+Optional product backends can be enabled with:
+  CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+
+Toolsets can narrow loaded backends:
+  CENTRALMCP_TOOLSETS=central,rag
 
 Point MCP clients at THIS server instead of the 6 individual ones to cut
 context cost ~80% and let small local models pick tools reliably.
@@ -16,16 +21,25 @@ from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from mcp_servers.shared import READ_ONLY
+from mcp_servers.prompts import register_router_prompts
+from mcp_servers.shared import DESTRUCTIVE, READ_ONLY
 
 _BACKEND = os.getenv("CENTRALMCP_RAG_BACKEND", "lancedb").strip().lower()
+_ROUTER_MODE = os.getenv("CENTRALMCP_ROUTER_MODE", "default").strip().lower()
 
 if _BACKEND == "redis":
     from pipeline.clients.ollama_client import OllamaClient
 
     try:
-        from pipeline.clients.redis_client import TOOLS_INDEX, get_client as _get_redis
-        from pipeline.clients.redis_client import search_tools as _search_tools
+        from pipeline.clients.redis_client import (
+            TOOLS_INDEX,
+        )
+        from pipeline.clients.redis_client import (
+            get_client as _get_redis,
+        )
+        from pipeline.clients.redis_client import (
+            search_tools as _search_tools,
+        )
         _redis_tools = _get_redis()
         _redis_tools.ping()
     except Exception:
@@ -38,9 +52,10 @@ else:
     _embedder = EmbedClient()  # lazy — the ONNX model loads on first query
 
 mcp = FastMCP("aruba-tool-router")
+register_router_prompts(mcp)
 
 # Backend MCP modules (loaded lazily on first invoke_tool).
-_BACKENDS = {
+_BACKENDS_BASE = {
     "aruba-config": "mcp_servers.config",
     "aruba-monitoring": "mcp_servers.monitoring",
     "aruba-nac": "mcp_servers.nac",
@@ -48,19 +63,85 @@ _BACKENDS = {
     "aruba-glp": "mcp_servers.glp",
     "aruba-rag": "mcp_servers.rag",
 }
+_OPTIONAL_BACKENDS = {
+    "clearpass": ("clearpass-core", "mcp_servers.clearpass"),
+    "mist": ("mist-core", "mcp_servers.mist"),
+    "apstra": ("apstra-core", "mcp_servers.apstra"),
+    "aos8": ("aos8-core", "mcp_servers.aos8"),
+    "edgeconnect": ("edgeconnect-core", "mcp_servers.edgeconnect"),
+}
+_TOOLSET_BACKENDS = {
+    "config": {"aruba-config"},
+    "monitoring": {"aruba-monitoring"},
+    "nac": {"aruba-nac"},
+    "ops": {"aruba-ops"},
+    "glp": {"aruba-glp"},
+    "rag": {"aruba-rag"},
+    "central": {"aruba-config", "aruba-monitoring", "aruba-nac", "aruba-ops"},
+    "clearpass": {"clearpass-core"},
+    "mist": {"mist-core"},
+    "apstra": {"apstra-core"},
+    "aos8": {"aos8-core"},
+    "edgeconnect": {"edgeconnect-core"},
+}
+
+
+def _csv_env(name: str) -> list[str]:
+    raw = os.getenv(name, "")
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def _build_backends() -> dict[str, str]:
+    """Build backend module map, including optional product backends.
+
+    Optional products/toolsets are enabled via:
+      CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+      CENTRALMCP_TOOLSETS=central,glp,rag
+    Unknown product names are ignored.
+    """
+    products = _csv_env("CENTRALMCP_PRODUCTS")
+    toolsets = _csv_env("CENTRALMCP_TOOLSETS")
+
+    optional_by_server = {
+        server_name: module_path
+        for server_name, module_path in _OPTIONAL_BACKENDS.values()
+    }
+    all_backends = {**_BACKENDS_BASE, **optional_by_server}
+
+    if not toolsets:
+        out = dict(_BACKENDS_BASE)
+    elif "all" in toolsets:
+        out = dict(all_backends)
+    else:
+        wanted_servers: set[str] = set()
+        for toolset in toolsets:
+            wanted_servers.update(_TOOLSET_BACKENDS.get(toolset, set()))
+        out = {server: all_backends[server] for server in wanted_servers if server in all_backends}
+
+    for product in products:
+        spec = _OPTIONAL_BACKENDS.get(product)
+        if spec:
+            server_name, module_path = spec
+            out[server_name] = module_path
+    return out
+
+
+_BACKENDS = _build_backends()
 _tool_index: dict[str, Any] = {}  # name -> FastMCP Tool
 _tool_servers: dict[str, Any] = {}  # name -> owning FastMCP backend (for dispatch)
+_tool_backend_names: dict[str, str] = {}  # name -> owning server name
 
 
 def _load_all_backends() -> None:
     """Import every backend once and index tools by name."""
     if _tool_index:
         return
-    for module_path in _BACKENDS.values():
+    for server_name, module_path in _BACKENDS.items():
         mod = importlib.import_module(module_path)
         for name, tool in mod.mcp._tool_manager._tools.items():
             _tool_index[name] = tool
             _tool_servers[name] = mod.mcp
+            _tool_backend_names[name] = server_name
 
 
 # ── find_tool ────────────────────────────────────────────────────────────────
@@ -99,22 +180,35 @@ def _keyword_hits(query: str, limit: int) -> list[dict]:
         schema = t.parameters if isinstance(t.parameters, dict) else {}
         out.append({
             "name": t.name,
+            "server": _tool_backend_names.get(t.name),
             "description": (t.description or "").strip(),
             "params": list((schema.get("properties") or {}).keys()),
             "schema": schema,
             "score": round(score, 4),
             "match": "keyword",
+            **_annotation_flags(t),
         })
     return out
 
 
+def _annotation_flags(tool: Any) -> dict[str, bool]:
+    annotations = getattr(tool, "annotations", None)
+    return {
+        "read_only": bool(getattr(annotations, "readOnlyHint", False)),
+        "destructive": bool(getattr(annotations, "destructiveHint", False)),
+        "idempotent": bool(getattr(annotations, "idempotentHint", False)),
+    }
+
+
 @mcp.tool(annotations=READ_ONLY)
 def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
-    """Find Aruba tools by query. Combines semantic search + tool-name keyword match.
+    """Find tools by query. Combines semantic search + tool-name keyword match.
 
     Call this first when you need an action. The returned `name` is what you
-    pass to invoke_tool. Results are deduplicated; semantic matches are
-    annotated match='semantic', name-overlap matches match='keyword'.
+    pass to invoke_read_tool for read-only tools or invoke_tool for writes.
+    Results are deduplicated; semantic matches are annotated match='semantic',
+    name-overlap matches match='keyword', and safety flags mirror backend
+    ToolAnnotations.
 
     Args:
         query: What you want to do. e.g. "create a VLAN", "disconnect a client".
@@ -141,18 +235,20 @@ def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
         added = 0
         for h in hits:
             name = h.get("name", "")
-            if not name or name in by_name:
+            server = h.get("server")
+            if not name or name in by_name or server not in _BACKENDS:
                 continue
             if added >= sem_budget + max(0, kw_budget - len(by_name)):
                 break
             by_name[name] = {
                 "name": name,
-                "server": h.get("server"),
+                "server": server,
                 "description": h.get("description", ""),
                 "params": [],
                 "schema": json.loads(h.get("schema_json") or "{}"),
                 "score": h.get("score", 0.0),
                 "match": "semantic",
+                **_annotation_flags(_tool_index.get(name)),
             }
             added += 1
     except Exception:
@@ -161,9 +257,48 @@ def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
     return list(by_name.values())[:top_k]
 
 
-# ── invoke_tool ──────────────────────────────────────────────────────────────
+# ── invoke_read_tool / invoke_tool ───────────────────────────────────────────
+
+async def _dispatch_tool(ctx: Context, name: str, arguments: dict[str, Any] | None = None) -> Any:
+    _load_all_backends()
+    backend = _tool_servers.get(name)
+    if backend is None:
+        return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
+    args = {k: v for k, v in (arguments or {}).items() if v is not None}
+    try:
+        return await backend._tool_manager.call_tool(name, args, context=ctx)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
 
 @mcp.tool(annotations=READ_ONLY)
+async def invoke_read_tool(
+    ctx: Context,
+    name: str,
+    arguments: dict[str, Any] | None = None,
+) -> Any:
+    """Call a read-only Aruba tool by name (from find_tool).
+
+    This refuses tools that are not annotated read-only. Use invoke_tool only
+    for write/destructive tools after explicit user intent.
+    """
+    _load_all_backends()
+    tool = _tool_index.get(name)
+    if tool is None:
+        return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
+    if not bool(getattr(getattr(tool, "annotations", None), "readOnlyHint", False)):
+        return {
+            "error": (
+                f"Tool '{name}' is not read-only. Use invoke_tool only after "
+                "explicit user intent for write/destructive actions."
+            ),
+            "tool": name,
+            "status": "blocked",
+        }
+    return await _dispatch_tool(ctx, name, arguments)
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
 async def invoke_tool(
     ctx: Context,
     name: str,
@@ -180,97 +315,130 @@ async def invoke_tool(
     confirmation elicitation. (FastMCP injects `ctx` here and strips it from the
     published schema, so callers only pass name + arguments.)
     """
-    _load_all_backends()
-    backend = _tool_servers.get(name)
-    if backend is None:
-        return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
-    args = arguments or {}
-    try:
-        return await backend._tool_manager.call_tool(name, args, context=ctx)
-    except Exception as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+    return await _dispatch_tool(ctx, name, arguments)
 
 
-# ── Always-available discovery tools (used in nearly every session) ──────────
-
-@mcp.tool(annotations=READ_ONLY)
-async def list_scopes(ctx: Context) -> dict[str, Any]:
-    """List Central scopes (sites, groups, global) — ID + name."""
-    return await invoke_tool(ctx, "list_scopes")
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def get_global_scope_id(ctx: Context) -> dict[str, Any]:
-    """Return the global (org-wide) scope-id."""
-    return await invoke_tool(ctx, "get_global_scope_id")
+# ── Optional discovery convenience tools ──────────────────────────────────────
+#
+# default mode: include convenience wrappers (list_sites/find_device/etc.)
+# minimal mode: expose only find_tool + invoke_read_tool + invoke_tool to minimize tool-list tokens
+if _ROUTER_MODE != "minimal" and "aruba-monitoring" in _BACKENDS:
+    @mcp.tool(annotations=READ_ONLY)
+    async def list_scopes(ctx: Context) -> dict[str, Any]:
+        """List Central scopes (sites, groups, global) — ID + name."""
+        return await invoke_tool(ctx, "list_scopes")
 
 
-@mcp.tool(annotations=READ_ONLY)
-async def list_sites(
-    ctx: Context, limit: int = 50, offset: int = 0, full_list: bool = False
-) -> dict[str, Any]:
-    """List sites (paginated)."""
-    return await invoke_tool(
-        ctx, "list_sites", {"limit": limit, "offset": offset, "full_list": full_list}
-    )
+    @mcp.tool(annotations=READ_ONLY)
+    async def get_global_scope_id(ctx: Context) -> dict[str, Any]:
+        """Return the global (org-wide) scope-id."""
+        return await invoke_tool(ctx, "get_global_scope_id")
 
 
-@mcp.tool(annotations=READ_ONLY)
-async def list_devices(
-    ctx: Context, limit: int = 50, offset: int = 0, full_list: bool = False
-) -> dict[str, Any]:
-    """List devices (paginated)."""
-    return await invoke_tool(
-        ctx, "list_devices", {"limit": limit, "offset": offset, "full_list": full_list}
-    )
+    @mcp.tool(annotations=READ_ONLY)
+    async def list_sites(
+        ctx: Context, limit: int = 50, offset: int = 0, full_list: bool = False
+    ) -> dict[str, Any]:
+        """List sites (paginated)."""
+        return await invoke_tool(
+            ctx, "list_sites", {"limit": limit, "offset": offset, "full_list": full_list}
+        )
 
 
-@mcp.tool(annotations=READ_ONLY)
-async def find_device(ctx: Context, query: str) -> dict[str, Any]:
-    """Find a device by name / serial / MAC / IP."""
-    return await invoke_tool(ctx, "find_device", {"query": query})
+    @mcp.tool(annotations=READ_ONLY)
+    async def list_devices(
+        ctx: Context, limit: int = 50, offset: int = 0, full_list: bool = False
+    ) -> dict[str, Any]:
+        """List devices (paginated)."""
+        return await invoke_tool(
+            ctx, "list_devices", {"limit": limit, "offset": offset, "full_list": full_list}
+        )
 
 
-@mcp.tool(annotations=READ_ONLY)
-async def find_client(ctx: Context, query: str) -> dict[str, Any]:
-    """Find a client by name / MAC / IP."""
-    return await invoke_tool(ctx, "find_client", {"query": query})
+    @mcp.tool(annotations=READ_ONLY)
+    async def find_device(ctx: Context, query: str) -> dict[str, Any]:
+        """Find a device by name / serial / MAC / IP."""
+        return await invoke_tool(ctx, "find_device", {"serial_number": query})
 
 
-@mcp.tool(annotations=READ_ONLY)
-async def search_docs(ctx: Context, query: str, top_k: int = 5, source: str | None = None) -> Any:
-    """Search Aruba/HPE documentation (Central config, APIs, NAC, VSG).
-
-    For EXACT API questions (enum values, endpoints, schema fields) prefer
-    lookup_api — it is lossless; this is fuzzy retrieval.
-    """
-    args: dict[str, Any] = {"query": query, "top_k": top_k}
-    if source:
-        args["source"] = source
-    return await invoke_tool(ctx, "search_docs", args)
+    @mcp.tool(annotations=READ_ONLY)
+    async def find_client(ctx: Context, query: str) -> dict[str, Any]:
+        """Find a client by name / MAC / IP."""
+        return await invoke_tool(ctx, "find_client", {"mac_or_ip": query})
 
 
-@mcp.tool(annotations=READ_ONLY)
-async def lookup_api(ctx: Context, query: str, top_k: int = 10) -> Any:
-    """Exact Aruba Central API lookup — endpoints, schemas, fields, enum values.
+if _ROUTER_MODE != "minimal" and "aruba-rag" in _BACKENDS:
+    @mcp.tool(annotations=READ_ONLY)
+    async def ask_docs(ctx: Context, query: str, top_k: int = 5) -> Any:
+        """Ask Aruba/HPE docs for a compact cited answer.
 
-    Use INSTEAD of search_docs for "what enum values does field X accept",
-    "which endpoint configures Y and with what method", or "what fields does
-    schema Z have". Authoritative answers from the parsed OpenAPI specs.
-    Returns [] when the specs hold no confident answer — fall back to
-    search_docs in that case.
-    """
-    return await invoke_tool(ctx, "lookup_api", {"query": query, "top_k": top_k})
+        Use this for prose/how-to questions when you want a short answer instead
+        of raw retrieval hits. Exact endpoint/schema questions should still use
+        lookup_api first.
+        """
+        return await invoke_tool(ctx, "ask_docs", {"question": query, "top_k": top_k})
+
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def search_docs(ctx: Context, query: str, top_k: int = 5, source: str | None = None) -> Any:
+        """Search Aruba/HPE documentation (Central config, APIs, NAC, VSG).
+
+        For EXACT API questions (enum values, endpoints, schema fields) prefer
+        lookup_api — it is lossless; this is fuzzy retrieval.
+        """
+        args: dict[str, Any] = {"query": query, "top_k": top_k}
+        if source:
+            args["source"] = source
+        return await invoke_tool(ctx, "search_docs", args)
+
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def lookup_api(ctx: Context, query: str, top_k: int = 10) -> Any:
+        """Exact Aruba Central API lookup — endpoints, schemas, fields, enum values.
+
+        Use INSTEAD of search_docs for "what enum values does field X accept",
+        "which endpoint configures Y and with what method", or "what fields does
+        schema Z have". Authoritative answers from the parsed OpenAPI specs.
+        Returns [] when the specs hold no confident answer — fall back to
+        search_docs in that case.
+        """
+        return await invoke_tool(ctx, "lookup_api", {"query": query, "top_k": top_k})
 
 
 if __name__ == "__main__":
     from mcp_servers._cache_hygiene import stable_list_tools
     from mcp_servers._middleware import (
+        MacNormalizeMiddleware,
         NullStripMiddleware,
         RateLimitMiddleware,
+        ResponseEnvelopeMiddleware,
+        UnknownToolSuggestMiddleware,
         install_middleware,
     )
+
+    def _suggest_router_tool(name: str, limit: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": item["name"],
+                "description": item.get("description", ""),
+                "match": item.get("match", "keyword"),
+                "score": item.get("score", 0.0),
+            }
+            for item in _keyword_hits(name.replace("_", " "), limit)
+        ]
+
+    middlewares = [
+        NullStripMiddleware(),
+        RateLimitMiddleware(rate=8.0),
+        UnknownToolSuggestMiddleware(
+            lambda: mcp._tool_manager._tools,
+            suggestion_provider=_suggest_router_tool,
+        ),
+        ResponseEnvelopeMiddleware(),
+    ]
+    if os.getenv("CENTRALMCP_NORMALIZE_MACS", "").strip().lower() in {"1", "true", "yes"}:
+        middlewares.append(MacNormalizeMiddleware())
     stable_list_tools(mcp)
-    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    install_middleware(mcp, middlewares)
     from mcp_servers.shared import READ_ONLY, run_server
     run_server(mcp)

@@ -28,6 +28,7 @@ import pytest
 from mcp.server.fastmcp import Context, FastMCP
 
 import mcp_servers.tool_router as router
+from mcp_servers.shared import IDEMPOTENT_WRITE, READ_ONLY
 
 # ---------------------------------------------------------------------------
 # A tiny backend that mirrors the three tool shapes the router must dispatch.
@@ -37,13 +38,17 @@ import mcp_servers.tool_router as router
 def _build_backend() -> FastMCP:
     srv = FastMCP("test-backend")
 
-    @srv.tool()
+    @srv.tool(annotations=READ_ONLY)
     def sync_echo(value: int) -> dict[str, Any]:
         return {"kind": "sync", "value": value}
 
-    @srv.tool()
+    @srv.tool(annotations=READ_ONLY)
     async def async_echo(value: int) -> dict[str, Any]:
         return {"kind": "async", "value": value}
+
+    @srv.tool(annotations=READ_ONLY)
+    def optional_limit(limit: int = 5) -> dict[str, Any]:
+        return {"limit": limit}
 
     @srv.tool()
     async def async_ctx_echo(ctx: Context, value: int) -> dict[str, Any]:
@@ -54,6 +59,10 @@ def _build_backend() -> FastMCP:
     @srv.tool()
     def boom() -> dict[str, Any]:
         raise RuntimeError("kaboom")
+
+    @srv.tool(annotations=IDEMPOTENT_WRITE)
+    def write_echo(value: int) -> dict[str, Any]:
+        return {"kind": "write", "value": value}
 
     return srv
 
@@ -70,6 +79,12 @@ def wired_router(monkeypatch):
 
     monkeypatch.setattr(router, "_tool_index", tools, raising=True)
     monkeypatch.setattr(router, "_tool_servers", servers, raising=True)
+    monkeypatch.setattr(
+        router,
+        "_tool_backend_names",
+        {name: "test-backend" for name in tools},
+        raising=True,
+    )
     # Maps are already populated; make the lazy loader a no-op so it doesn't
     # clobber them by importing the real backend modules.
     monkeypatch.setattr(router, "_load_all_backends", lambda: None, raising=True)
@@ -86,6 +101,11 @@ def _invoke(name: str, arguments: dict[str, Any] | None = None) -> Any:
     return asyncio.run(router.invoke_tool(ctx, name, arguments))
 
 
+def _invoke_read(name: str, arguments: dict[str, Any] | None = None) -> Any:
+    ctx = router.mcp.get_context()
+    return asyncio.run(router.invoke_read_tool(ctx, name, arguments))
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -99,6 +119,19 @@ class TestDispatch:
     def test_async_tool(self, wired_router):
         out = _invoke("async_echo", {"value": 9})
         assert out == {"kind": "async", "value": 9}
+
+    def test_read_only_dispatcher_allows_read_only_tool(self, wired_router):
+        out = _invoke_read("sync_echo", {"value": 7})
+        assert out == {"kind": "sync", "value": 7}
+
+    def test_dispatcher_strips_nested_null_arguments(self, wired_router):
+        out = _invoke_read("optional_limit", {"limit": None})
+        assert out == {"limit": 5}
+
+    def test_read_only_dispatcher_blocks_write_tool(self, wired_router):
+        out = _invoke_read("write_echo", {"value": 7})
+        assert out["status"] == "blocked"
+        assert "not read-only" in out["error"]
 
     def test_async_ctx_tool_gets_context_injected(self, wired_router):
         # The core C2 regression: a ctx-requiring async tool must run AND

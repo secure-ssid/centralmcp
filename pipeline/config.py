@@ -96,6 +96,8 @@ def build_account_contexts(creds_path: str = "config/credentials.yaml") -> tuple
         client_id=creds["source"]["client_id"],
         client_secret=creds["source"]["client_secret"],
         glp_workspace_id=creds["source"]["glp_workspace_id"],
+        glp_token_url=creds["glp"]["token_url"],
+        glp_base_url=creds["glp"]["base_url"],
     )
 
     target = AccountContext(
@@ -104,6 +106,8 @@ def build_account_contexts(creds_path: str = "config/credentials.yaml") -> tuple
         client_id=creds["target"]["client_id"],
         client_secret=creds["target"]["client_secret"],
         glp_workspace_id=creds["target"]["glp_workspace_id"],
+        glp_token_url=creds["glp"]["token_url"],
+        glp_base_url=creds["glp"]["base_url"],
     )
 
     return source, target

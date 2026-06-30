@@ -69,19 +69,16 @@ class OnboardStage(Stage):
                     "ensure the device is in GLP with an active subscription."
                 )
 
-        # Trigger onboarding via pycentral v2 NewCentralBase
+        # Trigger onboarding directly via Central REST
         try:
-            conn = target_ctx.central_client.get_pycentral_conn()
-            # pycentral handles the onboarding activation request
-            conn.command(
-                api_method="POST",
-                api_path="device-inventory/v1/devices/activate",
-                api_data={"serials": [record.serial_number]},
+            target_ctx.central_client.post(
+                "/device-inventory/v1/devices/activate",
+                data={"serials": [record.serial_number]},
             )
             logger.info("Onboard activation triggered for %s", record.serial_number)
         except Exception as exc:
             logger.warning(
-                "pycentral activate call failed for %s: %s — polling for status anyway",
+                "activate call failed for %s: %s — polling for status anyway",
                 record.serial_number,
                 exc,
             )

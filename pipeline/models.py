@@ -131,6 +131,8 @@ class AccountContext:
     client_id: str
     client_secret: str
     glp_workspace_id: str = ""
+    glp_token_url: str = "https://sso.common.cloud.hpe.com/as/token.oauth2"
+    glp_base_url: str = "https://global.api.greenlake.hpe.com"
 
     # Populated lazily by pipeline/clients modules
     central_client: Any = field(default=None, repr=False)

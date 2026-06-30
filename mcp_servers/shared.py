@@ -2,8 +2,10 @@
 import asyncio
 import logging
 import os
+import re
 import time
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from mcp.types import ToolAnnotations
 
@@ -56,12 +58,47 @@ MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
 
 
+def _csv_env(name: str) -> list[str]:
+    return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _configure_http_transport(mcp_instance: Any, host: str, port: int) -> None:
+    """Apply HTTP transport settings on SDK versions whose run() reads settings."""
+    settings = getattr(mcp_instance, "settings", None)
+    if settings is None:
+        return
+    settings.host = host
+    settings.port = port
+
+    transport_security = getattr(settings, "transport_security", None)
+    if transport_security is None:
+        return
+    transport_security.enable_dns_rebinding_protection = _env_bool(
+        "MCP_DNS_REBINDING_PROTECTION",
+        transport_security.enable_dns_rebinding_protection,
+    )
+    allowed_hosts = _csv_env("MCP_ALLOWED_HOSTS")
+    if allowed_hosts:
+        transport_security.allowed_hosts = allowed_hosts
+    allowed_origins = _csv_env("MCP_ALLOWED_ORIGINS")
+    if allowed_origins:
+        transport_security.allowed_origins = allowed_origins
+
+
 def run_server(mcp_instance, default_port: int | None = None) -> None:
     """Run an MCP server with transport configured by environment.
 
     MCP_TRANSPORT: 'stdio' (default) or 'streamable-http'
     MCP_HOST: bind address (default 127.0.0.1)
     MCP_PORT: port (default 8000, or default_port if provided)
+    MCP_ALLOWED_HOSTS / MCP_ALLOWED_ORIGINS: comma-separated DNS rebinding allowlists
     """
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport == "stdio":
@@ -69,7 +106,8 @@ def run_server(mcp_instance, default_port: int | None = None) -> None:
     else:
         host = os.environ.get("MCP_HOST", "127.0.0.1")
         port = int(os.environ.get("MCP_PORT", str(default_port or 8000)))
-        mcp_instance.run(transport=transport, host=host, port=port)
+        _configure_http_transport(mcp_instance, host, port)
+        mcp_instance.run(transport=transport)
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +117,7 @@ def run_server(mcp_instance, default_port: int | None = None) -> None:
 _central_client: CentralClient | None = None
 _mcp_client: MCPClient | None = None
 _glp_client: GLPClient | None = None
+_ENCODED_PATH_RESERVED = re.compile(r"%(?:2e|2f|5c)", re.IGNORECASE)
 
 
 def get_client() -> CentralClient:
@@ -112,12 +151,14 @@ def get_glp_client() -> GLPClient:
         tm = TokenManager(
             client_id=target_ctx.client_id,
             client_secret=target_ctx.client_secret,
+            token_url=target_ctx.glp_token_url,
             cache_key="glp",
             expiry_buffer=60,
         )
         _glp_client = GLPClient(
             token_manager=tm,
             workspace_id=target_ctx.glp_workspace_id,
+            base_url=target_ctx.glp_base_url,
         )
     return _glp_client
 
@@ -157,6 +198,26 @@ def compact_http_error(resp: Any, endpoint: str | None = None, max_chars: int = 
         body = resp.text
     where = f" at {endpoint}" if endpoint else ""
     return f"HTTP {resp.status_code}{where}: {_truncate_text(body, max_chars=max_chars)}"
+
+
+def safe_api_path(path: str, allowed_prefixes: tuple[str, ...]) -> str:
+    """Validate a user-supplied API path before appending it to an authenticated host."""
+    parsed = urlsplit(path)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError("path must be a relative API path without scheme, host, query, or fragment")
+    if _ENCODED_PATH_RESERVED.search(parsed.path):
+        raise ValueError("path must not contain encoded dot, slash, or backslash characters")
+    decoded = unquote(parsed.path)
+    if _ENCODED_PATH_RESERVED.search(decoded):
+        raise ValueError("path must not contain double-encoded dot, slash, or backslash characters")
+    if "\\" in decoded:
+        raise ValueError("path must not contain backslashes")
+    if any(segment in (".", "..") for segment in decoded.split("/")):
+        raise ValueError("path must not contain dot segments")
+    if not decoded.startswith(allowed_prefixes):
+        allowed = ", ".join(f"{prefix}*" for prefix in allowed_prefixes)
+        raise ValueError(f"path must begin with one of: {allowed}")
+    return decoded
 
 
 def bound_collection_response(

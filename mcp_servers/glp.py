@@ -1,4 +1,4 @@
-"""MCP server — GreenLake Platform (GLP): inventory, licensing, and user management (10 tools).
+"""MCP server — GreenLake Platform (GLP): inventory, licensing, and user management (12 tools).
 
 Covers: GLP device lifecycle, subscription assignment, bulk onboarding, audit logs, users.
 Uses the target_account (glp_account) credentials.
@@ -7,9 +7,76 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_servers.shared import DESTRUCTIVE, IDEMPOTENT_WRITE, READ_ONLY, get_glp_client
+from pipeline.clients.glp_client import _V2BETA1_WRITES_FLAG, _writes_enabled
+
+from mcp_servers.shared import DESTRUCTIVE, IDEMPOTENT_WRITE, READ_ONLY, get_glp_client, safe_api_path
 
 mcp = FastMCP("aruba-glp")
+
+_GLP_GET_PREFIXES = (
+    "/devices/",
+    "/subscriptions/",
+    "/audit-logs/",
+    "/identity/",
+    "/service-catalog/",
+    "/workspaces/",
+    "/reporting/",
+)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def glp_write_status() -> dict[str, Any]:
+    """Report whether guarded GLP v2beta1 write tools are enabled."""
+    enabled = _writes_enabled()
+    return {
+        "enabled": enabled,
+        "flag": _V2BETA1_WRITES_FLAG,
+        "set_to_enable": f"{_V2BETA1_WRITES_FLAG}=1",
+        "guarded_tools": [
+            "glp_assign_subscription",
+            "glp_add_device",
+            "glp_add_devices_bulk",
+            "glp_archive_device",
+        ],
+        "message": (
+            "GLP write tools can execute."
+            if enabled
+            else "GLP write tools are visible but fail closed until the feature flag is enabled."
+        ),
+    }
+
+
+def _write_disabled(tool_name: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    if _writes_enabled():
+        return None
+    return {
+        "status": "FORBIDDEN",
+        "error": (
+            f"{tool_name} is gated behind {_V2BETA1_WRITES_FLAG}=1 and was not performed. "
+            "Set the flag only after sandbox-validating payload and rollback."
+        ),
+        "flag": _V2BETA1_WRITES_FLAG,
+        "would_have_sent": payload,
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def glp_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Perform a guarded read-only GET against selected GLP API families.
+
+    Useful for exploring GLP service-catalog, workspaces, reporting, and
+    adjacent read-only APIs before adding dedicated typed wrappers. Path must
+    be relative and begin with one of the documented GLP API family prefixes.
+    """
+    try:
+        safe_path = safe_api_path(path, _GLP_GET_PREFIXES)
+    except ValueError as exc:
+        return {"error": f"Invalid path. {exc}"}
+    try:
+        data = get_glp_client()._client.get(safe_path, params=params or {})
+        return {"data": data, "endpoint_used": safe_path}
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": safe_path}
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -105,6 +172,12 @@ def glp_assign_subscription(serial_number: str, subscription_key: str) -> dict[s
     subscription_key accepts either a subscription key string or its GLP UUID;
     a key is resolved to its UUID internally before assignment.
     """
+    disabled = _write_disabled(
+        "glp_assign_subscription",
+        {"serial_number": serial_number, "subscription_key": subscription_key},
+    )
+    if disabled:
+        return disabled
     glp = get_glp_client()
     errors: list[str] = []
     try:
@@ -118,6 +191,12 @@ def glp_assign_subscription(serial_number: str, subscription_key: str) -> dict[s
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
 def glp_add_device(serial_number: str, mac_address: str | None = None) -> dict[str, Any]:
     """Add a device to the GLP workspace (async task, polls until complete, ~5min max)."""
+    disabled = _write_disabled(
+        "glp_add_device",
+        {"serial_number": serial_number, "mac_address": mac_address},
+    )
+    if disabled:
+        return disabled
     glp = get_glp_client()
     errors: list[str] = []
     try:
@@ -135,6 +214,9 @@ def glp_add_devices_bulk(devices: list[dict[str, str]]) -> dict[str, Any]:
 
     Returns task_id + task_result (successfulDevicesSerial / failedDevicesSerial).
     """
+    disabled = _write_disabled("glp_add_devices_bulk", {"devices": devices})
+    if disabled:
+        return disabled
     glp = get_glp_client()
     errors: list[str] = []
     try:
@@ -149,6 +231,9 @@ def glp_add_devices_bulk(devices: list[dict[str, str]]) -> dict[str, Any]:
 @mcp.tool(annotations=DESTRUCTIVE)
 def glp_archive_device(serial_number: str) -> dict[str, Any]:
     """Archive a device in GLP (removes from Central, keeps in GLP inventory)."""
+    disabled = _write_disabled("glp_archive_device", {"serial_number": serial_number})
+    if disabled:
+        return disabled
     glp = get_glp_client()
     errors: list[str] = []
     try:

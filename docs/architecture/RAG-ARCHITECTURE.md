@@ -1,7 +1,7 @@
 # centralmcp — RAG Architecture & Decision (2026-06-03)
 
 **Repo:** https://github.com/secure-ssid/centralmcp
-**Companion:** [AUDIT-2026-06-03.md](AUDIT-2026-06-03.md) · **Obsidian:** `Central-MCP-Obsidian/Projects/centralmcp — Audit & RAG Redesign (2026-06-03)`
+**Companion:** [../audits/AUDIT-2026-06-03.md](../audits/AUDIT-2026-06-03.md) · **Obsidian:** `Central-MCP-Obsidian/Projects/centralmcp — Audit & RAG Redesign (2026-06-03)`
 
 ---
 
@@ -110,7 +110,7 @@ Metrics: `recall@5` (did an expected source appear in top-5), `mrr` (rank of fir
 | `mrr` | 0.339 | 0.679 | **0.90** | ≥ 0.50 ✅ |
 | `keyword_hit` | — | 0.80 | **1.00** | — |
 
-**Final corpus (full rebuild):** 53,052 chunks / 7 sources (Redis index had 40,900 and was missing `aos_techdocs`, `openapi_specs`, and most of `techdocs_html`) + 213-spec SQLite index + 150-tool index. 18/20 eval questions hit at rank 1. Shippable artifacts: `data/docs.lance` (190 MB), `data/specs.sqlite` (18 MB), `data/tools.lance` (0.6 MB).
+**Final corpus (full rebuild):** 53,052 chunks / 7 sources (Redis index had 40,900 and was missing `aos_techdocs`, `openapi_specs`, and most of `techdocs_html`) + 213-spec SQLite index + router tool index (currently 194 core tools / 204 with optional product starters). 18/20 eval questions hit at rank 1. Shippable artifacts: `data/docs.lance` (190 MB), `data/specs.sqlite` (18 MB), `data/tools.lance` (0.6 MB).
 
 The API-lookup rows almost all missed the spec sources at baseline — direct empirical evidence of **R2** (OpenAPI specs absent from the active index). `howto` retrieval is already decent, confirming the redesign's value is concentrated in (a) structured API lookup and (b) hybrid+rerank for exact identifiers, not in replacing vector search wholesale. Re-run `uv run --with pyyaml python tests/eval/run_eval.py` after each change.
 

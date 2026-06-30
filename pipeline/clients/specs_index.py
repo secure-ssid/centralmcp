@@ -4,7 +4,7 @@ Vector search is the wrong tool for "what enum values does field X accept" or
 "which endpoint configures Y": those need lossless, authoritative answers.
 This module parses ingestion/sources/openapi_specs/*.json into SQLite with
 FTS5 keyword search, giving exact endpoint / schema / field / enum lookup.
-Stdlib only — no new dependencies. See docs/RAG-ARCHITECTURE.md.
+Stdlib only — no new dependencies. See docs/architecture/RAG-ARCHITECTURE.md.
 
 Build:   python -m pipeline.clients.specs_index --build
 Query:   python -m pipeline.clients.specs_index --query "auth-type"

@@ -1,8 +1,6 @@
 """Aruba Central REST API client.
 
 Wraps HTTP calls with automatic token refresh and 429/5xx retry+backoff.
-Also provides a pycentral v2 NewCentralBase accessor for scopes/provisioning calls
-that are not yet directly available via raw REST.
 
 Ported from aruba-central-portal/utils/central_api_client.py.
 """
@@ -15,7 +13,7 @@ import random
 import time
 from typing import Any, Optional
 
-import requests
+import httpx
 
 from pipeline.clients.token_manager import TokenManager
 
@@ -65,7 +63,7 @@ class CentralClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.token_manager = token_manager
-        self.session = requests.Session()
+        self.session = httpx.Client(timeout=30.0)
         self.session.headers.update({"Content-Type": "application/json"})
         self._refresh_auth_header()
 
@@ -82,7 +80,7 @@ class CentralClient:
         endpoint: str,
         max_retries: int = 3,
         **kwargs: Any,
-    ) -> requests.Response:
+    ) -> httpx.Response:
         """Issue an HTTP request, honoring Retry-After on 429 and backing
         off on transient 5xx errors.
 
@@ -182,8 +180,10 @@ class CentralClient:
             sorted(data.keys()) if isinstance(data, dict) else None,
         )
         response = self._request("POST", endpoint, json=data, params=params)
-        if not response.ok:
-            raise Exception(f"{response.status_code} {response.reason} — {response.text[:500]}")
+        if not response.is_success:
+            raise Exception(
+                f"{response.status_code} {response.reason_phrase} — {response.text[:500]}"
+            )
         return _parse_json(response)
 
     def post_async(
@@ -195,8 +195,10 @@ class CentralClient:
         """POST to an async endpoint; returns the Location header value (task URI)."""
         logger.debug("POST(async) %s%s", self.base_url, endpoint)
         response = self._request("POST", endpoint, json=data, params=params)
-        if not response.ok:
-            raise Exception(f"{response.status_code} {response.reason} — {response.text[:500]}")
+        if not response.is_success:
+            raise Exception(
+                f"{response.status_code} {response.reason_phrase} — {response.text[:500]}"
+            )
         location = response.headers.get("Location", "")
         logger.info("POST async Location: %s", location)
         return location
@@ -233,36 +235,7 @@ class CentralClient:
         response.raise_for_status()
         return _parse_json(response)
 
-    # ------------------------------------------------------------------
-    # pycentral v2 accessor
-    # ------------------------------------------------------------------
-
-    def get_pycentral_conn(self) -> Any:
-        """Return a pycentral v2 NewCentralBase connection object.
-
-        Used for pycentral.scopes and provisioning status checks that wrap
-        the Central APIs with convenience helpers.
-        """
-        try:
-            from pycentral import NewCentralBase  # type: ignore[import]
-        except ImportError as exc:
-            raise RuntimeError(
-                "pycentral is not installed. Run: pip install --pre pycentral"
-            ) from exc
-
-        token = self.token_manager.get_access_token()
-        conn = NewCentralBase(
-            token_info={
-                "new_central": {
-                    "base_url": self.base_url,
-                    "access_token": token,
-                }
-            }
-        )
-        return conn
-
-
-def _parse_json(response: requests.Response) -> dict[str, Any]:
+def _parse_json(response: httpx.Response) -> dict[str, Any]:
     if not response.text or not response.text.strip():
         return {}
     try:

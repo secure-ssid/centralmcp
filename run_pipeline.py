@@ -23,7 +23,6 @@ import logging
 import sys
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
@@ -67,15 +66,23 @@ def _build_clients(ctx: AccountContext, cache_key: str) -> None:
     if not ctx.client_id or not ctx.client_secret:
         return  # Skip — same-account target may not need separate creds
 
-    tm = TokenManager(
+    central_tm = TokenManager(
         client_id=ctx.client_id,
         client_secret=ctx.client_secret,
         cache_key=cache_key,
     )
-    central = CentralClient(base_url=ctx.base_url, token_manager=tm)
+    glp_tm = TokenManager(
+        client_id=ctx.client_id,
+        client_secret=ctx.client_secret,
+        token_url=ctx.glp_token_url,
+        cache_key=f"{cache_key}-glp",
+        expiry_buffer=60,
+    )
+    central = CentralClient(base_url=ctx.base_url, token_manager=central_tm)
     glp = GLPClient(
-        token_manager=tm,
+        token_manager=glp_tm,
         workspace_id=ctx.glp_workspace_id,
+        base_url=ctx.glp_base_url,
     )
     mcp = MCPClient(central_client=central)
 

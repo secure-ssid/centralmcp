@@ -132,6 +132,20 @@ def create_tools_table(db, rows: list[dict[str, Any]], table_name: str = TOOLS_T
     return table
 
 
+def tools_table(db, table_name: str = TOOLS_TABLE):
+    """Return the tools table, or None if it hasn't been built yet."""
+    try:
+        return db.open_table(table_name)
+    except Exception:
+        return None
+
+
+def tool_count(db, table_name: str = TOOLS_TABLE) -> int | None:
+    """Return indexed tool count, or None when the tools table is missing."""
+    table = tools_table(db, table_name)
+    return table.count_rows() if table is not None else None
+
+
 def search_tools(
     db,
     query_text: str,
@@ -140,9 +154,8 @@ def search_tools(
     table_name: str = TOOLS_TABLE,
 ) -> list[dict[str, Any]]:
     """Hybrid search over tool definitions (same shape as redis search_tools)."""
-    try:
-        table = db.open_table(table_name)
-    except Exception:
+    table = tools_table(db, table_name)
+    if table is None:
         return []
     q = (
         table.search(query_type="hybrid")

@@ -15,9 +15,9 @@ import sys
 import json
 
 try:
-    import requests
+    import httpx
 except ImportError:
-    sys.exit("requests is not installed — run: uv sync  (or pip install requests)")
+    sys.exit("httpx is not installed — run: uv sync  (or pip install httpx)")
 
 COLLECTION_ID = "32717089-1d8b9f9e-2137-4a7d-b735-1b3c06f87e70"
 POSTMAN_API_URL = f"https://api.getpostman.com/collections/{COLLECTION_ID}"
@@ -28,7 +28,7 @@ OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 def download(api_key: str) -> None:
     headers = {"X-Api-Key": api_key}
     print(f"Fetching collection {COLLECTION_ID} ...")
-    resp = requests.get(POSTMAN_API_URL, headers=headers, timeout=30)
+    resp = httpx.get(POSTMAN_API_URL, headers=headers, timeout=30)
     if resp.status_code == 401:
         sys.exit("Invalid Postman API key.")
     if resp.status_code == 404:

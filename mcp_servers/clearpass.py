@@ -1,0 +1,81 @@
+"""MCP server — optional ClearPass backend (low-surface starter tools).
+
+Enabled via tool router env:
+  CENTRALMCP_PRODUCTS=clearpass
+
+Auth/env:
+  CLEARPASS_BASE_URL   e.g. https://clearpass.example.com
+  CLEARPASS_API_TOKEN  static bearer token
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+from mcp.server.fastmcp import FastMCP
+
+from mcp_servers.shared import READ_ONLY, safe_api_path
+
+mcp = FastMCP("clearpass-core")
+
+
+def _clearpass_config() -> tuple[str | None, str | None]:
+    import os
+
+    base_url = os.getenv("CLEARPASS_BASE_URL", "").strip().rstrip("/")
+    token = os.getenv("CLEARPASS_API_TOKEN", "").strip()
+    return (base_url or None, token or None)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def clearpass_status() -> dict[str, Any]:
+    """Report whether ClearPass backend is configured."""
+    base_url, token = _clearpass_config()
+    return {
+        "configured": bool(base_url and token),
+        "base_url": base_url,
+        "has_token": bool(token),
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def clearpass_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Perform a read-only GET request to ClearPass REST API.
+
+    Safety guard: only allows paths beginning with `/api/`.
+    """
+    base_url, token = _clearpass_config()
+    if not base_url or not token:
+        return {"error": "ClearPass not configured. Set CLEARPASS_BASE_URL and CLEARPASS_API_TOKEN."}
+    try:
+        path = safe_api_path(path, ("/api/",))
+    except ValueError as exc:
+        return {"error": f"Invalid path. {exc}"}
+
+    url = f"{base_url}{path}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    try:
+        resp = httpx.get(url, headers=headers, params=params or {}, timeout=30.0)
+        payload: Any
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = resp.text
+        return {"status_code": resp.status_code, "data": payload, "url": url}
+    except httpx.HTTPError as exc:
+        return {"error": str(exc), "url": url}
+
+
+if __name__ == "__main__":
+    from mcp_servers._cache_hygiene import stable_list_tools
+    from mcp_servers._middleware import (
+        NullStripMiddleware,
+        RateLimitMiddleware,
+        install_middleware,
+    )
+    from mcp_servers.shared import run_server
+
+    stable_list_tools(mcp)
+    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    run_server(mcp)

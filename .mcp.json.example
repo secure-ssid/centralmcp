@@ -8,7 +8,9 @@
       "cwd": "/path/to/API-Central",
       "env": {
         "PYTHONPATH": "/path/to/API-Central",
-        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml"
+        "CREDS_PATH": "/path/to/API-Central/config/credentials.yaml",
+        "CENTRALMCP_ROUTER_MODE": "minimal",
+        "CENTRALMCP_TOOLSETS": "central,glp,rag"
       }
     }
   }

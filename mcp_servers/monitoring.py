@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central read-only monitoring tools (43 tools).
+"""MCP server — Aruba Central monitoring and operational health tools (61 tools).
 
 Covers: sites, devices, clients, alerts, events, scopes, inventory,
 audit logs, device health/trends, switch ports/VLANs/PoE, AP radios/ports,
@@ -9,13 +9,18 @@ SSID clients, client location.
 """
 import time
 from typing import Any
+from urllib.parse import quote
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
+from pydantic import BaseModel
 
 from mcp_servers.shared import (
+    DESTRUCTIVE,
+    IDEMPOTENT_WRITE,
     READ_ONLY,
     bound_collection_response,
     clamp_limit,
+    compact_http_error,
     get_client,
     get_mcp_client,
     maybe_bound,
@@ -240,6 +245,90 @@ def get_client_details(mac_address: str) -> dict[str, Any]:
 
 # ── Alerts & Events ───────────────────────────────────────────────────────────
 
+_ALERT_ACTIONS_BASE = "/network-notifications/v1/alerts"
+_ALERT_CLEAR_REASONS = {
+    "Problem was resolved",
+    "False Positive",
+    "Insufficient information for troubleshooting",
+    "Alert is not important",
+    "Other",
+}
+_ALERT_PRIORITIES = {"Very High", "High", "Medium", "Low", "Very Low"}
+_SEARCH_MIN_CHARS = 3
+_SEARCH_MAX_CHARS = 128
+_ALERT_CLASSIFICATIONS = {
+    "severity",
+    "status",
+    "priority",
+    "category",
+    "device_type",
+    "impacted_devices",
+}
+_ALERT_CONFIG_SCOPE_TYPES = {"GLOBAL", "SITE", "DEVICE"}
+
+
+class _ConfirmAction(BaseModel):
+    confirm: bool = False
+
+
+def _require_non_empty_strings(values: list[str], field: str) -> list[str]:
+    cleaned = [str(value).strip() for value in values if str(value).strip()]
+    if not cleaned:
+        raise ValueError(f"{field} must contain at least one non-empty value")
+    return cleaned
+
+
+def _json_response(response: Any) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {"items": data}
+
+
+def _odata_string(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def _items_from_collection(data: Any) -> list[dict[str, Any]]:
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if not isinstance(data, dict):
+        return []
+    for key in ("items", "scopes", "devices"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+async def _confirm_alert_action(ctx: Context, action: str, keys: list[str]) -> dict[str, Any] | None:
+    try:
+        result = await ctx.elicit(
+            message=f"Confirm alert {action} for {len(keys)} alert key(s): {keys}",
+            schema=_ConfirmAction,
+        )
+    except Exception as exc:
+        return {
+            "status": "CONFIRMATION_UNAVAILABLE",
+            "error": f"client does not support elicitation; operation NOT performed: {exc}",
+        }
+    if result.action != "accept" or not result.data.confirm:
+        return {"status": "CANCELLED", "detail": "user declined confirmation"}
+    return None
+
+
+def _alert_action(action: str, body: dict[str, Any], submitted_message: str) -> dict[str, Any]:
+    endpoint = f"{_ALERT_ACTIONS_BASE}/{action}"
+    response = get_client()._request("POST", endpoint, json=body)
+    if response.status_code not in (200, 201, 202):
+        return {"error": compact_http_error(response, endpoint), "endpoint_used": endpoint}
+    data = _json_response(response)
+    if not data:
+        data = {"submitted": True, "message": submitted_message}
+    data.setdefault("endpoint_used", endpoint)
+    return data
+
 @mcp.tool(annotations=READ_ONLY)
 def list_alerts(
     site_id: str | None = None,
@@ -251,6 +340,169 @@ def list_alerts(
         site_id=site_id, severity=severity, limit=clamp_limit(limit)
     )
     return maybe_bound(alerts, limit=limit, offset=0)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_active_alerts(
+    site_id: str | None = None,
+    severity: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List active alerts from network-notifications/v1/alerts using OData status filter."""
+    client = get_client()
+    filters = ["status eq 'Active'"]
+    if site_id:
+        filters.append(f"siteId eq '{_odata_string(site_id)}'")
+    if severity:
+        filters.append(f"severity eq '{_odata_string(severity)}'")
+    params: dict[str, Any] = {
+        "limit": clamp_limit(limit),
+        "offset": max(0, offset),
+        "filter": " and ".join(filters),
+        "sort": "severity desc",
+    }
+    try:
+        return client.get("/network-notifications/v1/alerts", params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": "/network-notifications/v1/alerts"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_alert_classifications(
+    classify_by: str = "severity",
+    filter: str | None = None,
+    search: str | None = None,
+) -> dict[str, Any]:
+    """List alert classification metadata from network-notifications/v1/alerts/classification."""
+    if classify_by not in _ALERT_CLASSIFICATIONS:
+        allowed = ", ".join(sorted(_ALERT_CLASSIFICATIONS))
+        raise ValueError(f"classify_by must be one of: {allowed}")
+    client = get_client()
+    params = {"type": classify_by}
+    if filter:
+        params["filter"] = filter
+    if search:
+        params["search"] = search
+    try:
+        return client.get("/network-notifications/v1/alerts/classification", params=params)
+    except Exception as exc:
+        return {
+            "error": str(exc),
+            "endpoint_used": "/network-notifications/v1/alerts/classification",
+        }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_alert_configs(scope_id: str, scope_type: str = "GLOBAL") -> dict[str, Any]:
+    """List alert configuration definitions for a Central scope."""
+    scope = scope_id.strip()
+    scope_kind = scope_type.strip().upper()
+    if not scope:
+        raise ValueError("scope_id must be a non-empty string")
+    if scope_kind not in _ALERT_CONFIG_SCOPE_TYPES:
+        allowed = ", ".join(sorted(_ALERT_CONFIG_SCOPE_TYPES))
+        raise ValueError(f"scope_type must be one of: {allowed}")
+    return get_client().get(
+        "/network-notifications/v1/alert-config",
+        params={"scopeId": scope, "scopeType": scope_kind},
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_insights(
+    filter: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List Central Insights recommendation-style observations."""
+    params: dict[str, Any] = {"limit": clamp_limit(limit, default=100), "offset": max(0, offset)}
+    if filter:
+        params["filter"] = filter
+    return get_client().get("/network-notifications/v1/insights", params=params)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_alert_action_status(task_id: str) -> dict[str, Any]:
+    """Return async status for clear/defer/reactivate/priority alert actions."""
+    task = quote(task_id.strip(), safe="")
+    if not task:
+        raise ValueError("task_id must be a non-empty string")
+    endpoint = f"{_ALERT_ACTIONS_BASE}/async-operations/{task}"
+    response = get_client()._request("GET", endpoint)
+    if response.status_code not in (200, 201, 202):
+        return {"error": compact_http_error(response, endpoint), "endpoint_used": endpoint}
+    data = _json_response(response)
+    data.setdefault("endpoint_used", endpoint)
+    return data
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def clear_alerts(
+    ctx: Context,
+    keys: list[str],
+    reason: str,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """Clear one or more alerts by key. Returns the Central async task payload."""
+    alert_keys = _require_non_empty_strings(keys, "keys")
+    if reason not in _ALERT_CLEAR_REASONS:
+        allowed = ", ".join(sorted(_ALERT_CLEAR_REASONS))
+        raise ValueError(f"reason must be one of: {allowed}")
+    body: dict[str, Any] = {"keys": alert_keys, "reason": reason}
+    if notes:
+        body["notes"] = notes
+    cancelled = await _confirm_alert_action(ctx, "clear", alert_keys)
+    if cancelled:
+        return cancelled
+    return _alert_action("clear", body, f"Clear request submitted for {len(alert_keys)} alert(s).")
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def defer_alerts(ctx: Context, keys: list[str], defer_until: str) -> dict[str, Any]:
+    """Defer one or more alerts until an absolute ISO-8601 timestamp."""
+    alert_keys = _require_non_empty_strings(keys, "keys")
+    defer_value = defer_until.strip()
+    if not defer_value:
+        raise ValueError("defer_until must be a non-empty ISO-8601 timestamp")
+    body = {"keys": alert_keys, "deferUntil": defer_value}
+    cancelled = await _confirm_alert_action(ctx, "defer", alert_keys)
+    if cancelled:
+        return cancelled
+    return _alert_action("defer", body, f"Defer request submitted for {len(alert_keys)} alert(s).")
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def reactivate_alerts(ctx: Context, keys: list[str]) -> dict[str, Any]:
+    """Reactivate cleared or deferred alerts by key."""
+    alert_keys = _require_non_empty_strings(keys, "keys")
+    body = {"keys": alert_keys}
+    cancelled = await _confirm_alert_action(ctx, "reactivate", alert_keys)
+    if cancelled:
+        return cancelled
+    return _alert_action(
+        "active",
+        body,
+        f"Reactivate request submitted for {len(alert_keys)} alert(s).",
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def set_alert_priority(ctx: Context, keys: list[str], priority: str) -> dict[str, Any]:
+    """Set operator priority for one or more alerts."""
+    alert_keys = _require_non_empty_strings(keys, "keys")
+    if priority not in _ALERT_PRIORITIES:
+        allowed = ", ".join(sorted(_ALERT_PRIORITIES))
+        raise ValueError(f"priority must be one of: {allowed}")
+    body = {"keys": alert_keys, "priority": priority}
+    cancelled = await _confirm_alert_action(ctx, f"set priority to {priority}", alert_keys)
+    if cancelled:
+        return cancelled
+    return _alert_action(
+        "priority",
+        body,
+        f"Priority update submitted for {len(alert_keys)} alert(s).",
+    )
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -311,6 +563,73 @@ def get_events_count(serial_number: str, hours: int = 24) -> dict[str, Any]:
         except Exception as exc:
             errors.append(f"{endpoint}: {exc}")
     return {"serial_number": serial_number, "count": 0, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_radios(
+    site_id: str | None = None,
+    serial_number: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List radios from network-monitoring/v1/radios with optional site/device filters."""
+    client = get_client()
+    params: dict[str, Any] = {"limit": clamp_limit(limit), "offset": max(0, offset)}
+    if site_id:
+        params["siteId"] = site_id
+    if serial_number:
+        params["serialNumber"] = serial_number
+    try:
+        return client.get("/network-monitoring/v1/radios", params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": "/network-monitoring/v1/radios"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_gateways(
+    site_id: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List gateway inventory from network-monitoring/v1/gateways."""
+    client = get_client()
+    params: dict[str, Any] = {"limit": clamp_limit(limit), "offset": max(0, offset)}
+    if site_id:
+        params["siteId"] = site_id
+    try:
+        return client.get("/network-monitoring/v1/gateways", params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": "/network-monitoring/v1/gateways"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_sites_client_health(
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List per-site client health from network-monitoring/v1/sites-client-health."""
+    client = get_client()
+    params = {"limit": clamp_limit(limit), "offset": max(0, offset)}
+    try:
+        return client.get("/network-monitoring/v1/sites-client-health", params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": "/network-monitoring/v1/sites-client-health"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_tenant_health() -> dict[str, Any]:
+    """Return tenant-wide device and client health summaries."""
+    client = get_client()
+    out: dict[str, Any] = {"device_health": None, "client_health": None, "errors": []}
+    try:
+        out["device_health"] = client.get("/network-monitoring/v1/tenant-device-health")
+    except Exception as exc:
+        out["errors"].append(f"tenant-device-health: {exc}")
+    try:
+        out["client_health"] = client.get("/network-monitoring/v1/tenant-client-health")
+    except Exception as exc:
+        out["errors"].append(f"tenant-client-health: {exc}")
+    return out
 
 
 # ── Scopes ────────────────────────────────────────────────────────────────────
@@ -427,6 +746,96 @@ def get_global_scope_id() -> dict[str, Any]:
     except Exception as exc:
         errors.append(str(exc))
         return {"global_scope_id": None, "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def find_scope(
+    query: str,
+    scope_type: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Find scopes by name or ID substring, optionally narrowed by scope_type."""
+    needle = query.strip().lower()
+    if not needle:
+        raise ValueError("query must be a non-empty string")
+    wanted_type = scope_type.strip().upper() if scope_type else None
+    scopes = _items_from_collection(list_scopes(full_list=True))
+    matches: list[dict[str, Any]] = []
+    for scope in scopes:
+        sid = str(
+            scope.get("scope_id")
+            or scope.get("scopeId")
+            or scope.get("siteId")
+            or scope.get("id")
+            or ""
+        )
+        name = str(
+            scope.get("scope_name")
+            or scope.get("scopeName")
+            or scope.get("siteName")
+            or scope.get("name")
+            or ""
+        )
+        kind = str(scope.get("scope_type") or scope.get("scopeType") or scope.get("type") or "")
+        if wanted_type and kind.upper() != wanted_type:
+            continue
+        if needle in sid.lower() or needle in name.lower():
+            matches.append(
+                {
+                    "scope_id": sid,
+                    "scope_name": name,
+                    "scope_type": kind,
+                    "raw": scope,
+                }
+            )
+    return bound_collection_response(matches, limit=limit, offset=0)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_scope_devices(
+    scope_id: str,
+    device_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List devices associated with a site/scope ID using known Central scope fields."""
+    scope = scope_id.strip()
+    if not scope:
+        raise ValueError("scope_id must be a non-empty string")
+    page_size = 200
+    found: list[dict[str, Any]] = []
+    off = 0
+    for _ in range(50):
+        page = get_mcp_client().get_devices(
+            {"siteId": scope},
+            limit=page_size,
+            offset=off,
+        )
+        if not page:
+            break
+        for device in page:
+            fields = (
+                device.get("scopeId"),
+                device.get("scope_id"),
+                device.get("siteId"),
+                device.get("site_id"),
+                device.get("groupId"),
+                device.get("deviceGroupId"),
+            )
+            if scope not in {str(value) for value in fields if value is not None}:
+                continue
+            if device_type:
+                want = device_type.upper()
+                raw = str(device.get("deviceType") or device.get("type") or "").upper()
+                if want == "AP":
+                    want = "ACCESS_POINT"
+                if want not in raw:
+                    continue
+            found.append(device)
+        if len(page) < page_size:
+            break
+        off += page_size
+    return bound_collection_response(found, limit=limit, offset=offset)
 
 
 # ── Inventory ─────────────────────────────────────────────────────────────────
@@ -635,6 +1044,49 @@ def get_device_health(
                 errors.append(str(exc))
 
     return {"serial_number": serial_number, "health": None, "endpoint_used": None, "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_device_config_issues(serial_number: str) -> dict[str, Any]:
+    """Return active configuration issues and recommended actions for one device."""
+    serial = serial_number.strip()
+    if not serial:
+        raise ValueError("serial_number must be a non-empty string")
+    endpoint = "/network-config/v1alpha1/config-health/active-issue"
+    return get_client().get(endpoint, params={"serial": serial})
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_devices_config_health(
+    limit: int = 100,
+    offset: int = 0,
+    sort: str | None = None,
+    filter: str | None = None,
+    search: str | None = None,
+) -> dict[str, Any]:
+    """List fleet config-health summaries, optionally sorted/filtered/searched."""
+    if search is not None and not (_SEARCH_MIN_CHARS <= len(search) <= _SEARCH_MAX_CHARS):
+        raise ValueError(
+            f"search must be {_SEARCH_MIN_CHARS}-{_SEARCH_MAX_CHARS} characters, got {len(search)}"
+        )
+    params: dict[str, Any] = {"limit": clamp_limit(limit, default=100), "offset": max(0, offset)}
+    if sort:
+        params["sort"] = sort
+    if filter:
+        params["filter"] = filter
+    if search:
+        params["search"] = search
+    return get_client().get("/network-config/v1alpha1/config-health/devices", params=params)
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def resync_device_config(serial_numbers: list[str]) -> dict[str, Any]:
+    """Trigger full Central config resync for one or more device serial numbers."""
+    serials = _require_non_empty_strings(serial_numbers, "serial_numbers")
+    return get_client().post(
+        "/network-config/v1alpha1/config-health/devices-resync",
+        data={"serials": serials},
+    )
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1440,7 +1892,7 @@ def get_site_health_summary(
     else:
         return {"error": "Provide site_id or site_name"}
 
-    devices = client.get_devices(filters={"site-id": site_id} if site_id else {}, limit=200)
+    devices = client.get_devices(filters={"siteId": site_id} if site_id else {}, limit=200)
     clients = client.get_clients(site_id=site_id, limit=200)
     alerts = client.get_alerts(site_id=site_id, limit=200)
 

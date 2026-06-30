@@ -1,4 +1,4 @@
-"""MCP server — Aruba/HPE documentation RAG tools (2 tools).
+"""MCP server — Aruba/HPE documentation RAG tools (3 tools).
 
 Covers: hybrid (vector + BM25) search over ingested Aruba Central developer
 docs, tech docs, NAC docs, VSG docs, and HTML tech docs; exact API
@@ -65,6 +65,19 @@ _DOC_TYPE_TO_SOURCE: dict[str, str] = {
     "vsg": "vsg_docs",
     "openapi": "openapi_specs",
     "aos-techdocs": "aos_techdocs",
+}
+_API_QUERY_HINTS = {
+    "api",
+    "endpoint",
+    "enum",
+    "field",
+    "schema",
+    "method",
+    "url",
+    "path",
+    "payload",
+    "request",
+    "response",
 }
 
 
@@ -161,6 +174,68 @@ def lookup_api(query: str, top_k: int = 10) -> list[dict[str, Any]]:
         return specs_index.lookup(query, top_k=min(top_k, 20))
     except FileNotFoundError as exc:
         return [{"error": str(exc)}]
+
+
+def _is_api_question(question: str) -> bool:
+    tokens = {
+        tok.strip(".,:;?!()[]{}\"'").lower()
+        for tok in question.replace("/", " ").replace("-", " ").split()
+    }
+    return bool(tokens & _API_QUERY_HINTS)
+
+
+def _citation(hit: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "file_path": hit.get("file_path"),
+        "source": hit.get("source"),
+        "score": hit.get("score"),
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def ask_docs(
+    question: str,
+    top_k: int = 3,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Return a compact cited answer from local docs/API indexes.
+
+    Token-saving companion to `search_docs`: it returns the shortest useful
+    extractive answer plus citations instead of dumping multiple long chunks.
+    API-shaped questions consult `lookup_api` first and fall back to prose RAG
+    when no exact OpenAPI match exists.
+    """
+    k = max(1, min(top_k, 5))
+    mode = "search_docs"
+    hits: list[dict[str, Any]] = []
+
+    if source is None and _is_api_question(question):
+        api_hits = lookup_api(question, top_k=k)
+        if api_hits and "error" not in api_hits[0]:
+            mode = "lookup_api"
+            hits = api_hits
+
+    if not hits:
+        hits = search_docs(question, top_k=k, source=source)
+        mode = "search_docs"
+
+    if not hits:
+        return {
+            "answer": "No matching local documentation was found.",
+            "citations": [],
+            "mode": mode,
+        }
+    if "error" in hits[0]:
+        return {"answer": hits[0]["error"], "citations": [], "mode": mode}
+
+    top = hits[0]
+    text = str(top.get("text", "")).strip()
+    answer = text[:900] + "…" if len(text) > 900 else text
+    return {
+        "answer": answer,
+        "citations": [_citation(hit) for hit in hits[:k]],
+        "mode": mode,
+    }
 
 
 if __name__ == "__main__":

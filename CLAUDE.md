@@ -6,13 +6,20 @@ HPE Aruba Central API tooling for network device migration, SSID config, switch 
 
 ```
 mcp_servers/
-  tool_router.py       Unified router — proxies the 6 domain servers under one MCP entrypoint
+  tool_router.py       Unified low-token router — find_tool + invoke_read_tool/invoke_tool over enabled backends
+  prompts.py           Router-level guided workflows (MCP prompts)
+  _middleware/         Middleware — null-strip, async rate limit, response envelope, unknown-tool hints, optional MAC normalization
   monitoring.py        Monitoring tools — device health, trends, wireless metrics
   config.py            Config tools — SSIDs, VLANs, profiles, webhooks, firmware
   ops.py               Ops tools — reboots, ping, cable test, PoE bounce, GLP mgmt
   nac.py               NAC tools — MAC reg, MPSK, visitors, auth servers, AAA profiles, AAA test
-  glp.py               GreenLake Platform tools — devices, subscriptions, users, audit logs
-  rag.py               RAG tools — search_docs (semantic, Redis Stack + Ollama) + lookup_api (exact OpenAPI lookup, SQLite)
+  glp.py               GreenLake Platform tools — devices, subscriptions, users, audit logs, guarded GLP GET
+  rag.py               RAG tools — ask_docs/search_docs (LanceDB hybrid) + lookup_api (exact OpenAPI lookup, SQLite)
+  clearpass.py         Optional ClearPass starter backend
+  mist.py              Optional Juniper Mist starter backend
+  apstra.py            Optional Apstra starter backend
+  aos8.py              Optional ArubaOS 8 starter backend
+  edgeconnect.py       Optional EdgeConnect starter backend
   shared.py            Shared utilities and helpers
 pipeline/
   clients/             CentralClient, GLPClient, MCPClient, TokenManager, EmbedClient (fastembed),
@@ -25,6 +32,7 @@ ingestion/
   sources/             Raw scraped docs (git-ignored — regenerable)
 scripts/
   ingest_tools.py      Re-index the find_tool catalog → LanceDB (default) or Redis Stack (--backend redis)
+  validate_release.py  Local pre-push gate: unit tests, optional RAG/API eval, tool catalog floor
 data/                  Embedded indexes (git-ignored): docs.lance, tools.lance, specs.sqlite — rebuild via ingest or download prebuilt
 docker-compose.yml     OPTIONAL server backend: Redis Stack + Ollama (set CENTRALMCP_RAG_BACKEND=redis)
 config/credentials.yaml  API credentials (never commit)
@@ -36,12 +44,17 @@ state/                 Pipeline state store (idempotent runs)
   mcp.json             Router-only entry (aruba-tool-router) — low token overhead
   mcp.dev.json         All 6 domain servers directly — full introspection for debugging
   obsidian-vault       Filesystem MCP over ~/Documents/Central-MCP-Obsidian (Aruba docs + customer notes)
+.github/workflows/
+  ci.yml               GitHub Actions unit/RAG/catalog validation
 ```
 
 ## MCP tools (`mcp_servers/`)
 
-Six domain servers — `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, `rag.py` — each registered in `.cursor/mcp.dev.json`. For day-to-day use, `tool_router.py` is the single entrypoint registered in `.cursor/mcp.json` and proxies to all six.
+Six core domain servers — `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, `rag.py` — each registered in `.cursor/mcp.dev.json`. For day-to-day use, `tool_router.py` is the single entrypoint registered in `.cursor/mcp.json` and proxies to enabled backends.
 Tools follow `verb_noun` naming — no prefix. The server name provides context (`aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`, `aruba-glp`, `aruba-rag`).
+
+Optional product starters (`clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect`) are loaded only when enabled with `CENTRALMCP_PRODUCTS` or `CENTRALMCP_TOOLSETS`. Keep new product backends opt-in so default tool-list token cost stays low.
+Use router `invoke_read_tool` for read-only dispatch. Keep router `invoke_tool` annotated `DESTRUCTIVE`; it is a generic dispatcher and can reach destructive backend tools.
 
 | Verb | Meaning |
 |------|---------|
@@ -95,11 +108,12 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 
 ## Adding new MCP tools
 
-1. Pick the right domain server: `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, or `rag.py`. The `tool_router.py` auto-exposes any tool registered on those servers — no router edits needed.
+1. Pick the right domain server: `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, or `rag.py`. The `tool_router.py` auto-exposes tools from enabled backends; add router mapping only for a new backend module/toolset.
 2. Add `@mcp.tool(annotations=READ_ONLY|DIAGNOSTIC|DESTRUCTIVE|IDEMPOTENT_WRITE)` with verb_noun naming, no prefix. Import the annotation constant from `mcp_servers.shared`.
 3. Use thin wrapper — delegate to `pipeline/clients/` or inline API call.
 4. Docstring: what it does, key args, and any gotchas.
 5. Update the tool count in the module docstring.
+6. Rebuild/check the router catalog with `uv run python scripts/ingest_tools.py --products all` and run `uv run python scripts/validate_release.py`.
 
 **Before editing:** use `Grep` to find the line, then `Read` only that slice.
 
@@ -107,8 +121,8 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 
 **Always consult the RAG tools before answering any question about Aruba/HPE config, APIs, or features.**
 
-- **Exact API questions** (what enum values does field X accept, which endpoint configures Y, what fields does schema Z have) → call `lookup_api` first. It reads the parsed OpenAPI specs — lossless and authoritative. If it returns `[]`, fall back to `search_docs`.
-- **Everything else** (how-to, concepts, design guidance) → call `search_docs`. The corpus (40,900+ chunks of developer docs, tech docs, NAC/VSG guides) is authoritative and must be consulted first.
+- **Exact API questions** (what enum values does field X accept, which endpoint configures Y, what fields does schema Z have) → call `lookup_api` first. It reads the parsed OpenAPI specs — lossless and authoritative. If it returns `[]`, fall back to `ask_docs` or `search_docs`.
+- **Everything else** (how-to, concepts, design guidance) → call `ask_docs` for compact cited answers, or `search_docs` for raw retrieval. The corpus (53k+ chunks of developer docs, tech docs, NAC/VSG guides, and OpenAPI specs) is authoritative and must be consulted first.
 
 Skip both only when:
 - The question is purely about live device/client state (use monitoring tools directly).
@@ -160,3 +174,4 @@ Postman collections are in `resources/` (git-ignored — download with `python r
 - Start a fresh conversation after long build sessions to reset context.
 - Large tool results — grep before using: `list_devices`, `get_device_health`, `get_wireless_metrics`, `list_switch_ports`, `list_audit_logs`, `cx_show`.
 - Use `site_id` / `serial_number` / `filter` params to limit API results before they hit context.
+- Use `CENTRALMCP_ROUTER_MODE=minimal` and narrow `CENTRALMCP_TOOLSETS` for daily client configs; expose optional product backends only when needed.

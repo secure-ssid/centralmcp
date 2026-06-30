@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from pipeline.models import FirmwareAction, StageStatus, TargetAccount
 from pipeline.stages.s1_discover import DiscoverStage
 from pipeline.stages.s2_validate import ValidateStage
@@ -287,7 +285,6 @@ def test_s6_device_profiles_skipped_second_device(record_unmanaged, source_ctx, 
 
 def test_s6_device_profile_duplicate_is_silent(record_unmanaged, source_ctx, target_ctx, state, run_id):
     """A 'duplicate' error on profile POST is silently skipped and stage still succeeds."""
-    from unittest.mock import MagicMock
     record_unmanaged.scope_id = "12345"
     _setup_s6_mocks(target_ctx)
     target_ctx.device_profiles_created = False
@@ -335,7 +332,6 @@ def test_s8_verify_passes(record_unmanaged, source_ctx, target_ctx, state, run_i
         "status": "ONLINE",
         "firmwareVersion": "10.13.1010",
     }
-    target_ctx.central_client.get_pycentral_conn.side_effect = ImportError("pycentral not installed")
     target_ctx.central_client.get.return_value = {
         "softwareVersion": "10.13.1010",
         "upgradeStatus": "Up To Date",
@@ -352,7 +348,6 @@ def test_s8_verify_offline_is_warning_only(record_unmanaged, source_ctx, target_
         "status": "OFFLINE",
         "firmwareVersion": "10.13.1010",
     }
-    target_ctx.central_client.get_pycentral_conn.side_effect = ImportError
     target_ctx.central_client.get.return_value = {"devices": [{"configStatus": "SYNCHRONIZED"}]}
     result = VerifyStage()._execute(record_unmanaged, run_id, source_ctx, target_ctx, state, False)
     assert result.status == StageStatus.SUCCESS
@@ -364,7 +359,6 @@ def test_s8_verify_fails_config_out_of_sync(record_unmanaged, source_ctx, target
         "status": "ONLINE",
         "firmwareVersion": "10.13.1010",
     }
-    target_ctx.central_client.get_pycentral_conn.side_effect = ImportError
     target_ctx.central_client.get.return_value = {"devices": [{"configStatus": "OUT_OF_SYNC"}]}
     result = VerifyStage()._execute(record_unmanaged, run_id, source_ctx, target_ctx, state, False)
     assert result.status == StageStatus.FAILED

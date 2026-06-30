@@ -5,19 +5,19 @@ middleware's ``before_call`` and ``after_call`` hooks. This is a
 deliberate trade: the shim has no middleware API, we don't want a new
 dependency, and patching a single method keeps blast radius small.
 
-Note on async: ``ToolManager.call_tool`` returns a coroutine — the
-installer wraps it as ``async def`` so middleware runs synchronously in
-the event-loop-blocking happy path (HTTP is blocking requests anyway).
-Middleware hooks themselves are **sync only**; if they need to I/O, they
-should do it fast. This keeps the middleware API trivial to test.
+Note on async: ``ToolManager.call_tool`` returns a coroutine, so the
+installer wraps it as ``async def`` and awaits middleware hooks that return
+awaitables. Synchronous hooks remain supported for simple mutations.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Protocol
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.utilities.func_metadata import _convert_to_content
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class Middleware(Protocol):
     can't crash the server (fail-open).
     """
 
-    def before_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+    def before_call(self, name: str, arguments: dict[str, Any]) -> Any:
         """Mutate / replace call arguments. Return ``None`` to leave args unchanged."""
         ...
 
@@ -47,12 +47,18 @@ class Middleware(Protocol):
 _INSTALLED_ATTR = "_centralmcp_middleware_original"
 
 
-def _run_before(middlewares, name, args):
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _run_before(middlewares, name, args):
     for mw in middlewares:
         try:
             before = getattr(mw, "before_call", None)
             if before is not None:
-                new_args = before(name, args)
+                new_args = await _maybe_await(before(name, args))
                 if new_args is not None:
                     args = new_args
         except Exception as exc:
@@ -60,12 +66,12 @@ def _run_before(middlewares, name, args):
     return args
 
 
-def _run_after(middlewares, name, args, result):
+async def _run_after(middlewares, name, args, result):
     for mw in middlewares:
         try:
             after = getattr(mw, "after_call", None)
             if after is not None:
-                new_result = after(name, args, result)
+                new_result = await _maybe_await(after(name, args, result))
                 if new_result is not None:
                     result = new_result
         except Exception as exc:
@@ -73,13 +79,13 @@ def _run_after(middlewares, name, args, result):
     return result
 
 
-def _run_on_error(middlewares, name, args, exc):
+async def _run_on_error(middlewares, name, args, exc):
     for mw in middlewares:
         try:
             handler = getattr(mw, "on_error", None)
             if handler is None:
                 continue
-            substitute = handler(name, args, exc)
+            substitute = await _maybe_await(handler(name, args, exc))
             if substitute is not None:
                 return substitute
         except Exception as handler_exc:
@@ -104,16 +110,33 @@ def install_middleware(server: FastMCP, middlewares: list[Middleware]) -> None:
 
     async def wrapped_call_tool(name, arguments, context=None, convert_result=False):  # noqa: ANN001,ANN202
         args = dict(arguments) if arguments else {}
-        args = _run_before(middlewares, name, args)
+        args = await _run_before(middlewares, name, args)
 
         try:
-            result = await original(name, args, context=context, convert_result=convert_result)
+            raw_result = await original(name, args, context=context, convert_result=False)
         except BaseException as exc:
-            substitute = _run_on_error(middlewares, name, args, exc)
+            substitute = await _run_on_error(middlewares, name, args, exc)
             if substitute is not None:
+                if convert_result:
+                    tool = tm.get_tool(name)
+                    if tool is not None:
+                        try:
+                            return tool.fn_metadata.convert_result(substitute)
+                        except Exception:
+                            return _convert_to_content(substitute)
                 return substitute
             raise
 
-        return _run_after(middlewares, name, args, result)
+        result = await _run_after(middlewares, name, args, raw_result)
+        if convert_result:
+            tool = tm.get_tool(name)
+            if tool is not None:
+                try:
+                    return tool.fn_metadata.convert_result(result)
+                except Exception:
+                    if result is not raw_result:
+                        return _convert_to_content(result)
+                    raise
+        return result
 
     tm.call_tool = wrapped_call_tool  # type: ignore[method-assign]

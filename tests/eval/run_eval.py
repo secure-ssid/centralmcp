@@ -3,12 +3,13 @@
 
 Measures whether retrieval selects the *correct* info, so a backend/retrieval
 change (e.g. Redis -> LanceDB, adding hybrid+rerank, nomic prefixes) can be
-proven instead of asserted. See docs/RAG-ARCHITECTURE.md.
+proven instead of asserted. See docs/architecture/RAG-ARCHITECTURE.md.
 
 Usage:
     uv run python tests/eval/run_eval.py                 # default top_k=5
     uv run python tests/eval/run_eval.py --k 8 --verbose
     uv run python tests/eval/run_eval.py --json out.json # machine-readable
+    uv run python tests/eval/run_eval.py --ci            # enforce quality thresholds
 
 Metrics:
     source_hit@k  - an expected source substring appears in a top-k file_path/source
@@ -127,11 +128,33 @@ def _aggregate(rows: list[dict]) -> dict:
     return summary
 
 
+_DEFAULT_THRESHOLDS = {
+    "source_hit@k": 0.85,
+    "mrr": 0.85,
+    "howto_recall@k": 0.85,
+    "api_exact": 0.95,
+}
+
+
+def _threshold_failures(summary: dict, thresholds: dict[str, float]) -> list[str]:
+    failures = []
+    for metric, minimum in thresholds.items():
+        actual = float(summary.get(metric, 0.0))
+        if actual < minimum:
+            failures.append(f"{metric}={actual:.3f} < {minimum:.3f}")
+    return failures
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--json", help="write full results to this path")
+    ap.add_argument("--ci", action="store_true", help="enforce default eval thresholds")
+    ap.add_argument("--min-source-hit", type=float, default=None)
+    ap.add_argument("--min-mrr", type=float, default=None)
+    ap.add_argument("--min-howto-recall", type=float, default=None)
+    ap.add_argument("--min-api-exact", type=float, default=None)
     args = ap.parse_args()
 
     print(f"Running RAG eval (top_k={args.k})...")
@@ -146,6 +169,21 @@ def main():
     # Non-zero exit if nothing retrieved at all (sanity gate for CI).
     if summary["source_hit@k"] == 0 and summary["keyword_hit"] == 0:
         sys.exit("FAIL: zero retrieval signal — backend likely unreachable or empty index.")
+
+    thresholds: dict[str, float] = {}
+    if args.ci:
+        thresholds.update(_DEFAULT_THRESHOLDS)
+    explicit = {
+        "source_hit@k": args.min_source_hit,
+        "mrr": args.min_mrr,
+        "howto_recall@k": args.min_howto_recall,
+        "api_exact": args.min_api_exact,
+    }
+    thresholds.update({metric: value for metric, value in explicit.items() if value is not None})
+    if thresholds:
+        failures = _threshold_failures(summary, thresholds)
+        if failures:
+            sys.exit("FAIL: eval thresholds not met: " + "; ".join(failures))
 
 
 if __name__ == "__main__":

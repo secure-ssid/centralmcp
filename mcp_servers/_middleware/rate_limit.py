@@ -10,7 +10,8 @@ remaining ~2/s headroom absorbs transient bursts (a handful of tool
 calls issued in parallel by a Claude client running multiple subagents).
 
 Uses a simple token bucket: tokens refill at ``rate`` per second up to
-``burst`` max. On empty bucket we block for the earliest refill time.
+``burst`` max. On empty bucket we await the earliest refill time without
+blocking the asyncio event loop.
 This is **per-process**, so if multiple server processes run on the same
 host each has its own bucket. That's fine — we still cut peak rate
 roughly by the number of processes, which is the real blast-radius
@@ -21,7 +22,7 @@ coordinator (Redis / file lock) and isn't worth the complexity here.
 from __future__ import annotations
 
 import logging
-import threading
+import asyncio
 import time
 from typing import Any
 
@@ -44,12 +45,12 @@ class RateLimitMiddleware:
         self.burst = burst if burst is not None else max(2, int(rate))
         self._tokens: float = float(self.burst)
         self._last_refill = time.monotonic()
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()
 
-    def _acquire(self) -> None:
-        """Block until a token is available, then consume one."""
+    async def _acquire(self) -> None:
+        """Wait until a token is available, then consume one."""
         while True:
-            with self._lock:
+            async with self._lock:
                 now = time.monotonic()
                 elapsed = now - self._last_refill
                 self._tokens = min(self.burst, self._tokens + elapsed * self.rate)
@@ -59,12 +60,12 @@ class RateLimitMiddleware:
                     return
                 # How long until we'd have 1 token?
                 wait = (1.0 - self._tokens) / self.rate
-            # Sleep outside the lock so other threads can refill too.
+            # Sleep outside the lock so other calls can refill too.
             logger.debug("rate limit: sleeping %.3fs", wait)
-            time.sleep(wait)
+            await asyncio.sleep(wait)
 
-    def before_call(self, name: str, arguments: dict[str, Any]) -> None:
-        self._acquire()
+    async def before_call(self, name: str, arguments: dict[str, Any]) -> None:
+        await self._acquire()
         return None
 
     def after_call(self, name: str, arguments: dict[str, Any], result: Any) -> None:

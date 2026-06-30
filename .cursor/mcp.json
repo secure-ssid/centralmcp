@@ -14,7 +14,9 @@
       "cwd": "${workspaceFolder}",
       "env": {
         "PYTHONPATH": "${workspaceFolder}",
-        "CREDS_PATH": "${workspaceFolder}/config/credentials.yaml"
+        "CREDS_PATH": "${workspaceFolder}/config/credentials.yaml",
+        "CENTRALMCP_ROUTER_MODE": "minimal",
+        "CENTRALMCP_TOOLSETS": "central,glp,rag"
       }
     }
   }
