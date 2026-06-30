@@ -118,7 +118,9 @@ The API-lookup rows almost all missed the spec sources at baseline — direct em
 
 ---
 
-## Open questions for the user
+## Original open questions and current defaults
+
+These questions were captured during the migration decision. The current repository defaults are embedded LanceDB + SQLite, `fastembed`, release/ignored `data/*` indexes, and Redis as an optional server backend.
 
 1. **Embedding model:** keep `nomic-embed-text-v1.5` (via fastembed) for identical semantics, or move to `bge-base-en-v1.5`? (Both good; nomic = no quality change, just drops Ollama.)
 2. **Ship prebuilt index in-repo or as a Release asset?** Release asset keeps the repo small; in-repo is zero-step but bloats clones.

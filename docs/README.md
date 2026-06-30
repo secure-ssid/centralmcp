@@ -11,7 +11,7 @@ Use this directory as the organized documentation hub for setup, architecture, o
 | [architecture/RAG-ARCHITECTURE.md](architecture/RAG-ARCHITECTURE.md) | Embedded RAG design, eval results, and migration rationale |
 | [operations/hpe-support-events-endpoint.md](operations/hpe-support-events-endpoint.md) | HPE support events endpoint notes |
 | [audits/AUDIT-2026-06-03.md](audits/AUDIT-2026-06-03.md) | Historical deep audit and remediation notes |
-| [plans/agentic-rag-plan.md](plans/agentic-rag-plan.md) | Agentic RAG implementation plan |
+| [plans/agentic-rag-plan.md](plans/agentic-rag-plan.md) | Historical original Qdrant/Ollama RAG plan; current design is the architecture doc above |
 
 ## Documentation sections
 
