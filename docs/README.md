@@ -53,4 +53,4 @@ uv run pytest tests/unit -q
 uv run python scripts/validate_release.py
 ```
 
-The release helper enforces the documented tool catalog floor and checks local LanceDB tool-index freshness when `data/tools.lance` exists.
+The release helper enforces the documented tool catalog floor and checks local LanceDB tool-index freshness when `data/tools.lance` exists. The unit suite also carries static regression guards for async-safe MCP tools, shared `httpx` client boundaries, and project metadata (`centralmcp` package name with no direct `pycentral`/`requests` runtime dependencies).

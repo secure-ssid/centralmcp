@@ -185,7 +185,7 @@ Run the local release gate:
 uv run python scripts/validate_release.py
 ```
 
-The release helper runs unit tests, optional RAG/API eval when indexes exist, tool catalog floor checks, and local tool-index freshness checks.
+The release helper runs unit tests, optional RAG/API eval when indexes exist, tool catalog floor checks, and local tool-index freshness checks. Unit tests also include static guards for the active MCP/pipeline code: no `requests` imports, no direct `CentralClient.session` bypasses, no sync `_request()` or `time.sleep()` inside async MCP functions, and no direct `pycentral`/`requests` runtime dependencies.
 
 ## Related projects
 
