@@ -47,6 +47,8 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 
 This keeps the tool list small while still covering the common Central, GLP, and RAG workflows.
 
+If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and includes convenience wrappers. Keep `minimal` in MCP client configs when token surface matters.
+
 ## Toolsets
 
 | Toolset | Enables |

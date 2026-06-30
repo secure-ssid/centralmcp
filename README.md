@@ -37,7 +37,7 @@ It is built around direct REST calls with `httpx`. `pycentral` is not a runtime 
 
 Point your MCP client at **one** server: `mcp_servers/tool_router.py`.
 
-The router keeps the default tool list small while still giving access to the larger backend catalog:
+The recommended `minimal` router profile keeps the MCP tool list small while still giving access to the larger backend catalog:
 
 1. Use `find_tool` to discover the right backend tool.
 2. Use `invoke_read_tool` for read-only calls.
@@ -102,8 +102,8 @@ CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
 |---|---|---|
 | `CREDS_PATH` | Credentials YAML path | `config/credentials.yaml` |
 | `TOKEN_CACHE_DIR` | OAuth token cache directory | `~/.cache/centralmcp/` |
-| `CENTRALMCP_ROUTER_MODE` | Router mode: `minimal` or `default` | `default` |
-| `CENTRALMCP_TOOLSETS` | Loaded backend profiles | all core Aruba backends |
+| `CENTRALMCP_ROUTER_MODE` | Router mode: `minimal` or `default`; examples use `minimal` for low-token clients | `default` |
+| `CENTRALMCP_TOOLSETS` | Loaded backend profiles; examples use `central,glp,rag` | all core Aruba backends |
 | `CENTRALMCP_PRODUCTS` | Optional product backends | empty |
 | `CENTRALMCP_GLP_V2BETA1_WRITES` | Enable guarded GLP write tools | off |
 | `CENTRALMCP_NORMALIZE_MACS` | Normalize outbound MAC strings in router responses | off |
