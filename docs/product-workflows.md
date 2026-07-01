@@ -80,7 +80,10 @@ Promote a generic GET pattern to a typed tool when it is:
 |---|---|---|
 | Show command | `aos8_show_command` | Only permits `show ...` commands via `/v1/configuration/showcommand` |
 | AP inventory | `aos8_list_aps` | Bounded `show ap database` read scoped by `config_path` |
+| Active APs | `aos8_list_active_aps` | Bounded `show ap active` read scoped by `config_path` |
 | Client visibility | `aos8_list_clients` | Bounded `show user-table` read scoped by `config_path` |
+| BSS table | `aos8_list_bss` | Bounded `show ap bss-table` read scoped by `config_path` |
+| Radio summary | `aos8_get_radio_summary` | Bounded `show ap radio-summary` read scoped by `config_path` |
 | AP-group inventory | `aos8_list_ap_groups` | Configuration-object read scoped by `config_path` |
 | SSID profile summary | `aos8_list_ssid_profiles` | Configuration-object read scoped by `config_path` |
 | Generic lab write | `aos8_write` | Guarded POST/PUT/PATCH/DELETE to `/v1/*`; dry-run default |

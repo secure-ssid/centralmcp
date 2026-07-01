@@ -51,6 +51,26 @@ _AP_FIELDS = (
     "Serial #",
     "serial",
 )
+_BSS_FIELDS = (
+    "BSSID",
+    "bssid",
+    "AP Name",
+    "ap_name",
+    "ESSID",
+    "essid",
+    "SSID",
+    "ssid",
+    "Band",
+    "band",
+    "Channel",
+    "channel",
+    "Type",
+    "type",
+    "Status",
+    "status",
+    "Clients",
+    "clients",
+)
 _CLIENT_FIELDS = (
     "Name",
     "name",
@@ -68,6 +88,28 @@ _CLIENT_FIELDS = (
     "role",
     "VLAN",
     "vlan",
+    "Status",
+    "status",
+)
+_RADIO_FIELDS = (
+    "AP Name",
+    "ap_name",
+    "Radio",
+    "radio",
+    "Band",
+    "band",
+    "Channel",
+    "channel",
+    "EIRP",
+    "eirp",
+    "Power",
+    "power",
+    "Noise Floor",
+    "noise_floor",
+    "Utilization",
+    "utilization",
+    "Clients",
+    "clients",
     "Status",
     "status",
 )
@@ -207,6 +249,25 @@ async def aos8_list_aps(
 
 
 @mcp.tool(annotations=READ_ONLY)
+async def aos8_list_active_aps(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List active AOS8 APs from `show ap active` with bounded output."""
+    out = await aos8_show_command(
+        "show ap active",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["active_aps"] = _compact_primary_list(out.pop("data"), _AP_FIELDS)
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
 async def aos8_list_clients(
     config_path: str = "/md",
     limit: int = 50,
@@ -221,6 +282,44 @@ async def aos8_list_clients(
     )
     if "data" in out:
         out["clients"] = _compact_primary_list(out.pop("data"), _CLIENT_FIELDS)
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_list_bss(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List AOS8 BSS table entries from `show ap bss-table`."""
+    out = await aos8_show_command(
+        "show ap bss-table",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["bss"] = _compact_primary_list(out.pop("data"), _BSS_FIELDS)
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_radio_summary(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get AOS8 AP radio summary from `show ap radio-summary`."""
+    out = await aos8_show_command(
+        "show ap radio-summary",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["radio_summary"] = _compact_primary_list(out.pop("data"), _RADIO_FIELDS)
         out["config_path"] = config_path
     return out
 

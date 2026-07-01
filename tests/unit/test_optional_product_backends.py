@@ -1007,6 +1007,146 @@ def test_aos8_list_aps_runs_show_ap_database_and_compacts(monkeypatch):
     assert out["aps"]["_pagination"]["truncated"] is True
 
 
+@pytest.mark.parametrize(
+    ("tool_func", "expected_command", "payload", "output_key", "expected_item"),
+    [
+        (
+            aos8.aos8_list_active_aps,
+            "show ap active",
+            {
+                "Active APs": [
+                    {
+                        "Name": "ap1",
+                        "Group": "HQ",
+                        "IP Address": "192.0.2.10",
+                        "Status": "Up",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Name": "ap2",
+                        "Group": "HQ",
+                        "IP Address": "192.0.2.11",
+                        "Status": "Up",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "active_aps",
+            {"Name": "ap1", "Group": "HQ", "IP Address": "192.0.2.10", "Status": "Up"},
+        ),
+        (
+            aos8.aos8_list_bss,
+            "show ap bss-table",
+            {
+                "BSS Table": [
+                    {
+                        "BSSID": "aa:bb:cc:dd:ee:ff",
+                        "AP Name": "ap1",
+                        "ESSID": "Corp",
+                        "Channel": 36,
+                        "Clients": 12,
+                        "Raw": "omitted",
+                    },
+                    {
+                        "BSSID": "aa:bb:cc:dd:ee:00",
+                        "AP Name": "ap2",
+                        "ESSID": "Guest",
+                        "Channel": 149,
+                        "Clients": 4,
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "bss",
+            {
+                "BSSID": "aa:bb:cc:dd:ee:ff",
+                "AP Name": "ap1",
+                "ESSID": "Corp",
+                "Channel": 36,
+                "Clients": 12,
+            },
+        ),
+        (
+            aos8.aos8_get_radio_summary,
+            "show ap radio-summary",
+            {
+                "Radio Summary": [
+                    {
+                        "AP Name": "ap1",
+                        "Radio": "5GHz",
+                        "Channel": 36,
+                        "EIRP": 18,
+                        "Clients": 12,
+                        "Raw": "omitted",
+                    },
+                    {
+                        "AP Name": "ap2",
+                        "Radio": "2.4GHz",
+                        "Channel": 6,
+                        "EIRP": 9,
+                        "Clients": 4,
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "radio_summary",
+            {"AP Name": "ap1", "Radio": "5GHz", "Channel": 36, "EIRP": 18, "Clients": 12},
+        ),
+    ],
+)
+def test_aos8_visibility_show_tools_compact_outputs(
+    monkeypatch,
+    tool_func,
+    expected_command,
+    payload,
+    output_key,
+    expected_item,
+):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"rows":[]}'
+
+        def json(self):
+            return {
+                "_global_result": {"status": "0"},
+                "_meta": {"rows": []},
+                **payload,
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(tool_func(config_path="/md/branch1", limit=1))
+
+    assert called["url"] == "https://mm.example.com/v1/configuration/showcommand"
+    assert called["params"] == {
+        "command": expected_command,
+        "config_path": "/md/branch1",
+    }
+    assert out["config_path"] == "/md/branch1"
+    list_key = next(key for key in out[output_key] if key != "_pagination")
+    assert out[output_key][list_key] == [expected_item]
+    assert out[output_key]["_pagination"]["truncated"] is True
+
+
 def test_aos8_list_clients_runs_show_user_table_and_compacts(monkeypatch):
     called = {}
 
