@@ -85,6 +85,40 @@ def test_glp_get_bounds_list_payloads(monkeypatch):
     }
 
 
+def test_glp_list_tools_clamp_limit_and_forward_offset(monkeypatch):
+    calls = []
+
+    class DummyGLP:
+        def list_devices(self, limit=100, offset=0, filter=None):
+            calls.append(("devices", limit, offset, filter))
+            return []
+
+        def list_subscriptions(self, limit=100, offset=0):
+            calls.append(("subscriptions", limit, offset))
+            return []
+
+        def list_users(self, limit=100, offset=0):
+            calls.append(("users", limit, offset))
+            return []
+
+        def list_audit_logs(self, limit=100, offset=0, category=None):
+            calls.append(("audit", limit, offset, category))
+            return []
+
+    monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
+
+    assert glp.list_glp_devices(limit=999, offset=-1, filter="deviceType eq 'AP'")["errors"] == []
+    assert glp.list_glp_subscriptions(limit=999, offset=2)["errors"] == []
+    assert glp.list_glp_users(limit=999, offset=3)["errors"] == []
+    assert glp.list_glp_audit_logs(limit=999, offset=4, category="USER_MANAGEMENT")["errors"] == []
+    assert calls == [
+        ("devices", 200, 0, "deviceType eq 'AP'"),
+        ("subscriptions", 200, 2),
+        ("users", 200, 3),
+        ("audit", 200, 4, "USER_MANAGEMENT"),
+    ]
+
+
 def test_glp_add_device_fails_closed_when_writes_disabled(monkeypatch):
     monkeypatch.delenv("CENTRALMCP_GLP_V2BETA1_WRITES", raising=False)
 

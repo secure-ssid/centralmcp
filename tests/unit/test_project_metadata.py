@@ -13,6 +13,7 @@ BOUNDED_GENERIC_GET_TOOLS = {
     "mcp_servers/aos8.py": "aos8_get",
     "mcp_servers/edgeconnect.py": "edgeconnect_get",
 }
+MAX_MCP_LIST_DEFAULT = 200
 
 
 def _project_dependencies(pyproject_text: str) -> list[str]:
@@ -44,6 +45,19 @@ def _calls_name(node: ast.AST, name: str) -> bool:
         if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
             if child.func.id == name:
                 return True
+    return False
+
+
+def _is_mcp_tool(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    for decorator in node.decorator_list:
+        if (
+            isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Attribute)
+            and decorator.func.attr == "tool"
+            and isinstance(decorator.func.value, ast.Name)
+            and decorator.func.value.id == "mcp"
+        ):
+            return True
     return False
 
 
@@ -125,5 +139,29 @@ def test_generic_read_only_get_tools_bound_list_responses():
             violations.append(
                 f"{relative_path}:{function_name} does not call bound_collection_response"
             )
+
+    assert violations == []
+
+
+def test_mcp_tool_limit_defaults_do_not_exceed_project_bound():
+    violations: list[str] = []
+
+    for path in sorted((REPO_ROOT / "mcp_servers").glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            if not _is_mcp_tool(node):
+                continue
+            defaults = [None] * (len(node.args.args) - len(node.args.defaults))
+            defaults.extend(node.args.defaults)
+            for arg, default in zip(node.args.args, defaults):
+                if arg.arg != "limit" or not isinstance(default, ast.Constant):
+                    continue
+                if isinstance(default.value, int) and default.value > MAX_MCP_LIST_DEFAULT:
+                    violations.append(
+                        f"{path.relative_to(REPO_ROOT)}:{node.name} limit default "
+                        f"{default.value} exceeds {MAX_MCP_LIST_DEFAULT}"
+                    )
 
     assert violations == []

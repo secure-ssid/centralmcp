@@ -402,7 +402,7 @@ class GLPClient:
 
     def list_users(
         self,
-        limit: int = 300,
+        limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """List users in the GLP workspace."""

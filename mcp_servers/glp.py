@@ -12,6 +12,7 @@ from mcp_servers.shared import (
     IDEMPOTENT_WRITE,
     READ_ONLY,
     bound_collection_response,
+    clamp_limit,
     get_glp_client,
     safe_api_path,
 )
@@ -93,16 +94,22 @@ def glp_get(
 
 
 @mcp.tool(annotations=READ_ONLY)
-def list_glp_devices(limit: int = 100, filter: str | None = None) -> dict[str, Any]:
+def list_glp_devices(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
     """List devices in the GLP workspace (warranty, subscription state, lifecycle).
 
     Args:
+        limit: Maximum items to request; clamped to the MCP list limit.
+        offset: Zero-based result offset for pagination.
         filter: OData filter, e.g. "serialNumber eq 'SG30LMR164'".
     """
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        items = glp.list_devices(limit=limit, filter=filter)
+        items = glp.list_devices(limit=clamp_limit(limit), offset=max(0, offset), filter=filter)
         return {"items": items, "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
@@ -123,12 +130,12 @@ def get_glp_device(serial_number: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_ONLY)
-def list_glp_subscriptions(limit: int = 100) -> dict[str, Any]:
-    """List subscriptions (license keys) in the GLP workspace (type, assigned device, expiry)."""
+def list_glp_subscriptions(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List subscriptions with `limit` / `offset` pagination."""
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        items = glp.list_subscriptions(limit=limit)
+        items = glp.list_subscriptions(limit=clamp_limit(limit), offset=max(0, offset))
         return {"items": items, "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
@@ -149,12 +156,12 @@ def get_glp_subscription(subscription_id: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_ONLY)
-def list_glp_users(limit: int = 300) -> dict[str, Any]:
-    """List users with access to the GLP workspace."""
+def list_glp_users(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List users with access to the GLP workspace using `limit` / `offset` pagination."""
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        items = glp.list_users(limit=limit)
+        items = glp.list_users(limit=clamp_limit(limit), offset=max(0, offset))
         return {"items": items, "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
@@ -162,16 +169,26 @@ def list_glp_users(limit: int = 300) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_ONLY)
-def list_glp_audit_logs(limit: int = 100, category: str | None = None) -> dict[str, Any]:
+def list_glp_audit_logs(
+    limit: int = 100,
+    offset: int = 0,
+    category: str | None = None,
+) -> dict[str, Any]:
     """List GLP audit log entries (who did what and when).
 
     Args:
+        limit: Maximum entries to request; clamped to the MCP list limit.
+        offset: Zero-based result offset for pagination.
         category: e.g. "USER_MANAGEMENT", "DEVICE_MANAGEMENT".
     """
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        items = glp.list_audit_logs(limit=limit, category=category)
+        items = glp.list_audit_logs(
+            limit=clamp_limit(limit),
+            offset=max(0, offset),
+            category=category,
+        )
         return {"items": items, "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
