@@ -1,0 +1,47 @@
+name: Support question
+description: Ask for setup, docs, MCP client, or usage help with fake or redacted details.
+title: "[Support]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the docs site and run `uv run python scripts/doctor.py`
+        before filing. Do not include real credentials, tokens, tenant IDs,
+        customer data, private URLs, or sensitive screenshots.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Setup wizard or doctor
+        - MCP client configuration
+        - Streamable HTTP mode
+        - Router/tool discovery
+        - Optional product starters
+        - RAG/OpenAPI lookup
+        - GitHub Pages or documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to do, and where are you stuck?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Redacted context
+      description: Share commands, fake/redacted config snippets, or doctor output.
+      placeholder: |
+        uv run python scripts/doctor.py
+        MCP_PORT=8010 bash scripts/run_http_router.sh
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, tokens, tenant IDs, customer data, and private network details.
+          required: true

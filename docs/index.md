@@ -139,7 +139,7 @@ uv run python scripts/download_indexes.py
 - [Contributing guide](https://github.com/secure-ssid/centralmcp/blob/main/CONTRIBUTING.md) - local setup, validation, docs, and no-secret expectations
 - [Code of conduct](https://github.com/secure-ssid/centralmcp/blob/main/CODE_OF_CONDUCT.md) - collaboration expectations
 - [Security policy](https://github.com/secure-ssid/centralmcp/blob/main/SECURITY.md) - private vulnerability and credential-exposure reporting guidance
-- [GitHub issues](https://github.com/secure-ssid/centralmcp/issues) - bug reports and feature requests with fake or redacted details
+- [GitHub issues](https://github.com/secure-ssid/centralmcp/issues) - bug reports, feature requests, and support questions with fake or redacted details
 
 ## Related projects and thanks
 

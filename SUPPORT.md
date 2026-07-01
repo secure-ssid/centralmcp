@@ -21,7 +21,7 @@ uv run python scripts/doctor.py
 |---|---|
 | Reproducible bug | Open a bug report using the GitHub issue form |
 | Feature or product workflow idea | Open a feature request using the GitHub issue form |
-| Setup, docs, or usage question | Open a GitHub issue with fake or redacted details |
+| Setup, docs, or usage question | Open a support question using the GitHub issue form |
 | Security vulnerability or credential exposure | Follow [SECURITY.md](SECURITY.md), not a public issue |
 | Pull request guidance | See [CONTRIBUTING.md](CONTRIBUTING.md) |
 

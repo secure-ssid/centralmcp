@@ -1,4 +1,4 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability or credential exposure
     url: https://github.com/secure-ssid/centralmcp/blob/main/SECURITY.md
