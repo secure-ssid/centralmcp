@@ -4092,3 +4092,70 @@ def test_edgeconnect_write_executes_with_custom_auth_header(monkeypatch):
     assert called["url"] == "https://orch.example.com/gms/rest/appliance"
     assert called["headers"]["X-Auth-Token"] == "secret"
     assert called["json"] == {"name": "lab"}
+
+
+def test_edgeconnect_save_changes_previews_with_nepk(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    out = asyncio.run(edgeconnect.edgeconnect_save_changes(ne_pk="1.NE", body={"save": True}))
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/appliance/saveChanges"
+    assert out["params"] == {"nePk": "1.NE"}
+    assert out["json"] == {"save": True}
+    assert "execute_hint" in out
+
+
+def test_edgeconnect_save_changes_blocks_when_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(edgeconnect.edgeconnect_save_changes(ne_pk="1.NE"))
+
+    assert out["status"] == "blocked"
+    assert out["tool"] == "edgeconnect_save_changes"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+def test_edgeconnect_save_changes_executes_with_confirm(monkeypatch):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_save_changes(
+            ne_pk="1.NE",
+            body={"save": True},
+            dry_run=False,
+            confirm=True,
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert called["method"] == "POST"
+    assert called["url"] == "https://orch.example.com/gms/rest/appliance/saveChanges"
+    assert called["params"] == {"nePk": "1.NE"}
+    assert called["json"] == {"save": True}

@@ -977,6 +977,28 @@ async def edgeconnect_list_vrf_segments(
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_save_changes(
+    ne_pk: str | None = None,
+    body: dict[str, Any] | None = None,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Persist pending EdgeConnect appliance configuration changes with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_save_changes")
+
+    params = {"nePk": ne_pk} if ne_pk else None
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/appliance/saveChanges",
+        params=params,
+        body=body or {},
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
 async def edgeconnect_write(
     method: str,
     path: str,
