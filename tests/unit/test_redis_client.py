@@ -59,3 +59,21 @@ def test_vector_search_similarity_clamped_above_one():
     client = _fake_client_returning(1.5)
     hits = redis_client.vector_search(client, query_vector=[0.0] * 768, top_k=1)
     assert hits[0]["score"] == 0.0
+
+
+def test_vector_search_negative_top_k_clamped_to_one():
+    client = _fake_client_returning(0.0)
+    redis_client.vector_search(client, query_vector=[0.0] * 768, top_k=-5)
+
+    query = client.ft.return_value.search.call_args.args[0]
+    assert "KNN 1" in query._query_string
+    assert query._num == 1
+
+
+def test_search_tools_negative_top_k_clamped_to_one():
+    client = _fake_client_returning(0.0)
+    redis_client.search_tools(client, query_vector=[0.0] * 768, top_k=-5)
+
+    query = client.ft.return_value.search.call_args.args[0]
+    assert "KNN 1" in query._query_string
+    assert query._num == 1

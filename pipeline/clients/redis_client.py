@@ -16,6 +16,11 @@ DEFAULT_REDIS_URL = "redis://localhost:6379"
 REDIS_URL = os.getenv("REDIS_URL", DEFAULT_REDIS_URL)
 DOCS_INDEX = "network_docs"
 EMBEDDING_DIMS = 768  # nomic-embed-text
+MAX_SEARCH_TOP_K = 200
+
+
+def _clamp_top_k(top_k: int) -> int:
+    return max(1, min(top_k, MAX_SEARCH_TOP_K))
 
 
 def get_redis_url() -> str:
@@ -103,6 +108,7 @@ def vector_search(
 
     Returns list of dicts with text, source, doc_type, file_path, chunk_index, score.
     """
+    top_k = _clamp_top_k(top_k)
     vec_bytes = np.array(query_vector, dtype=np.float32).tobytes()
 
     filter_str = "*"
@@ -227,6 +233,7 @@ def search_tools(
 
     Returns list of dicts with name, description, server, schema_json, score.
     """
+    top_k = _clamp_top_k(top_k)
     vec_bytes = np.array(query_vector, dtype=np.float32).tobytes()
     q = (
         Query(f"*=>[KNN {top_k} @embedding $vec AS score]")

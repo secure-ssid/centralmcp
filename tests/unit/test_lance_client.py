@@ -59,6 +59,10 @@ class TestHybridSearch:
         hits = lc.hybrid_search(db, "WPA3 SAE SSID", _vec(99), top_k=1)
         assert hits[0]["file_path"] == "ssid.md"
 
+    def test_negative_top_k_clamped_to_one(self, db):
+        hits = lc.hybrid_search(db, "WPA3 SAE SSID", _vec(99), top_k=-5)
+        assert len(hits) == 1
+
     def test_source_filter_narrows(self, db):
         hits = lc.hybrid_search(db, "VLAN port profile", _vec(99), top_k=3,
                                 source_filter="tech_docs")
@@ -101,6 +105,19 @@ class TestToolsTable:
         hits = lc.search_tools(db, "create a vlan", _vec(99), top_k=1)
         assert hits[0]["name"] == "create_vlan"
         assert set(hits[0]) == {"name", "description", "server", "schema_json", "score"}
+
+    def test_negative_tool_search_top_k_clamped_to_one(self, db):
+        rows = [
+            {"id": "t1", "server": "aruba-config", "name": "create_vlan",
+             "description": "Create a VLAN", "schema_json": "{}",
+             "fts_text": "create vlan create_vlan Create a VLAN", "vector": _vec(4)},
+            {"id": "t2", "server": "aruba-ops", "name": "reboot_device",
+             "description": "Reboot a device", "schema_json": "{}",
+             "fts_text": "reboot device reboot_device Reboot a device", "vector": _vec(5)},
+        ]
+        lc.create_tools_table(db, rows)
+        hits = lc.search_tools(db, "create a vlan", _vec(99), top_k=-5)
+        assert len(hits) == 1
 
     def test_missing_tools_table_returns_empty(self, tmp_path):
         empty = lc.connect(tmp_path / "empty")

@@ -22,8 +22,13 @@ DATA_DIR = ROOT / "data"
 DOCS_TABLE = "docs"
 TOOLS_TABLE = "tools"
 EMBEDDING_DIMS = 768
+MAX_SEARCH_TOP_K = 200
 
 _SOURCE_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+def _clamp_top_k(top_k: int) -> int:
+    return max(1, min(top_k, MAX_SEARCH_TOP_K))
 
 
 def connect(data_dir: Path = DATA_DIR):
@@ -71,6 +76,7 @@ def hybrid_search(
             "`python ingestion/ingest_docs.py` or download the prebuilt "
             "index from the GitHub Release."
         )
+    top_k = _clamp_top_k(top_k)
     # limit() truncates EACH leg (vector, FTS) before RRF fusion — fetch deep
     # so fusion sees real overlap, then slice to top_k after.
     q = (
@@ -157,6 +163,7 @@ def search_tools(
     table = tools_table(db, table_name)
     if table is None:
         return []
+    top_k = _clamp_top_k(top_k)
     q = (
         table.search(query_type="hybrid")
         .vector(query_vector)
