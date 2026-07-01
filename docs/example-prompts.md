@@ -139,7 +139,7 @@ invoke_read_tool("apstra_list_blueprints", {"limit": 10})
 UXI read prompt:
 
 ```text
-List the first 10 UXI sensors and include only compact identity/status fields.
+List the first 10 UXI sensors, then get online/testing status for one sensor ID.
 ```
 
 Router flow:
@@ -147,6 +147,8 @@ Router flow:
 ```text
 find_tool("UXI list sensors")
 invoke_read_tool("uxi_list_sensors", {"page_size": 10})
+find_tool("UXI sensor status")
+invoke_read_tool("uxi_get_sensor_status", {"sensor_id": "SENSOR_ID"})
 ```
 
 Lab write dry-run prompt:
