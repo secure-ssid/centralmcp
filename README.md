@@ -10,7 +10,19 @@ centralmcp gives MCP-capable AI clients a low-token way to search Aruba/HPE docs
 
 It is built around direct REST calls with `httpx`. `pycentral` is not a runtime dependency.
 
-![centralmcp architecture overview](docs/assets/centralmcp-overview.svg)
+```mermaid
+flowchart LR
+    client["MCP clients<br/>Claude, Cursor, VS Code, any MCP-capable model"]
+    router["aruba-tool-router<br/>find_tool<br/>invoke_read_tool<br/>invoke_tool"]
+    rag["Embedded RAG<br/>LanceDB docs<br/>SQLite OpenAPI lookup"]
+    core["Core Aruba backends<br/>Central monitoring/config/NAC/ops<br/>GreenLake Platform"]
+    optional["Optional starters<br/>ClearPass, Mist, Apstra<br/>AOS8, EdgeConnect"]
+
+    client -->|"stdio or streamable HTTP"| router
+    router -->|"search_docs / ask_docs / lookup_api"| rag
+    router -->|"async httpx REST"| core
+    router -->|"opt-in only"| optional
+```
 
 ## Search keywords
 
@@ -39,6 +51,7 @@ ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
 | Install and connect an MCP client | [docs/getting-started.md](docs/getting-started.md) |
 | Understand the low-token router | [docs/tool-router.md](docs/tool-router.md) |
 | Run with any MCP-capable AI client/model | [Streamable HTTP mode](#streamable-http-mode) |
+| See the architecture diagrams | [docs/architecture/system-overview.md](docs/architecture/system-overview.md) |
 | Browse the documentation map | [docs/README.md](docs/README.md) |
 | Review the RAG design | [docs/architecture/RAG-ARCHITECTURE.md](docs/architecture/RAG-ARCHITECTURE.md) |
 | Run validation before pushing | [`scripts/validate_release.py`](scripts/validate_release.py) |
@@ -205,6 +218,12 @@ Product starter backends also use product-specific URL/token variables. See [doc
 ## Project layout
 
 ```text
+.claude/                 Claude launch profiles and repo agent notes
+.cursor/                 Cursor MCP profiles: router default and direct-server dev mode
+.vscode/                 VS Code MCP example config
+config/                  Credentials template; real credentials stay git-ignored
+docker-compose.yml       Optional Redis/Ollama server backend for power users
+
 mcp_servers/
   tool_router.py        Low-token MCP entrypoint
   prompts.py            Guided MCP prompt templates
@@ -220,6 +239,9 @@ mcp_servers/
   aos8.py               Optional ArubaOS 8 starter backend
   edgeconnect.py        Optional EdgeConnect starter backend
 
+ingestion/
+  ingest_docs.py        Build docs/API indexes into LanceDB + SQLite
+
 pipeline/
   clients/              httpx clients, token manager, LanceDB, SQLite specs
   stages/               8-stage migration pipeline
@@ -227,18 +249,20 @@ pipeline/
 docs/
   getting-started.md    Setup and MCP connection guide
   tool-router.md        Router modes and low-token usage
-  architecture/         RAG and architecture notes
+  architecture/         System overview and RAG design notes
   audits/               Historical audits and remediation notes
   operations/           Endpoint/runbook notes
   plans/                Planning documents
 
-.vscode/
-  mcp.json.example      VS Code MCP example using the minimal router profile
+inputs/                  Example CSV inputs for migration workflows
+resources/               Postman/API reference material and resource notes
+scripts/                 Tool catalog ingest, local doctor, HTTP router helper, release validation
+tests/                   Unit, integration, and RAG eval tests
 
-.mcp.json.example       Generic stdio MCP client example using the minimal router
-.mcp.http.json.example  Generic streamable HTTP MCP client example
-scripts/run_http_router.sh  Start the minimal router over streamable HTTP
-scripts/doctor.py           Local setup diagnostic; no API calls
+.mcp.json.example        Generic stdio MCP client example using the minimal router
+.mcp.http.json.example   Generic streamable HTTP MCP client example
+run_pipeline.py          Migration pipeline CLI
+run_ssid.py              SSID helper CLI
 ```
 
 ## RAG and API lookup

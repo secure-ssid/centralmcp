@@ -8,6 +8,7 @@ Use this directory as the organized documentation hub for setup, architecture, o
 |---|---|
 | [getting-started.md](getting-started.md) | Install, configure credentials, connect an MCP client, and build indexes |
 | [tool-router.md](tool-router.md) | Low-token router modes, toolsets, optional products, and safe dispatch |
+| [architecture/system-overview.md](architecture/system-overview.md) | End-to-end MCP architecture diagrams and runtime flow |
 | [architecture/RAG-ARCHITECTURE.md](architecture/RAG-ARCHITECTURE.md) | Embedded RAG design, eval results, and migration rationale |
 | [operations/hpe-support-events-endpoint.md](operations/hpe-support-events-endpoint.md) | HPE support events endpoint notes |
 | [audits/AUDIT-2026-06-03.md](audits/AUDIT-2026-06-03.md) | Historical deep audit and remediation notes |
@@ -29,7 +30,6 @@ Use this directory as the organized documentation hub for setup, architecture, o
 | `mcp_servers/` | FastMCP servers, low-token router, prompts, middleware, optional product starters |
 | `pipeline/` | Migration pipeline, typed clients, credentials loading, state store, SSID helpers |
 | `ingestion/` | Docs/API ingestion into LanceDB and SQLite |
-| `docs/assets/centralmcp-overview.svg` | README architecture image for GitHub visitors |
 | `scripts/run_http_router.sh` | Start the minimal router over streamable HTTP |
 | `scripts/doctor.py` | Check local setup without making API calls |
 | `scripts/` | Tool-catalog ingestion, release validation, local sync helpers |
