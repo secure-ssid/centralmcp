@@ -335,6 +335,7 @@ Measured on the bundled eval set:
 - `find_tool` omits full JSON schemas by default; request `include_schema=true` only when needed.
 - Generic GLP and optional product GET tools bound list responses with `limit` / `offset`.
 - MCP tool list defaults are capped at 200 items to protect client context windows.
+- Report vulnerabilities and accidental credential exposure through [SECURITY.md](SECURITY.md); do not publish real tokens, tenant IDs, or customer data in issues or PRs.
 
 ## Validation
 
