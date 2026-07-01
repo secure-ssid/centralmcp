@@ -58,7 +58,7 @@ always use the latest release URL.
 | `data/docs.lance` | `search_docs`, `ask_docs` | Embedded docs retrieval |
 | `data/specs.sqlite` | `lookup_api` | Exact OpenAPI endpoint/schema lookup |
 | `data/tools.lance` | `find_tool` | Semantic router tool discovery |
-| `data/INDEX-MANIFEST.json` | humans / doctor output | Build metadata and artifact sizes |
+| `data/INDEX-MANIFEST.json` | humans / doctor output | Build metadata, artifact sizes, and source-manifest checksum/source names |
 
 ## Refresh RAG source inputs
 

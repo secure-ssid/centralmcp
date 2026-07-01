@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 DIST_DIR = ROOT / "dist"
 REQUIRED_ARTIFACTS = ("docs.lance", "tools.lance", "specs.sqlite")
+SOURCE_MANIFEST = ROOT / "ingestion" / "source_manifest.json"
 
 
 def _project_version() -> str:
@@ -47,6 +48,28 @@ def _sqlite_counts(path: Path) -> dict[str, int]:
     return counts
 
 
+def _source_manifest_summary(path: Path = SOURCE_MANIFEST) -> dict[str, object]:
+    if not path.exists():
+        raise SystemExit(f"Missing source manifest: {path.relative_to(ROOT)}")
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid source manifest JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise SystemExit("Invalid source manifest: top-level JSON value must be a list")
+    sources = sorted(
+        str(item.get("source", "")).strip()
+        for item in data
+        if isinstance(item, dict) and str(item.get("source", "")).strip()
+    )
+    return {
+        "path": str(path.relative_to(ROOT)),
+        "sha256": _sha256(path),
+        "source_count": len(sources),
+        "sources": sources,
+    }
+
+
 def _artifact_manifest(version: str) -> dict[str, object]:
     artifacts: dict[str, object] = {}
     for name in REQUIRED_ARTIFACTS:
@@ -71,6 +94,7 @@ def _artifact_manifest(version: str) -> dict[str, object]:
         "project_version": _project_version(),
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "artifacts": artifacts,
+        "source_manifest": _source_manifest_summary(),
         "restore": "tar -xzf centralmcp-rag-index-<version>.tar.gz",
         "rebuild": (
             "uv run python ingestion/ingest_docs.py && "
