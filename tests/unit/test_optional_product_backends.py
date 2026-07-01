@@ -2874,6 +2874,68 @@ def test_edgeconnect_list_appliance_reachability_compacts_map(monkeypatch):
     assert out["reachability"]["_pagination"]["truncated"] is True
 
 
+def test_edgeconnect_get_maintenance_mode_compacts_map(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/maintenanceMode"
+        assert params is None
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "1.NE": {
+                    "hostName": "ec-1",
+                    "maintenanceMode": True,
+                    "reason": "lab change",
+                    "userName": "admin",
+                    "raw": "omitted",
+                },
+                "2.NE": {
+                    "hostName": "ec-2",
+                    "maintenanceMode": False,
+                    "raw": "omitted",
+                },
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_maintenance_mode(limit=1))
+
+    assert out["maintenance_mode"]["appliances"] == [
+        {
+            "nePk": "1.NE",
+            "hostName": "ec-1",
+            "maintenanceMode": True,
+            "reason": "lab change",
+            "userName": "admin",
+        }
+    ]
+    assert out["maintenance_mode"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_get_maintenance_mode_bounds_upstream_lists(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/maintenanceMode"
+        assert params is None
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "pauseOrchestration": ["1.NE", "2.NE"],
+                "suppressAlarm": ["3.NE", "4.NE"],
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_maintenance_mode(limit=1))
+
+    assert out["maintenance_mode"]["pauseOrchestration"]["items"] == ["1.NE"]
+    assert out["maintenance_mode"]["pauseOrchestration"]["_pagination"]["truncated"] is True
+    assert out["maintenance_mode"]["suppressAlarm"]["items"] == ["3.NE"]
+    assert out["maintenance_mode"]["suppressAlarm"]["_pagination"]["truncated"] is True
+
+
 def test_edgeconnect_list_alarms_compacts_outstanding(monkeypatch):
     called = {}
 
@@ -4159,3 +4221,71 @@ def test_edgeconnect_save_changes_executes_with_confirm(monkeypatch):
     assert called["url"] == "https://orch.example.com/gms/rest/appliance/saveChanges"
     assert called["params"] == {"nePk": "1.NE"}
     assert called["json"] == {"save": True}
+
+
+def test_edgeconnect_set_maintenance_mode_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_set_maintenance_mode(
+            {"nePks": ["1.NE"], "enabled": True, "reason": "lab change"}
+        )
+    )
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/maintenanceMode"
+    assert out["json"] == {"nePks": ["1.NE"], "enabled": True, "reason": "lab change"}
+    assert "execute_hint" in out
+
+
+def test_edgeconnect_set_maintenance_mode_blocks_when_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(edgeconnect.edgeconnect_set_maintenance_mode({"nePks": ["1.NE"]}))
+
+    assert out["status"] == "blocked"
+    assert out["tool"] == "edgeconnect_set_maintenance_mode"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+def test_edgeconnect_set_maintenance_mode_executes_with_confirm(monkeypatch):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_set_maintenance_mode(
+            {"nePks": ["1.NE"], "enabled": False},
+            dry_run=False,
+            confirm=True,
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert called["method"] == "POST"
+    assert called["url"] == "https://orch.example.com/gms/rest/maintenanceMode"
+    assert called["json"] == {"nePks": ["1.NE"], "enabled": False}

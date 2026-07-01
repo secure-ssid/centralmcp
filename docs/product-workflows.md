@@ -131,6 +131,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Tunnel health | `edgeconnect_list_tunnels` | Physical tunnel status from `/gms/rest/tunnels2/physical`, with optional filters |
 | Tunnel metadata | `edgeconnect_get_tunnel_metadata` | Compact tunnel count metadata from `/gms/rest/tunnels2?metaData=true` |
 | VRF/routing segments | `edgeconnect_list_vrf_segments` | Compact routing-segment inventory from `/gms/rest/vrf/config/segments`, with optional segment ID filter |
+| Maintenance mode | `edgeconnect_get_maintenance_mode` / `edgeconnect_set_maintenance_mode` | Compact maintenance-mode read plus guarded lab write to `/gms/rest/maintenanceMode` |
 | Persist appliance changes | `edgeconnect_save_changes` | Guarded lab write to `/gms/rest/appliance/saveChanges`, dry-run default and `confirm=True` required |
 | Generic lab write | `edgeconnect_write` | Guarded POST/PUT/PATCH/DELETE to Orchestrator REST paths; dry-run default |
 

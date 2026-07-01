@@ -140,6 +140,29 @@ _REACHABILITY_PATHS = {
     "gms": "/gms/rest/reachability/gms",
     "gms2": "/gms/rest/reachability/gms2",
 }
+_MAINTENANCE_MODE_FIELDS = (
+    "id",
+    "nePk",
+    "applianceId",
+    "hostName",
+    "hostname",
+    "name",
+    "site",
+    "maintenanceMode",
+    "maintenance",
+    "inMaintenance",
+    "enabled",
+    "status",
+    "state",
+    "reason",
+    "description",
+    "comment",
+    "userName",
+    "username",
+    "startTime",
+    "endTime",
+    "timestamp",
+)
 _TOPOLOGY_LINK_FIELDS = (
     "id",
     "linkId",
@@ -539,6 +562,64 @@ def _compact_reachability(data: Any, *, limit: int, offset: int, single: bool = 
     compacted = [_compact_record(record, _REACHABILITY_FIELDS) for record in records]
     if single and len(compacted) == 1:
         return compacted[0]
+    return bound_collection_response(
+        {"appliances": compacted},
+        limit=limit,
+        offset=offset,
+        list_key="appliances",
+    )
+
+
+def _normalize_maintenance_mode_records(data: Any) -> list[Any] | None:
+    records = _collection_records(
+        data,
+        ("appliances", "maintenanceMode", "maintenance", "states"),
+    )
+    if records is not None:
+        return records
+    if not isinstance(data, dict):
+        return None
+
+    for key in ("appliances", "maintenanceMode", "maintenance", "states", "data"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            records = _normalize_maintenance_mode_records(nested)
+            if records is not None:
+                return records
+
+    if _looks_like_record(data, _MAINTENANCE_MODE_FIELDS):
+        return [data]
+
+    records = []
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        record = dict(value)
+        if not any(field in record for field in ("id", "nePk", "applianceId")):
+            record["nePk"] = key
+        records.append(record)
+    return records or None
+
+
+def _compact_maintenance_mode(data: Any, *, limit: int, offset: int) -> Any:
+    if isinstance(data, dict) and any(
+        isinstance(data.get(key), list) for key in ("pauseOrchestration", "suppressAlarm")
+    ):
+        out = dict(data)
+        for key in ("pauseOrchestration", "suppressAlarm"):
+            if isinstance(out.get(key), list):
+                out[key] = bound_collection_response(out[key], limit=limit, offset=offset)
+        return out
+
+    records = _normalize_maintenance_mode_records(data)
+    if records is None:
+        return _compact_collection(
+            data,
+            _MAINTENANCE_MODE_FIELDS,
+            ("appliances", "maintenanceMode", "maintenance", "states"),
+        )
+
+    compacted = [_compact_record(record, _MAINTENANCE_MODE_FIELDS) for record in records]
     return bound_collection_response(
         {"appliances": compacted},
         limit=limit,
@@ -974,6 +1055,43 @@ async def edgeconnect_list_vrf_segments(
                 offset=offset,
             )
     return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_maintenance_mode(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List EdgeConnect appliances currently configured for maintenance mode."""
+    out = await _edgeconnect_get(
+        "/gms/rest/maintenanceMode",
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["maintenance_mode"] = _compact_maintenance_mode(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+        )
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_maintenance_mode(
+    body: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Configure EdgeConnect appliance maintenance mode with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_maintenance_mode")
+
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/maintenanceMode",
+        body=body,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
 
 
 @mcp.tool(annotations=DESTRUCTIVE)

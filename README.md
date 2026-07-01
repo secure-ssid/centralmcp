@@ -72,7 +72,7 @@ Python `httpx` network automation.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 194 core tools, or 284 with optional product starters indexed |
+| MCP tools | 194 core tools, or 286 with optional product starters indexed |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |
