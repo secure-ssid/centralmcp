@@ -93,7 +93,8 @@ surface:
 - typed Mist site/client/WLAN/alarm lookups
 - typed Apstra blueprint/anomaly, AOS8 show/config-object diagnostics and
   guarded WLAN/VLAN lab writes, and EdgeConnect appliance, route, tunnel, VRF,
-  interface-label, ACL object-group, service, bypass, and firewall-zone workflows
+  interface-label, ACL object-group, service, bypass, link-integrity, and
+  firewall-zone workflows
 
 Generic GET responses are paginated with `limit` and `offset` when the response
 contains a list. This keeps token cost low while leaving room to add

@@ -34,7 +34,7 @@ ClearPass MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, AOS8 automation,
 HPE Aruba EdgeConnect MCP, EdgeConnect MCP, guarded read/write lab automation,
 EdgeConnect zones, EdgeConnect interface labels, zone-based firewall MCP, Python
 `httpx` network automation, EdgeConnect ACL object groups, EdgeConnect services,
-EdgeConnect bypass mode.
+EdgeConnect bypass mode, EdgeConnect link integrity diagnostics.
 
 ## Who this is for
 
@@ -74,7 +74,7 @@ EdgeConnect bypass mode.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 194 core tools, or 312 with optional product starters indexed |
+| MCP tools | 194 core tools, or 314 with optional product starters indexed |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |

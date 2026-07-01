@@ -123,6 +123,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Appliance interface state | `edgeconnect_get_interface_state` | Compact interface admin/oper/IP/speed view from `/gms/rest/interfaceState`, scoped by appliance `nePk` |
 | Interface labels | `edgeconnect_list_interface_labels` / `edgeconnect_set_interface_labels` / `edgeconnect_apply_interface_labels` | Compact WAN/LAN interface-label read, guarded complete-label-map lab write, and guarded push-to-appliance action |
 | Appliance bypass mode | `edgeconnect_get_bypass_mode` / `edgeconnect_set_bypass_mode` | Compact bypass actual/config state plus guarded lab toggle to `/gms/rest/bypass` |
+| Link integrity diagnostics | `edgeconnect_get_link_integrity_status` / `edgeconnect_run_link_integrity_test` | Compact status plus guarded iperf/tcpperf diagnostic start at `/gms/rest/linkIntegrityTest/*` |
 | Appliance disk report | `edgeconnect_get_disk_report` | Compact disk/storage health view from `/gms/rest/configReportDisk`, scoped by appliance `nePk` |
 | Appliance reachability | `edgeconnect_get_appliance_reachability` | Compact reachability from `/gms/rest/reachability/{appliance,gms,gms2}`, scoped by appliance `nePk` |
 | Fleet reachability | `edgeconnect_list_appliance_reachability` | Compact all-appliance reachability from `/gms/rest/reachability/gms2/appliancesReachability` |

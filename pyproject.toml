@@ -19,6 +19,7 @@ keywords = [
     "edgeconnect-bypass",
     "edgeconnect",
     "edgeconnect-interface-labels",
+    "edgeconnect-link-integrity",
     "edgeconnect-services",
     "edgeconnect-zones",
     "fastmcp",

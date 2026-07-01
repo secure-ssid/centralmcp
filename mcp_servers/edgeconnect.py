@@ -111,6 +111,16 @@ _BYPASS_FIELDS = (
     "message",
     "error",
 )
+_LINK_INTEGRITY_FIELDS = (
+    "active",
+    "result",
+    "status",
+    "state",
+    "taskKey",
+    "clientKey",
+    "message",
+    "error",
+)
 _DISK_REPORT_FIELDS = (
     "id",
     "name",
@@ -451,6 +461,15 @@ def _int_or_none(value: Any) -> int | None:
         return int(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _trim_text(value: Any, max_chars: int) -> Any:
+    if not isinstance(value, str):
+        return value
+    max_chars = max(0, max_chars)
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars] + "..."
 
 
 def _normalize_vrf_segments(data: Any) -> list[Any] | None:
@@ -1116,6 +1135,18 @@ def _compact_next_id(data: Any) -> Any:
     return compacted or data
 
 
+def _compact_link_integrity_status(data: Any, *, max_result_chars: int) -> Any:
+    compacted = _compact_record(data, _LINK_INTEGRITY_FIELDS)
+    if not isinstance(compacted, dict):
+        return data
+    if "result" in compacted:
+        original = compacted["result"]
+        trimmed = _trim_text(original, max_result_chars)
+        compacted["result"] = trimmed
+        compacted["result_truncated"] = isinstance(original, str) and trimmed != original
+    return compacted
+
+
 def _normalize_vrf_zone_map_records(data: Any) -> list[Any] | None:
     records = _collection_records(data, ("zones", "items"))
     if records is not None:
@@ -1407,6 +1438,51 @@ async def edgeconnect_set_bypass_mode(
         "POST",
         "/gms/rest/bypass",
         body={"enable": enabled, "nePks": cleaned_ne_pks},
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_link_integrity_status(
+    ne_pk: str,
+    max_result_chars: int = 1200,
+) -> dict[str, Any]:
+    """Get compact EdgeConnect link-integrity test status for an appliance."""
+    out = await _edgeconnect_get(
+        "/gms/rest/linkIntegrityTest/status",
+        {"nePk": ne_pk},
+        limit=1,
+        offset=0,
+        paginate=False,
+    )
+    if "data" in out:
+        out["link_integrity_status"] = _compact_link_integrity_status(
+            out.pop("data"),
+            max_result_chars=max_result_chars,
+        )
+        out["ne_pk"] = ne_pk
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_run_link_integrity_test(
+    body: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Start an EdgeConnect link-integrity iperf/tcpperf test with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_run_link_integrity_test")
+
+    ne_pks = body.get("nePks")
+    if not isinstance(ne_pks, list) or len([item for item in ne_pks if str(item).strip()]) != 2:
+        return {"error": "body.nePks must contain exactly two appliance nePk values."}
+
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/linkIntegrityTest/run",
+        body=body,
         dry_run=dry_run,
         confirm=confirm,
     )

@@ -2714,6 +2714,32 @@ def test_edgeconnect_get_bypass_mode_compacts(monkeypatch):
     }
 
 
+def test_edgeconnect_get_link_integrity_status_compacts_and_trims(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/linkIntegrityTest/status"
+        assert params == {"nePk": "1.NE"}
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "active": False,
+                "result": "abcdef",
+                "raw": "omitted",
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_link_integrity_status("1.NE", max_result_chars=3))
+
+    assert out["ne_pk"] == "1.NE"
+    assert out["link_integrity_status"] == {
+        "active": False,
+        "result": "abc...",
+        "result_truncated": True,
+    }
+
+
 def test_edgeconnect_get_disk_report_compacts(monkeypatch):
     called = {}
 
@@ -5083,6 +5109,102 @@ def test_edgeconnect_set_bypass_mode_executes_with_confirm(monkeypatch):
     assert called["url"] == "https://orch.example.com/gms/rest/bypass"
     assert called["params"] == {}
     assert called["json"] == {"enable": False, "nePks": ["1.NE"]}
+
+
+def _link_integrity_body() -> dict:
+    return {
+        "nePks": ["1.NE", "2.NE"],
+        "1.NE": {
+            "bandwidth": "10000",
+            "path": "tunnel_1",
+            "tunnelInterface": {"name": "wan0", "ip": "192.0.2.1"},
+            "trafficClassId": "1",
+        },
+        "2.NE": {
+            "bandwidth": "10000",
+            "path": "tunnel_1",
+            "tunnelInterface": {"name": "wan0", "ip": "192.0.2.2"},
+            "trafficClassId": "1",
+        },
+        "duration": "30",
+        "DSCP": "any",
+        "testProgram": "iperf",
+    }
+
+
+def test_edgeconnect_run_link_integrity_test_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    body = _link_integrity_body()
+    out = asyncio.run(edgeconnect.edgeconnect_run_link_integrity_test(body))
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/linkIntegrityTest/run"
+    assert out["json"] == body
+    assert "execute_hint" in out
+
+
+def test_edgeconnect_run_link_integrity_test_blocks_when_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(edgeconnect.edgeconnect_run_link_integrity_test(_link_integrity_body()))
+
+    assert out["status"] == "blocked"
+    assert out["tool"] == "edgeconnect_run_link_integrity_test"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+def test_edgeconnect_run_link_integrity_test_requires_two_nepks(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+
+    out = asyncio.run(edgeconnect.edgeconnect_run_link_integrity_test({"nePks": ["1.NE"]}))
+
+    assert out == {"error": "body.nePks must contain exactly two appliance nePk values."}
+
+
+def test_edgeconnect_run_link_integrity_test_executes_with_confirm(monkeypatch):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    body = _link_integrity_body()
+    out = asyncio.run(
+        edgeconnect.edgeconnect_run_link_integrity_test(
+            body,
+            dry_run=False,
+            confirm=True,
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert called["method"] == "POST"
+    assert called["url"] == "https://orch.example.com/gms/rest/linkIntegrityTest/run"
+    assert called["params"] == {}
+    assert called["json"] == body
 
 
 def test_edgeconnect_set_address_group_previews(monkeypatch):
