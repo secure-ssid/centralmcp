@@ -109,7 +109,8 @@ The optional product starter GET tools are read-only and page list responses wit
 The MCP server is model-agnostic: any AI client/model that supports MCP
 streamable HTTP can connect to the same router endpoint.
 
-Start the low-token HTTP router in the foreground:
+Start the low-token HTTP router in the foreground. The helper defaults to port
+`8010`, matching the HTTP client example:
 
 ```bash
 MCP_PORT=8010 bash scripts/run_http_router.sh
@@ -142,7 +143,7 @@ and prints the listener details plus the `kill <PID>` stop command.
 | `GLP_BASE_URL` | Override GLP API base URL | HPE default |
 | `MCP_TRANSPORT` | `stdio` or `streamable-http` | `stdio` |
 | `MCP_HOST` | HTTP bind address for streamable HTTP mode | `127.0.0.1` |
-| `MCP_PORT` | HTTP port for streamable HTTP mode | `8000` |
+| `MCP_PORT` | HTTP port for streamable HTTP mode; `scripts/run_http_router.sh` defaults to `8010` | `8000` |
 
 Product starter backends also use product-specific URL/token variables. See [docs/getting-started.md](docs/getting-started.md).
 

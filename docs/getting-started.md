@@ -73,7 +73,8 @@ This exposes only the router discovery/dispatch surface and keeps tool-list toke
 Any MCP-capable AI client/model can connect over streamable HTTP if the client
 supports remote MCP servers.
 
-Start the minimal router:
+Start the minimal router. The helper defaults to port `8010`, matching
+`.mcp.http.json.example`:
 
 ```bash
 MCP_PORT=8010 bash scripts/run_http_router.sh
