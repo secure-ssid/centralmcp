@@ -1,5 +1,5 @@
 title: centralmcp
-description: "HPE Aruba Networking MCP toolkit for Aruba Central, GreenLake Platform, RAG/OpenAPI lookup, ClearPass, Juniper Mist, Apstra, ArubaOS 8, EdgeConnect, and HPE Aruba UXI lab automation."
+description: "Low-token HPE Aruba Networking MCP toolkit for Aruba Central, GreenLake Platform service catalog/reporting, RAG/OpenAPI lookup, ClearPass, Juniper Mist, Apstra, ArubaOS 8, EdgeConnect SD-WAN, and HPE Aruba UXI lab automation."
 theme: jekyll-theme-cayman
 repository: secure-ssid/centralmcp
 url: https://secure-ssid.github.io
