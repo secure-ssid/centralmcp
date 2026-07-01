@@ -104,6 +104,26 @@ def test_documented_router_invocation_arguments_match_backend_tools():
     assert problems == []
 
 
+def test_product_workflow_tool_table_names_match_backend_tools():
+    tool_args = _backend_tool_args()
+    path = REPO_ROOT / "docs" / "product-workflows.md"
+    problems = []
+
+    for line_number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        if not line.startswith("|") or "`" not in line:
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        for tool_name in re.findall(r"`([a-z][a-z0-9_]+)`", cells[1]):
+            if tool_name not in tool_args:
+                problems.append(
+                    f"{path.relative_to(REPO_ROOT)}:{line_number}: unknown tool {tool_name!r}"
+                )
+
+    assert problems == []
+
+
 def test_validation_docs_describe_current_guard_coverage():
     expected_phrases = [
         "committed low-token MCP config examples",
@@ -116,6 +136,7 @@ def test_validation_docs_describe_current_guard_coverage():
         "tool-count docstrings",
         "tracked Markdown local links and images",
         "documented router example arguments",
+        "product workflow tool-name tables",
     ]
     combined_docs = "\n".join(
         [
