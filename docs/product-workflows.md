@@ -80,6 +80,7 @@ Promote a generic GET pattern to a typed tool when it is:
 |---|---|---|
 | Show command | `aos8_show_command` | Only permits `show ...` commands via `/v1/configuration/showcommand` |
 | AP inventory | `aos8_list_aps` | Bounded `show ap database` read scoped by `config_path` |
+| Client visibility | `aos8_list_clients` | Bounded `show user-table` read scoped by `config_path` |
 | AP-group inventory | `aos8_list_ap_groups` | Configuration-object read scoped by `config_path` |
 | SSID profile summary | `aos8_list_ssid_profiles` | Configuration-object read scoped by `config_path` |
 | Generic lab write | `aos8_write` | Guarded POST/PUT/PATCH/DELETE to `/v1/*`; dry-run default |
@@ -93,6 +94,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Appliance alarms | `edgeconnect_list_alarms` | Outstanding alarms from `/rest/json/alarm`, bounded by `limit` / `offset` |
 | Tunnel health | `edgeconnect_list_tunnels` | Physical tunnel status from `/gms/rest/tunnels2/physical`, with optional filters |
 | Tunnel metadata | `edgeconnect_get_tunnel_metadata` | Compact tunnel count metadata from `/gms/rest/tunnels2?metaData=true` |
+| VRF/routing segments | `edgeconnect_list_vrf_segments` | Compact routing-segment inventory from `/gms/rest/vrf/config/segments`, with optional segment ID filter |
 | Generic lab write | `edgeconnect_write` | Guarded POST/PUT/PATCH/DELETE to Orchestrator REST paths; dry-run default |
 
 ## Remaining optional typed candidates

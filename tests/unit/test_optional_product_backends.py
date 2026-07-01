@@ -1007,6 +1007,82 @@ def test_aos8_list_aps_runs_show_ap_database_and_compacts(monkeypatch):
     assert out["aps"]["_pagination"]["truncated"] is True
 
 
+def test_aos8_list_clients_runs_show_user_table_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"Users":[{"Name":"alice"}]}'
+
+        def json(self):
+            return {
+                "_global_result": {"status": "0"},
+                "_meta": {"Users": ["Name"]},
+                "Users": [
+                    {
+                        "Name": "alice",
+                        "MAC Address": "aa:bb:cc:dd:ee:01",
+                        "IP Address": "192.0.2.50",
+                        "AP Name": "ap1",
+                        "SSID": "Corp",
+                        "Role": "employee",
+                        "VLAN": 20,
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Name": "bob",
+                        "MAC Address": "aa:bb:cc:dd:ee:02",
+                        "IP Address": "192.0.2.51",
+                        "AP Name": "ap2",
+                        "SSID": "Corp",
+                        "Role": "employee",
+                        "VLAN": 20,
+                        "Raw": "omitted",
+                    },
+                ],
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(aos8.aos8_list_clients(config_path="/md/branch1", limit=1))
+
+    assert called["url"] == "https://mm.example.com/v1/configuration/showcommand"
+    assert called["params"] == {
+        "command": "show user-table",
+        "config_path": "/md/branch1",
+    }
+    assert out["config_path"] == "/md/branch1"
+    assert out["clients"]["Users"] == [
+        {
+            "Name": "alice",
+            "MAC Address": "aa:bb:cc:dd:ee:01",
+            "IP Address": "192.0.2.50",
+            "AP Name": "ap1",
+            "SSID": "Corp",
+            "Role": "employee",
+            "VLAN": 20,
+        }
+    ]
+    assert out["clients"]["_pagination"]["truncated"] is True
+
+
 def test_aos8_list_ssid_profiles_uses_config_object(monkeypatch):
     called = {}
 
@@ -1377,6 +1453,68 @@ def test_edgeconnect_get_tunnel_metadata_sets_metadata_param(monkeypatch):
         "physicalTunnels": 8,
         "bondedTunnels": 4,
     }
+
+
+def test_edgeconnect_list_vrf_segments_filters_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"1":{"name":"Corp"}}'
+
+        def json(self):
+            return {
+                "0": {
+                    "name": "Default",
+                    "vrfName": "default",
+                    "enabled": True,
+                    "status": "active",
+                    "raw": "omitted",
+                },
+                "1": {
+                    "name": "Corp",
+                    "vrfName": "corp-vrf",
+                    "enabled": True,
+                    "status": "active",
+                    "raw": "omitted",
+                },
+                "metadata": {"raw": "not a segment"},
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_vrf_segments(segment_id=1, limit=1))
+
+    assert called["url"] == "https://orch.example.com/gms/rest/vrf/config/segments"
+    assert called["params"] == {"id": 1}
+    assert out["vrf_segments"]["items"] == [
+        {
+            "id": 1,
+            "name": "Corp",
+            "vrfName": "corp-vrf",
+            "enabled": True,
+            "status": "active",
+        }
+    ]
+    assert out["vrf_segments"]["_pagination"]["total"] == 1
+    assert out["vrf_segments"]["_pagination"]["truncated"] is False
 
 
 @pytest.mark.parametrize(

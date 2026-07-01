@@ -104,6 +104,18 @@ _TUNNEL_METADATA_FIELDS = (
     "ipsec",
     "ipsecTunnels",
 )
+_VRF_SEGMENT_FIELDS = (
+    "id",
+    "segmentId",
+    "name",
+    "segmentName",
+    "vrf",
+    "vrfName",
+    "description",
+    "enabled",
+    "state",
+    "status",
+)
 
 
 def _edgeconnect_config() -> tuple[str | None, str | None, str]:
@@ -132,6 +144,45 @@ def _compact_collection(data: Any, fields: tuple[str, ...], list_keys: tuple[str
             out[key] = [_compact_record(item, fields) for item in out[key]]
             break
     return out
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_vrf_segments(data: Any) -> list[Any] | None:
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return None
+    for key in ("segments", "vrfs", "items", "results", "data"):
+        if isinstance(data.get(key), list):
+            return data[key]
+
+    records: list[Any] = []
+    for key, value in data.items():
+        segment_id = _int_or_none(key)
+        if segment_id is None or not isinstance(value, dict):
+            continue
+        record = dict(value)
+        if "id" not in record and "segmentId" not in record:
+            record["id"] = segment_id
+        records.append(record)
+    return records or None
+
+
+def _matches_vrf_segment(record: Any, segment_id: int | None) -> bool:
+    if segment_id is None:
+        return True
+    if not isinstance(record, dict):
+        return False
+    for key in ("id", "segmentId"):
+        if _int_or_none(record.get(key)) == segment_id:
+            return True
+    return False
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -256,6 +307,44 @@ async def edgeconnect_get_tunnel_metadata() -> dict[str, Any]:
         data = out.pop("data")
         metadata = _compact_record(data, _TUNNEL_METADATA_FIELDS)
         out["tunnel_metadata"] = metadata or data
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_vrf_segments(
+    segment_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List EdgeConnect routing/VRF segments with compact fields."""
+    params: dict[str, Any] = {}
+    if segment_id is not None:
+        params["id"] = segment_id
+    out = await edgeconnect_get(
+        "/gms/rest/vrf/config/segments",
+        params,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        data = out.pop("data")
+        records = _normalize_vrf_segments(data)
+        if records is None:
+            out["vrf_segments"] = _compact_collection(
+                data,
+                _VRF_SEGMENT_FIELDS,
+                ("segments", "vrfs"),
+            )
+        else:
+            filtered = [
+                record for record in records if _matches_vrf_segment(record, segment_id)
+            ]
+            compacted = [_compact_record(record, _VRF_SEGMENT_FIELDS) for record in filtered]
+            out["vrf_segments"] = bound_collection_response(
+                compacted,
+                limit=limit,
+                offset=offset,
+            )
     return out
 
 

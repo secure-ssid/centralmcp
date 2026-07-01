@@ -51,6 +51,26 @@ _AP_FIELDS = (
     "Serial #",
     "serial",
 )
+_CLIENT_FIELDS = (
+    "Name",
+    "name",
+    "User Name",
+    "username",
+    "MAC Address",
+    "mac",
+    "IP Address",
+    "ip_address",
+    "AP Name",
+    "ap_name",
+    "SSID",
+    "ssid",
+    "Role",
+    "role",
+    "VLAN",
+    "vlan",
+    "Status",
+    "status",
+)
 
 
 def _aos8_config() -> tuple[str | None, str | None]:
@@ -182,6 +202,25 @@ async def aos8_list_aps(
     )
     if "data" in out:
         out["aps"] = _compact_primary_list(out.pop("data"), _AP_FIELDS)
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_list_clients(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List AOS8 clients from `show user-table` with bounded output."""
+    out = await aos8_show_command(
+        "show user-table",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["clients"] = _compact_primary_list(out.pop("data"), _CLIENT_FIELDS)
         out["config_path"] = config_path
     return out
 
