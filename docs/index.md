@@ -143,3 +143,12 @@ for useful patterns and references:
 - [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) - MCP Python SDK
 - [KarthikSKumar98/central-mcp-server](https://github.com/KarthikSKumar98/central-mcp-server) - community Aruba Central MCP server
 - [nowireless4u/hpe-networking-mcp](https://github.com/nowireless4u/hpe-networking-mcp) - unified HPE networking MCP reference
+
+## Disclaimer
+
+centralmcp is an independent community project. It is not an official HPE or
+HPE Aruba Networking product and is not endorsed by or supported by HPE.
+
+## License
+
+MIT - see the [repository license](https://github.com/secure-ssid/centralmcp/blob/main/LICENSE).
