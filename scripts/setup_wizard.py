@@ -215,6 +215,19 @@ def _env_assignment_key(line: str) -> str | None:
     return key if key else None
 
 
+def _is_placeholder_value(value: str) -> bool:
+    return any(marker in value for marker in PLACEHOLDER_MARKERS)
+
+
+def _should_replace_env_assignment(line: str, env: dict[str, str]) -> bool:
+    key = _env_assignment_key(line)
+    if key not in env:
+        return False
+    if key in {"CENTRALMCP_PRODUCTS", "CENTRALMCP_PRODUCT_ACCESS"}:
+        return True
+    return _is_placeholder_value(line) and not _is_placeholder_value(env[key])
+
+
 def _is_loopback_host(host: str) -> bool:
     return host.strip().lower() in LOOPBACK_HOSTS
 
@@ -373,7 +386,8 @@ def _write_env_file(target: Path, env: dict[str, str], *, force: bool) -> Step:
         update_keys = {"CENTRALMCP_PRODUCTS", "CENTRALMCP_PRODUCT_ACCESS"}
         updated_lines = [
             _shell_line(key, env[key])
-            if (key := _env_assignment_key(line)) in update_keys and key in env
+            if (key := _env_assignment_key(line)) in env
+            and (key in update_keys or _should_replace_env_assignment(line, env))
             else line
             for line in lines
         ]

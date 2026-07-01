@@ -12,7 +12,7 @@ uv run python scripts/doctor.py
 | Symptom | Fix |
 |---|---|
 | `uv` is missing | Install `uv`, or rerun the wizard after installing it. |
-| Existing local config was not overwritten | Re-run with `--force` if you want to replace `.mcp.json`, `.mcp.http.json`, or `config/credentials.yaml`. Existing `.env` files are merged by default so selected products/access mode update while token values are preserved. |
+| Existing local config was not overwritten | Re-run with `--force` if you want to replace `.mcp.json`, `.mcp.http.json`, or `config/credentials.yaml`. Existing `.env` files are merged by default so selected products/access mode update while non-placeholder token values are preserved. |
 | You only want a no-credentials trial | Run `python3 scripts/setup_wizard.py --yes --skip-credentials` and skip API-backed tools until credentials are added. |
 | You picked the wrong products | Re-run with `--products clearpass,mist` to merge the selector/access mode into `.env`, or use `--force` if you intentionally want to replace generated local config files. |
 

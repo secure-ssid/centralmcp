@@ -76,6 +76,38 @@ def test_write_env_file_merges_existing_values_without_overwriting_tokens(tmp_pa
     assert "export MIST_API_TOKEN=YOUR_MIST_API_TOKEN" in text
 
 
+def test_write_env_file_replaces_placeholder_values_on_rerun(tmp_path):
+    target = tmp_path / ".env"
+    target.write_text(
+        "\n".join(
+            [
+                "export CENTRALMCP_PRODUCTS=mist",
+                "export MIST_API_TOKEN=YOUR_MIST_API_TOKEN",
+                "export MIST_HOST=https://old.example.com",
+                "",
+            ]
+        )
+    )
+
+    step = setup_wizard._write_env_file(
+        target,
+        {
+            "CENTRALMCP_PRODUCTS": "mist",
+            "CENTRALMCP_PRODUCT_ACCESS": "read-write",
+            "MIST_HOST": "https://api.mist.com",
+            "MIST_API_TOKEN": "real-token",
+        },
+        force=False,
+    )
+
+    text = target.read_text()
+    assert step.status == "OK"
+    assert "export MIST_API_TOKEN=real-token" in text
+    assert "YOUR_MIST_API_TOKEN" not in text
+    assert "export MIST_HOST=https://old.example.com" in text
+    assert "export CENTRALMCP_PRODUCT_ACCESS=read-write" in text
+
+
 def test_write_env_file_force_replaces_existing_env(tmp_path):
     target = tmp_path / ".env"
     target.write_text("export CENTRALMCP_PRODUCTS=clearpass\n")

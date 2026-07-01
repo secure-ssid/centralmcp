@@ -238,9 +238,9 @@ CENTRALMCP_PRODUCT_ACCESS=read-write
 ```
 
 The wizard can prompt for the selected product URL/token settings, merge them
-into local git-ignored `.env` while preserving existing token values, and add
-the product selector plus access mode to local MCP configs. Use a subset when
-you only want ClearPass, Mist, or another specific starter:
+into local git-ignored `.env` while preserving existing non-placeholder token
+values, and add the product selector plus access mode to local MCP configs. Use
+a subset when you only want ClearPass, Mist, or another specific starter:
 
 ```bash
 python3 scripts/setup_wizard.py --products clearpass
