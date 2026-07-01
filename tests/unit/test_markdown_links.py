@@ -2,6 +2,7 @@ import ast
 import importlib
 import re
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -52,6 +53,36 @@ def test_tracked_markdown_local_links_and_images_resolve():
                 missing.append(f"{path.relative_to(REPO_ROOT)} -> {target}")
 
     assert missing == []
+
+
+def test_pages_sitemap_and_robots_cover_landing_navigation():
+    site_root = "https://secure-ssid.github.io/centralmcp"
+    robots = (REPO_ROOT / "docs" / "robots.txt").read_text()
+    sitemap = REPO_ROOT / "docs" / "sitemap.xml"
+    namespace = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    sitemap_urls = {
+        node.text
+        for node in ET.parse(sitemap).getroot().findall("sm:url/sm:loc", namespace)
+    }
+    expected_urls = {f"{site_root}/"}
+    index = REPO_ROOT / "docs" / "index.md"
+
+    for match in MARKDOWN_LINK_RE.finditer(index.read_text(errors="replace")):
+        target = match.group(1).split("#", 1)[0].strip()
+        if not target or target.startswith(("http://", "https://", "mailto:", "#")):
+            continue
+        target_path = (index.parent / unquote(target)).resolve()
+        if target_path.suffix != ".md":
+            continue
+        relative = target_path.relative_to(REPO_ROOT / "docs")
+        url_path = relative.with_suffix(".html").as_posix()
+        if relative.name == "index.md":
+            expected_urls.add(f"{site_root}/")
+        else:
+            expected_urls.add(f"{site_root}/{url_path}")
+
+    assert f"Sitemap: {site_root}/sitemap.xml" in robots
+    assert sitemap_urls == expected_urls
 
 
 def _backend_tool_args() -> dict[str, set[str]]:
@@ -135,6 +166,7 @@ def test_validation_docs_describe_current_guard_coverage():
         "public tool-count claims",
         "tool-count docstrings",
         "tracked Markdown local links and images",
+        "Pages sitemap and robots metadata",
         "documented router example arguments",
         "product workflow tool-name tables",
         "wizard optional-product env tables",
