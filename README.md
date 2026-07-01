@@ -91,8 +91,8 @@ uv run python scripts/doctor.py
 ```
 
 The doctor reports missing local stdio/HTTP MCP config copies, index files,
-router env, optional product env, and HTTP listener status without calling
-Central or GLP APIs.
+placeholder stdio paths, HTTP config URL mismatches, router env, optional
+product env, and HTTP listener status without calling Central or GLP APIs.
 
 See [docs/getting-started.md](docs/getting-started.md) for the full setup path.
 

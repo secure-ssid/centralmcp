@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import shutil
 import socket
@@ -53,6 +54,83 @@ def _path_check(path: Path, name: str, *, missing_detail: str) -> Check:
     if path.exists():
         return Check("OK", name, f"{_display_path(path)} exists")
     return Check("WARN", name, missing_detail)
+
+
+def _load_json(path: Path) -> tuple[dict[str, object] | None, str | None]:
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        return None, str(exc)
+    if not isinstance(data, dict):
+        return None, "top-level JSON value must be an object"
+    return data, None
+
+
+def _stdio_config_checks(path: Path) -> list[Check]:
+    if not path.exists():
+        return []
+
+    checks: list[Check] = []
+    _, error = _load_json(path)
+    checks.append(
+        Check(
+            "OK" if error is None else "FAIL",
+            "Local stdio MCP config JSON",
+            "valid JSON object" if error is None else f"invalid JSON: {error}",
+        )
+    )
+
+    text = path.read_text()
+    checks.append(
+        Check(
+            "WARN" if "/path/to/centralmcp" in text else "OK",
+            "Local stdio MCP config paths",
+            "replace /path/to/centralmcp placeholders"
+            if "/path/to/centralmcp" in text
+            else "no example placeholders found",
+        )
+    )
+    return checks
+
+
+def _http_config_checks(path: Path, host: str, port: int) -> list[Check]:
+    if not path.exists():
+        return []
+
+    checks: list[Check] = []
+    data, error = _load_json(path)
+    checks.append(
+        Check(
+            "OK" if error is None else "FAIL",
+            "Local HTTP MCP config JSON",
+            "valid JSON object" if error is None else f"invalid JSON: {error}",
+        )
+    )
+    if data is None:
+        return checks
+
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        return [
+            *checks,
+            Check("WARN", "Local HTTP MCP config URL", "missing mcpServers object"),
+        ]
+
+    urls = [
+        server.get("url")
+        for server in servers.values()
+        if isinstance(server, dict) and isinstance(server.get("url"), str)
+    ]
+    if not urls:
+        return [
+            *checks,
+            Check("WARN", "Local HTTP MCP config URL", "no server URL found"),
+        ]
+
+    expected = f"http://{host}:{port}/mcp"
+    status = "OK" if expected in urls else "WARN"
+    detail = f"matches {expected}" if status == "OK" else f"expected {expected}"
+    return [*checks, Check(status, "Local HTTP MCP config URL", detail)]
 
 
 def _csv_values(value: str | None) -> list[str]:
@@ -164,6 +242,7 @@ def _config_checks() -> list[Check]:
             else "copy .mcp.json.example to .mcp.json for local stdio clients",
         )
     )
+    checks.extend(_stdio_config_checks(local_stdio))
     checks.append(
         Check(
             "OK" if local_http.exists() else "WARN",
@@ -173,6 +252,12 @@ def _config_checks() -> list[Check]:
             else "copy .mcp.http.json.example to .mcp.http.json for local HTTP clients",
         )
     )
+    raw_port = os.getenv("MCP_PORT", str(DEFAULT_HTTP_PORT))
+    try:
+        port = int(raw_port)
+    except ValueError:
+        port = DEFAULT_HTTP_PORT
+    checks.extend(_http_config_checks(local_http, os.getenv("MCP_HOST", "127.0.0.1"), port))
 
     return checks
 
