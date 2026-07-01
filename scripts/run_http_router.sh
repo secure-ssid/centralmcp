@@ -20,9 +20,12 @@ import sys
 
 host, port = sys.argv[1], int(sys.argv[2])
 target = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-    sock.settimeout(0.25)
-    sys.exit(0 if sock.connect_ex((target, port)) == 0 else 1)
+for family, socktype, proto, _, sockaddr in socket.getaddrinfo(target, port, type=socket.SOCK_STREAM):
+    with socket.socket(family, socktype, proto) as sock:
+        sock.settimeout(0.25)
+        if sock.connect_ex(sockaddr) == 0:
+            sys.exit(0)
+sys.exit(1)
 PY
     return
   fi
