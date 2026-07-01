@@ -5,6 +5,7 @@ from urllib.parse import unquote
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
+MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
 
 def _tracked_markdown_files() -> list[Path]:
@@ -16,11 +17,13 @@ def _tracked_markdown_files() -> list[Path]:
     return [REPO_ROOT / line for line in output.splitlines()]
 
 
-def test_tracked_markdown_local_links_resolve():
+def test_tracked_markdown_local_links_and_images_resolve():
     missing = []
 
     for path in _tracked_markdown_files():
-        for match in MARKDOWN_LINK_RE.finditer(path.read_text(errors="replace")):
+        markdown = path.read_text(errors="replace")
+        matches = list(MARKDOWN_LINK_RE.finditer(markdown)) + list(MARKDOWN_IMAGE_RE.finditer(markdown))
+        for match in matches:
             target = match.group(1).split("#", 1)[0].strip()
             if not target or target.startswith(("http://", "https://", "mailto:", "#")):
                 continue
@@ -44,7 +47,7 @@ def test_validation_docs_describe_current_guard_coverage():
         "RAG/search top_k bounds",
         "public tool-count claims",
         "tool-count docstrings",
-        "tracked Markdown local links",
+        "tracked Markdown local links and images",
     ]
     combined_docs = "\n".join(
         [

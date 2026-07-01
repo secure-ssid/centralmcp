@@ -91,4 +91,5 @@ intend to run a write/destructive backend tool.
 
 | Symptom | Fix |
 |---|---|
-| Pages build succeeds but deploy fails with `due to in progress deployment` | Wait for the earlier Pages deployment to complete, then rerun the failed workflow or push a follow-up commit. This is a transient GitHub Pages deployment queue race, not a docs/Jekyll build failure. |
+| Pages build succeeds but deploy fails with `due to in progress deployment` | Wait for the earlier Pages deployment to complete and confirm the Pages API is no longer `building`, then rerun the failed workflow or push a follow-up commit. This is a transient GitHub Pages deployment queue race, not a docs/Jekyll build failure. |
+| A rerun stays `queued` with no jobs after the live site is `built` | Cancel that exact stuck rerun before pushing again so a stale Pages queue entry does not stack another deployment race. |
