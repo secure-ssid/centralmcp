@@ -60,6 +60,19 @@ the GitHub Release so the downloader can always use and verify the latest
 release URL. Use `--skip-latest-copy` only if you intentionally want to package
 versioned assets without the downloader alias.
 
+For an existing release, upload the four generated assets with:
+
+```bash
+VERSION="v<project-version>"
+gh release upload "$VERSION" \
+  "dist/centralmcp-rag-index-${VERSION}.tar.gz" \
+  "dist/centralmcp-rag-index-${VERSION}.tar.gz.sha256" \
+  dist/centralmcp-rag-index-latest.tar.gz \
+  dist/centralmcp-rag-index-latest.tar.gz.sha256 \
+  --repo secure-ssid/centralmcp \
+  --clobber
+```
+
 ## What is inside
 
 | Artifact | Used by | Purpose |
