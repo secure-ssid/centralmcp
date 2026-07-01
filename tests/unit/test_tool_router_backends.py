@@ -163,6 +163,25 @@ def test_find_tool_can_include_schema_when_requested(monkeypatch):
     assert result[0]["schema"] == {"properties": {"vlan_id": {"type": "integer"}}}
 
 
+def test_find_tool_reports_semantic_error_without_keyword_fallback(monkeypatch):
+    def raise_index_missing(query):
+        raise RuntimeError("index missing")
+
+    monkeypatch.setattr(router, "_BACKEND", "lancedb")
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "mcp_servers.config"})
+    monkeypatch.setattr(router, "_keyword_hits", lambda query, limit, include_schema=False: [])
+    monkeypatch.setattr(router._embedder, "embed_query", raise_index_missing)
+
+    result = router.find_tool("create vlan", top_k=1)
+
+    assert result == [
+        {
+            "error": "Tool semantic search unavailable: RuntimeError: index missing",
+            "hint": "Rebuild the tool index with `uv run python scripts/ingest_tools.py`.",
+        }
+    ]
+
+
 def test_default_router_exposes_ask_docs_wrapper_when_rag_enabled():
     assert "ask_docs" in router.mcp._tool_manager._tools
 

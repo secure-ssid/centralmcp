@@ -42,6 +42,10 @@ To keep discovery responses small, `find_tool` omits full JSON schemas by
 default and returns only parameter names in `params`. Set
 `include_schema=true` only when you need the full schema for a selected tool.
 
+If the semantic tool index is unavailable and no keyword fallback matches,
+`find_tool` returns a compact error with a rebuild hint instead of an empty
+success-shaped result.
+
 ## Recommended client profile
 
 ```env

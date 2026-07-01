@@ -224,6 +224,7 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
     kw_budget = max(1, top_k // 2)
     sem_budget = top_k - kw_budget
     by_name: dict[str, dict[str, Any]] = {}
+    semantic_error: str | None = None
 
     for h in _keyword_hits(query, kw_budget, include_schema=include_schema):
         by_name[h["name"]] = h
@@ -259,9 +260,16 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
                 item["schema"] = schema
             by_name[name] = item
             added += 1
-    except Exception:
-        pass  # fall back to keyword-only results
+    except Exception as exc:
+        semantic_error = f"{type(exc).__name__}: {exc}"
 
+    if not by_name and semantic_error:
+        return [
+            {
+                "error": f"Tool semantic search unavailable: {semantic_error}",
+                "hint": "Rebuild the tool index with `uv run python scripts/ingest_tools.py`.",
+            }
+        ]
     return list(by_name.values())[:top_k]
 
 
