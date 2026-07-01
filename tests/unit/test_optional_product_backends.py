@@ -189,6 +189,60 @@ def test_apstra_list_blueprints_compacts(monkeypatch):
     ]
 
 
+def test_apstra_list_templates_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"items":[{"id":"tmpl1"}]}'
+
+        def json(self):
+            return {
+                "items": [
+                    {
+                        "id": "tmpl1",
+                        "label": "5-stage Clos",
+                        "design": "datacenter",
+                        "version": "1.0",
+                        "raw": "omitted",
+                    },
+                    {
+                        "id": "tmpl2",
+                        "label": "Collapsed core",
+                        "design": "datacenter",
+                        "version": "1.0",
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_list_templates(limit=1))
+
+    assert called["url"] == "https://apstra.example.com/api/design/templates"
+    assert out["templates"]["items"] == [
+        {"id": "tmpl1", "label": "5-stage Clos", "design": "datacenter", "version": "1.0"}
+    ]
+    assert out["templates"]["_pagination"]["truncated"] is True
+
+
 def test_apstra_list_anomalies_quotes_blueprint_id_and_compacts(monkeypatch):
     called = {}
 

@@ -61,6 +61,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Workflow | Tool | Notes |
 |---|---|---|
 | List blueprints | `apstra_list_blueprints` | IDs/names/state only |
+| List design templates | `apstra_list_templates` | Compact template inventory from `/api/design/templates` |
 | Blueprint anomalies | `apstra_list_anomalies` | Read-only fabric health |
 | Blueprint racks | `apstra_list_racks` | Compact rack topology from `/api/blueprints/{id}/racks` |
 | Blueprint routing zones | `apstra_list_routing_zones` | Compact security-zone/VRF view from `/api/blueprints/{id}/security-zones` |

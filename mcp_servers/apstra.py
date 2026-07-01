@@ -42,6 +42,18 @@ _BLUEPRINT_FIELDS = (
     "design",
     "reference_design",
 )
+_TEMPLATE_FIELDS = (
+    "id",
+    "label",
+    "name",
+    "display_name",
+    "type",
+    "design",
+    "reference_design",
+    "version",
+    "description",
+    "tags",
+)
 _ANOMALY_FIELDS = (
     "id",
     "identity",
@@ -301,6 +313,15 @@ async def apstra_list_blueprints(limit: int = 50, offset: int = 0) -> dict[str, 
     out = await apstra_get("/api/blueprints", limit=limit, offset=offset)
     if "data" in out:
         out["blueprints"] = _compact_collection(out.pop("data"), _BLUEPRINT_FIELDS)
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_list_templates(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List Apstra design templates available for blueprint creation."""
+    out = await apstra_get("/api/design/templates", limit=limit, offset=offset)
+    if "data" in out:
+        out["templates"] = _compact_collection(out.pop("data"), _TEMPLATE_FIELDS)
     return out
 
 
