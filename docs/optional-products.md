@@ -74,3 +74,6 @@ call, for example:
 | "List Mist sites with client counts" | Yes |
 | "Fetch this one documented endpoint while exploring" | Generic GET is fine |
 | "Perform a write/remediation action" | Yes, with explicit destructive annotations and confirmation |
+
+See [Typed product workflow roadmap](product-workflows.md) for concrete
+ClearPass, Mist, Apstra, ArubaOS 8, and EdgeConnect candidates.

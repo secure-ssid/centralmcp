@@ -16,6 +16,27 @@ The wizard can install dependencies, create local MCP configs, choose a Central
 API gateway region, fill credentials without echoing secrets, enable selected
 optional products, build the router catalog, and run the local doctor.
 
+![Setup wizard preview](assets/setup-wizard-preview.png)
+
+## Setup flow
+
+```text
+clone repo
+   |
+   v
+run setup_wizard.py
+   |
+   +--> choose Central region / credentials
+   +--> choose stdio or streamable HTTP
+   +--> optionally enable ClearPass, Mist, Apstra, AOS8, EdgeConnect
+   |
+   v
+run doctor.py
+   |
+   v
+connect MCP client to aruba-tool-router
+```
+
 ## Pick your path
 
 | Goal | Guide |
@@ -23,7 +44,9 @@ optional products, build the router catalog, and run the local doctor.
 | Install and connect an MCP client | [Getting started](getting-started.md) |
 | Copy/paste stdio or HTTP client config | [MCP client recipes](mcp-client-recipes.md) |
 | Enable ClearPass, Mist, Apstra, AOS8, or EdgeConnect | [Optional product starters](optional-products.md) |
+| Plan typed product-specific workflows | [Typed product workflow roadmap](product-workflows.md) |
 | Fix setup, credentials, HTTP, or catalog issues | [Troubleshooting](troubleshooting.md) |
+| Download or package prebuilt RAG/OpenAPI indexes | [Prebuilt RAG/OpenAPI indexes](release-indexes.md) |
 | Understand the low-token router | [Tool router](tool-router.md) |
 | Try useful prompts | [Example prompts](example-prompts.md) |
 | See architecture and flow diagrams | [System overview](architecture/system-overview.md) |
@@ -70,6 +93,15 @@ Then point an MCP-capable client to:
 
 ```text
 http://127.0.0.1:8010/mcp
+```
+
+## Prebuilt docs/API search
+
+For full docs/API search without local scraping, download the prebuilt release
+indexes:
+
+```bash
+uv run python scripts/download_indexes.py
 ```
 
 ## Project links

@@ -53,6 +53,8 @@ ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
 | Install and connect an MCP client | [docs/getting-started.md](docs/getting-started.md) |
 | Copy/paste MCP client setup | [docs/mcp-client-recipes.md](docs/mcp-client-recipes.md) |
 | Enable optional products | [docs/optional-products.md](docs/optional-products.md) |
+| See typed product workflow roadmap | [docs/product-workflows.md](docs/product-workflows.md) |
+| Download prebuilt RAG/OpenAPI indexes | [docs/release-indexes.md](docs/release-indexes.md) |
 | Fix setup or HTTP issues | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Try useful prompts | [docs/example-prompts.md](docs/example-prompts.md) |
 | Understand the low-token router | [docs/tool-router.md](docs/tool-router.md) |
@@ -142,7 +144,12 @@ For optional product starters too:
 uv run python scripts/ingest_tools.py --products all
 ```
 
-For full RAG docs/API search, download the prebuilt release index if available.
+For full RAG docs/API search, download the prebuilt release index:
+
+```bash
+uv run python scripts/download_indexes.py
+```
+
 To rebuild locally, populate the git-ignored `ingestion/sources/` tree with
 scraped docs/API source files first, then run:
 

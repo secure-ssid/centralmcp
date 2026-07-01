@@ -12,6 +12,8 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | [getting-started.md](getting-started.md) | Wizard install, credentials, optional products, MCP client setup, and indexes |
 | [mcp-client-recipes.md](mcp-client-recipes.md) | Copy/paste stdio and streamable HTTP MCP client setup recipes |
 | [optional-products.md](optional-products.md) | Optional product matrix, wizard behavior, env vars, and safety surface |
+| [product-workflows.md](product-workflows.md) | Typed ClearPass/Mist/Apstra/AOS8/EdgeConnect workflow roadmap |
+| [release-indexes.md](release-indexes.md) | Download, package, and release prebuilt RAG/OpenAPI indexes |
 | [troubleshooting.md](troubleshooting.md) | Setup wizard, credentials, HTTP mode, router catalog, and first-call fixes |
 | [example-prompts.md](example-prompts.md) | Practical low-token prompt examples and router call patterns |
 | [tool-router.md](tool-router.md) | Low-token router modes, toolsets, optional products, and safe dispatch |
@@ -38,6 +40,8 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | `pipeline/` | Migration pipeline, typed clients, credentials loading, state store, SSID helpers |
 | `ingestion/` | Docs/API ingestion into LanceDB and SQLite |
 | `scripts/setup_wizard.py` | Guided install, Central region, credentials, optional products, MCP configs, catalog, and doctor |
+| `scripts/download_indexes.py` | Restore prebuilt docs/API/tool indexes from GitHub Releases |
+| `scripts/package_indexes.py` | Package local indexes for a GitHub Release asset |
 | `scripts/run_http_router.sh` | Start the minimal router over streamable HTTP |
 | `scripts/doctor.py` | Check local setup without making API calls |
 | `scripts/` | Tool-catalog ingestion, release validation, local sync helpers |
@@ -55,6 +59,9 @@ python3 scripts/setup_wizard.py
 
 # Guided setup with selected optional products
 python3 scripts/setup_wizard.py --products clearpass,mist
+
+# Download prebuilt RAG/OpenAPI indexes
+uv run python scripts/download_indexes.py
 
 # Build the router tool catalog
 uv run python scripts/ingest_tools.py
