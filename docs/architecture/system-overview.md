@@ -143,6 +143,8 @@ state/
 outputs/
 ingestion/sources/
 ingestion/markdown*/
-redis_data/
-ollama_data/
 ```
+
+The optional Redis/Ollama Docker helper uses Docker named volumes for service
+state, so it does not create repo-local `redis_data/` or `ollama_data/`
+directories on new setups.

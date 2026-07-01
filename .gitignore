@@ -46,8 +46,7 @@ ingestion/markdown_techdocs/
 ingestion/markdown_vsg/
 ingestion/techdocs_urls.json
 
-# Local vector DB and model data (docker volumes)
-qdrant_data/
+# Historical local Docker bind-mount dirs from older Compose files
 redis_data/
 ollama_data/
 
