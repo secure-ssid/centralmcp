@@ -39,6 +39,7 @@ def test_validation_docs_describe_current_guard_coverage():
         "committed low-token MCP config examples",
         "local-only config files",
         "router product/toolset docs",
+        "bounded generic read-only GET tools",
         "public tool-count claims",
         "tool-count docstrings",
         "tracked Markdown local links",
