@@ -78,6 +78,8 @@ Promote a generic GET pattern to a typed tool when it is:
 | Workflow | Tool | Notes |
 |---|---|---|
 | Appliance inventory | `edgeconnect_list_appliances` | IDs/names/site/status only |
+| Appliance system info | `edgeconnect_get_system_info` | Model/version/status/alarm summary from `/rest/json/systemInfo` |
+| Appliance alarms | `edgeconnect_list_alarms` | Outstanding alarms from `/rest/json/alarm`, bounded by `limit` / `offset` |
 | Generic lab write | `edgeconnect_write` | Guarded POST/PUT/PATCH/DELETE to Orchestrator REST paths; dry-run default |
 
 ## Remaining optional typed candidates
@@ -87,7 +89,6 @@ Promote a generic GET pattern to a typed tool when it is:
 | Apstra | Device details | `apstra_get_device` | Compact system/fabric role/status |
 | ArubaOS 8 | AP inventory | `aos8_list_aps` | Bound AP inventory when a stable response shape is verified |
 | EdgeConnect | Tunnel health | `edgeconnect_list_tunnels` | Bound output and status filters |
-| EdgeConnect | Alarm summary | `edgeconnect_list_alarms` | Severity/time bounded |
 
 ## Design constraints
 

@@ -497,6 +497,105 @@ def test_edgeconnect_list_appliances_compacts(monkeypatch):
     ]
 
 
+def test_edgeconnect_get_system_info_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"hostName":"ec-1"}'
+
+        def json(self):
+            return {
+                "hostName": "ec-1",
+                "modelShort": "EC-V",
+                "status": "Normal",
+                "release": "ECOS 9.5.2.1",
+                "alarmSummary": {"num_outstanding": 0},
+                "raw": "omitted",
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://ec.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_system_info())
+
+    assert called["url"] == "https://ec.example.com/rest/json/systemInfo"
+    assert out["system_info"] == {
+        "hostName": "ec-1",
+        "modelShort": "EC-V",
+        "status": "Normal",
+        "release": "ECOS 9.5.2.1",
+        "alarmSummary": {"num_outstanding": 0},
+    }
+
+
+def test_edgeconnect_list_alarms_compacts_outstanding(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"outstanding":[{"id":"alarm1"}]}'
+
+        def json(self):
+            return {
+                "outstanding": [
+                    {
+                        "id": "alarm1",
+                        "severity": "critical",
+                        "message": "Link down",
+                        "raw": "omitted",
+                    },
+                    {
+                        "id": "alarm2",
+                        "severity": "minor",
+                        "message": "Peer changed",
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://ec.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_alarms(limit=1))
+
+    assert called["url"] == "https://ec.example.com/rest/json/alarm"
+    assert out["alarms"]["outstanding"] == [
+        {"id": "alarm1", "severity": "critical", "message": "Link down"}
+    ]
+    assert out["alarms"]["_pagination"]["truncated"] is True
+
+
 @pytest.mark.parametrize(
     ("write_func", "env_base", "env_token", "base_url", "path", "expected_url"),
     [

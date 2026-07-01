@@ -21,7 +21,7 @@ python3 scripts/setup_wizard.py --with-products
 | Juniper Mist | status, guarded GET/write, typed site/client/WLAN/alarm reads and lab writes | `MIST_HOST`, `MIST_API_TOKEN` | Read/write starter; writes dry-run by default |
 | Apstra | status, guarded GET/write, blueprint and anomaly reads | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` | Read/write starter; writes dry-run by default |
 | ArubaOS 8 | status, guarded GET/write, show-command and WLAN/AP-group reads | `AOS8_BASE_URL`, `AOS8_API_TOKEN` | Read/write starter; writes dry-run by default |
-| EdgeConnect | status, guarded GET/write, appliance inventory reads | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` | Read/write starter; writes dry-run by default |
+| EdgeConnect | status, guarded GET/write, appliance inventory/system/alarm reads | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` | Read/write starter; writes dry-run by default |
 
 The generic GET tools reject absolute URLs and stay bounded to the configured
 product host. List-like responses are paged with `limit` and `offset` when

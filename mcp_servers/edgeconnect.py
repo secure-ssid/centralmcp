@@ -47,6 +47,32 @@ _APPLIANCE_FIELDS = (
     "state",
     "status",
 )
+_SYSTEM_INFO_FIELDS = (
+    "hostName",
+    "applianceid",
+    "model",
+    "modelShort",
+    "platform",
+    "status",
+    "uptimeString",
+    "release",
+    "serial",
+    "uuid",
+    "deploymentMode",
+    "alarmSummary",
+)
+_ALARM_FIELDS = (
+    "id",
+    "uuid",
+    "type",
+    "severity",
+    "state",
+    "source",
+    "message",
+    "description",
+    "timestamp",
+    "time",
+)
 
 
 def _edgeconnect_config() -> tuple[str | None, str | None, str]:
@@ -64,13 +90,13 @@ def _compact_record(item: Any, fields: tuple[str, ...]) -> Any:
     return {key: item[key] for key in fields if key in item}
 
 
-def _compact_collection(data: Any, fields: tuple[str, ...]) -> Any:
+def _compact_collection(data: Any, fields: tuple[str, ...], list_keys: tuple[str, ...] = ()) -> Any:
     if isinstance(data, list):
         return [_compact_record(item, fields) for item in data]
     if not isinstance(data, dict):
         return data
     out = dict(data)
-    for key in ("items", "results", "data"):
+    for key in (*list_keys, "items", "results", "data"):
         if isinstance(out.get(key), list):
             out[key] = [_compact_record(item, fields) for item in out[key]]
             break
@@ -135,6 +161,24 @@ async def edgeconnect_list_appliances(limit: int = 50, offset: int = 0) -> dict[
     out = await edgeconnect_get("/gms/rest/appliance", limit=limit, offset=offset)
     if "data" in out:
         out["appliances"] = _compact_collection(out.pop("data"), _APPLIANCE_FIELDS)
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_system_info() -> dict[str, Any]:
+    """Get compact system information from an EdgeConnect appliance API."""
+    out = await edgeconnect_get("/rest/json/systemInfo")
+    if "data" in out:
+        out["system_info"] = _compact_record(out.pop("data"), _SYSTEM_INFO_FIELDS)
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_alarms(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List outstanding EdgeConnect appliance alarms with compact fields."""
+    out = await edgeconnect_get("/rest/json/alarm", limit=limit, offset=offset)
+    if "data" in out:
+        out["alarms"] = _compact_collection(out.pop("data"), _ALARM_FIELDS, ("outstanding",))
     return out
 
 
