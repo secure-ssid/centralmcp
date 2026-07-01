@@ -128,6 +128,7 @@ def _config_checks() -> list[Check]:
     ]
 
     local_stdio = ROOT / ".mcp.json"
+    local_http = ROOT / ".mcp.http.json"
     checks.append(
         Check(
             "OK" if local_stdio.exists() else "WARN",
@@ -135,6 +136,15 @@ def _config_checks() -> list[Check]:
             ".mcp.json exists"
             if local_stdio.exists()
             else "copy .mcp.json.example to .mcp.json for local stdio clients",
+        )
+    )
+    checks.append(
+        Check(
+            "OK" if local_http.exists() else "WARN",
+            "Local HTTP MCP config",
+            ".mcp.http.json exists"
+            if local_http.exists()
+            else "copy .mcp.http.json.example to .mcp.http.json for local HTTP clients",
         )
     )
 
@@ -185,19 +195,30 @@ def _runtime_checks() -> list[Check]:
         ]
     listening = _port_listening(host, port)
     products = os.getenv("CENTRALMCP_PRODUCTS", "").strip()
-    toolsets = os.getenv("CENTRALMCP_TOOLSETS", "central,glp,rag")
-    mode = os.getenv("CENTRALMCP_ROUTER_MODE", "minimal")
+    toolsets = os.getenv("CENTRALMCP_TOOLSETS")
+    mode = os.getenv("CENTRALMCP_ROUTER_MODE")
+
+    mode_detail = (
+        "unset in this shell; committed MCP client examples set 'minimal'"
+        if mode is None
+        else f"CENTRALMCP_ROUTER_MODE={mode!r}; use 'minimal' for low-token clients"
+    )
+    toolsets_detail = (
+        "unset in this shell; committed MCP client examples set 'central,glp,rag'"
+        if toolsets is None
+        else f"CENTRALMCP_TOOLSETS={toolsets!r}"
+    )
 
     return [
         Check(
-            "OK" if mode == "minimal" else "WARN",
+            "OK" if mode in (None, "minimal") else "WARN",
             "Router mode",
-            f"CENTRALMCP_ROUTER_MODE={mode!r}; use 'minimal' for low-token clients",
+            mode_detail,
         ),
         Check(
-            "OK",
+            "OK" if toolsets in (None, "central,glp,rag") else "WARN",
             "Router toolsets",
-            f"CENTRALMCP_TOOLSETS={toolsets!r}",
+            toolsets_detail,
         ),
         Check(
             "OK" if not products else "WARN",

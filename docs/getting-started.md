@@ -132,8 +132,9 @@ uv run python scripts/validate_release.py
 ```
 
 `scripts/doctor.py` is a non-mutating local setup diagnostic. It checks Python
-modules, credentials/config paths, local indexes, optional product env, and the
-HTTP router port without calling Central or GLP APIs.
+modules, credentials/config paths, local stdio/HTTP MCP config copies, local
+indexes, optional product env, low-token router env, and the HTTP router port
+without calling Central or GLP APIs.
 
 The unit suite includes static guards that keep async MCP tools off sync HTTP calls, prevent direct `CentralClient.session` bypasses, keep direct runtime dependencies on `httpx` instead of `pycentral` or `requests`, and protect the committed low-token MCP config examples.
 
