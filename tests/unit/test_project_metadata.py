@@ -1,9 +1,18 @@
+import ast
 from pathlib import Path
 
 PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 REPO_ROOT = PYPROJECT.parents[0]
 ACTIVE_CODE_DIRS = ("mcp_servers", "pipeline", "scripts")
 SCRAPER = REPO_ROOT / "ingestion" / "scrape.py"
+BOUNDED_GENERIC_GET_TOOLS = {
+    "mcp_servers/glp.py": "glp_get",
+    "mcp_servers/clearpass.py": "clearpass_get",
+    "mcp_servers/mist.py": "mist_get",
+    "mcp_servers/apstra.py": "apstra_get",
+    "mcp_servers/aos8.py": "aos8_get",
+    "mcp_servers/edgeconnect.py": "edgeconnect_get",
+}
 
 
 def _project_dependencies(pyproject_text: str) -> list[str]:
@@ -21,6 +30,21 @@ def _project_dependencies(pyproject_text: str) -> list[str]:
             dependencies.append(stripped.split('"', 2)[1])
 
     return dependencies
+
+
+def _function_node(tree: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"missing function {name}")
+
+
+def _calls_name(node: ast.AST, name: str) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+            if child.func.id == name:
+                return True
+    return False
 
 
 def test_project_name_matches_repo_name():
@@ -80,3 +104,21 @@ def test_direct_runtime_dependencies_do_not_include_pycentral_or_requests():
     assert "pycentral" not in names
     assert "requests" not in names
     assert "httpx" in names
+
+
+def test_generic_read_only_get_tools_bound_list_responses():
+    violations: list[str] = []
+
+    for relative_path, function_name in BOUNDED_GENERIC_GET_TOOLS.items():
+        path = REPO_ROOT / relative_path
+        function = _function_node(ast.parse(path.read_text()), function_name)
+        arg_names = [arg.arg for arg in function.args.args]
+
+        if "limit" not in arg_names or "offset" not in arg_names:
+            violations.append(f"{relative_path}:{function_name} missing limit/offset")
+        if not _calls_name(function, "bound_collection_response"):
+            violations.append(
+                f"{relative_path}:{function_name} does not call bound_collection_response"
+            )
+
+    assert violations == []
