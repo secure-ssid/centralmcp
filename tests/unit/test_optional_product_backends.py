@@ -64,6 +64,13 @@ def test_uxi_status_unconfigured(monkeypatch):
     assert out["configured"] is False
     assert out["has_client_id"] is False
     assert out["has_client_secret"] is False
+    assert len(out["tools"]) == len(set(out["tools"]))
+    assert {
+        "uxi_list_agent_group_assignments",
+        "uxi_list_sensor_group_assignments",
+        "uxi_list_network_group_assignments",
+        "uxi_list_service_test_group_assignments",
+    }.issubset(out["tools"])
 
 
 def test_uxi_get_rejects_absolute_url(monkeypatch):

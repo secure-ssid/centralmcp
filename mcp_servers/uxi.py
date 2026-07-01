@@ -200,6 +200,10 @@ def uxi_status() -> dict[str, Any]:
             "uxi_list_wired_networks",
             "uxi_list_wireless_networks",
             "uxi_list_service_tests",
+            "uxi_list_agent_group_assignments",
+            "uxi_list_sensor_group_assignments",
+            "uxi_list_network_group_assignments",
+            "uxi_list_service_test_group_assignments",
         ],
     }
 
