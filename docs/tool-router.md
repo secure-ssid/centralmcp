@@ -38,6 +38,10 @@ invoke_read_tool("list_active_alerts", {"severity": "CRITICAL"})
 }
 ```
 
+To keep discovery responses small, `find_tool` omits full JSON schemas by
+default and returns only parameter names in `params`. Set
+`include_schema=true` only when you need the full schema for a selected tool.
+
 ## Recommended client profile
 
 ```env

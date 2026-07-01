@@ -151,7 +151,7 @@ _STOPWORDS = {"list", "get", "set", "find", "the", "a", "an", "of", "for", "to",
               "on", "at", "in", "and", "or", "all", "one", "new", "show", "view"}
 
 
-def _keyword_hits(query: str, limit: int) -> list[dict]:
+def _keyword_hits(query: str, limit: int, include_schema: bool = False) -> list[dict]:
     """High-precision keyword fallback: require a *non-stopword* tool-name-token match.
 
     Guards against the model asking generic 'list APs' and getting every
@@ -178,16 +178,18 @@ def _keyword_hits(query: str, limit: int) -> list[dict]:
     out = []
     for score, t in scored[:limit]:
         schema = t.parameters if isinstance(t.parameters, dict) else {}
-        out.append({
+        item = {
             "name": t.name,
             "server": _tool_backend_names.get(t.name),
             "description": (t.description or "").strip(),
             "params": list((schema.get("properties") or {}).keys()),
-            "schema": schema,
             "score": round(score, 4),
             "match": "keyword",
             **_annotation_flags(t),
-        })
+        }
+        if include_schema:
+            item["schema"] = schema
+        out.append(item)
     return out
 
 
@@ -201,18 +203,21 @@ def _annotation_flags(tool: Any) -> dict[str, bool]:
 
 
 @mcp.tool(annotations=READ_ONLY)
-def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
+def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[dict[str, Any]]:
     """Find tools by query. Combines semantic search + tool-name keyword match.
 
     Call this first when you need an action. The returned `name` is what you
     pass to invoke_read_tool for read-only tools or invoke_tool for writes.
     Results are deduplicated; semantic matches are annotated match='semantic',
     name-overlap matches match='keyword', and safety flags mirror backend
-    ToolAnnotations.
+    ToolAnnotations. Results are compact by default; set include_schema=True
+    only when you need the full JSON schema for a selected tool.
 
     Args:
         query: What you want to do. e.g. "create a VLAN", "disconnect a client".
         top_k: 1-10 results (default 5).
+        include_schema: Include full JSON schemas in results. Defaults to False
+            to keep MCP responses compact.
     """
     top_k = max(1, min(top_k, 10))
     # Split the budget so one match type can't starve the other.
@@ -220,7 +225,7 @@ def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
     sem_budget = top_k - kw_budget
     by_name: dict[str, dict[str, Any]] = {}
 
-    for h in _keyword_hits(query, kw_budget):
+    for h in _keyword_hits(query, kw_budget, include_schema=include_schema):
         by_name[h["name"]] = h
 
     try:
@@ -240,16 +245,19 @@ def find_tool(query: str, top_k: int = 5) -> list[dict[str, Any]]:
                 continue
             if added >= sem_budget + max(0, kw_budget - len(by_name)):
                 break
-            by_name[name] = {
+            schema = json.loads(h.get("schema_json") or "{}")
+            item = {
                 "name": name,
                 "server": server,
                 "description": h.get("description", ""),
-                "params": [],
-                "schema": json.loads(h.get("schema_json") or "{}"),
+                "params": list((schema.get("properties") or {}).keys()),
                 "score": h.get("score", 0.0),
                 "match": "semantic",
                 **_annotation_flags(_tool_index.get(name)),
             }
+            if include_schema:
+                item["schema"] = schema
+            by_name[name] = item
             added += 1
     except Exception:
         pass  # fall back to keyword-only results

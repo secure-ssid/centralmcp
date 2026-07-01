@@ -178,6 +178,7 @@ Measured on the bundled eval set:
 - Destructive Central operations use MCP elicitation/confirmation where supported.
 - The router's `invoke_read_tool` blocks non-read-only backend tools.
 - The generic router `invoke_tool` is marked destructive because it can reach write/destructive tools.
+- `find_tool` omits full JSON schemas by default; request `include_schema=true` only when needed.
 - Generic GLP and optional product GET tools bound list responses with `limit` / `offset`.
 - MCP tool list defaults are capped at 200 items to protect client context windows.
 

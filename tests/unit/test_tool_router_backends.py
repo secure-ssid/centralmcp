@@ -76,11 +76,14 @@ def test_public_docs_list_router_products_and_toolsets():
     for toolset in {*router._TOOLSET_BACKENDS, "all"}:
         assert f"`{toolset}`" in tool_router
 
+    for text in (readme, tool_router):
+        assert "`include_schema=true`" in text
+
 
 def test_find_tool_filters_semantic_hits_from_disabled_backends(monkeypatch):
     monkeypatch.setattr(router, "_BACKEND", "lancedb")
     monkeypatch.setattr(router, "_BACKENDS", {"aruba-rag": "mcp_servers.rag"})
-    monkeypatch.setattr(router, "_keyword_hits", lambda query, limit: [])
+    monkeypatch.setattr(router, "_keyword_hits", lambda query, limit, include_schema=False: [])
     monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
     monkeypatch.setattr(router._lance, "connect", lambda: object())
     monkeypatch.setattr(
@@ -107,6 +110,57 @@ def test_find_tool_filters_semantic_hits_from_disabled_backends(monkeypatch):
     results = router.find_tool("vlan docs", top_k=5)
 
     assert [item["name"] for item in results] == ["search_docs"]
+
+
+def test_find_tool_omits_schema_by_default(monkeypatch):
+    monkeypatch.setattr(router, "_BACKEND", "lancedb")
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "mcp_servers.config"})
+    monkeypatch.setattr(router, "_keyword_hits", lambda query, limit, include_schema=False: [])
+    monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
+    monkeypatch.setattr(router._lance, "connect", lambda: object())
+    monkeypatch.setattr(
+        router._lance,
+        "search_tools",
+        lambda db, query, vec, top_k: [
+            {
+                "name": "create_vlan",
+                "server": "aruba-config",
+                "description": "Create a VLAN",
+                "schema_json": '{"properties": {"vlan_id": {"type": "integer"}}}',
+                "score": 0.9,
+            }
+        ],
+    )
+
+    result = router.find_tool("create vlan", top_k=1)
+
+    assert result[0]["params"] == ["vlan_id"]
+    assert "schema" not in result[0]
+
+
+def test_find_tool_can_include_schema_when_requested(monkeypatch):
+    monkeypatch.setattr(router, "_BACKEND", "lancedb")
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "mcp_servers.config"})
+    monkeypatch.setattr(router, "_keyword_hits", lambda query, limit, include_schema=False: [])
+    monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
+    monkeypatch.setattr(router._lance, "connect", lambda: object())
+    monkeypatch.setattr(
+        router._lance,
+        "search_tools",
+        lambda db, query, vec, top_k: [
+            {
+                "name": "create_vlan",
+                "server": "aruba-config",
+                "description": "Create a VLAN",
+                "schema_json": '{"properties": {"vlan_id": {"type": "integer"}}}',
+                "score": 0.9,
+            }
+        ],
+    )
+
+    result = router.find_tool("create vlan", top_k=1, include_schema=True)
+
+    assert result[0]["schema"] == {"properties": {"vlan_id": {"type": "integer"}}}
 
 
 def test_default_router_exposes_ask_docs_wrapper_when_rag_enabled():
