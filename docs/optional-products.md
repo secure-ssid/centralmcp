@@ -85,7 +85,8 @@ uv run python scripts/ingest_tools.py --products clearpass,mist
 ```
 
 For streamable HTTP, `scripts/run_http_router.sh` safely loads expected local
-`.env` assignments before starting the router:
+`.env` assignments before starting the router, including the product selector,
+access mode, supported product URL/token variables, and UXI OAuth settings:
 
 ```bash
 MCP_PORT=8010 bash scripts/run_http_router.sh

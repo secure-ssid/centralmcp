@@ -15,8 +15,11 @@ import sys
 env_key = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 allowed_keys = {
     "CENTRALMCP_PRODUCTS",
+    "CENTRALMCP_PRODUCT_ACCESS",
+    "CENTRALMCP_ALLOW_LOCAL_PRODUCT_URLS",
     "CENTRALMCP_ROUTER_MODE",
     "CENTRALMCP_TOOLSETS",
+    "CENTRALMCP_GLP_V2BETA1_WRITES",
     "MCP_HOST",
     "MCP_PORT",
     "CLEARPASS_BASE_URL",
@@ -30,6 +33,10 @@ allowed_keys = {
     "EDGECONNECT_BASE_URL",
     "EDGECONNECT_API_TOKEN",
     "EDGECONNECT_AUTH_HEADER",
+    "UXI_CLIENT_ID",
+    "UXI_CLIENT_SECRET",
+    "UXI_BASE_URL",
+    "UXI_TOKEN_URL",
 }
 for raw_line in open(sys.argv[1]):
     line = raw_line.strip()
