@@ -48,9 +48,17 @@ def _sqlite_counts(path: Path) -> dict[str, int]:
     return counts
 
 
-def _source_manifest_summary(path: Path = SOURCE_MANIFEST) -> dict[str, object]:
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _source_manifest_summary(path: Path | None = None) -> dict[str, object]:
+    path = path or SOURCE_MANIFEST
     if not path.exists():
-        raise SystemExit(f"Missing source manifest: {path.relative_to(ROOT)}")
+        raise SystemExit(f"Missing source manifest: {_display_path(path)}")
     try:
         data = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
@@ -63,7 +71,7 @@ def _source_manifest_summary(path: Path = SOURCE_MANIFEST) -> dict[str, object]:
         if isinstance(item, dict) and str(item.get("source", "")).strip()
     )
     return {
-        "path": str(path.relative_to(ROOT)),
+        "path": _display_path(path),
         "sha256": _sha256(path),
         "source_count": len(sources),
         "sources": sources,
@@ -119,6 +127,7 @@ def package_indexes(version: str, output_dir: Path) -> tuple[Path, Path]:
         with tarfile.open(archive, "w:gz") as tar:
             for name in REQUIRED_ARTIFACTS:
                 tar.add(DATA_DIR / name, arcname=f"data/{name}")
+            tar.add(SOURCE_MANIFEST, arcname="data/SOURCE-MANIFEST.json")
             tar.add(manifest_path, arcname="data/INDEX-MANIFEST.json")
 
     checksum.write_text(f"{_sha256(archive)}  {archive.name}\n")

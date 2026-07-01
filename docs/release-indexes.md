@@ -16,6 +16,7 @@ unpacks:
 data/docs.lance
 data/tools.lance
 data/specs.sqlite
+data/SOURCE-MANIFEST.json
 data/INDEX-MANIFEST.json
 ```
 
@@ -58,6 +59,7 @@ always use the latest release URL.
 | `data/docs.lance` | `search_docs`, `ask_docs` | Embedded docs retrieval |
 | `data/specs.sqlite` | `lookup_api` | Exact OpenAPI endpoint/schema lookup |
 | `data/tools.lance` | `find_tool` | Semantic router tool discovery |
+| `data/SOURCE-MANIFEST.json` | humans / release audit | Copy of the tracked RAG source manifest used for the rebuild |
 | `data/INDEX-MANIFEST.json` | humans / doctor output | Build metadata, artifact sizes, and source-manifest checksum/source names |
 
 ## Refresh RAG source inputs
