@@ -259,7 +259,7 @@ def _product_access_check(value: str | None) -> Check:
         return Check(
             "OK",
             "Optional product access",
-            "unset; optional product writes default to read-write lab mode",
+            "unset; optional product writes default to read-only",
         )
     normalized = value.strip().lower()
     if normalized in READ_ONLY_PRODUCT_ACCESS_VALUES:

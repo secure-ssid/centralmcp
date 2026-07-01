@@ -75,7 +75,7 @@ flowchart TD
     products{"Enable optional<br/>product starters?"}
     selected["Select products<br/>clearpass, mist, apstra,<br/>aos8, edgeconnect, uxi, or all"]
     access{"Product access mode"}
-    ro["read-only<br/>hide/block optional writes"]
+    ro["read-only default<br/>hide/block optional writes"]
     rw["read-write lab mode<br/>writes visible, dry-run default,<br/>dry_run=False + confirm=True required"]
     catalog["uv run python scripts/ingest_tools.py"]
     doctor["uv run python scripts/doctor.py"]
@@ -89,8 +89,8 @@ flowchart TD
     products -->|"yes / --products / --with-products"| selected
     products -->|"no"| catalog
     selected --> access
-    access -->|"--product-access read-only"| ro
-    access -->|"default read-write"| rw
+    access -->|"default"| ro
+    access -->|"--product-access read-write"| rw
     ro --> catalog
     rw --> catalog
     catalog --> doctor
