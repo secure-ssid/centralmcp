@@ -10,7 +10,8 @@ uv run python scripts/download_indexes.py
 ```
 
 This downloads the latest `centralmcp-rag-index-latest.tar.gz` release asset and
-its `.sha256` checksum, verifies the archive, and unpacks:
+its `.sha256` checksum, verifies the archive, and safely unpacks only regular
+files/directories under `data/`:
 
 ```text
 data/docs.lance

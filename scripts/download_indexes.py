@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import shutil
 import tarfile
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_URL = (
@@ -43,6 +44,38 @@ def _verify_checksum(archive: Path, checksum_file: Path) -> None:
         raise SystemExit(
             f"Checksum mismatch for {archive}: expected {expected}, got {actual}"
         )
+
+
+def _member_target(member: tarfile.TarInfo, output_dir: Path) -> Path:
+    name = PurePosixPath(member.name)
+    parts = name.parts
+    if name.is_absolute() or not parts or ".." in parts or parts[0] != "data":
+        raise SystemExit(f"Unsafe archive member path: {member.name!r}")
+
+    output_root = output_dir.resolve(strict=False)
+    target = output_root.joinpath(*parts).resolve(strict=False)
+    try:
+        target.relative_to(output_root)
+    except ValueError as exc:
+        raise SystemExit(f"Unsafe archive member path: {member.name!r}") from exc
+    return target
+
+
+def _extract_data_archive(tar: tarfile.TarFile, output_dir: Path) -> None:
+    for member in tar:
+        target = _member_target(member, output_dir)
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if not member.isfile():
+            raise SystemExit(f"Unsafe archive member type: {member.name!r}")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = tar.extractfile(member)
+        if source is None:
+            raise SystemExit(f"Could not read archive member: {member.name!r}")
+        with source, target.open("wb") as destination:
+            shutil.copyfileobj(source, destination)
 
 
 def main() -> int:
@@ -95,7 +128,7 @@ def main() -> int:
 
     print(f"Unpacking {args.archive} into {args.output_dir}")
     with tarfile.open(args.archive, "r:gz") as tar:
-        tar.extractall(args.output_dir, filter="data")
+        _extract_data_archive(tar, args.output_dir)
     print("Indexes restored under data/")
     return 0
 

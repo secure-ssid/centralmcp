@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import shutil
 import sys
 import tarfile
@@ -44,9 +45,13 @@ def test_main_downloads_checksum_next_to_archive_by_default(tmp_path, monkeypatc
         source = source_checksum if url.endswith(".sha256") else source_archive
         shutil.copyfile(source, destination)
 
+    def fail_extractall(*args, **kwargs):
+        raise AssertionError("download_indexes should use the compatibility extractor")
+
     archive = tmp_path / "dist" / "centralmcp-rag-index-latest.tar.gz"
     output_dir = tmp_path / "restore"
     monkeypatch.setattr(download_indexes.urllib.request, "urlretrieve", fake_urlretrieve)
+    monkeypatch.setattr(tarfile.TarFile, "extractall", fail_extractall)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -66,3 +71,31 @@ def test_main_downloads_checksum_next_to_archive_by_default(tmp_path, monkeypatc
     assert archive.exists()
     assert archive.with_suffix(archive.suffix + ".sha256").exists()
     assert (output_dir / "data" / "INDEX-MANIFEST.json").exists()
+
+
+def test_extract_data_archive_rejects_path_traversal(tmp_path):
+    archive = tmp_path / "unsafe.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        payload = b"unsafe"
+        member = tarfile.TarInfo("../escape.txt")
+        member.size = len(payload)
+        tar.addfile(member, io.BytesIO(payload))
+
+    with tarfile.open(archive, "r:gz") as tar:
+        with pytest.raises(SystemExit, match="Unsafe archive member path"):
+            download_indexes._extract_data_archive(tar, tmp_path / "restore")
+
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_extract_data_archive_rejects_symlink_members(tmp_path):
+    archive = tmp_path / "unsafe-link.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        member = tarfile.TarInfo("data/link")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "/etc/passwd"
+        tar.addfile(member)
+
+    with tarfile.open(archive, "r:gz") as tar:
+        with pytest.raises(SystemExit, match="Unsafe archive member type"):
+            download_indexes._extract_data_archive(tar, tmp_path / "restore")
