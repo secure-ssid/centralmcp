@@ -6,6 +6,7 @@ a cache_key parameter so source and target accounts use independent caches.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -47,6 +48,7 @@ class TokenManager:
         client_secret: str,
         token_url: str = "https://sso.common.cloud.hpe.com/as/token.oauth2",
         cache_key: str = "central",
+        cache_context: str = "",
         expiry_buffer: int = _DEFAULT_EXPIRY_BUFFER,
     ):
         """
@@ -55,8 +57,10 @@ class TokenManager:
             client_secret: OAuth2 client secret.
             token_url: Token endpoint URL.
             cache_key: Unique key used to name the cache file, e.g. "source" or "target".
-                       Produces .token_cache_{cache_key}.json so source/target caches
-                       never collide.
+                       Combined with credential context so source/target and tenant
+                       changes never collide.
+            cache_context: Non-secret account metadata such as API base URL or
+                       workspace ID. Changes invalidate cached tokens.
             expiry_buffer: Seconds before the token's stated expiry to refresh
                        proactively. Default 300s is right for Central's 120-min
                        tokens. For GLP (15-min tokens), pass 60-90s.
@@ -64,9 +68,11 @@ class TokenManager:
         self.client_id = client_id
         self.client_secret = client_secret
         self.token_url = token_url
+        self.cache_context = cache_context
         self.expiry_buffer = expiry_buffer
 
-        cache_filename = f".token_cache_{cache_key}.json"
+        self.cache_fingerprint = self._cache_fingerprint()
+        cache_filename = f".token_cache_{cache_key}_{self.cache_fingerprint}.json"
         cache_dir = _default_cache_dir()
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -94,12 +100,22 @@ class TokenManager:
             or time.time() >= (self.token_expires_at - self.expiry_buffer)
         )
 
+    def _cache_fingerprint(self) -> str:
+        digest = hashlib.sha256()
+        for value in (self.client_id, self.token_url, self.cache_context):
+            digest.update(value.encode("utf-8"))
+            digest.update(b"\0")
+        return digest.hexdigest()[:12]
+
     def _load_cached_token(self) -> None:
         if not self.cache_file.exists():
             return
         try:
             with open(self.cache_file) as f:
                 data = json.load(f)
+            if data.get("cache_fingerprint") != self.cache_fingerprint:
+                logger.debug("Token cache context changed (%s)", self.cache_file)
+                return
             self.access_token = data.get("access_token")
             self.token_expires_at = data.get("expires_at")
             if self.token_expires_at and time.time() < (self.token_expires_at - self.expiry_buffer):
@@ -127,6 +143,7 @@ class TokenManager:
                         "access_token": self.access_token,
                         "expires_at": self.token_expires_at,
                         "cached_at": time.time(),
+                        "cache_fingerprint": self.cache_fingerprint,
                     },
                     f,
                     indent=2,

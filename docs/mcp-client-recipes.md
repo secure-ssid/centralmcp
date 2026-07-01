@@ -19,7 +19,7 @@ This exposes only `find_tool`, `invoke_read_tool`, and `invoke_tool` in minimal 
 ## Generic stdio client
 
 ```bash
-python3 scripts/setup_wizard.py --yes
+python3 scripts/setup_wizard.py --yes --skip-credentials
 ```
 
 Or copy the generic file manually:
@@ -66,7 +66,7 @@ The remaining direct-server profiles are for debugging individual backends.
 Start the local HTTP router:
 
 ```bash
-python3 scripts/setup_wizard.py --yes
+python3 scripts/setup_wizard.py --yes --skip-credentials
 MCP_PORT=8010 bash scripts/run_http_router.sh
 ```
 
@@ -83,14 +83,14 @@ http://127.0.0.1:8010/mcp
 ```
 
 If you change `MCP_HOST` or `MCP_PORT`, update `.mcp.http.json` to match. The
-HTTP helper sources local `.env` first, so optional products selected in the
-wizard are available to the router process.
+HTTP helper safely loads expected local `.env` assignments first, so optional
+products selected in the wizard are available to the router process.
 
 ## Optional product clients
 
 Keep optional products disabled unless you want them in the current MCP session.
 The wizard can enable only the starters you choose, write the matching local
-`.env`, and inject those settings into local stdio MCP configs:
+`.env`, and add the product selector to local stdio MCP configs:
 
 ```bash
 python3 scripts/setup_wizard.py --products clearpass,mist

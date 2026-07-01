@@ -20,6 +20,7 @@ from mcp_servers.shared import (
     bound_collection_response,
     response_payload,
     safe_api_path,
+    validate_product_base_url,
 )
 
 mcp = FastMCP("mist-core")
@@ -64,6 +65,10 @@ async def mist_get(
     except ValueError as exc:
         return {"error": f"Invalid path. {exc}"}
 
+    try:
+        host = validate_product_base_url(host, product="Mist")
+    except ValueError as exc:
+        return {"error": str(exc)}
     url = f"{host}{path}"
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
     try:

@@ -1,11 +1,14 @@
 """Shared clients, helpers, and constants for all MCP servers."""
 import asyncio
+import ipaddress
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from dotenv import load_dotenv
 from mcp.types import ToolAnnotations
 
 from pipeline.clients.central_client import CentralClient
@@ -47,6 +50,7 @@ IDEMPOTENT_WRITE = ToolAnnotations(
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 # ---------------------------------------------------------------------------
 # Transport configuration
@@ -66,6 +70,45 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def validate_product_base_url(value: str, *, product: str) -> str:
+    """Validate optional product base URLs before attaching API tokens."""
+    base_url = value.strip().rstrip("/")
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"https", "http"} or not parsed.netloc:
+        raise ValueError(f"{product} base URL must be an absolute HTTP(S) URL")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{product} base URL must not include credentials")
+    if parsed.scheme != "https" and not _env_bool("CENTRALMCP_ALLOW_LOCAL_PRODUCT_URLS", False):
+        raise ValueError(
+            f"{product} base URL must use https; set CENTRALMCP_ALLOW_LOCAL_PRODUCT_URLS=1 "
+            "only for local lab testing"
+        )
+
+    host = (parsed.hostname or "").strip().lower()
+    if host in {"localhost", "localhost.localdomain"} and not _env_bool(
+        "CENTRALMCP_ALLOW_LOCAL_PRODUCT_URLS", False
+    ):
+        raise ValueError(
+            f"{product} base URL host {host!r} is local; set "
+            "CENTRALMCP_ALLOW_LOCAL_PRODUCT_URLS=1 only for local lab testing"
+        )
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return base_url
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+    ) and not _env_bool("CENTRALMCP_ALLOW_LOCAL_PRODUCT_URLS", False):
+        raise ValueError(
+            f"{product} base URL host {host!r} is not public; set "
+            "CENTRALMCP_ALLOW_LOCAL_PRODUCT_URLS=1 only for local lab testing"
+        )
+    return base_url
 
 
 def _configure_http_transport(mcp_instance: Any, host: str, port: int) -> None:
@@ -127,6 +170,7 @@ def get_client() -> CentralClient:
         tm = TokenManager(
             client_id=source_ctx.client_id,
             client_secret=source_ctx.client_secret,
+            cache_context=f"{source_ctx.base_url}|{source_ctx.glp_workspace_id}",
             cache_key="source",
         )
         _central_client = CentralClient(base_url=source_ctx.base_url, token_manager=tm)
@@ -151,6 +195,7 @@ def get_glp_client() -> GLPClient:
             client_id=target_ctx.client_id,
             client_secret=target_ctx.client_secret,
             token_url=target_ctx.glp_token_url,
+            cache_context=f"{target_ctx.glp_base_url}|{target_ctx.glp_workspace_id}",
             cache_key="glp",
             expiry_buffer=60,
         )

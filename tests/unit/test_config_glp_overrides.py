@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pipeline.config import build_account_contexts
-from pipeline.models import AccountContext
 import mcp_servers.shared as shared
 import run_pipeline
+from pipeline.config import build_account_contexts
+from pipeline.models import AccountContext
 
 
 def test_build_account_contexts_carries_glp_overrides(tmp_path, monkeypatch):
@@ -83,9 +83,11 @@ def test_pipeline_client_builder_uses_separate_glp_overrides(monkeypatch):
     run_pipeline._build_clients(ctx, "target")
 
     assert token_managers[0]["cache_key"] == "target"
+    assert token_managers[0]["cache_context"] == "https://central.example.com|workspace-id"
     assert "token_url" not in token_managers[0]
     assert token_managers[1]["cache_key"] == "target-glp"
     assert token_managers[1]["token_url"] == "https://custom-sso.example.com/token"
+    assert token_managers[1]["cache_context"] == "https://custom-glp.example.com|workspace-id"
     assert token_managers[1]["expiry_buffer"] == 60
     assert glp_clients == [
         {
@@ -139,6 +141,7 @@ def test_mcp_shared_glp_client_uses_loaded_glp_overrides(monkeypatch):
             "client_id": "client-id",
             "client_secret": "secret",
             "token_url": "https://custom-sso.example.com/token",
+            "cache_context": "https://custom-glp.example.com|workspace-id",
             "cache_key": "glp",
             "expiry_buffer": 60,
         }

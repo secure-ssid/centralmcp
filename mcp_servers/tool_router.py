@@ -379,7 +379,7 @@ if _ROUTER_MODE != "minimal" and "aruba-monitoring" in _BACKENDS:
 
     @mcp.tool(annotations=READ_ONLY)
     async def find_device(ctx: Context, query: str) -> dict[str, Any]:
-        """Find a device by name / serial / MAC / IP."""
+        """Find a device by serial number."""
         return await invoke_tool(ctx, "find_device", {"serial_number": query})
 
 

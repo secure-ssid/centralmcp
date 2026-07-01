@@ -29,7 +29,7 @@ You can verify dependencies, build the local router catalog, and start the HTTP
 MCP server before adding Central or GLP credentials:
 
 ```bash
-python3 scripts/setup_wizard.py --yes
+python3 scripts/setup_wizard.py --yes --skip-credentials
 uv run python scripts/doctor.py
 MCP_PORT=8010 bash scripts/run_http_router.sh
 ```
@@ -127,8 +127,8 @@ http://127.0.0.1:8010/mcp
 ```
 
 The HTTP example in `.mcp.http.json.example` points at that local endpoint.
-The helper sources local `.env` first, so optional product settings created by
-the wizard are available in HTTP mode.
+The helper safely loads expected local `.env` assignments first, so optional
+product settings created by the wizard are available in HTTP mode.
 If the port is already in use, `scripts/run_http_router.sh` exits before
 starting another router and prints the listener details. Stop the foreground
 server with `Ctrl-C`. If you launched it in the background, find the listener
@@ -163,7 +163,9 @@ python3 scripts/setup_wizard.py --products clearpass,mist
 
 ## 5. Optional: build the docs/API RAG indexes
 
-The router tool catalog is quick. The full docs/API index is larger.
+The router tool catalog is quick. The full docs/API index is larger. Fresh
+clones need either a prebuilt release index or locally populated
+`ingestion/sources/` input files before rebuilding docs/API search.
 
 ```bash
 uv run python ingestion/ingest_docs.py
@@ -174,7 +176,7 @@ Built indexes live under `data/` and are git-ignored.
 ## 6. Validate
 
 ```bash
-python3 scripts/setup_wizard.py --yes --skip-catalog
+python3 scripts/setup_wizard.py --yes --skip-credentials --skip-catalog
 uv run python scripts/doctor.py
 uv run pytest tests/unit -q
 uv run python scripts/validate_release.py
@@ -197,9 +199,10 @@ Optional product backends are disabled by default.
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
 ```
 
-The wizard can prompt for the selected product URL/token settings and writes
-them to local git-ignored `.env` plus local stdio MCP configs. Use a subset when
-you only want ClearPass, Mist, or another specific starter:
+The wizard can prompt for the selected product URL/token settings, write them to
+local git-ignored `.env`, and add the product selector to local stdio MCP
+configs. Use a subset when you only want ClearPass, Mist, or another specific
+starter:
 
 ```bash
 python3 scripts/setup_wizard.py --products clearpass

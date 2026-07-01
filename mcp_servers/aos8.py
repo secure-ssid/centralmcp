@@ -20,6 +20,7 @@ from mcp_servers.shared import (
     bound_collection_response,
     response_payload,
     safe_api_path,
+    validate_product_base_url,
 )
 
 mcp = FastMCP("aos8-core")
@@ -64,6 +65,10 @@ async def aos8_get(
     except ValueError as exc:
         return {"error": f"Invalid path. {exc}"}
 
+    try:
+        base_url = validate_product_base_url(base_url, product="AOS8")
+    except ValueError as exc:
+        return {"error": str(exc)}
     url = f"{base_url}{path}"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     try:

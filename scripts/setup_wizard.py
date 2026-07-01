@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8010
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 CENTRAL_BASE_URLS = [
     (
@@ -72,6 +74,7 @@ PRODUCT_ENV = {
         },
     },
 }
+PLACEHOLDER_MARKERS = ("YOUR_", "REPLACE_ME", "PLACEHOLDER")
 
 
 @dataclass
@@ -114,13 +117,21 @@ def _csv(values: str) -> list[str]:
 
 
 def _selected_products(args: argparse.Namespace) -> list[str]:
+    def validate(requested: list[str]) -> list[str]:
+        if "all" in requested:
+            return list(PRODUCT_ENV)
+        unknown = sorted(set(requested) - set(PRODUCT_ENV))
+        if unknown:
+            accepted = ", ".join([*PRODUCT_ENV, "all"])
+            raise SystemExit(
+                f"Unknown optional product(s): {', '.join(unknown)}. Accepted values: {accepted}"
+            )
+        return requested
+
     if args.with_products:
         return list(PRODUCT_ENV)
     if args.products:
-        requested = _csv(args.products)
-        if "all" in requested:
-            return list(PRODUCT_ENV)
-        return [name for name in requested if name in PRODUCT_ENV]
+        return validate(_csv(args.products))
     if args.yes:
         return []
     if not _ask("Enable optional product starter backends?", False, assume_yes=False):
@@ -130,10 +141,7 @@ def _selected_products(args: argparse.Namespace) -> list[str]:
     for name, meta in PRODUCT_ENV.items():
         print(f"  - {name}: {meta['label']}")
     raw = _ask_text("Enter products as comma-separated names, or all", "")
-    requested = _csv(raw)
-    if "all" in requested:
-        return list(PRODUCT_ENV)
-    return [name for name in requested if name in PRODUCT_ENV]
+    return validate(_csv(raw))
 
 
 def _choose_base_url(label: str, *, default: str, assume_yes: bool) -> str:
@@ -163,6 +171,10 @@ def _shell_line(name: str, value: str) -> str:
     return f"export {name}={shlex.quote(value)}"
 
 
+def _is_loopback_host(host: str) -> bool:
+    return host.strip().lower() in LOOPBACK_HOSTS
+
+
 def _write_from_template(
     source: Path,
     target: Path,
@@ -180,9 +192,23 @@ def _write_from_template(
     return Step(_rel(target), "OK", f"created from {_rel(source)}")
 
 
+def _has_placeholders(path: Path) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(errors="replace")
+    return any(marker in text for marker in PLACEHOLDER_MARKERS)
+
+
 def _write_credentials(target: Path, *, force: bool, assume_yes: bool) -> Step:
     if target.exists() and not force:
-        return Step(_rel(target), "SKIP", "already exists; use --force to overwrite")
+        if assume_yes or not _has_placeholders(target):
+            return Step(_rel(target), "SKIP", "already exists; use --force to overwrite")
+        if not _ask(
+            "Existing config/credentials.yaml contains placeholders; update it now?",
+            True,
+            assume_yes=False,
+        ):
+            return Step(_rel(target), "SKIP", "left existing placeholder file unchanged")
 
     default_url = CENTRAL_BASE_URLS[0][1]
     central_url = _choose_base_url(
@@ -306,6 +332,9 @@ def _write_env_file(target: Path, env: dict[str, str], *, force: bool) -> Step:
 def _merge_json_env(target: Path, server_name: str, env: dict[str, str]) -> Step:
     if not env:
         return Step(_rel(target), "SKIP", "no optional products selected")
+    mcp_env = {
+        "CENTRALMCP_PRODUCTS": env["CENTRALMCP_PRODUCTS"],
+    }
     try:
         data = json.loads(target.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -318,14 +347,17 @@ def _merge_json_env(target: Path, server_name: str, env: dict[str, str]) -> Step
     server_env = server.setdefault("env", {})
     if not isinstance(server_env, dict):
         return Step(_rel(target), "WARN", f"{server_name} env is not an object")
-    server_env.update(env)
+    server_env.update(mcp_env)
     target.write_text(json.dumps(data, indent=2) + "\n")
-    return Step(_rel(target), "OK", "added optional product env")
+    return Step(_rel(target), "OK", "added optional product selector")
 
 
-def _run(command: list[str], label: str) -> Step:
+def _run(command: list[str], label: str, *, env: dict[str, str] | None = None) -> Step:
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
     try:
-        subprocess.run(command, cwd=ROOT, check=True)
+        subprocess.run(command, cwd=ROOT, check=True, env=run_env)
     except FileNotFoundError as exc:
         return Step(label, "WARN", f"command not found: {exc.filename}")
     except subprocess.CalledProcessError as exc:
@@ -395,6 +427,11 @@ def main() -> int:
     print("centralmcp setup wizard")
     print(f"Repository: {ROOT}")
     print("This wizard writes only local git-ignored config files.\n")
+    if not _is_loopback_host(args.host):
+        print(
+            "WARNING: Non-loopback MCP_HOST may expose credential-backed MCP tools "
+            "to your network. Use firewall/auth/TLS before sharing this endpoint.\n"
+        )
 
     steps: list[Step] = []
     selected_products = _selected_products(args)
@@ -472,12 +509,21 @@ def main() -> int:
         steps.append(_run(command, "tool catalog"))
 
     if not args.skip_doctor and _ask("Run the local doctor now?", True, assume_yes=args.yes):
-        steps.append(_run(["uv", "run", "python", "scripts/doctor.py"], "doctor"))
+        steps.append(
+            _run(
+                ["uv", "run", "python", "scripts/doctor.py"],
+                "doctor",
+                env={"MCP_HOST": args.host, "MCP_PORT": str(args.port)},
+            )
+        )
 
     _print_steps(steps)
     print("\nNext steps")
     print("1. Review config/credentials.yaml and .env before starting API-backed tools.")
-    print(f"2. For HTTP MCP clients, run: MCP_PORT={args.port} bash scripts/run_http_router.sh")
+    print(
+        "2. For HTTP MCP clients, run: "
+        f"MCP_HOST={args.host} MCP_PORT={args.port} bash scripts/run_http_router.sh"
+    )
     if selected_products:
         print(f"3. Optional products enabled locally: {', '.join(selected_products)}.")
     else:

@@ -30,6 +30,9 @@ run-ssid = "run_ssid:main"
 [dependency-groups]
 dev = ["pytest>=8.0"]
 
+[tool.setuptools]
+py-modules = ["run_pipeline", "run_ssid"]
+
 [tool.setuptools.packages.find]
 include = ["pipeline*", "mcp_servers*"]
 

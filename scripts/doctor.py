@@ -23,6 +23,7 @@ OPTIONAL_PRODUCT_ENVS = {
     "aos8": ("AOS8_BASE_URL", "AOS8_API_TOKEN"),
     "edgeconnect": ("EDGECONNECT_BASE_URL", "EDGECONNECT_API_TOKEN"),
 }
+PLACEHOLDER_MARKERS = ("YOUR_", "REPLACE_ME", "PLACEHOLDER")
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,13 @@ def _path_check(path: Path, name: str, *, missing_detail: str) -> Check:
     if path.exists():
         return Check("OK", name, f"{_display_path(path)} exists")
     return Check("WARN", name, missing_detail)
+
+
+def _has_placeholders(path: Path) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(errors="replace")
+    return any(marker in text for marker in PLACEHOLDER_MARKERS)
 
 
 def _load_json(path: Path) -> tuple[dict[str, object] | None, str | None]:
@@ -299,20 +307,28 @@ def _config_checks() -> list[Check]:
     if not creds_path.is_absolute():
         creds_path = ROOT / creds_path
 
+    credentials_check = _path_check(
+        creds_path,
+        "Credentials",
+        missing_detail=(
+            f"{creds_path} missing; copy config/credentials.yaml.example to "
+            "config/credentials.yaml and fill in credentials"
+        ),
+    )
+    if credentials_check.status == "OK" and _has_placeholders(creds_path):
+        credentials_check = Check(
+            "WARN",
+            "Credentials",
+            f"{_display_path(creds_path)} exists but still contains placeholders",
+        )
+
     checks = [
         _path_check(
             ROOT / "pyproject.toml",
             "Project metadata",
             missing_detail="pyproject.toml missing; run from a centralmcp checkout",
         ),
-        _path_check(
-            creds_path,
-            "Credentials",
-            missing_detail=(
-                f"{creds_path} missing; copy config/credentials.yaml.example to "
-                "config/credentials.yaml and fill in credentials"
-            ),
-        ),
+        credentials_check,
         _path_check(
             ROOT / ".mcp.json.example",
             "stdio MCP example",

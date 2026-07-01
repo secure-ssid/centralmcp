@@ -2,12 +2,17 @@
 
 Use this directory as the organized documentation hub for setup, architecture, operations, audits, and planning notes.
 
+This folder can also be served as a GitHub Pages site from `main` / `docs`.
+
 ## Start here
 
 | Doc | Use it for |
 |---|---|
+| [index.md](index.md) | GitHub Pages landing page with quick setup, router, optional product, and HTTP paths |
 | [getting-started.md](getting-started.md) | Wizard install, credentials, optional products, MCP client setup, and indexes |
 | [mcp-client-recipes.md](mcp-client-recipes.md) | Copy/paste stdio and streamable HTTP MCP client setup recipes |
+| [optional-products.md](optional-products.md) | Optional product matrix, wizard behavior, env vars, and safety surface |
+| [troubleshooting.md](troubleshooting.md) | Setup wizard, credentials, HTTP mode, router catalog, and first-call fixes |
 | [example-prompts.md](example-prompts.md) | Practical low-token prompt examples and router call patterns |
 | [tool-router.md](tool-router.md) | Low-token router modes, toolsets, optional products, and safe dispatch |
 | [architecture/system-overview.md](architecture/system-overview.md) | End-to-end MCP architecture diagrams and runtime flow |
@@ -71,9 +76,9 @@ uv run python scripts/validate_release.py
 ```
 
 The wizard can run `uv sync`, choose common Central API gateways, fill secrets
-with no echo, write local `.env` for selected optional products, and inject those
-settings into local stdio MCP configs. The HTTP helper sources `.env` first and
-exits with listener details instead of starting a duplicate router when the
-selected port is already in use.
+with no echo, write local `.env` for selected optional products, and add only
+the product selector to local stdio MCP configs. The HTTP helper safely loads
+expected `.env` assignments first and exits with listener details instead of
+starting a duplicate router when the selected port is already in use.
 
 The release helper enforces the documented tool catalog floor and checks local LanceDB tool-index freshness when `data/tools.lance` exists. The unit suite also carries static regression guards for async-safe MCP tools, shared `httpx` client boundaries, project metadata (`centralmcp` package name with no direct `pycentral`/`requests` runtime dependencies), committed low-token MCP config examples, local-only config files, router product/toolset docs, bounded generic read-only GET tools, MCP list default bounds, RAG/search top_k bounds, public tool-count claims, tool-count docstrings, and tracked Markdown local links.

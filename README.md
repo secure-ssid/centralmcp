@@ -45,12 +45,15 @@ ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
 
 | Need | Start here |
 |---|---|
+| Documentation site | [centralmcp GitHub Pages](https://secure-ssid.github.io/centralmcp/) |
 | Guided setup | [`scripts/setup_wizard.py`](scripts/setup_wizard.py) |
 | Try without API credentials | [Try it locally without credentials](#try-it-locally-without-credentials) |
 | Try it quickly | [Quick start](#quick-start) |
 | Check your local setup | [`scripts/doctor.py`](scripts/doctor.py) |
 | Install and connect an MCP client | [docs/getting-started.md](docs/getting-started.md) |
 | Copy/paste MCP client setup | [docs/mcp-client-recipes.md](docs/mcp-client-recipes.md) |
+| Enable optional products | [docs/optional-products.md](docs/optional-products.md) |
+| Fix setup or HTTP issues | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Try useful prompts | [docs/example-prompts.md](docs/example-prompts.md) |
 | Understand the low-token router | [docs/tool-router.md](docs/tool-router.md) |
 | Run with any MCP-capable AI client/model | [Streamable HTTP mode](#streamable-http-mode) |
@@ -93,7 +96,7 @@ will need credentials later, but the local setup path is safe to test first.
 ```bash
 git clone https://github.com/secure-ssid/centralmcp.git
 cd centralmcp
-python3 scripts/setup_wizard.py --yes
+python3 scripts/setup_wizard.py --yes --skip-credentials
 uv run python scripts/doctor.py
 MCP_PORT=8010 bash scripts/run_http_router.sh
 ```
@@ -139,7 +142,9 @@ For optional product starters too:
 uv run python scripts/ingest_tools.py --products all
 ```
 
-For full RAG docs/API search, download the prebuilt release index if available or rebuild locally:
+For full RAG docs/API search, download the prebuilt release index if available.
+To rebuild locally, populate the git-ignored `ingestion/sources/` tree with
+scraped docs/API source files first, then run:
 
 ```bash
 uv run python ingestion/ingest_docs.py
@@ -174,7 +179,8 @@ CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
 ```
 
 The setup wizard can enable a subset for you, write the matching local `.env`,
-and inject those values into local stdio MCP configs:
+and add only the product selector to local stdio MCP configs so tokens stay in
+one local file:
 
 ```bash
 python3 scripts/setup_wizard.py --products clearpass,mist
@@ -204,7 +210,7 @@ http://127.0.0.1:8010/mcp
 Use [`.mcp.http.json.example`](.mcp.http.json.example) as a generic HTTP client
 snippet. Plain `curl` is only useful for checking that the server is listening;
 real MCP clients use streaming headers such as `Accept: text/event-stream`.
-The helper sources a local `.env` first, so optional product settings created by
+The helper loads local `.env` assignments first, so optional product settings created by
 the wizard are available to HTTP mode too.
 If the port is already in use, the helper exits before starting another router
 and prints the listener details plus the `kill <PID>` stop command.

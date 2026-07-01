@@ -69,12 +69,14 @@ def _build_clients(ctx: AccountContext, cache_key: str) -> None:
     central_tm = TokenManager(
         client_id=ctx.client_id,
         client_secret=ctx.client_secret,
+        cache_context=f"{ctx.base_url}|{ctx.glp_workspace_id}",
         cache_key=cache_key,
     )
     glp_tm = TokenManager(
         client_id=ctx.client_id,
         client_secret=ctx.client_secret,
         token_url=ctx.glp_token_url,
+        cache_context=f"{ctx.glp_base_url}|{ctx.glp_workspace_id}",
         cache_key=f"{cache_key}-glp",
         expiry_buffer=60,
     )
@@ -122,10 +124,28 @@ def main() -> None:
     parser.add_argument("--creds", default="config/credentials.yaml", help="Credentials YAML file")
     parser.add_argument("--resume", metavar="RUN_ID", help="Resume a prior run")
     parser.add_argument("--dry-run", action="store_true", help="Run S1+S2 only, no writes")
-    parser.add_argument("--devices", metavar="SN1,SN2", help="Comma-separated serial numbers to process")
-    parser.add_argument("--stage-from", metavar="STAGE", choices=STAGE_NAMES, help="Start from this stage")
-    parser.add_argument("--stage-to", metavar="STAGE", choices=STAGE_NAMES, help="Stop after this stage")
-    parser.add_argument("--configure-only", action="store_true", help="Run S6 only (group/persona/site) on already-provisioned devices")
+    parser.add_argument(
+        "--devices",
+        metavar="SN1,SN2",
+        help="Comma-separated serial numbers to process",
+    )
+    parser.add_argument(
+        "--stage-from",
+        metavar="STAGE",
+        choices=STAGE_NAMES,
+        help="Start from this stage",
+    )
+    parser.add_argument(
+        "--stage-to",
+        metavar="STAGE",
+        choices=STAGE_NAMES,
+        help="Stop after this stage",
+    )
+    parser.add_argument(
+        "--configure-only",
+        action="store_true",
+        help="Run S6 only (group/persona/site) on already-provisioned devices",
+    )
     parser.add_argument("--output-dir", default="outputs", help="Output directory")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     args = parser.parse_args()
@@ -182,7 +202,10 @@ def main() -> None:
         target_ctx.mcp_client = source_ctx.mcp_client
 
     # State store
-    run_id = args.resume or f"run_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}"
+    run_id = args.resume or (
+        f"run_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_"
+        f"{uuid.uuid4().hex[:6]}"
+    )
     db_path = f"state/pipeline_{run_id}.db"
     state = StateStore(db_path)
     state.create_run(run_id, args.input, len(records))
@@ -194,7 +217,10 @@ def main() -> None:
     started_at = datetime.now(tz=timezone.utc)
 
     for record in records:
-        console.print(f"[bold]{record.serial_number}[/bold] ({record.source_type.value} → {record.target_account.value})")
+        console.print(
+            f"[bold]{record.serial_number}[/bold] "
+            f"({record.source_type.value} → {record.target_account.value})"
+        )
         _run_device(record, run_id, source_ctx, target_ctx, state, active_stages, args.dry_run)
 
     ended_at = datetime.now(tz=timezone.utc)
@@ -232,7 +258,10 @@ def main() -> None:
     console.print(table)
     console.print(f"\nReport: [cyan]{report_path}[/cyan]")
     console.print(f"State DB: [cyan]{db_path}[/cyan]")
-    console.print(f"\nTo resume failed devices: [bold]python run_pipeline.py --input {args.input} --resume {run_id}[/bold]\n")
+    console.print(
+        "\nTo resume failed devices: "
+        f"[bold]python run_pipeline.py --input {args.input} --resume {run_id}[/bold]\n"
+    )
 
 
 if __name__ == "__main__":
