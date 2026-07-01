@@ -246,14 +246,14 @@ a subset when you only want ClearPass, Mist, or another specific starter:
 python3 scripts/setup_wizard.py --products clearpass
 ```
 
-| Product | Required variables |
+| Product | Variables |
 |---|---|
 | ClearPass | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` |
-| Mist | `MIST_HOST`, `MIST_API_TOKEN` |
+| Juniper Mist | `MIST_HOST`, `MIST_API_TOKEN` |
 | Apstra | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` |
-| AOS8 | `AOS8_BASE_URL`, `AOS8_API_TOKEN` |
+| ArubaOS 8 | `AOS8_BASE_URL`, `AOS8_API_TOKEN` |
 | EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` |
-| UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
+| HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
 
 ## Safety defaults
 

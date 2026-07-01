@@ -137,6 +137,7 @@ def test_validation_docs_describe_current_guard_coverage():
         "tracked Markdown local links and images",
         "documented router example arguments",
         "product workflow tool-name tables",
+        "wizard optional-product env tables",
     ]
     combined_docs = "\n".join(
         [

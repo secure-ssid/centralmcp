@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 
 from scripts import setup_wizard
@@ -34,6 +35,23 @@ def test_product_env_includes_uxi_credentials():
 
 def test_uxi_client_secret_uses_secret_prompt():
     assert setup_wizard._is_secret_env_var("UXI_CLIENT_SECRET") is True
+
+
+def test_public_docs_list_wizard_product_env_vars():
+    docs = [
+        setup_wizard.ROOT / "docs" / "optional-products.md",
+        setup_wizard.ROOT / "docs" / "getting-started.md",
+        setup_wizard.ROOT / "docs" / "index.md",
+    ]
+
+    for path in docs:
+        lines = path.read_text().splitlines()
+        for spec in setup_wizard.PRODUCT_ENV.values():
+            label = spec["label"]
+            row = next((line for line in lines if line.startswith(f"| {label} |")), None)
+            assert row is not None, f"{path.relative_to(setup_wizard.ROOT)} missing {label}"
+            documented = set(re.findall(r"`([A-Z][A-Z0-9_]+)`", row))
+            assert set(spec["vars"]) <= documented
 
 
 def test_product_access_defaults_to_read_write_for_products():

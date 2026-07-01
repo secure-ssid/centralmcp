@@ -86,11 +86,11 @@ Available starters:
 | Product | Variables |
 |---|---|
 | ClearPass | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` |
-| Mist | `MIST_HOST`, `MIST_API_TOKEN` |
+| Juniper Mist | `MIST_HOST`, `MIST_API_TOKEN` |
 | Apstra | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` |
 | ArubaOS 8 | `AOS8_BASE_URL`, `AOS8_API_TOKEN` |
-| EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN` |
-| UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET` |
+| EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` |
+| HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
 
 See the [optional product matrix](optional-products.md) for the full setup and
 safety model.
