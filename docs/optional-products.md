@@ -53,9 +53,9 @@ When you select products, the setup wizard:
    URL/token settings to local `.env`.
 2. Adds only `CENTRALMCP_PRODUCTS` and `CENTRALMCP_PRODUCT_ACCESS` to local MCP
    config files, leaving product tokens in `.env`.
-3. Builds the router tool catalog with the selected product starters and access
-   mode unless you use `--with-products`; product tokens are not passed to the
-   catalog-build subprocess.
+3. Builds the router tool catalog with the selected product starters (or every
+   starter with `--with-products`) and access mode; product tokens are not
+   passed to the catalog-build subprocess.
 4. Lets `scripts/doctor.py` confirm required product variables are present.
 
 Real `.env`, `.mcp.json`, and `.vscode/mcp.json` files are git-ignored.

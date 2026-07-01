@@ -121,3 +121,52 @@ def test_catalog_build_receives_product_access_env(monkeypatch):
     assert set(env) == {"CENTRALMCP_PRODUCTS", "CENTRALMCP_PRODUCT_ACCESS"}
     assert env["CENTRALMCP_PRODUCTS"] == "clearpass"
     assert env["CENTRALMCP_PRODUCT_ACCESS"] == "read-only"
+
+
+def test_with_products_catalog_uses_all_products_without_tokens(monkeypatch):
+    calls: list[tuple[list[str], str, dict[str, str] | None]] = []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "setup_wizard.py",
+            "--yes",
+            "--skip-install",
+            "--skip-credentials",
+            "--skip-stdio",
+            "--skip-http",
+            "--skip-doctor",
+            "--with-products",
+            "--product-access",
+            "read-only",
+        ],
+    )
+    monkeypatch.setattr(
+        setup_wizard,
+        "_write_env_file",
+        lambda *args, **kwargs: setup_wizard.Step(".env", "OK", "captured"),
+    )
+
+    def fake_run(
+        command: list[str],
+        label: str,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> setup_wizard.Step:
+        calls.append((command, label, env))
+        return setup_wizard.Step(label, "OK", "captured")
+
+    monkeypatch.setattr(setup_wizard, "_run", fake_run)
+
+    assert setup_wizard.main() == 0
+
+    catalog_calls = [call for call in calls if call[1] == "tool catalog"]
+    assert len(catalog_calls) == 1
+    command, _, env = catalog_calls[0]
+    products = ",".join(setup_wizard.PRODUCT_ENV)
+    assert command[-2:] == ["--products", products]
+    assert env == {
+        "CENTRALMCP_PRODUCTS": products,
+        "CENTRALMCP_PRODUCT_ACCESS": "read-only",
+    }
