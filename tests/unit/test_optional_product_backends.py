@@ -1592,6 +1592,173 @@ def test_aos8_list_ssid_profiles_uses_config_object(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    ("tool_func", "expected_path", "payload", "output_key", "expected_item"),
+    [
+        (
+            aos8.aos8_list_virtual_aps,
+            "/v1/configuration/object/virtual_ap",
+            {
+                "virtual_ap": [
+                    {
+                        "profile-name": "Corp-VAP",
+                        "ssid-profile": "Corp",
+                        "aaa-profile": "dot1x",
+                        "vlan": 20,
+                        "forward-mode": "tunnel",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "profile-name": "Guest-VAP",
+                        "ssid-profile": "Guest",
+                        "aaa-profile": "guest",
+                        "vlan": 30,
+                        "forward-mode": "bridge",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "virtual_aps",
+            {
+                "profile-name": "Corp-VAP",
+                "ssid-profile": "Corp",
+                "aaa-profile": "dot1x",
+                "vlan": 20,
+                "forward-mode": "tunnel",
+            },
+        ),
+        (
+            aos8.aos8_list_user_roles,
+            "/v1/configuration/object/role",
+            {
+                "role": [
+                    {
+                        "role": "employee",
+                        "acl": "allowall",
+                        "vlan": 20,
+                        "captive-portal-profile": "none",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "role": "guest",
+                        "acl": "guest-logon",
+                        "vlan": 30,
+                        "captive-portal-profile": "guest",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "user_roles",
+            {
+                "role": "employee",
+                "acl": "allowall",
+                "vlan": 20,
+                "captive-portal-profile": "none",
+            },
+        ),
+    ],
+)
+def test_aos8_wlan_object_reads_compact(monkeypatch, tool_func, expected_path, payload, output_key, expected_item):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"items":[]}'
+
+        def json(self):
+            return {
+                "_global_result": {"status": "0"},
+                "_meta": {"items": []},
+                **payload,
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(tool_func(config_path="/md/branch1", limit=1))
+
+    assert called["url"] == f"https://mm.example.com{expected_path}"
+    assert called["params"] == {"config_path": "/md/branch1"}
+    assert out["config_path"] == "/md/branch1"
+    list_key = next(key for key in out[output_key] if key != "_pagination")
+    assert out[output_key][list_key] == [expected_item]
+    assert out[output_key]["_pagination"]["truncated"] is True
+
+
+def test_aos8_wlan_object_reads_unwrap_data_envelope(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"_data":{"role":[]}}'
+
+        def json(self):
+            return {
+                "_global_result": {"status": "0"},
+                "_meta": {"items": []},
+                "_data": {
+                    "role": [
+                        {
+                            "role": "employee",
+                            "acl": "allowall",
+                            "vlan": 20,
+                            "Raw": "omitted",
+                        },
+                        {
+                            "role": "guest",
+                            "acl": "guest-logon",
+                            "vlan": 30,
+                            "Raw": "omitted",
+                        },
+                    ]
+                },
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(aos8.aos8_list_user_roles(config_path="/md/branch1", limit=1))
+
+    assert called["url"] == "https://mm.example.com/v1/configuration/object/role"
+    assert called["params"] == {"config_path": "/md/branch1"}
+    assert out["user_roles"]["role"] == [
+        {"role": "employee", "acl": "allowall", "vlan": 20}
+    ]
+    assert out["user_roles"]["_pagination"]["truncated"] is True
+
+
 def test_edgeconnect_get_rejects_unknown_path(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")

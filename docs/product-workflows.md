@@ -92,6 +92,8 @@ Promote a generic GET pattern to a typed tool when it is:
 | Radio summary | `aos8_get_radio_summary` | Bounded `show ap radio-summary` read scoped by `config_path` |
 | AP-group inventory | `aos8_list_ap_groups` | Configuration-object read scoped by `config_path` |
 | SSID profile summary | `aos8_list_ssid_profiles` | Configuration-object read scoped by `config_path` |
+| Virtual AP profiles | `aos8_list_virtual_aps` | Configuration-object read scoped by `config_path` |
+| User roles | `aos8_list_user_roles` | Configuration-object read scoped by `config_path` |
 | Generic lab write | `aos8_write` | Guarded POST/PUT/PATCH/DELETE to `/v1/*`; dry-run default |
 
 ## EdgeConnect implemented starters

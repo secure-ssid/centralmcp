@@ -211,6 +211,30 @@ _VERSION_FIELDS = (
     "Hostname",
     "hostname",
 )
+_USER_ROLE_FIELDS = (
+    "role",
+    "name",
+    "profile-name",
+    "acl",
+    "access-list",
+    "vlan",
+    "captive-portal-profile",
+    "bw-contract",
+    "status",
+)
+_VIRTUAL_AP_FIELDS = (
+    "profile-name",
+    "name",
+    "ssid-profile",
+    "ssid_prof",
+    "aaa-profile",
+    "aaa_prof",
+    "vlan",
+    "forward-mode",
+    "forward_mode",
+    "opmode",
+    "status",
+)
 
 
 def _aos8_config() -> tuple[str | None, str | None]:
@@ -224,7 +248,11 @@ def _aos8_config() -> tuple[str | None, str | None]:
 def _strip_aos8_envelope(data: Any) -> Any:
     if not isinstance(data, dict):
         return data
-    return {key: value for key, value in data.items() if key not in {"_meta", "_global_result"}}
+    out = {key: value for key, value in data.items() if key not in {"_meta", "_global_result"}}
+    payload = out.get("_data")
+    if len(out) == 1 and isinstance(payload, (dict, list)):
+        return payload
+    return out
 
 
 def _compact_aos8_data(data: Any, *, limit: int, offset: int = 0) -> Any:
@@ -241,7 +269,19 @@ def _compact_record(item: Any, fields: tuple[str, ...]) -> Any:
     return compacted or item
 
 
-def _compact_primary_list(data: Any, fields: tuple[str, ...]) -> Any:
+def _compact_primary_list(
+    data: Any,
+    fields: tuple[str, ...],
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+) -> Any:
+    data = _strip_aos8_envelope(data)
+    if limit is not None and (
+        isinstance(data, list)
+        or (isinstance(data, dict) and "_pagination" not in data)
+    ):
+        data = bound_collection_response(data, limit=limit, offset=offset)
     if isinstance(data, list):
         return [_compact_record(item, fields) for item in data]
     if not isinstance(data, dict):
@@ -341,7 +381,7 @@ async def aos8_list_aps(
         offset=offset,
     )
     if "data" in out:
-        out["aps"] = _compact_primary_list(out.pop("data"), _AP_FIELDS)
+        out["aps"] = _compact_primary_list(out.pop("data"), _AP_FIELDS, limit=limit, offset=offset)
         out["config_path"] = config_path
     return out
 
@@ -360,7 +400,7 @@ async def aos8_list_active_aps(
         offset=offset,
     )
     if "data" in out:
-        out["active_aps"] = _compact_primary_list(out.pop("data"), _AP_FIELDS)
+        out["active_aps"] = _compact_primary_list(out.pop("data"), _AP_FIELDS, limit=limit, offset=offset)
         out["config_path"] = config_path
     return out
 
@@ -370,7 +410,12 @@ async def aos8_list_controllers(limit: int = 50, offset: int = 0) -> dict[str, A
     """List AOS8 Mobility Conductor controllers from `show switches`."""
     out = await aos8_show_command("show switches", limit=limit, offset=offset)
     if "data" in out:
-        out["controllers"] = _compact_primary_list(out.pop("data"), _CONTROLLER_FIELDS)
+        out["controllers"] = _compact_primary_list(
+            out.pop("data"),
+            _CONTROLLER_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
     return out
 
 
@@ -388,7 +433,12 @@ async def aos8_list_clients(
         offset=offset,
     )
     if "data" in out:
-        out["clients"] = _compact_primary_list(out.pop("data"), _CLIENT_FIELDS)
+        out["clients"] = _compact_primary_list(
+            out.pop("data"),
+            _CLIENT_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
         out["config_path"] = config_path
     return out
 
@@ -419,7 +469,7 @@ async def aos8_find_client(
         offset=offset,
     )
     if "data" in out:
-        out["client"] = _compact_primary_list(out.pop("data"), _CLIENT_FIELDS)
+        out["client"] = _compact_primary_list(out.pop("data"), _CLIENT_FIELDS, limit=limit, offset=offset)
         out["config_path"] = config_path
     return out
 
@@ -442,7 +492,12 @@ async def aos8_get_client_detail(
         offset=offset,
     )
     if "data" in out:
-        out["client_detail"] = _compact_primary_list(out.pop("data"), _CLIENT_DETAIL_FIELDS)
+        out["client_detail"] = _compact_primary_list(
+            out.pop("data"),
+            _CLIENT_DETAIL_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
         out["config_path"] = config_path
     return out
 
@@ -463,7 +518,12 @@ async def aos8_get_client_history(
         offset=offset,
     )
     if "data" in out:
-        out["client_history"] = _compact_primary_list(out.pop("data"), _CLIENT_HISTORY_FIELDS)
+        out["client_history"] = _compact_primary_list(
+            out.pop("data"),
+            _CLIENT_HISTORY_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
     return out
 
 
@@ -472,7 +532,12 @@ async def aos8_get_version(limit: int = 50, offset: int = 0) -> dict[str, Any]:
     """Get AOS8 Mobility Conductor software version from `show version`."""
     out = await aos8_show_command("show version", limit=limit, offset=offset)
     if "data" in out:
-        out["version"] = _compact_primary_list(out.pop("data"), _VERSION_FIELDS)
+        out["version"] = _compact_primary_list(
+            out.pop("data"),
+            _VERSION_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
     return out
 
 
@@ -481,7 +546,12 @@ async def aos8_list_licenses(limit: int = 50, offset: int = 0) -> dict[str, Any]
     """List AOS8 Mobility Conductor licenses from `show license`."""
     out = await aos8_show_command("show license", limit=limit, offset=offset)
     if "data" in out:
-        out["licenses"] = _compact_primary_list(out.pop("data"), _LICENSE_FIELDS)
+        out["licenses"] = _compact_primary_list(
+            out.pop("data"),
+            _LICENSE_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
     return out
 
 
@@ -499,7 +569,7 @@ async def aos8_list_bss(
         offset=offset,
     )
     if "data" in out:
-        out["bss"] = _compact_primary_list(out.pop("data"), _BSS_FIELDS)
+        out["bss"] = _compact_primary_list(out.pop("data"), _BSS_FIELDS, limit=limit, offset=offset)
         out["config_path"] = config_path
     return out
 
@@ -518,7 +588,12 @@ async def aos8_get_radio_summary(
         offset=offset,
     )
     if "data" in out:
-        out["radio_summary"] = _compact_primary_list(out.pop("data"), _RADIO_FIELDS)
+        out["radio_summary"] = _compact_primary_list(
+            out.pop("data"),
+            _RADIO_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
         out["config_path"] = config_path
     return out
 
@@ -557,6 +632,54 @@ async def aos8_list_ssid_profiles(
     )
     if "data" in out:
         out["ssid_profiles"] = _compact_aos8_data(out.pop("data"), limit=limit, offset=offset)
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_list_virtual_aps(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List virtual AP profile objects at an AOS8 hierarchy node."""
+    out = await aos8_get(
+        "/v1/configuration/object/virtual_ap",
+        {"config_path": config_path},
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["virtual_aps"] = _compact_primary_list(
+            out.pop("data"),
+            _VIRTUAL_AP_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_list_user_roles(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List user-role configuration objects at an AOS8 hierarchy node."""
+    out = await aos8_get(
+        "/v1/configuration/object/role",
+        {"config_path": config_path},
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["user_roles"] = _compact_primary_list(
+            out.pop("data"),
+            _USER_ROLE_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
         out["config_path"] = config_path
     return out
 
