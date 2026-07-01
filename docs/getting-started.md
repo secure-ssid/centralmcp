@@ -55,8 +55,9 @@ For VS Code, copy `.vscode/mcp.json.example` to `.vscode/mcp.json`.
 For Claude launch profiles, use `.claude/launch.json`; the first profile is the
 same minimal `aruba-tool-router` setup and the remaining profiles are direct
 debug servers.
-For clients that connect to an already-running HTTP MCP server, use
-`.mcp.http.json.example` as the starting point.
+For clients that connect to an already-running HTTP MCP server, copy
+`.mcp.http.json.example` to `.mcp.http.json` and edit the URL if you use a
+different host or port. The copied file is local-only and git-ignored.
 
 Recommended default:
 

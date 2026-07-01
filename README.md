@@ -61,7 +61,8 @@ Edit:
 - `config/credentials.yaml` with your Central / GLP OAuth credentials.
 - `.mcp.json` and replace `/path/to/centralmcp` with your local clone path.
 - `.mcp.http.json.example` if your MCP client connects to an already-running
-  streamable HTTP server instead of launching stdio.
+  streamable HTTP server instead of launching stdio; copy it to the git-ignored
+  `.mcp.http.json` for local edits.
 - `.claude/launch.json` if you use Claude launch profiles; choose the minimal
   `aruba-tool-router` profile for daily use.
 

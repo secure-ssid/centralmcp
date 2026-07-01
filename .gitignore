@@ -9,6 +9,7 @@ config/credentials.yaml
 # Local MCP client configs (often include absolute paths/secrets)
 # Keep shared settings in .mcp.json.example and editor-specific *.example files only.
 .mcp.json
+.mcp.http.json
 .claude/mcp.json
 .vscode/mcp.json
 
