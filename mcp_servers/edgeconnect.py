@@ -315,6 +315,34 @@ _VRF_SEGMENT_FIELDS = (
     "state",
     "status",
 )
+_ZONE_FIELDS = (
+    "id",
+    "zoneId",
+    "zoneIndex",
+    "name",
+    "zoneName",
+    "description",
+    "vrfId",
+    "vrfName",
+    "segmentId",
+    "segmentName",
+    "active",
+    "enabled",
+    "enable",
+    "state",
+    "status",
+)
+_ZONE_STATUS_FIELDS = (
+    "enable",
+    "enabled",
+    "state",
+    "status",
+)
+_NEXT_ID_FIELDS = (
+    "nextId",
+    "next_id",
+    "id",
+)
 
 
 def _edgeconnect_config() -> tuple[str | None, str | None, str]:
@@ -779,6 +807,117 @@ def _compact_route_labels(data: Any, *, limit: int, offset: int) -> Any:
     )
 
 
+def _normalize_zone_records(data: Any) -> list[Any] | None:
+    records = _collection_records(data, ("zones", "zoneList", "zoneNames"))
+    if records is not None:
+        return records
+    if not isinstance(data, dict):
+        return None
+
+    for key in ("zones", "data"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            records = _normalize_zone_records(nested)
+            if records is not None:
+                return records
+
+    if _looks_like_record(data, _ZONE_FIELDS):
+        return [data]
+
+    records = []
+    for key, value in data.items():
+        zone_id = _int_or_none(key)
+        if isinstance(value, dict):
+            if zone_id is None and not _looks_like_record(value, _ZONE_FIELDS):
+                continue
+            record = dict(value)
+            if zone_id is not None and not any(field in record for field in ("id", "zoneId")):
+                record["id"] = zone_id
+            records.append(record)
+        elif zone_id is not None and isinstance(value, (str, int, float, bool)):
+            records.append({"id": zone_id, "name": value})
+    return records or None
+
+
+def _compact_zones(data: Any, *, limit: int, offset: int) -> Any:
+    records = _normalize_zone_records(data)
+    if records is None:
+        return _compact_collection(
+            data,
+            _ZONE_FIELDS,
+            ("zones", "zoneList", "zoneNames"),
+        )
+
+    compacted = [_compact_record(record, _ZONE_FIELDS) for record in records]
+    return bound_collection_response(
+        {"zones": compacted},
+        limit=limit,
+        offset=offset,
+        list_key="zones",
+    )
+
+
+def _compact_zone_status(data: Any) -> Any:
+    if isinstance(data, bool):
+        return {"enable": data}
+    compacted = _compact_record(data, _ZONE_STATUS_FIELDS)
+    return compacted or data
+
+
+def _compact_next_id(data: Any) -> Any:
+    if isinstance(data, int):
+        return {"nextId": data}
+    compacted = _compact_record(data, _NEXT_ID_FIELDS)
+    return compacted or data
+
+
+def _normalize_vrf_zone_map_records(data: Any) -> list[Any] | None:
+    records = _collection_records(data, ("zones", "items"))
+    if records is not None:
+        return records
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return None
+
+    records = []
+    for vrf_key, zones in data.items():
+        if not isinstance(zones, dict):
+            continue
+        vrf_id = _int_or_none(vrf_key)
+        for zone_index_key, zone in zones.items():
+            if not isinstance(zone, dict):
+                continue
+            if _int_or_none(zone.get("id")) == 255:
+                continue
+            record = dict(zone)
+            zone_index = _int_or_none(zone_index_key)
+            if vrf_id is not None and "vrfId" not in record:
+                record["vrfId"] = vrf_id
+            if zone_index is not None and "zoneIndex" not in record:
+                record["zoneIndex"] = zone_index
+            records.append(record)
+    return records or None
+
+
+def _compact_vrf_zones(data: Any, *, limit: int, offset: int) -> Any:
+    records = _normalize_vrf_zone_map_records(data)
+    if records is None:
+        return _compact_collection(
+            data,
+            _ZONE_FIELDS,
+            ("zones", "items"),
+        )
+
+    compacted = [_compact_record(record, _ZONE_FIELDS) for record in records]
+    return bound_collection_response(
+        {"zones": compacted},
+        limit=limit,
+        offset=offset,
+        list_key="zones",
+    )
+
+
 @mcp.tool(annotations=READ_ONLY)
 def edgeconnect_status() -> dict[str, Any]:
     """Report whether EdgeConnect backend is configured."""
@@ -1086,6 +1225,165 @@ async def edgeconnect_set_route_labels(
         "POST",
         "/gms/rest/routeLabels",
         body=body,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_zones(
+    all_vrf_zones: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List EdgeConnect firewall zones with compact fields."""
+    out = await _edgeconnect_get(
+        "/gms/rest/zones",
+        {"allVRFZones": all_vrf_zones},
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["zones"] = _compact_zones(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+        )
+        out["all_vrf_zones"] = all_vrf_zones
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_zone_firewall_status() -> dict[str, Any]:
+    """Get EdgeConnect End-to-End Zone-Based Firewall status."""
+    out = await _edgeconnect_get(
+        "/gms/rest/zones/eeEnable",
+        limit=1,
+        offset=0,
+        paginate=False,
+    )
+    if "data" in out:
+        out["zone_firewall_status"] = _compact_zone_status(out.pop("data"))
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_next_zone_id() -> dict[str, Any]:
+    """Get the next available EdgeConnect firewall-zone ID."""
+    out = await _edgeconnect_get(
+        "/gms/rest/zones/nextId",
+        limit=1,
+        offset=0,
+        paginate=False,
+    )
+    if "data" in out:
+        out["next_zone_id"] = _compact_next_id(out.pop("data"))
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_vrf_segment_zones(
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List EdgeConnect firewall zones across VRF segments with compact fields."""
+    out = await _edgeconnect_get(
+        "/gms/rest/zones/vrfSegmentZonesMap",
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["vrf_segment_zones"] = _compact_vrf_zones(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+        )
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_vrf_zone_map(
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List EdgeConnect VRF-to-firewall-zone mappings with compact fields."""
+    out = await _edgeconnect_get(
+        "/gms/rest/zones/vrfZonesMap",
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["vrf_zone_map"] = _compact_vrf_zones(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+        )
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_zones(
+    body: dict[str, Any],
+    delete_dependencies: bool = False,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Replace EdgeConnect firewall zones with write guards.
+
+    The upstream endpoint treats `body` as the complete zone map; omitted zones
+    are deleted by Orchestrator.
+    """
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_zones")
+
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/zones",
+        params={"deleteDependencies": delete_dependencies},
+        body=body,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_zone_firewall_status(
+    enabled: bool,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Enable or disable EdgeConnect End-to-End Zone-Based Firewall with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_zone_firewall_status")
+
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/zones/eeEnable",
+        body={"enable": enabled},
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_next_zone_id(
+    next_id: int,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Set the next available EdgeConnect firewall-zone ID with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_next_zone_id")
+    if next_id < 1:
+        return {"error": "next_id must be greater than 0."}
+
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/zones/nextId",
+        body={"nextId": next_id},
         dry_run=dry_run,
         confirm=confirm,
     )

@@ -16,6 +16,7 @@ keywords = [
     "arubaos8",
     "clearpass",
     "edgeconnect",
+    "edgeconnect-zones",
     "fastmcp",
     "greenlake",
     "hpe-aruba-networking",
@@ -27,6 +28,7 @@ keywords = [
     "network-automation",
     "openapi",
     "rag",
+    "zone-based-firewall",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

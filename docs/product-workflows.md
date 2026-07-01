@@ -129,6 +129,10 @@ Promote a generic GET pattern to a typed tool when it is:
 | Topology link status | `edgeconnect_get_topology_link_info` | Sparse topology link status from `/gms/rest/gms/topologyConfig/linkInfo/v2`, scoped by overlay ID |
 | Route maps | `edgeconnect_get_route_maps` | Compact route policy settings from `/gms/rest/routeMaps`, scoped by appliance `nePk` |
 | Route labels | `edgeconnect_list_route_labels` / `edgeconnect_set_route_labels` | Compact route-label read plus guarded lab write to `/gms/rest/routeLabels` |
+| Firewall zones | `edgeconnect_list_zones` / `edgeconnect_set_zones` | Compact firewall-zone read plus guarded complete-map lab write to `/gms/rest/zones` |
+| Zone-based firewall | `edgeconnect_get_zone_firewall_status` / `edgeconnect_set_zone_firewall_status` | Read and guarded lab write for End-to-End Zone-Based Firewall status at `/gms/rest/zones/eeEnable` |
+| Zone ID allocation | `edgeconnect_get_next_zone_id` / `edgeconnect_set_next_zone_id` | Read and guarded lab write for next firewall-zone ID at `/gms/rest/zones/nextId` |
+| VRF zone maps | `edgeconnect_list_vrf_segment_zones` / `edgeconnect_list_vrf_zone_map` | Compact VRF-to-zone mappings from `/gms/rest/zones/vrfSegmentZonesMap` and `/gms/rest/zones/vrfZonesMap` |
 | Tunnel health | `edgeconnect_list_tunnels` | Physical tunnel status from `/gms/rest/tunnels2/physical`, with optional filters |
 | Tunnel metadata | `edgeconnect_get_tunnel_metadata` | Compact tunnel count metadata from `/gms/rest/tunnels2?metaData=true` |
 | VRF/routing segments | `edgeconnect_list_vrf_segments` | Compact routing-segment inventory from `/gms/rest/vrf/config/segments`, with optional segment ID filter |

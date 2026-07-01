@@ -92,8 +92,8 @@ surface:
 - typed ClearPass troubleshooting lookups
 - typed Mist site/client/WLAN/alarm lookups
 - typed Apstra blueprint/anomaly, AOS8 show/config-object diagnostics and
-  guarded WLAN/VLAN lab writes, and EdgeConnect appliance inventory/system/alarm
-  lookups
+  guarded WLAN/VLAN lab writes, and EdgeConnect appliance, route, tunnel, VRF,
+  and firewall-zone workflows
 
 Generic GET responses are paginated with `limit` and `offset` when the response
 contains a list. This keeps token cost low while leaving room to add

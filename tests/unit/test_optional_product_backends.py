@@ -3192,6 +3192,111 @@ def test_edgeconnect_list_route_labels_compacts_map(monkeypatch):
     assert out["route_labels"]["_pagination"]["truncated"] is True
 
 
+def test_edgeconnect_list_zones_compacts_map(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/zones"
+        assert params == {"allVRFZones": True}
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "1": {"name": "Voice", "raw": "omitted"},
+                "2": {"name": "Data", "raw": "omitted"},
+                "metadata": {"raw": "not a zone"},
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_zones(all_vrf_zones=True, limit=1))
+
+    assert out["all_vrf_zones"] is True
+    assert out["zones"]["zones"] == [{"id": 1, "name": "Voice"}]
+    assert out["zones"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_get_zone_firewall_status_compacts(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/zones/eeEnable"
+        assert params is None
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {"enable": True, "raw": "omitted"},
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_zone_firewall_status())
+
+    assert out["zone_firewall_status"] == {"enable": True}
+
+
+def test_edgeconnect_get_next_zone_id_compacts(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/zones/nextId"
+        assert params is None
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {"nextId": 10, "raw": "omitted"},
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_next_zone_id())
+
+    assert out["next_zone_id"] == {"nextId": 10}
+
+
+def test_edgeconnect_list_vrf_segment_zones_compacts(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/zones/vrfSegmentZonesMap"
+        assert params is None
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": [
+                {"zoneId": 0, "zoneName": "Default", "vrfId": 0, "vrfName": "Default"},
+                {"zoneId": 101, "zoneName": "Voice", "vrfId": 1, "vrfName": "Corporate"},
+            ],
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_vrf_segment_zones(limit=1))
+
+    assert out["vrf_segment_zones"]["zones"] == [
+        {"zoneId": 0, "zoneName": "Default", "vrfId": 0, "vrfName": "Default"}
+    ]
+    assert out["vrf_segment_zones"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_list_vrf_zone_map_compacts_nested_map(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/zones/vrfZonesMap"
+        assert params is None
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "1": {
+                    "0": {"id": 0, "name": "Default", "raw": "omitted"},
+                    "1": {"id": 101, "name": "Voice", "raw": "omitted"},
+                }
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_vrf_zone_map(limit=1))
+
+    assert out["vrf_zone_map"]["zones"] == [
+        {"id": 0, "zoneIndex": 0, "name": "Default", "vrfId": 1}
+    ]
+    assert out["vrf_zone_map"]["_pagination"]["truncated"] is True
+
+
 def test_edgeconnect_empty_topology_and_route_maps_return_paginated_items(monkeypatch):
     responses = [
         {"nePks": ["1.NE"], "linkInfo": [[], [], []]},
@@ -4511,3 +4616,146 @@ def test_edgeconnect_set_route_labels_executes_with_confirm(monkeypatch):
     assert called["method"] == "POST"
     assert called["url"] == "https://orch.example.com/gms/rest/routeLabels"
     assert called["json"] == {"routeLabels": [{"id": 100, "name": "Corp", "active": True}]}
+
+
+def test_edgeconnect_set_zones_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_set_zones(
+            {"1": {"name": "Voice"}, "2": {"name": "Data"}},
+            delete_dependencies=False,
+        )
+    )
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/zones"
+    assert out["params"] == {"deleteDependencies": False}
+    assert out["json"] == {"1": {"name": "Voice"}, "2": {"name": "Data"}}
+    assert "execute_hint" in out
+
+
+def test_edgeconnect_set_zone_firewall_status_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    out = asyncio.run(edgeconnect.edgeconnect_set_zone_firewall_status(enabled=True))
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/zones/eeEnable"
+    assert out["json"] == {"enable": True}
+    assert "execute_hint" in out
+
+
+def test_edgeconnect_set_next_zone_id_previews_and_validates(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    out = asyncio.run(edgeconnect.edgeconnect_set_next_zone_id(next_id=10))
+    invalid = asyncio.run(edgeconnect.edgeconnect_set_next_zone_id(next_id=0))
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/zones/nextId"
+    assert out["json"] == {"nextId": 10}
+    assert "execute_hint" in out
+    assert invalid == {"error": "next_id must be greater than 0."}
+
+
+@pytest.mark.parametrize(
+    "tool_call",
+    [
+        lambda: edgeconnect.edgeconnect_set_zones({"1": {"name": "Voice"}}),
+        lambda: edgeconnect.edgeconnect_set_zone_firewall_status(enabled=True),
+        lambda: edgeconnect.edgeconnect_set_next_zone_id(next_id=10),
+    ],
+)
+def test_edgeconnect_zone_writes_block_when_read_only(monkeypatch, tool_call):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(tool_call())
+
+    assert out["status"] == "blocked"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+@pytest.mark.parametrize(
+    ("tool_call", "expected_url", "expected_params", "expected_body"),
+    [
+        (
+            lambda: edgeconnect.edgeconnect_set_zones(
+                {"1": {"name": "Voice"}},
+                delete_dependencies=True,
+                dry_run=False,
+                confirm=True,
+            ),
+            "https://orch.example.com/gms/rest/zones",
+            {"deleteDependencies": True},
+            {"1": {"name": "Voice"}},
+        ),
+        (
+            lambda: edgeconnect.edgeconnect_set_zone_firewall_status(
+                enabled=False,
+                dry_run=False,
+                confirm=True,
+            ),
+            "https://orch.example.com/gms/rest/zones/eeEnable",
+            {},
+            {"enable": False},
+        ),
+        (
+            lambda: edgeconnect.edgeconnect_set_next_zone_id(
+                next_id=10,
+                dry_run=False,
+                confirm=True,
+            ),
+            "https://orch.example.com/gms/rest/zones/nextId",
+            {},
+            {"nextId": 10},
+        ),
+    ],
+)
+def test_edgeconnect_zone_writes_execute_with_confirm(
+    monkeypatch,
+    tool_call,
+    expected_url,
+    expected_params,
+    expected_body,
+):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(tool_call())
+
+    assert out["status_code"] == 200
+    assert called["method"] == "POST"
+    assert called["url"] == expected_url
+    assert called["params"] == expected_params
+    assert called["json"] == expected_body
