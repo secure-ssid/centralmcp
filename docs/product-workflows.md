@@ -85,6 +85,9 @@ Promote a generic GET pattern to a typed tool when it is:
 | AP inventory | `aos8_list_aps` | Bounded `show ap database` read scoped by `config_path` |
 | Active APs | `aos8_list_active_aps` | Bounded `show ap active` read scoped by `config_path` |
 | Client visibility | `aos8_list_clients` | Bounded `show user-table` read scoped by `config_path` |
+| Client lookup | `aos8_find_client` | Bounded `show user-table` lookup by exactly one MAC, IP, or username |
+| Client detail | `aos8_get_client_detail` | Bounded verbose `show user-table verbose mac` read scoped by `config_path` |
+| Client association history | `aos8_get_client_history` | Bounded root-scope `show ap association history client-mac` read |
 | BSS table | `aos8_list_bss` | Bounded `show ap bss-table` read scoped by `config_path` |
 | Radio summary | `aos8_get_radio_summary` | Bounded `show ap radio-summary` read scoped by `config_path` |
 | AP-group inventory | `aos8_list_ap_groups` | Configuration-object read scoped by `config_path` |

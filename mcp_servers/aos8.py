@@ -91,6 +91,52 @@ _CLIENT_FIELDS = (
     "Status",
     "status",
 )
+_CLIENT_DETAIL_FIELDS = (
+    "Name",
+    "name",
+    "User Name",
+    "username",
+    "MAC Address",
+    "mac",
+    "IP Address",
+    "ip_address",
+    "IPv6 Address",
+    "ipv6_address",
+    "AP Name",
+    "ap_name",
+    "SSID",
+    "ssid",
+    "Role",
+    "role",
+    "Mobility Role",
+    "mobility_role",
+    "VLAN",
+    "vlan",
+    "Authentication",
+    "authentication",
+    "Status",
+    "status",
+    "Uptime",
+    "uptime",
+)
+_CLIENT_HISTORY_FIELDS = (
+    "Time",
+    "time",
+    "Timestamp",
+    "timestamp",
+    "AP Name",
+    "ap_name",
+    "BSSID",
+    "bssid",
+    "SSID",
+    "ssid",
+    "Event",
+    "event",
+    "Reason",
+    "reason",
+    "Status",
+    "status",
+)
 _CONTROLLER_FIELDS = (
     "Name",
     "name",
@@ -344,6 +390,80 @@ async def aos8_list_clients(
     if "data" in out:
         out["clients"] = _compact_primary_list(out.pop("data"), _CLIENT_FIELDS)
         out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_find_client(
+    mac: str | None = None,
+    ip: str | None = None,
+    username: str | None = None,
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Find one AOS8 client by MAC, IP, or username from `show user-table`."""
+    selectors = {
+        "mac": (mac or "").strip(),
+        "ip": (ip or "").strip(),
+        "name": (username or "").strip(),
+    }
+    selected = [(key, value) for key, value in selectors.items() if value]
+    if len(selected) != 1:
+        return {"error": "Provide exactly one of mac, ip, or username."}
+    selector, value = selected[0]
+    out = await aos8_show_command(
+        f"show user-table {selector} {value}",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["client"] = _compact_primary_list(out.pop("data"), _CLIENT_FIELDS)
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_client_detail(
+    mac: str,
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get verbose AOS8 client detail from `show user-table verbose mac`."""
+    normalized_mac = mac.strip()
+    if not normalized_mac:
+        return {"error": "mac is required."}
+    out = await aos8_show_command(
+        f"show user-table verbose mac {normalized_mac}",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["client_detail"] = _compact_primary_list(out.pop("data"), _CLIENT_DETAIL_FIELDS)
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_client_history(
+    mac: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get AOS8 AP association history for a client MAC."""
+    normalized_mac = mac.strip()
+    if not normalized_mac:
+        return {"error": "mac is required."}
+    out = await aos8_show_command(
+        f"show ap association history client-mac {normalized_mac}",
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["client_history"] = _compact_primary_list(out.pop("data"), _CLIENT_HISTORY_FIELDS)
     return out
 
 

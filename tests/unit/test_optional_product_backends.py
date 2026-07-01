@@ -1370,6 +1370,185 @@ def test_aos8_list_clients_runs_show_user_table_and_compacts(monkeypatch):
     assert out["clients"]["_pagination"]["truncated"] is True
 
 
+def test_aos8_find_client_requires_exactly_one_selector(monkeypatch):
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+
+    missing = asyncio.run(aos8.aos8_find_client())
+    multiple = asyncio.run(aos8.aos8_find_client(mac="aa:bb", ip="192.0.2.50"))
+
+    assert missing == {"error": "Provide exactly one of mac, ip, or username."}
+    assert multiple == {"error": "Provide exactly one of mac, ip, or username."}
+
+
+@pytest.mark.parametrize(
+    ("tool_call", "expected_command", "output_key", "payload", "expected_item", "expect_path"),
+    [
+        (
+            lambda: aos8.aos8_find_client(mac="aa:bb:cc:dd:ee:01", config_path="/md/branch1", limit=1),
+            "show user-table mac aa:bb:cc:dd:ee:01",
+            "client",
+            {
+                "Users": [
+                    {
+                        "Name": "alice",
+                        "MAC Address": "aa:bb:cc:dd:ee:01",
+                        "IP Address": "192.0.2.50",
+                        "AP Name": "ap1",
+                        "SSID": "Corp",
+                        "Role": "employee",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Name": "other",
+                        "MAC Address": "aa:bb:cc:dd:ee:02",
+                        "IP Address": "192.0.2.51",
+                        "AP Name": "ap2",
+                        "SSID": "Guest",
+                        "Role": "guest",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            {
+                "Name": "alice",
+                "MAC Address": "aa:bb:cc:dd:ee:01",
+                "IP Address": "192.0.2.50",
+                "AP Name": "ap1",
+                "SSID": "Corp",
+                "Role": "employee",
+            },
+            True,
+        ),
+        (
+            lambda: aos8.aos8_get_client_detail(
+                mac="aa:bb:cc:dd:ee:01",
+                config_path="/md/branch1",
+                limit=1,
+            ),
+            "show user-table verbose mac aa:bb:cc:dd:ee:01",
+            "client_detail",
+            {
+                "Client Details": [
+                    {
+                        "Name": "alice",
+                        "MAC Address": "aa:bb:cc:dd:ee:01",
+                        "IP Address": "192.0.2.50",
+                        "Authentication": "802.1X",
+                        "Mobility Role": "employee",
+                        "Uptime": "1h",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Name": "other",
+                        "MAC Address": "aa:bb:cc:dd:ee:02",
+                        "IP Address": "192.0.2.51",
+                        "Authentication": "MAC",
+                        "Mobility Role": "guest",
+                        "Uptime": "2h",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            {
+                "Name": "alice",
+                "MAC Address": "aa:bb:cc:dd:ee:01",
+                "IP Address": "192.0.2.50",
+                "Authentication": "802.1X",
+                "Mobility Role": "employee",
+                "Uptime": "1h",
+            },
+            True,
+        ),
+        (
+            lambda: aos8.aos8_get_client_history(mac="aa:bb:cc:dd:ee:01", limit=1),
+            "show ap association history client-mac aa:bb:cc:dd:ee:01",
+            "client_history",
+            {
+                "History": [
+                    {
+                        "Time": "2026-07-01 01:00:00",
+                        "AP Name": "ap1",
+                        "BSSID": "aa:bb:cc:00:00:01",
+                        "Event": "Associated",
+                        "Reason": "Success",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Time": "2026-07-01 00:55:00",
+                        "AP Name": "ap2",
+                        "BSSID": "aa:bb:cc:00:00:02",
+                        "Event": "Roamed",
+                        "Reason": "RSSI",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            {
+                "Time": "2026-07-01 01:00:00",
+                "AP Name": "ap1",
+                "BSSID": "aa:bb:cc:00:00:01",
+                "Event": "Associated",
+                "Reason": "Success",
+            },
+            False,
+        ),
+    ],
+)
+def test_aos8_client_troubleshooting_tools_map_commands_and_compact(
+    monkeypatch,
+    tool_call,
+    expected_command,
+    output_key,
+    payload,
+    expected_item,
+    expect_path,
+):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"rows":[]}'
+
+        def json(self):
+            return {
+                "_global_result": {"status": "0"},
+                "_meta": {"rows": []},
+                **payload,
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(tool_call())
+
+    assert called["url"] == "https://mm.example.com/v1/configuration/showcommand"
+    expected_params = {"command": expected_command}
+    if expect_path:
+        expected_params["config_path"] = "/md/branch1"
+        assert out["config_path"] == "/md/branch1"
+    assert called["params"] == expected_params
+    list_key = next(key for key in out[output_key] if key != "_pagination")
+    assert out[output_key][list_key] == [expected_item]
+    assert out[output_key]["_pagination"]["truncated"] is True
+
+
 def test_aos8_list_ssid_profiles_uses_config_object(monkeypatch):
     called = {}
 
