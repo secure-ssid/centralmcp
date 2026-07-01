@@ -52,3 +52,10 @@ def test_validation_docs_describe_current_guard_coverage():
 
     for phrase in expected_phrases:
         assert phrase in combined_docs
+
+
+def test_current_rag_architecture_avoids_removed_qdrant_implementation_names():
+    architecture = (REPO_ROOT / "docs" / "architecture" / "RAG-ARCHITECTURE.md").read_text()
+
+    assert "qdrant_client" not in architecture
+    assert "qdrant-client" not in architecture

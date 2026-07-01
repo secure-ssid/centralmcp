@@ -64,7 +64,7 @@ These are correctness/quality fixes; most are inherited or simplified by the Lan
 
 ```
 pipeline/clients/
-  lance_client.py     # open table, hybrid search(query, k, source_filter) -> hits   (replaces redis_client/qdrant_client)
+  lance_client.py     # open table, hybrid search(query, k, source_filter) -> hits for the default embedded path
   embed_client.py     # fastembed wrapper: embed_document(list) / embed_query(str); model nomic-embed-text-v1.5
   specs_index.py      # build + query SQLite over OpenAPI specs: get_endpoint / get_schema / get_field / get_enum
 mcp_servers/
@@ -82,7 +82,7 @@ No `docker-compose.yml` requirement for the default path. `redis-stack` stays do
 
 This sequence is complete for the default local path. Redis remains optional; Qdrant is historical context only.
 
-1. Add deps: `lancedb`, `fastembed` (drop `qdrant-client`; keep `redis` only if shipping the interim server option).
+1. Add deps: `lancedb`, `fastembed`; keep `redis` only for the optional server backend.
 2. `embed_client.py` (fastembed, `nomic-embed-text-v1.5`, `embed_document`/`embed_query` with prefixes — R3).
 3. `lance_client.py`: create a hybrid table (vector + FTS on `text`), `search()` with `source` filter + reranker (R5).
 4. `specs_index.py`: parse `ingestion/sources/openapi_specs/*.json` → SQLite (`endpoints`, `schemas`, `fields` tables) with FTS; query helpers (R2 resolved).
