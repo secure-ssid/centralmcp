@@ -91,6 +91,8 @@ surface:
 - guarded `<product>_write` for lab POST/PUT/PATCH/DELETE calls
 - typed ClearPass troubleshooting lookups
 - typed Mist site/client/WLAN/alarm lookups
+- typed Apstra blueprint/anomaly, AOS8 show/config-object, and EdgeConnect
+  appliance inventory lookups
 
 Generic GET responses are paginated with `limit` and `offset` when the response
 contains a list. This keeps token cost low while leaving room to add

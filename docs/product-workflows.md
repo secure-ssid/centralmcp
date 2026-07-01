@@ -56,32 +56,38 @@ Promote a generic GET pattern to a typed tool when it is:
 | Unack site alarm | `mist_unack_alarm` | POST site alarm unacknowledgement |
 | Delete WLAN | `mist_delete_wlan` | Destructive site WLAN delete |
 
-## Apstra candidates
+## Apstra implemented starters
 
-| Workflow | Proposed tool | Notes |
+| Workflow | Tool | Notes |
 |---|---|---|
 | List blueprints | `apstra_list_blueprints` | IDs/names/state only |
 | Blueprint anomalies | `apstra_list_anomalies` | Read-only fabric health |
-| Device details | `apstra_get_device` | Compact system/fabric role/status |
 | Generic lab write | `apstra_write` | Guarded POST/PUT/PATCH/DELETE to `/api/*`; dry-run default |
 
-## ArubaOS 8 candidates
+## ArubaOS 8 implemented starters
 
-| Workflow | Proposed tool | Notes |
+| Workflow | Tool | Notes |
 |---|---|---|
-| Controller status | `aos8_get_controller_status` | Read-only summary |
-| AP inventory | `aos8_list_aps` | Bound by `limit` / `offset` |
-| WLAN summary | `aos8_list_wlans` | Compact profile/status output |
+| Show command | `aos8_show_command` | Only permits `show ...` commands via `/v1/configuration/showcommand` |
+| AP-group inventory | `aos8_list_ap_groups` | Configuration-object read scoped by `config_path` |
+| SSID profile summary | `aos8_list_ssid_profiles` | Configuration-object read scoped by `config_path` |
 | Generic lab write | `aos8_write` | Guarded POST/PUT/PATCH/DELETE to `/v1/*`; dry-run default |
 
-## EdgeConnect candidates
+## EdgeConnect implemented starters
 
-| Workflow | Proposed tool | Notes |
+| Workflow | Tool | Notes |
 |---|---|---|
 | Appliance inventory | `edgeconnect_list_appliances` | IDs/names/site/status only |
-| Tunnel health | `edgeconnect_list_tunnels` | Bound output and status filters |
-| Alarm summary | `edgeconnect_list_alarms` | Severity/time bounded |
 | Generic lab write | `edgeconnect_write` | Guarded POST/PUT/PATCH/DELETE to Orchestrator REST paths; dry-run default |
+
+## Remaining optional typed candidates
+
+| Product | Workflow | Proposed tool | Notes |
+|---|---|---|---|
+| Apstra | Device details | `apstra_get_device` | Compact system/fabric role/status |
+| ArubaOS 8 | AP inventory | `aos8_list_aps` | Bound AP inventory when a stable response shape is verified |
+| EdgeConnect | Tunnel health | `edgeconnect_list_tunnels` | Bound output and status filters |
+| EdgeConnect | Alarm summary | `edgeconnect_list_alarms` | Severity/time bounded |
 
 ## Design constraints
 

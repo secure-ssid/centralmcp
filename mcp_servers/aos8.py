@@ -41,6 +41,19 @@ def _aos8_config() -> tuple[str | None, str | None]:
     return (base_url or None, token or None)
 
 
+def _strip_aos8_envelope(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return data
+    return {key: value for key, value in data.items() if key not in {"_meta", "_global_result"}}
+
+
+def _compact_aos8_data(data: Any, *, limit: int, offset: int = 0) -> Any:
+    stripped = _strip_aos8_envelope(data)
+    if isinstance(stripped, dict) and "_pagination" in stripped:
+        return stripped
+    return bound_collection_response(stripped, limit=limit, offset=offset)
+
+
 @mcp.tool(annotations=READ_ONLY)
 def aos8_status() -> dict[str, Any]:
     """Report whether AOS8 backend is configured."""
@@ -71,6 +84,7 @@ async def aos8_get(
         path = safe_api_path(path, ("/v1/",))
     except ValueError as exc:
         return {"error": f"Invalid path. {exc}"}
+    path = quote(path, safe="/")
 
     try:
         base_url = validate_product_base_url(base_url, product="AOS8")
@@ -85,6 +99,65 @@ async def aos8_get(
         return {"status_code": resp.status_code, "data": payload, "url": url}
     except httpx.HTTPError as exc:
         return {"error": str(exc), "url": url}
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_show_command(
+    command: str,
+    config_path: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Run a read-only AOS8 `show ...` command through the showcommand API."""
+    normalized = command.strip()
+    if not normalized.lower().startswith("show "):
+        return {"error": f"Only 'show' commands are permitted. Received: {command!r}"}
+    params: dict[str, Any] = {"command": normalized}
+    if config_path:
+        params["config_path"] = config_path
+    out = await aos8_get("/v1/configuration/showcommand", params, limit=limit, offset=offset)
+    if "data" in out:
+        out["data"] = _compact_aos8_data(out["data"], limit=limit, offset=offset)
+        out["command"] = normalized
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_list_ap_groups(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List AP-group configuration objects at an AOS8 hierarchy node."""
+    out = await aos8_get(
+        "/v1/configuration/object/ap_group",
+        {"config_path": config_path},
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["ap_groups"] = _compact_aos8_data(out.pop("data"), limit=limit, offset=offset)
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_list_ssid_profiles(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List SSID profile configuration objects at an AOS8 hierarchy node."""
+    out = await aos8_get(
+        "/v1/configuration/object/ssid_prof",
+        {"config_path": config_path},
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["ssid_profiles"] = _compact_aos8_data(out.pop("data"), limit=limit, offset=offset)
+        out["config_path"] = config_path
+    return out
 
 
 @mcp.tool(annotations=DESTRUCTIVE)

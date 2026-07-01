@@ -32,6 +32,21 @@ from mcp_servers.shared import (
 mcp = FastMCP("edgeconnect-core")
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _EXECUTE_HINT = "Review the request, then call again with dry_run=False and confirm=True."
+_APPLIANCE_FIELDS = (
+    "id",
+    "nePk",
+    "hostName",
+    "hostname",
+    "name",
+    "site",
+    "model",
+    "serial",
+    "serialNumber",
+    "softwareVersion",
+    "ipAddress",
+    "state",
+    "status",
+)
 
 
 def _edgeconnect_config() -> tuple[str | None, str | None, str]:
@@ -41,6 +56,25 @@ def _edgeconnect_config() -> tuple[str | None, str | None, str]:
     token = os.getenv("EDGECONNECT_API_TOKEN", "").strip()
     header = os.getenv("EDGECONNECT_AUTH_HEADER", "Authorization").strip() or "Authorization"
     return (base_url or None, token or None, header)
+
+
+def _compact_record(item: Any, fields: tuple[str, ...]) -> Any:
+    if not isinstance(item, dict):
+        return item
+    return {key: item[key] for key in fields if key in item}
+
+
+def _compact_collection(data: Any, fields: tuple[str, ...]) -> Any:
+    if isinstance(data, list):
+        return [_compact_record(item, fields) for item in data]
+    if not isinstance(data, dict):
+        return data
+    out = dict(data)
+    for key in ("items", "results", "data"):
+        if isinstance(out.get(key), list):
+            out[key] = [_compact_record(item, fields) for item in out[key]]
+            break
+    return out
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -77,6 +111,7 @@ async def edgeconnect_get(
         path = safe_api_path(path, ("/gms/rest/", "/rest/json/"))
     except ValueError as exc:
         return {"error": f"Invalid path. {exc}"}
+    path = quote(path, safe="/")
 
     try:
         base_url = validate_product_base_url(base_url, product="EdgeConnect")
@@ -92,6 +127,15 @@ async def edgeconnect_get(
         return {"status_code": resp.status_code, "data": payload, "url": url}
     except httpx.HTTPError as exc:
         return {"error": str(exc), "url": url}
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_appliances(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List EdgeConnect Orchestrator appliances with compact inventory fields."""
+    out = await edgeconnect_get("/gms/rest/appliance", limit=limit, offset=offset)
+    if "data" in out:
+        out["appliances"] = _compact_collection(out.pop("data"), _APPLIANCE_FIELDS)
+    return out
 
 
 @mcp.tool(annotations=DESTRUCTIVE)

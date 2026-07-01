@@ -123,6 +123,19 @@ invoke_read_tool("mist_status", {})
 find_tool("Mist read-only GET")
 ```
 
+Typed optional read prompt:
+
+```text
+List the first 10 Apstra blueprints and show only their IDs, labels, and status.
+```
+
+Router flow:
+
+```text
+find_tool("Apstra list blueprints")
+invoke_read_tool("apstra_list_blueprints", {"limit": 10})
+```
+
 Lab write dry-run prompt:
 
 ```text

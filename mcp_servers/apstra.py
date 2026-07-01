@@ -31,6 +31,27 @@ from mcp_servers.shared import (
 mcp = FastMCP("apstra-core")
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _EXECUTE_HINT = "Review the request, then call again with dry_run=False and confirm=True."
+_BLUEPRINT_FIELDS = (
+    "id",
+    "label",
+    "name",
+    "status",
+    "state",
+    "role",
+    "version",
+    "design",
+    "reference_design",
+)
+_ANOMALY_FIELDS = (
+    "id",
+    "identity",
+    "type",
+    "severity",
+    "role",
+    "count",
+    "description",
+    "acknowledged",
+)
 
 
 def _apstra_config() -> tuple[str | None, str | None]:
@@ -39,6 +60,29 @@ def _apstra_config() -> tuple[str | None, str | None]:
     base_url = os.getenv("APSTRA_BASE_URL", "").strip().rstrip("/")
     token = os.getenv("APSTRA_API_TOKEN", "").strip()
     return (base_url or None, token or None)
+
+
+def _path_segment(value: str) -> str:
+    return quote(value, safe="")
+
+
+def _compact_record(item: Any, fields: tuple[str, ...]) -> Any:
+    if not isinstance(item, dict):
+        return item
+    return {key: item[key] for key in fields if key in item}
+
+
+def _compact_collection(data: Any, fields: tuple[str, ...]) -> Any:
+    if isinstance(data, list):
+        return [_compact_record(item, fields) for item in data]
+    if not isinstance(data, dict):
+        return data
+    out = dict(data)
+    for key in ("items", "results", "data"):
+        if isinstance(out.get(key), list):
+            out[key] = [_compact_record(item, fields) for item in out[key]]
+            break
+    return out
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -71,6 +115,7 @@ async def apstra_get(
         path = safe_api_path(path, ("/api/",))
     except ValueError as exc:
         return {"error": f"Invalid path. {exc}"}
+    path = quote(path, safe="/")
 
     try:
         base_url = validate_product_base_url(base_url, product="Apstra")
@@ -85,6 +130,30 @@ async def apstra_get(
         return {"status_code": resp.status_code, "data": payload, "url": url}
     except httpx.HTTPError as exc:
         return {"error": str(exc), "url": url}
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_list_blueprints(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List Apstra blueprints with compact ID/name/status fields."""
+    out = await apstra_get("/api/blueprints", limit=limit, offset=offset)
+    if "data" in out:
+        out["blueprints"] = _compact_collection(out.pop("data"), _BLUEPRINT_FIELDS)
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_list_anomalies(
+    blueprint_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List anomalies for one Apstra blueprint with compact health fields."""
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/anomalies"
+    out = await apstra_get(path, limit=limit, offset=offset)
+    if "data" in out:
+        out["anomalies"] = _compact_collection(out.pop("data"), _ANOMALY_FIELDS)
+        out["blueprint_id"] = blueprint_id
+    return out
 
 
 @mcp.tool(annotations=DESTRUCTIVE)

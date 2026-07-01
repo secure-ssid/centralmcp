@@ -146,6 +146,95 @@ def test_apstra_get_bounds_list_payloads(monkeypatch):
     }
 
 
+def test_apstra_list_blueprints_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '[{"id":"bp1"}]'
+
+        def json(self):
+            return [
+                {
+                    "id": "bp1",
+                    "label": "DC1",
+                    "status": "ready",
+                    "raw": "omitted",
+                }
+            ]
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_list_blueprints(limit=10))
+
+    assert called["url"] == "https://apstra.example.com/api/blueprints"
+    assert out["blueprints"]["items"] == [
+        {"id": "bp1", "label": "DC1", "status": "ready"}
+    ]
+
+
+def test_apstra_list_anomalies_quotes_blueprint_id_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"items":[{"id":"a1"}]}'
+
+        def json(self):
+            return {
+                "items": [
+                    {
+                        "id": "a1",
+                        "type": "bgp",
+                        "severity": "critical",
+                        "details": "omitted",
+                    }
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_list_anomalies("bp 1"))
+
+    assert called["url"] == "https://apstra.example.com/api/blueprints/bp%201/anomalies"
+    assert out["blueprint_id"] == "bp 1"
+    assert out["anomalies"]["items"] == [
+        {"id": "a1", "type": "bgp", "severity": "critical"}
+    ]
+
+
 def test_aos8_get_rejects_non_v1_path(monkeypatch):
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
@@ -205,6 +294,101 @@ def test_aos8_get_calls_httpx(monkeypatch):
     assert out["data"] == {"ok": True}
     assert called["url"] == "https://mm.example.com/v1/configuration/object"
     assert called["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_aos8_show_command_rejects_non_show(monkeypatch):
+    out = asyncio.run(aos8.aos8_show_command("write memory"))
+
+    assert "error" in out
+    assert "Only 'show' commands" in out["error"]
+
+
+def test_aos8_show_command_calls_showcommand_and_strips_envelope(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"rows":[{"name":"mc1"}]}'
+
+        def json(self):
+            return {
+                "_global_result": {"status": "0"},
+                "_meta": {"rows": ["name"]},
+                "rows": [{"name": "mc1"}, {"name": "mc2"}, {"name": "mc3"}],
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        aos8.aos8_show_command(" show switchinfo", config_path="/md/branch1", limit=2, offset=1)
+    )
+
+    assert called["url"] == "https://mm.example.com/v1/configuration/showcommand"
+    assert called["params"] == {"command": "show switchinfo", "config_path": "/md/branch1"}
+    assert out["command"] == "show switchinfo"
+    assert "_global_result" not in out["data"]
+    assert "_meta" not in out["data"]
+    assert out["data"]["rows"] == [{"name": "mc2"}, {"name": "mc3"}]
+
+
+def test_aos8_list_ssid_profiles_uses_config_object(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"ssid_prof":[{"profile-name":"Corp"}]}'
+
+        def json(self):
+            return {
+                "_global_result": {"status": "0"},
+                "_meta": {"ssid_prof": ["profile-name"]},
+                "ssid_prof": [{"profile-name": "Corp", "opmode": "wpa2-aes"}],
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(aos8.aos8_list_ssid_profiles(config_path="/md/branch1"))
+
+    assert called["url"] == "https://mm.example.com/v1/configuration/object/ssid_prof"
+    assert called["params"] == {"config_path": "/md/branch1"}
+    assert out["config_path"] == "/md/branch1"
+    assert out["ssid_profiles"]["ssid_prof"] == [
+        {"profile-name": "Corp", "opmode": "wpa2-aes"}
+    ]
 
 
 def test_edgeconnect_get_rejects_unknown_path(monkeypatch):
@@ -267,6 +451,50 @@ def test_edgeconnect_get_calls_httpx_with_custom_auth_header(monkeypatch):
     assert out["data"] == {"ok": True}
     assert called["url"] == "https://orch.example.com/gms/rest/appliance"
     assert called["headers"]["X-Auth-Token"] == "secret"
+
+
+def test_edgeconnect_list_appliances_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '[{"nePk":"1"}]'
+
+        def json(self):
+            return [
+                {
+                    "nePk": "1",
+                    "hostName": "ec-1",
+                    "model": "EC-V",
+                    "status": "normal",
+                    "raw": "omitted",
+                }
+            ]
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_appliances(limit=10))
+
+    assert called["url"] == "https://orch.example.com/gms/rest/appliance"
+    assert out["appliances"]["items"] == [
+        {"nePk": "1", "hostName": "ec-1", "model": "EC-V", "status": "normal"}
+    ]
 
 
 @pytest.mark.parametrize(
