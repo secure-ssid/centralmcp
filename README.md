@@ -283,6 +283,7 @@ mcp_servers/
   apstra.py             Optional Apstra starter backend
   aos8.py               Optional ArubaOS 8 starter backend
   edgeconnect.py        Optional EdgeConnect starter backend
+  uxi.py                Optional HPE Aruba UXI starter backend
 
 ingestion/
   ingest_docs.py        Build docs/API indexes into LanceDB + SQLite
