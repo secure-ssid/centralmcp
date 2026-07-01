@@ -220,6 +220,23 @@ _ROUTE_MAP_FIELDS = (
     "state",
     "status",
 )
+_ROUTE_LABEL_FIELDS = (
+    "id",
+    "labelId",
+    "routeLabelId",
+    "name",
+    "label",
+    "description",
+    "color",
+    "priority",
+    "order",
+    "tag",
+    "active",
+    "enabled",
+    "inUse",
+    "state",
+    "status",
+)
 _ALARM_FIELDS = (
     "id",
     "uuid",
@@ -715,6 +732,53 @@ def _compact_network_role_site(
     )
 
 
+def _normalize_route_label_records(data: Any) -> list[Any] | None:
+    records = _collection_records(data, ("routeLabels", "labels"))
+    if records is not None:
+        return records
+    if not isinstance(data, dict):
+        return None
+
+    for key in ("routeLabels", "labels", "data"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            records = _normalize_route_label_records(nested)
+            if records is not None:
+                return records
+
+    if _looks_like_record(data, _ROUTE_LABEL_FIELDS):
+        return [data]
+
+    records = []
+    for key, value in data.items():
+        if isinstance(value, dict):
+            record = dict(value)
+            if not any(field in record for field in ("id", "labelId", "routeLabelId")):
+                record["id"] = key
+            records.append(record)
+        elif isinstance(value, (str, int, float, bool)):
+            records.append({"id": key, "name": value})
+    return records or None
+
+
+def _compact_route_labels(data: Any, *, limit: int, offset: int) -> Any:
+    records = _normalize_route_label_records(data)
+    if records is None:
+        return _compact_collection(
+            data,
+            _ROUTE_LABEL_FIELDS,
+            ("routeLabels", "labels"),
+        )
+
+    compacted = [_compact_record(record, _ROUTE_LABEL_FIELDS) for record in records]
+    return bound_collection_response(
+        {"route_labels": compacted},
+        limit=limit,
+        offset=offset,
+        list_key="route_labels",
+    )
+
+
 @mcp.tool(annotations=READ_ONLY)
 def edgeconnect_status() -> dict[str, Any]:
     """Report whether EdgeConnect backend is configured."""
@@ -988,6 +1052,43 @@ async def edgeconnect_get_route_maps(
             )
         out["ne_pk"] = ne_pk
     return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_route_labels(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List EdgeConnect route labels with compact fields."""
+    out = await _edgeconnect_get(
+        "/gms/rest/routeLabels",
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["route_labels"] = _compact_route_labels(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+        )
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_route_labels(
+    body: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create or update EdgeConnect route labels with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_route_labels")
+
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/routeLabels",
+        body=body,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
 
 
 @mcp.tool(annotations=READ_ONLY)

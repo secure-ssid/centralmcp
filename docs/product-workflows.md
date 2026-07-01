@@ -128,6 +128,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Overlay priority | `edgeconnect_get_overlay_priority` | Compact overlay priority order from `/gms/rest/gms/overlays/priority` |
 | Topology link status | `edgeconnect_get_topology_link_info` | Sparse topology link status from `/gms/rest/gms/topologyConfig/linkInfo/v2`, scoped by overlay ID |
 | Route maps | `edgeconnect_get_route_maps` | Compact route policy settings from `/gms/rest/routeMaps`, scoped by appliance `nePk` |
+| Route labels | `edgeconnect_list_route_labels` / `edgeconnect_set_route_labels` | Compact route-label read plus guarded lab write to `/gms/rest/routeLabels` |
 | Tunnel health | `edgeconnect_list_tunnels` | Physical tunnel status from `/gms/rest/tunnels2/physical`, with optional filters |
 | Tunnel metadata | `edgeconnect_get_tunnel_metadata` | Compact tunnel count metadata from `/gms/rest/tunnels2?metaData=true` |
 | VRF/routing segments | `edgeconnect_list_vrf_segments` | Compact routing-segment inventory from `/gms/rest/vrf/config/segments`, with optional segment ID filter |
