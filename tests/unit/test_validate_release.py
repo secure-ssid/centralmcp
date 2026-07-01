@@ -6,6 +6,7 @@ from scripts import validate_release
 
 README = validate_release.ROOT / "README.md"
 RAG_ARCHITECTURE = validate_release.ROOT / "docs" / "architecture" / "RAG-ARCHITECTURE.md"
+MIN_TOOLS = validate_release._DEFAULT_MIN_TOOLS
 
 
 def test_rag_indexes_available_false_when_missing(tmp_path: Path):
@@ -20,7 +21,7 @@ def test_rag_indexes_available_true_when_present(tmp_path: Path):
 
 
 def test_tool_catalog_count_includes_optional_products():
-    assert validate_release._tool_catalog_count("all") >= 204
+    assert validate_release._tool_catalog_count("all") >= MIN_TOOLS
 
 
 def test_public_docs_tool_counts_match_catalog():
@@ -34,12 +35,12 @@ def test_public_docs_tool_counts_match_catalog():
 
 
 def test_validate_tool_count_accepts_count_at_floor():
-    validate_release._validate_tool_count(204, 204)
+    validate_release._validate_tool_count(MIN_TOOLS, MIN_TOOLS)
 
 
 def test_validate_tool_count_rejects_count_below_floor():
     try:
-        validate_release._validate_tool_count(203, 204)
+        validate_release._validate_tool_count(MIN_TOOLS - 1, MIN_TOOLS)
     except SystemExit as exc:
         assert "below required minimum" in str(exc)
     else:
@@ -47,12 +48,12 @@ def test_validate_tool_count_rejects_count_below_floor():
 
 
 def test_validate_tool_index_fresh_accepts_equal_count():
-    validate_release._validate_tool_index_fresh(204, 204)
+    validate_release._validate_tool_index_fresh(MIN_TOOLS, MIN_TOOLS)
 
 
 def test_validate_tool_index_fresh_rejects_stale_index():
     try:
-        validate_release._validate_tool_index_fresh(203, 204)
+        validate_release._validate_tool_index_fresh(MIN_TOOLS - 1, MIN_TOOLS)
     except SystemExit as exc:
         assert "Tool index is stale" in str(exc)
         assert "scripts/ingest_tools.py --products all" in str(exc)
