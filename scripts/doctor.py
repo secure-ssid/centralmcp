@@ -59,11 +59,69 @@ def _path_check(path: Path, name: str, *, missing_detail: str) -> Check:
 def _load_json(path: Path) -> tuple[dict[str, object] | None, str | None]:
     try:
         data = json.loads(path.read_text())
-    except Exception as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return None, str(exc)
     if not isinstance(data, dict):
         return None, "top-level JSON value must be an object"
     return data, None
+
+
+def _server_map(data: dict[str, object]) -> dict[str, object] | None:
+    servers = data.get("mcpServers") or data.get("servers")
+    return servers if isinstance(servers, dict) else None
+
+
+def _router_server(data: dict[str, object]) -> dict[str, object] | None:
+    servers = _server_map(data)
+    if servers is None:
+        return None
+    server = servers.get("aruba-tool-router") or servers.get("centralmcp")
+    return server if isinstance(server, dict) else None
+
+
+def _router_env_checks(data: dict[str, object]) -> list[Check]:
+    server = _router_server(data)
+    if server is None:
+        return [
+            Check(
+                "WARN",
+                "Local stdio router profile",
+                "missing aruba-tool-router or centralmcp server entry",
+            )
+        ]
+
+    env = server.get("env")
+    if not isinstance(env, dict):
+        return [Check("WARN", "Local stdio router profile", "missing env object")]
+
+    mode = env.get("CENTRALMCP_ROUTER_MODE")
+    toolsets = env.get("CENTRALMCP_TOOLSETS")
+    products = env.get("CENTRALMCP_PRODUCTS")
+    checks = [
+        Check(
+            "OK" if mode == "minimal" else "WARN",
+            "Local stdio router mode",
+            "CENTRALMCP_ROUTER_MODE is minimal"
+            if mode == "minimal"
+            else "set CENTRALMCP_ROUTER_MODE=minimal for low-token clients",
+        ),
+        Check(
+            "OK" if toolsets == "central,glp,rag" else "WARN",
+            "Local stdio router toolsets",
+            "CENTRALMCP_TOOLSETS is central,glp,rag"
+            if toolsets == "central,glp,rag"
+            else "set CENTRALMCP_TOOLSETS=central,glp,rag for the default low-token profile",
+        ),
+    ]
+    if products:
+        checks.append(
+            Check(
+                "WARN",
+                "Local stdio optional products",
+                "CENTRALMCP_PRODUCTS is set; optional products increase tool catalog scope",
+            )
+        )
+    return checks
 
 
 def _stdio_config_checks(path: Path) -> list[Check]:
@@ -71,7 +129,7 @@ def _stdio_config_checks(path: Path) -> list[Check]:
         return []
 
     checks: list[Check] = []
-    _, error = _load_json(path)
+    data, error = _load_json(path)
     checks.append(
         Check(
             "OK" if error is None else "FAIL",
@@ -90,6 +148,8 @@ def _stdio_config_checks(path: Path) -> list[Check]:
             else "no example placeholders found",
         )
     )
+    if data is not None:
+        checks.extend(_router_env_checks(data))
     return checks
 
 
@@ -109,8 +169,8 @@ def _http_config_checks(path: Path, host: str, port: int) -> list[Check]:
     if data is None:
         return checks
 
-    servers = data.get("mcpServers")
-    if not isinstance(servers, dict):
+    servers = _server_map(data)
+    if servers is None:
         return [
             *checks,
             Check("WARN", "Local HTTP MCP config URL", "missing mcpServers object"),
@@ -130,7 +190,23 @@ def _http_config_checks(path: Path, host: str, port: int) -> list[Check]:
     expected = f"http://{host}:{port}/mcp"
     status = "OK" if expected in urls else "WARN"
     detail = f"matches {expected}" if status == "OK" else f"expected {expected}"
-    return [*checks, Check(status, "Local HTTP MCP config URL", detail)]
+    checks.append(Check(status, "Local HTTP MCP config URL", detail))
+
+    transports = [
+        server.get("transport")
+        for server in servers.values()
+        if isinstance(server, dict) and isinstance(server.get("transport"), str)
+    ]
+    checks.append(
+        Check(
+            "OK" if "streamable-http" in transports else "WARN",
+            "Local HTTP MCP transport",
+            "transport is streamable-http"
+            if "streamable-http" in transports
+            else "set transport to streamable-http",
+        )
+    )
+    return checks
 
 
 def _csv_values(value: str | None) -> list[str]:
