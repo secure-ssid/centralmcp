@@ -4,12 +4,11 @@ Scrape New Central docs and convert to markdown for RAG.
 Uses Python's standard urllib client to fetch rendered-enough HTML (ReadMe docs are mostly SSR),
 then pandoc to convert to clean markdown.
 """
-import os
 import re
 import subprocess
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 OUTPUT_DIR = Path(__file__).parent / "markdown"
@@ -52,9 +51,6 @@ DOC_PAGES = [
     "https://developer.arubanetworks.com/new-central/docs/ping-iperf-troubleshooting-test",
     "https://developer.arubanetworks.com/new-central/docs/postman-collection",
     "https://developer.arubanetworks.com/new-central/docs/profile-operations",
-    "https://developer.arubanetworks.com/new-central/docs/pycentral-authentication",
-    "https://developer.arubanetworks.com/new-central/docs/pycentral-introduction",
-    "https://developer.arubanetworks.com/new-central/docs/pycentral-quickstart-guide",
     "https://developer.arubanetworks.com/new-central/docs/rename-hostnames",
     "https://developer.arubanetworks.com/new-central/docs/routing-alerts",
     "https://developer.arubanetworks.com/new-central/docs/security-alerts",
@@ -67,7 +63,6 @@ DOC_PAGES = [
     "https://developer.arubanetworks.com/new-central/docs/streaming-api-event-location-analytics",
     "https://developer.arubanetworks.com/new-central/docs/streaming-api-getting-started",
     "https://developer.arubanetworks.com/new-central/docs/streaming-api-postman",
-    "https://developer.arubanetworks.com/new-central/docs/streaming-api-pycentral",
     "https://developer.arubanetworks.com/new-central/docs/streaming-modes",
     "https://developer.arubanetworks.com/new-central/docs/system-alerts-2",
     "https://developer.arubanetworks.com/new-central/docs/wan-alerts",

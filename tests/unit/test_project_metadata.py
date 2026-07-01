@@ -3,6 +3,7 @@ from pathlib import Path
 PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 REPO_ROOT = PYPROJECT.parents[0]
 ACTIVE_CODE_DIRS = ("mcp_servers", "pipeline", "scripts")
+SCRAPER = REPO_ROOT / "ingestion" / "scrape.py"
 
 
 def _project_dependencies(pyproject_text: str) -> list[str]:
@@ -52,6 +53,21 @@ def test_active_runtime_code_does_not_reference_removed_qdrant_backend():
                 violations.append(str(path.relative_to(REPO_ROOT)))
 
     assert violations == []
+
+
+def test_active_runtime_code_does_not_reference_pycentral_sdk():
+    violations: list[str] = []
+
+    for dirname in ACTIVE_CODE_DIRS:
+        for path in sorted((REPO_ROOT / dirname).rglob("*.py")):
+            if "pycentral" in path.read_text().lower():
+                violations.append(str(path.relative_to(REPO_ROOT)))
+
+    assert violations == []
+
+
+def test_doc_scraper_excludes_pycentral_specific_pages():
+    assert "pycentral" not in SCRAPER.read_text().lower()
 
 
 def test_direct_runtime_dependencies_do_not_include_pycentral_or_requests():

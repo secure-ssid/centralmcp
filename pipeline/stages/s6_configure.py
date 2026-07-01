@@ -1,7 +1,7 @@
 """Stage 6 — Configure: site creation, hostname, persona, and group assignment.
 
 Uses direct New Central REST calls per the Configuration APIs runbook (v2026.0331).
-No pycentral dependency in this stage.
+No vendor SDK dependency in this stage.
 """
 
 from __future__ import annotations
@@ -433,7 +433,7 @@ class ConfigureStage(Stage):
         except Exception as exc:
             logger.warning("Persona assignment failed for %s: %s — continuing (may already be set)", record.serial_number, exc)
 
-        # 5. Group assignment via configuration/v1/devices/move (direct REST, no pycentral)
+        # 5. Group assignment via configuration/v1/devices/move (direct REST)
         logger.info("Assigning %s to group '%s'", record.serial_number, record.target_group)
         try:
             central.post(
