@@ -62,6 +62,7 @@ export MCP_HOST="${MCP_HOST:-127.0.0.1}"
 export MCP_PORT="${MCP_PORT:-8010}"
 export CENTRALMCP_ROUTER_MODE="${CENTRALMCP_ROUTER_MODE:-minimal}"
 export CENTRALMCP_TOOLSETS="${CENTRALMCP_TOOLSETS:-central,glp,rag}"
+export CENTRALMCP_PRODUCT_ACCESS="${CENTRALMCP_PRODUCT_ACCESS:-read-write}"
 
 case "${MCP_HOST}" in
   127.0.0.1|localhost|::1) ;;
@@ -120,6 +121,7 @@ Starting centralmcp HTTP router
   mode:     ${CENTRALMCP_ROUTER_MODE}
   toolsets: ${CENTRALMCP_TOOLSETS}
   products: ${CENTRALMCP_PRODUCTS:-none}
+  access:   ${CENTRALMCP_PRODUCT_ACCESS}
 
 Foreground stop: Ctrl-C
 Background stop:

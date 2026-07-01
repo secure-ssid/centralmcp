@@ -84,7 +84,9 @@ http://127.0.0.1:8010/mcp
 
 If you change `MCP_HOST` or `MCP_PORT`, update `.mcp.http.json` to match. The
 HTTP helper safely loads expected local `.env` assignments first, so optional
-products selected in the wizard are available to the router process.
+products selected in the wizard are available to the router process. Its startup
+banner prints the selected products and `CENTRALMCP_PRODUCT_ACCESS` mode so lab
+write visibility is obvious before connecting a client.
 
 ## Optional product clients
 
