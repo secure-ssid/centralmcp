@@ -10,7 +10,7 @@ uv run python scripts/download_indexes.py
 ```
 
 This downloads the latest `centralmcp-rag-index-latest.tar.gz` release asset and
-unpacks:
+its `.sha256` checksum, verifies the archive, and unpacks:
 
 ```text
 data/docs.lance
@@ -25,6 +25,10 @@ Then check the local setup:
 ```bash
 uv run python scripts/doctor.py
 ```
+
+For custom archives, pass `--url` and optionally `--checksum-url`. Use
+`--skip-checksum` only for trusted local files that do not have a matching
+checksum.
 
 ## Package indexes for a release
 
@@ -49,8 +53,9 @@ dist/centralmcp-rag-index-v0.2.1.tar.gz.sha256
 ```
 
 Upload the archive and checksum to the GitHub Release. For convenience, also
-upload a copy named `centralmcp-rag-index-latest.tar.gz` so the downloader can
-always use the latest release URL.
+upload copies named `centralmcp-rag-index-latest.tar.gz` and
+`centralmcp-rag-index-latest.tar.gz.sha256` so the downloader can always use and
+verify the latest release URL.
 
 ## What is inside
 
