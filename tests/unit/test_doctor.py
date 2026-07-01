@@ -25,3 +25,10 @@ def test_doctor_warns_on_uxi_placeholder_credentials(monkeypatch):
 
     assert checks["uxi required env"].status == "WARN"
     assert checks["uxi required env"].detail == "missing or placeholder: UXI_CLIENT_ID, UXI_CLIENT_SECRET"
+
+
+def test_doctor_source_manifest_matches_ingest_sources():
+    checks = {check.name: check for check in doctor._source_manifest_checks()}
+
+    assert checks["RAG source manifest"].status == "OK"
+    assert "sources match ingestion SOURCE_META" in checks["RAG source manifest"].detail

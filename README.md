@@ -175,9 +175,9 @@ uv run python scripts/doctor.py
 ```
 
 The doctor reports missing local stdio/HTTP MCP config copies, index files,
-placeholder stdio paths, low-token router profile drift, HTTP config URL or
-transport mismatches, optional product env, and HTTP listener status without
-calling Central or GLP APIs.
+RAG source-manifest drift, placeholder stdio paths, low-token router profile
+drift, HTTP config URL or transport mismatches, optional product env, and HTTP
+listener status without calling Central or GLP APIs.
 
 See [docs/getting-started.md](docs/getting-started.md) for the full setup path.
 

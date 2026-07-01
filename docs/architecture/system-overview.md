@@ -105,8 +105,8 @@ flowchart TD
 choices, fill credentials without echoing secrets, and enable only the optional
 products you choose. `scripts/doctor.py` is intentionally non-mutating and does
 not call Central, GLP, or optional product APIs. It checks local dependencies,
-credentials/config paths, indexes, router profile drift, HTTP URL/transport
-mismatches, optional product env, and listener status.
+credentials/config paths, indexes, RAG source-manifest drift, router profile
+drift, HTTP URL/transport mismatches, optional product env, and listener status.
 
 ## Tracked file structure
 

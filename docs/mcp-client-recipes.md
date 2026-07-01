@@ -106,7 +106,7 @@ Run the local doctor before opening the client:
 uv run python scripts/doctor.py
 ```
 
-It does not call Central, GLP, or optional product APIs. It checks copied local configs, placeholder paths, HTTP URL/transport mismatch, low-token router profile drift, optional product env, local indexes, and listener status.
+It does not call Central, GLP, or optional product APIs. It checks copied local configs, placeholder paths, HTTP URL/transport mismatch, low-token router profile drift, optional product env, local indexes, RAG source-manifest drift, and listener status.
 
 ## First useful MCP call flow
 

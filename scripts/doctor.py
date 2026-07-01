@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import json
 import os
@@ -411,6 +412,63 @@ def _index_checks() -> list[Check]:
     return checks
 
 
+def _ingest_source_names() -> set[str]:
+    ingest_path = ROOT / "ingestion" / "ingest_docs.py"
+    tree = ast.parse(ingest_path.read_text())
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name) or target.id != "SOURCE_META":
+                continue
+            value = ast.literal_eval(node.value)
+            if not isinstance(value, dict):
+                raise ValueError("SOURCE_META must be a dictionary")
+            return {str(key) for key in value}
+    raise ValueError("SOURCE_META not found")
+
+
+def _source_manifest_checks() -> list[Check]:
+    manifest_path = ROOT / "ingestion" / "source_manifest.json"
+    if not manifest_path.exists():
+        return [
+            Check(
+                "WARN",
+                "RAG source manifest",
+                "missing ingestion/source_manifest.json",
+            )
+        ]
+    try:
+        data = json.loads(manifest_path.read_text())
+        source_names = _ingest_source_names()
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, SyntaxError) as exc:
+        return [Check("FAIL", "RAG source manifest", f"cannot validate: {exc}")]
+    if not isinstance(data, list):
+        return [Check("FAIL", "RAG source manifest", "top-level JSON value must be a list")]
+
+    manifest_sources = {
+        str(item.get("source", "")).strip()
+        for item in data
+        if isinstance(item, dict) and str(item.get("source", "")).strip()
+    }
+    missing = sorted(source_names - manifest_sources)
+    extra = sorted(manifest_sources - source_names)
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing: {', '.join(missing)}")
+        if extra:
+            details.append(f"extra: {', '.join(extra)}")
+        return [Check("WARN", "RAG source manifest", "; ".join(details))]
+    return [
+        Check(
+            "OK",
+            "RAG source manifest",
+            f"{len(manifest_sources)} sources match ingestion SOURCE_META",
+        )
+    ]
+
+
 def _runtime_checks() -> list[Check]:
     host = os.getenv("MCP_HOST", "127.0.0.1")
     raw_port = os.getenv("MCP_PORT", str(DEFAULT_HTTP_PORT))
@@ -513,6 +571,7 @@ def main() -> int:
         *_dependency_checks(),
         *_config_checks(),
         *_index_checks(),
+        *_source_manifest_checks(),
         *_runtime_checks(),
     ]
 
