@@ -98,6 +98,19 @@ _INTERFACE_LABEL_FIELDS = (
     "state",
     "status",
 )
+_BYPASS_FIELDS = (
+    "bypass_actual",
+    "bypass_config",
+    "bypassActual",
+    "bypassConfig",
+    "enabled",
+    "enable",
+    "supportsBypass",
+    "status",
+    "state",
+    "message",
+    "error",
+)
 _DISK_REPORT_FIELDS = (
     "id",
     "name",
@@ -1351,6 +1364,49 @@ async def edgeconnect_apply_interface_labels(
         "/gms/rest/interfaceLabels",
         params={"nePk": ne_pk.strip()},
         body={},
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_bypass_mode(
+    ne_pk: str,
+    cached: bool = True,
+) -> dict[str, Any]:
+    """Get compact EdgeConnect bypass-mode state for an appliance."""
+    out = await _edgeconnect_get(
+        "/gms/rest/bypass",
+        {"nePk": ne_pk, "cached": str(cached).lower()},
+        limit=1,
+        offset=0,
+        paginate=False,
+    )
+    if "data" in out:
+        data = out.pop("data")
+        out["bypass_mode"] = _compact_record(data, _BYPASS_FIELDS) or data
+        out["ne_pk"] = ne_pk
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_bypass_mode(
+    enabled: bool,
+    ne_pks: list[str],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Enable or disable EdgeConnect bypass mode on appliances with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_bypass_mode")
+    cleaned_ne_pks = [ne_pk.strip() for ne_pk in ne_pks if ne_pk.strip()]
+    if not cleaned_ne_pks:
+        return {"error": "ne_pks must include at least one appliance nePk."}
+
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/bypass",
+        body={"enable": enabled, "nePks": cleaned_ne_pks},
         dry_run=dry_run,
         confirm=confirm,
     )

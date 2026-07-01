@@ -2687,6 +2687,33 @@ def test_edgeconnect_list_interface_labels_rejects_unknown_type(monkeypatch):
     assert out == {"error": "label_type must be one of: lan, wan"}
 
 
+def test_edgeconnect_get_bypass_mode_compacts(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/bypass"
+        assert params == {"nePk": "1.NE", "cached": "false"}
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "bypass_actual": False,
+                "bypass_config": True,
+                "status": "Normal",
+                "raw": "omitted",
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_bypass_mode("1.NE", cached=False))
+
+    assert out["ne_pk"] == "1.NE"
+    assert out["bypass_mode"] == {
+        "bypass_actual": False,
+        "bypass_config": True,
+        "status": "Normal",
+    }
+
+
 def test_edgeconnect_get_disk_report_compacts(monkeypatch):
     called = {}
 
@@ -4982,6 +5009,80 @@ def test_edgeconnect_interface_label_writes_execute_with_confirm(
     assert called["url"] == expected_url
     assert called["params"] == expected_params
     assert called["json"] == expected_body
+
+
+def test_edgeconnect_set_bypass_mode_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    out = asyncio.run(edgeconnect.edgeconnect_set_bypass_mode(True, [" 1.NE ", "2.NE"]))
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/bypass"
+    assert out["json"] == {"enable": True, "nePks": ["1.NE", "2.NE"]}
+    assert "execute_hint" in out
+
+
+def test_edgeconnect_set_bypass_mode_blocks_when_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(edgeconnect.edgeconnect_set_bypass_mode(True, ["1.NE"]))
+
+    assert out["status"] == "blocked"
+    assert out["tool"] == "edgeconnect_set_bypass_mode"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+def test_edgeconnect_set_bypass_mode_requires_nepks(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+
+    out = asyncio.run(edgeconnect.edgeconnect_set_bypass_mode(False, [" "]))
+
+    assert out == {"error": "ne_pks must include at least one appliance nePk."}
+
+
+def test_edgeconnect_set_bypass_mode_executes_with_confirm(monkeypatch):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_set_bypass_mode(
+            False,
+            ["1.NE"],
+            dry_run=False,
+            confirm=True,
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert called["method"] == "POST"
+    assert called["url"] == "https://orch.example.com/gms/rest/bypass"
+    assert called["params"] == {}
+    assert called["json"] == {"enable": False, "nePks": ["1.NE"]}
 
 
 def test_edgeconnect_set_address_group_previews(monkeypatch):

@@ -16,6 +16,7 @@ keywords = [
     "arubaos8",
     "clearpass",
     "edgeconnect-acl-groups",
+    "edgeconnect-bypass",
     "edgeconnect",
     "edgeconnect-interface-labels",
     "edgeconnect-services",
