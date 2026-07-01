@@ -29,6 +29,30 @@ def test_get_device_scope_id_returns_none_on_client_error():
     assert MCPClient(central).get_device_scope_id("CN123") is None
 
 
+def test_get_sites_applies_client_side_limit_and_offset():
+    central = MagicMock()
+    central.get.return_value = {
+        "items": [
+            {"id": "site-1"},
+            {"id": "site-2"},
+            {"id": "site-3"},
+        ]
+    }
+
+    assert MCPClient(central).get_sites(limit=1, offset=1) == [{"id": "site-2"}]
+    central.get.assert_called_once_with("/network-config/v1/sites")
+
+
+def test_get_sites_clamps_negative_offset_and_large_limit():
+    central = MagicMock()
+    central.get.return_value = {"sites": [{"id": f"site-{idx}"} for idx in range(250)]}
+
+    sites = MCPClient(central).get_sites(limit=999, offset=-10)
+
+    assert len(sites) == 200
+    assert sites[0] == {"id": "site-0"}
+
+
 def test_get_clients_sends_bounded_limit_and_offset():
     central = MagicMock()
     central.get.return_value = {"items": []}

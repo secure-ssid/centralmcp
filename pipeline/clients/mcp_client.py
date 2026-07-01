@@ -110,11 +110,16 @@ class MCPClient:
     # ------------------------------------------------------------------
 
     def get_sites(self, limit: int = _DEFAULT_LIST_LIMIT, offset: int = 0) -> list[dict[str, Any]]:
-        """Return all sites with their IDs."""
+        """Return a bounded page of sites with their IDs."""
         try:
             # The sites config API does not support limit/offset query params
             result = self._client.get("/network-config/v1/sites")
-            return result.get("items", result.get("sites", []))
+            sites = result.get("items", result.get("sites", []))
+            if not isinstance(sites, list):
+                return []
+            off = max(0, offset)
+            lim = _bounded_limit(limit)
+            return sites[off : off + lim]
         except Exception as exc:
             logger.warning("MCPClient.get_sites failed: %s", exc)
             return []
