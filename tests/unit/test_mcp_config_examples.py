@@ -11,6 +11,7 @@ CLIENT_CONFIGS = [
 COMMITTED_CONFIGS = [
     *CLIENT_CONFIGS,
     REPO_ROOT / ".cursor" / "mcp.dev.json",
+    REPO_ROOT / ".claude" / "launch.json",
 ]
 LOCAL_ONLY_CONFIGS = [
     ".mcp.json",
@@ -55,3 +56,22 @@ def test_local_only_mcp_configs_are_not_tracked():
     ).splitlines()
 
     assert tracked == []
+
+
+def test_claude_launch_includes_low_token_router_profile():
+    data = json.loads((REPO_ROOT / ".claude" / "launch.json").read_text())
+    configs = data.get("configurations", [])
+    router = next(
+        (
+            config
+            for config in configs
+            if config.get("name") == "aruba-tool-router MCP server (minimal)"
+        ),
+        None,
+    )
+
+    assert router is not None
+    assert router.get("runtimeArgs") == ["-m", "mcp_servers.tool_router"]
+    assert router.get("env", {}).get("CENTRALMCP_ROUTER_MODE") == "minimal"
+    assert router.get("env", {}).get("CENTRALMCP_TOOLSETS") == "central,glp,rag"
+    assert "CENTRALMCP_PRODUCTS" not in router.get("env", {})

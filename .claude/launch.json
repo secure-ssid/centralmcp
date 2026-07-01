@@ -2,6 +2,15 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "aruba-tool-router MCP server (minimal)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "mcp_servers.tool_router"],
+      "env": {
+        "CENTRALMCP_ROUTER_MODE": "minimal",
+        "CENTRALMCP_TOOLSETS": "central,glp,rag"
+      }
+    },
+    {
       "name": "aruba-monitoring MCP server",
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "mcp_servers.monitoring"]
