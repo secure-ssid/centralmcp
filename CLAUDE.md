@@ -43,12 +43,13 @@ state/                 Pipeline state store (idempotent runs)
 .cursor/
   mcp.json             Router-only entry (aruba-tool-router) — low token overhead
   mcp.dev.json         6 core Aruba servers directly — full introspection for debugging
+.claude/launch.json    Claude launch profiles — minimal router (`CENTRALMCP_TOOLSETS=central,glp,rag`) plus direct debug servers
 .vscode/mcp.json.example  VS Code MCP example — router minimal mode
 ```
 
 ## MCP tools (`mcp_servers/`)
 
-Six core Aruba domain servers — `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, `rag.py` — each registered in `.cursor/mcp.dev.json`. For day-to-day use, `tool_router.py` is the single entrypoint registered in `.cursor/mcp.json` or copied from `.vscode/mcp.json.example`, and proxies to enabled backends.
+Six core Aruba domain servers — `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, `rag.py` — each registered in `.cursor/mcp.dev.json`. For day-to-day use, `tool_router.py` is the single entrypoint registered in `.cursor/mcp.json`, `.claude/launch.json`, or copied from `.vscode/mcp.json.example`, and proxies to enabled backends.
 Tools follow `verb_noun` naming — no prefix. The server name provides context (`aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`, `aruba-glp`, `aruba-rag`).
 
 Optional product starters (`clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect`) are loaded only when enabled with `CENTRALMCP_PRODUCTS` or `CENTRALMCP_TOOLSETS`. Keep new product backends opt-in so default tool-list token cost stays low.

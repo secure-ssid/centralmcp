@@ -75,3 +75,12 @@ def test_claude_launch_includes_low_token_router_profile():
     assert router.get("env", {}).get("CENTRALMCP_ROUTER_MODE") == "minimal"
     assert router.get("env", {}).get("CENTRALMCP_TOOLSETS") == "central,glp,rag"
     assert "CENTRALMCP_PRODUCTS" not in router.get("env", {})
+
+
+def test_repo_agent_docs_reference_claude_launch_router_config():
+    claude_md = (REPO_ROOT / "CLAUDE.md").read_text()
+    mcp_engineer = (REPO_ROOT / ".claude" / "agents" / "mcp-engineer.md").read_text()
+
+    for text in (claude_md, mcp_engineer):
+        assert ".claude/launch.json" in text
+        assert "CENTRALMCP_TOOLSETS=central,glp,rag" in text

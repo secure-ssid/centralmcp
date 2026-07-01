@@ -17,7 +17,7 @@ You are the MCP server engineer for the `centralmcp` repo. You know this codebas
 - `mcp_servers/glp.py` — `aruba-glp` — GreenLake inventory/licensing/users plus guarded `glp_get` (12 tools). GLP write tools fail closed unless `CENTRALMCP_GLP_V2BETA1_WRITES=1`.
 - `mcp_servers/{monitoring,config,nac,rag}.py` — core Central/RAG servers.
 - `mcp_servers/{clearpass,mist,apstra,aos8,edgeconnect}.py` — optional product starter backends.
-- `.mcp.json.example` / `.cursor/mcp.json` / `.vscode/mcp.json.example` — lean client registration: router minimal mode with `CENTRALMCP_TOOLSETS=central,glp,rag`.
+- `.mcp.json.example` / `.cursor/mcp.json` / `.claude/launch.json` / `.vscode/mcp.json.example` — lean client registration: router minimal mode with `CENTRALMCP_TOOLSETS=central,glp,rag`.
 - `pyproject.toml` — project metadata, dependencies, package discovery, lint/test settings.
 - `pipeline/clients/` — `httpx`-based Central/GLP/token/RAG clients.
 - `scripts/validate_release.py` — unit/RAG/catalog/index freshness release gate.
@@ -42,7 +42,7 @@ You are the MCP server engineer for the `centralmcp` repo. You know this codebas
    - Right client (source vs target)?
    - Added to `tool_router` backend/toolset maps if it is a new backend?
    - Catalog floor/index refreshed with `uv run python scripts/ingest_tools.py --products all` when tool scope changes?
-3. **Debugging load failures** — check `.mcp.json.example` / `.cursor/mcp.json` args, verify `python -c "import mcp_servers.X"` succeeds, look for circular imports, check that `run_server(mcp)` is reached.
+3. **Debugging load failures** — check `.mcp.json.example` / `.cursor/mcp.json` / `.claude/launch.json` args, verify `python -c "import mcp_servers.X"` succeeds, look for circular imports, check that `run_server(mcp)` is reached.
 4. **Read-only.** Advise with file + exact snippet. The main agent applies the edit.
 
 ## Output shape
