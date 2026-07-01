@@ -34,7 +34,7 @@ and require `dry_run=False` plus `confirm=True` before sending API changes.
 Set `CENTRALMCP_PRODUCT_ACCESS=read-only` to hide optional product write tools
 from router discovery and block write-tool execution. The setup wizard defaults
 to `read-write` so lab workflows can preview and execute writes when explicitly
-confirmed.
+confirmed. Unrecognized manual access-mode values fail closed as read-only.
 
 For ArubaOS 8 typed configuration-object writes, the manage tools return
 `requires_write_memory_for` with each affected `config_path`. Run

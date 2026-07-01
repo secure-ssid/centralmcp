@@ -27,6 +27,17 @@ def test_doctor_warns_on_uxi_placeholder_credentials(monkeypatch):
     assert checks["uxi required env"].detail == "missing or placeholder: UXI_CLIENT_ID, UXI_CLIENT_SECRET"
 
 
+def test_doctor_warns_on_invalid_product_access(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-wrtie")
+    monkeypatch.delenv("CENTRALMCP_PRODUCTS", raising=False)
+    monkeypatch.delenv("CENTRALMCP_TOOLSETS", raising=False)
+
+    checks = {check.name: check for check in doctor._runtime_checks()}
+
+    assert checks["Optional product access"].status == "WARN"
+    assert "optional writes fail closed" in checks["Optional product access"].detail
+
+
 def test_doctor_source_manifest_matches_ingest_sources():
     checks = {check.name: check for check in doctor._source_manifest_checks()}
 

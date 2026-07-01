@@ -98,9 +98,24 @@ def redact_sensitive(value: Any) -> Any:
     return value
 
 
+_READ_ONLY_ACCESS_VALUES = {"read-only", "readonly", "read_only", "ro"}
+_READ_WRITE_ACCESS_VALUES = {"read-write", "readwrite", "read_write", "rw"}
+
+
+def optional_product_access_mode() -> str:
+    raw = os.getenv("CENTRALMCP_PRODUCT_ACCESS")
+    if raw is None:
+        return "read-write"
+    value = raw.strip().lower()
+    if value in _READ_WRITE_ACCESS_VALUES:
+        return "read-write"
+    if value in _READ_ONLY_ACCESS_VALUES:
+        return "read-only"
+    return "read-only"
+
+
 def optional_product_writes_allowed() -> bool:
-    raw = os.getenv("CENTRALMCP_PRODUCT_ACCESS", "read-write").strip().lower()
-    return raw not in {"read-only", "readonly", "read_only", "ro"}
+    return optional_product_access_mode() == "read-write"
 
 
 def optional_product_write_blocked(tool_name: str) -> dict[str, str]:

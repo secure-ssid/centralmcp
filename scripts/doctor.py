@@ -26,6 +26,8 @@ OPTIONAL_PRODUCT_ENVS = {
     "uxi": ("UXI_CLIENT_ID", "UXI_CLIENT_SECRET"),
 }
 PLACEHOLDER_MARKERS = ("YOUR_", "REPLACE_ME", "PLACEHOLDER")
+READ_ONLY_PRODUCT_ACCESS_VALUES = {"read-only", "readonly", "read_only", "ro"}
+READ_WRITE_PRODUCT_ACCESS_VALUES = {"read-write", "readwrite", "read_write", "rw"}
 
 
 @dataclass(frozen=True)
@@ -250,6 +252,25 @@ def _csv_values(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip().lower() for item in value.split(",") if item.strip()]
+
+
+def _product_access_check(value: str | None) -> Check:
+    if value is None:
+        return Check(
+            "OK",
+            "Optional product access",
+            "unset; optional product writes default to read-write lab mode",
+        )
+    normalized = value.strip().lower()
+    if normalized in READ_ONLY_PRODUCT_ACCESS_VALUES:
+        return Check("OK", "Optional product access", "read-only")
+    if normalized in READ_WRITE_PRODUCT_ACCESS_VALUES:
+        return Check("OK", "Optional product access", "read-write")
+    return Check(
+        "WARN",
+        "Optional product access",
+        f"unrecognized CENTRALMCP_PRODUCT_ACCESS={value!r}; optional writes fail closed",
+    )
 
 
 def _enabled_optional_products(products: str, toolsets: str | None) -> set[str]:
@@ -484,6 +505,7 @@ def _runtime_checks() -> list[Check]:
         ]
     listening = _port_listening(host, port)
     products = os.getenv("CENTRALMCP_PRODUCTS", "").strip()
+    product_access = os.getenv("CENTRALMCP_PRODUCT_ACCESS")
     toolsets = os.getenv("CENTRALMCP_TOOLSETS")
     mode = os.getenv("CENTRALMCP_ROUTER_MODE")
 
@@ -517,6 +539,7 @@ def _runtime_checks() -> list[Check]:
             if not products
             else f"CENTRALMCP_PRODUCTS={products!r}; optional backends increase tool catalog scope",
         ),
+        _product_access_check(product_access),
         Check(
             "OK" if not unknown_products else "WARN",
             "Optional product names",

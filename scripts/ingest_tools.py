@@ -20,6 +20,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from mcp_servers.shared import optional_product_access_mode  # noqa: E402
+
 SERVERS = [
     ("aruba-config", "mcp_servers.config"),
     ("aruba-monitoring", "mcp_servers.monitoring"),
@@ -43,10 +45,7 @@ def _csv(value: str | None) -> list[str]:
 
 
 def _product_access() -> str:
-    raw = os.getenv("CENTRALMCP_PRODUCT_ACCESS", "read-write").strip().lower()
-    if raw in {"read-only", "readonly", "read_only", "ro"}:
-        return "read-only"
-    return "read-write"
+    return optional_product_access_mode()
 
 
 def _is_read_only_tool(tool) -> bool:

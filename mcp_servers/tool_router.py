@@ -22,7 +22,7 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_servers.prompts import register_router_prompts
-from mcp_servers.shared import DESTRUCTIVE, READ_ONLY
+from mcp_servers.shared import DESTRUCTIVE, READ_ONLY, optional_product_access_mode
 
 _BACKEND = os.getenv("CENTRALMCP_RAG_BACKEND", "lancedb").strip().lower()
 _ROUTER_MODE = os.getenv("CENTRALMCP_ROUTER_MODE", "default").strip().lower()
@@ -95,10 +95,7 @@ def _csv_env(name: str) -> list[str]:
 
 
 def _product_access() -> str:
-    raw = os.getenv("CENTRALMCP_PRODUCT_ACCESS", "read-write").strip().lower()
-    if raw in {"read-only", "readonly", "read_only", "ro"}:
-        return "read-only"
-    return "read-write"
+    return optional_product_access_mode()
 
 
 def _optional_writes_allowed() -> bool:

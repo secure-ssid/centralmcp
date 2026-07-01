@@ -106,7 +106,7 @@ after reviewing the preview, and execute with `dry_run=False` plus
 product write tools from `find_tool` and block direct dispatch through
 `invoke_tool`; the product write tools also return a blocked response if run
 directly with that mode. Use `read-write` for lab workflows that need guarded
-writes.
+writes. Unrecognized manual access-mode values fail closed as read-only.
 
 ## Why `invoke_tool` is destructive
 
