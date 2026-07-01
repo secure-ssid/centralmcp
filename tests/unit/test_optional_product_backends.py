@@ -3262,6 +3262,92 @@ def test_edgeconnect_list_route_labels_compacts_map(monkeypatch):
     assert out["route_labels"]["_pagination"]["truncated"] is True
 
 
+def test_edgeconnect_list_address_groups_compacts(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/ipObjects/addressGroup"
+        assert params is None
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": [
+                {
+                    "name": "OfficeNetwork",
+                    "type": "AG",
+                    "rules": [
+                        {
+                            "includedIPs": ["192.168.1.0/24"],
+                            "excludedIPs": [],
+                            "includedGroups": [],
+                            "comment": "Office IPs",
+                        }
+                    ],
+                    "raw": "omitted",
+                },
+                {
+                    "name": "DataCenterNetwork",
+                    "type": "AG",
+                    "rules": [{"includedIPs": ["172.16.0.0/16"]}],
+                    "raw": "omitted",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_address_groups(limit=1))
+
+    assert out["address_groups"]["address_groups"] == [
+        {
+            "name": "OfficeNetwork",
+            "type": "AG",
+            "rules": [
+                {
+                    "includedIPs": ["192.168.1.0/24"],
+                    "excludedIPs": [],
+                    "includedGroups": [],
+                    "comment": "Office IPs",
+                }
+            ],
+        }
+    ]
+    assert out["address_groups"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_list_service_groups_compacts_single(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/ipObjects/serviceGroup"
+        assert params == {"name": "WebServices"}
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "name": "WebServices",
+                "type": "SG",
+                "rules": [
+                    {
+                        "protocol": "tcp",
+                        "ports": "80,443",
+                        "comment": "web",
+                    }
+                ],
+                "raw": "omitted",
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_service_groups(name=" WebServices "))
+
+    assert out["name"] == "WebServices"
+    assert out["service_groups"]["service_groups"] == [
+        {
+            "name": "WebServices",
+            "type": "SG",
+            "rules": [{"protocol": "tcp", "ports": "80,443", "comment": "web"}],
+        }
+    ]
+
+
 def test_edgeconnect_list_zones_compacts_map(monkeypatch):
     async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
         assert path == "/gms/rest/zones"
@@ -4813,6 +4899,199 @@ def test_edgeconnect_interface_label_writes_execute_with_confirm(
 
     assert out["status_code"] == 200
     assert called["method"] == "POST"
+    assert called["url"] == expected_url
+    assert called["params"] == expected_params
+    assert called["json"] == expected_body
+
+
+def test_edgeconnect_set_address_group_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    body = {
+        "name": "OfficeNetwork",
+        "type": "AG",
+        "rules": [{"includedIPs": ["192.168.1.0/24"], "excludedIPs": []}],
+    }
+    out = asyncio.run(edgeconnect.edgeconnect_set_address_group(body))
+    replace = asyncio.run(edgeconnect.edgeconnect_set_address_group(body, replace_existing=True))
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/ipObjects/addressGroup"
+    assert out["json"] == body
+    assert "execute_hint" in out
+    assert replace["method"] == "PUT"
+
+
+def test_edgeconnect_set_service_group_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    body = {
+        "name": "WebServices",
+        "type": "SG",
+        "rules": [{"protocol": "tcp", "ports": "80,443"}],
+    }
+    out = asyncio.run(edgeconnect.edgeconnect_set_service_group(body))
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/ipObjects/serviceGroup"
+    assert out["json"] == body
+    assert "execute_hint" in out
+
+
+@pytest.mark.parametrize(
+    ("tool_call", "expected_path"),
+    [
+        (
+            lambda: edgeconnect.edgeconnect_delete_address_group(" OfficeNetwork "),
+            "/gms/rest/ipObjects/addressGroup",
+        ),
+        (
+            lambda: edgeconnect.edgeconnect_delete_service_group(" WebServices "),
+            "/gms/rest/ipObjects/serviceGroup",
+        ),
+    ],
+)
+def test_edgeconnect_delete_ip_object_groups_preview(monkeypatch, tool_call, expected_path):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    out = asyncio.run(tool_call())
+
+    assert out["dry_run"] is True
+    assert out["method"] == "DELETE"
+    assert out["path"] == expected_path
+    assert out["json"] is None
+    assert "name" in out["params"]
+    assert "execute_hint" in out
+
+
+@pytest.mark.parametrize(
+    "tool_call",
+    [
+        lambda: edgeconnect.edgeconnect_delete_address_group(" "),
+        lambda: edgeconnect.edgeconnect_delete_service_group(" "),
+    ],
+)
+def test_edgeconnect_delete_ip_object_groups_require_name(monkeypatch, tool_call):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+
+    out = asyncio.run(tool_call())
+
+    assert out == {"error": "name is required."}
+
+
+@pytest.mark.parametrize(
+    "tool_call",
+    [
+        lambda: edgeconnect.edgeconnect_set_address_group({"name": "OfficeNetwork"}),
+        lambda: edgeconnect.edgeconnect_delete_address_group("OfficeNetwork"),
+        lambda: edgeconnect.edgeconnect_set_service_group({"name": "WebServices"}),
+        lambda: edgeconnect.edgeconnect_delete_service_group("WebServices"),
+    ],
+)
+def test_edgeconnect_ip_object_group_writes_block_when_read_only(monkeypatch, tool_call):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(tool_call())
+
+    assert out["status"] == "blocked"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+@pytest.mark.parametrize(
+    ("tool_call", "expected_method", "expected_url", "expected_params", "expected_body"),
+    [
+        (
+            lambda: edgeconnect.edgeconnect_set_address_group(
+                {"name": "OfficeNetwork", "type": "AG"},
+                dry_run=False,
+                confirm=True,
+            ),
+            "POST",
+            "https://orch.example.com/gms/rest/ipObjects/addressGroup",
+            {},
+            {"name": "OfficeNetwork", "type": "AG"},
+        ),
+        (
+            lambda: edgeconnect.edgeconnect_set_service_group(
+                {"name": "WebServices", "type": "SG"},
+                replace_existing=True,
+                dry_run=False,
+                confirm=True,
+            ),
+            "PUT",
+            "https://orch.example.com/gms/rest/ipObjects/serviceGroup",
+            {},
+            {"name": "WebServices", "type": "SG"},
+        ),
+        (
+            lambda: edgeconnect.edgeconnect_delete_address_group(
+                "OfficeNetwork",
+                dry_run=False,
+                confirm=True,
+            ),
+            "DELETE",
+            "https://orch.example.com/gms/rest/ipObjects/addressGroup",
+            {"name": "OfficeNetwork"},
+            None,
+        ),
+        (
+            lambda: edgeconnect.edgeconnect_delete_service_group(
+                "WebServices",
+                dry_run=False,
+                confirm=True,
+            ),
+            "DELETE",
+            "https://orch.example.com/gms/rest/ipObjects/serviceGroup",
+            {"name": "WebServices"},
+            None,
+        ),
+    ],
+)
+def test_edgeconnect_ip_object_group_writes_execute_with_confirm(
+    monkeypatch,
+    tool_call,
+    expected_method,
+    expected_url,
+    expected_params,
+    expected_body,
+):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(tool_call())
+
+    assert out["status_code"] == 200
+    assert called["method"] == expected_method
     assert called["url"] == expected_url
     assert called["params"] == expected_params
     assert called["json"] == expected_body

@@ -252,6 +252,28 @@ _ROUTE_LABEL_FIELDS = (
     "state",
     "status",
 )
+_IP_OBJECT_GROUP_FIELDS = (
+    "id",
+    "name",
+    "type",
+    "description",
+    "rules",
+    "includedIPs",
+    "excludedIPs",
+    "includedGroups",
+    "includedServices",
+    "services",
+    "protocol",
+    "ports",
+    "tcpPorts",
+    "udpPorts",
+    "icmpTypes",
+    "comment",
+    "active",
+    "enabled",
+    "state",
+    "status",
+)
 _ALARM_FIELDS = (
     "id",
     "uuid",
@@ -819,6 +841,61 @@ def _compact_route_labels(data: Any, *, limit: int, offset: int) -> Any:
         limit=limit,
         offset=offset,
         list_key="route_labels",
+    )
+
+
+def _normalize_ip_object_group_records(data: Any) -> list[Any] | None:
+    records = _collection_records(
+        data,
+        ("addressGroups", "serviceGroups", "groups", "ipObjects"),
+    )
+    if records is not None:
+        return records
+    if not isinstance(data, dict):
+        return None
+
+    for key in ("addressGroups", "serviceGroups", "groups", "ipObjects", "data"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            records = _normalize_ip_object_group_records(nested)
+            if records is not None:
+                return records
+
+    if _looks_like_record(data, _IP_OBJECT_GROUP_FIELDS):
+        return [data]
+
+    records = []
+    for name, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        record = dict(value)
+        if "name" not in record:
+            record["name"] = name
+        records.append(record)
+    return records or None
+
+
+def _compact_ip_object_groups(
+    data: Any,
+    *,
+    limit: int,
+    offset: int,
+    list_key: str,
+) -> Any:
+    records = _normalize_ip_object_group_records(data)
+    if records is None:
+        return _compact_collection(
+            data,
+            _IP_OBJECT_GROUP_FIELDS,
+            ("addressGroups", "serviceGroups", "groups", "ipObjects"),
+        )
+
+    compacted = [_compact_record(record, _IP_OBJECT_GROUP_FIELDS) for record in records]
+    return bound_collection_response(
+        {list_key: compacted},
+        limit=limit,
+        offset=offset,
+        list_key=list_key,
     )
 
 
@@ -1407,6 +1484,144 @@ async def edgeconnect_set_route_labels(
         "POST",
         "/gms/rest/routeLabels",
         body=body,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_address_groups(
+    name: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List EdgeConnect ACL address groups with compact fields."""
+    params = {"name": name.strip()} if name and name.strip() else None
+    out = await _edgeconnect_get(
+        "/gms/rest/ipObjects/addressGroup",
+        params,
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["address_groups"] = _compact_ip_object_groups(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+            list_key="address_groups",
+        )
+        if params:
+            out["name"] = params["name"]
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_address_group(
+    body: dict[str, Any],
+    replace_existing: bool = False,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create/update or replace an EdgeConnect ACL address group with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_address_group")
+
+    return await edgeconnect_write(
+        "PUT" if replace_existing else "POST",
+        "/gms/rest/ipObjects/addressGroup",
+        body=body,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_delete_address_group(
+    name: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Delete an EdgeConnect ACL address group by name with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_delete_address_group")
+    name = name.strip()
+    if not name:
+        return {"error": "name is required."}
+
+    return await edgeconnect_write(
+        "DELETE",
+        "/gms/rest/ipObjects/addressGroup",
+        params={"name": name},
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_service_groups(
+    name: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List EdgeConnect ACL service groups with compact fields."""
+    params = {"name": name.strip()} if name and name.strip() else None
+    out = await _edgeconnect_get(
+        "/gms/rest/ipObjects/serviceGroup",
+        params,
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["service_groups"] = _compact_ip_object_groups(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+            list_key="service_groups",
+        )
+        if params:
+            out["name"] = params["name"]
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_service_group(
+    body: dict[str, Any],
+    replace_existing: bool = False,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create/update or replace an EdgeConnect ACL service group with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_service_group")
+
+    return await edgeconnect_write(
+        "PUT" if replace_existing else "POST",
+        "/gms/rest/ipObjects/serviceGroup",
+        body=body,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_delete_service_group(
+    name: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Delete an EdgeConnect ACL service group by name with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_delete_service_group")
+    name = name.strip()
+    if not name:
+        return {"error": "name is required."}
+
+    return await edgeconnect_write(
+        "DELETE",
+        "/gms/rest/ipObjects/serviceGroup",
+        params={"name": name},
         dry_run=dry_run,
         confirm=confirm,
     )
