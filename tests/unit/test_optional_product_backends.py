@@ -235,6 +235,71 @@ def test_apstra_list_anomalies_quotes_blueprint_id_and_compacts(monkeypatch):
     ]
 
 
+def test_apstra_get_system_info_quotes_blueprint_id_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"systems":[{"id":"sys1"}]}'
+
+        def json(self):
+            return {
+                "systems": [
+                    {
+                        "id": "sys1",
+                        "label": "leaf-1",
+                        "role": "leaf",
+                        "status": "ready",
+                        "management_ip": "192.0.2.10",
+                        "raw": "omitted",
+                    },
+                    {
+                        "id": "sys2",
+                        "label": "spine-1",
+                        "role": "spine",
+                        "status": "ready",
+                        "management_ip": "192.0.2.11",
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_get_system_info("bp 1", limit=1))
+
+    assert called["url"] == (
+        "https://apstra.example.com/api/blueprints/bp%201/experience/web/system-info"
+    )
+    assert out["blueprint_id"] == "bp 1"
+    assert out["systems"]["systems"] == [
+        {
+            "id": "sys1",
+            "label": "leaf-1",
+            "role": "leaf",
+            "status": "ready",
+            "management_ip": "192.0.2.10",
+        }
+    ]
+    assert out["systems"]["_pagination"]["truncated"] is True
+
+
 def test_aos8_get_rejects_non_v1_path(monkeypatch):
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")

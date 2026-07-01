@@ -62,6 +62,7 @@ Promote a generic GET pattern to a typed tool when it is:
 |---|---|---|
 | List blueprints | `apstra_list_blueprints` | IDs/names/state only |
 | Blueprint anomalies | `apstra_list_anomalies` | Read-only fabric health |
+| Blueprint system info | `apstra_get_system_info` | Compact systems/devices from `/api/blueprints/{id}/experience/web/system-info` |
 | Generic lab write | `apstra_write` | Guarded POST/PUT/PATCH/DELETE to `/api/*`; dry-run default |
 
 ## ArubaOS 8 implemented starters
@@ -86,9 +87,9 @@ Promote a generic GET pattern to a typed tool when it is:
 
 ## Remaining optional typed candidates
 
-| Product | Workflow | Proposed tool | Notes |
-|---|---|---|---|
-| Apstra | Device details | `apstra_get_device` | Compact system/fabric role/status |
+No verified optional typed candidates are queued. Continue promoting new reads
+or lab writes only after confirming stable endpoint patterns from upstream or
+public references.
 
 ## Design constraints
 

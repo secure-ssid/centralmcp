@@ -52,6 +52,24 @@ _ANOMALY_FIELDS = (
     "description",
     "acknowledged",
 )
+_SYSTEM_FIELDS = (
+    "id",
+    "system_id",
+    "label",
+    "name",
+    "hostname",
+    "role",
+    "system_type",
+    "device_key",
+    "status",
+    "state",
+    "deploy_status",
+    "management_ip",
+    "ip_address",
+    "asn",
+    "model",
+    "serial_number",
+)
 
 
 def _apstra_config() -> tuple[str | None, str | None]:
@@ -69,16 +87,17 @@ def _path_segment(value: str) -> str:
 def _compact_record(item: Any, fields: tuple[str, ...]) -> Any:
     if not isinstance(item, dict):
         return item
-    return {key: item[key] for key in fields if key in item}
+    compacted = {key: item[key] for key in fields if key in item}
+    return compacted or item
 
 
-def _compact_collection(data: Any, fields: tuple[str, ...]) -> Any:
+def _compact_collection(data: Any, fields: tuple[str, ...], list_keys: tuple[str, ...] = ()) -> Any:
     if isinstance(data, list):
         return [_compact_record(item, fields) for item in data]
     if not isinstance(data, dict):
         return data
     out = dict(data)
-    for key in ("items", "results", "data"):
+    for key in (*list_keys, "items", "results", "data"):
         if isinstance(out.get(key), list):
             out[key] = [_compact_record(item, fields) for item in out[key]]
             break
@@ -152,6 +171,25 @@ async def apstra_list_anomalies(
     out = await apstra_get(path, limit=limit, offset=offset)
     if "data" in out:
         out["anomalies"] = _compact_collection(out.pop("data"), _ANOMALY_FIELDS)
+        out["blueprint_id"] = blueprint_id
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_get_system_info(
+    blueprint_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get compact system/device information for one Apstra blueprint."""
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/experience/web/system-info"
+    out = await apstra_get(path, limit=limit, offset=offset)
+    if "data" in out:
+        out["systems"] = _compact_collection(
+            out.pop("data"),
+            _SYSTEM_FIELDS,
+            ("systems", "nodes"),
+        )
         out["blueprint_id"] = blueprint_id
     return out
 
