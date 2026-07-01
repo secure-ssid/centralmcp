@@ -49,6 +49,7 @@ ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
 | Try it quickly | [Quick start](#quick-start) |
 | Check your local setup | [`scripts/doctor.py`](scripts/doctor.py) |
 | Install and connect an MCP client | [docs/getting-started.md](docs/getting-started.md) |
+| Copy/paste MCP client setup | [docs/mcp-client-recipes.md](docs/mcp-client-recipes.md) |
 | Understand the low-token router | [docs/tool-router.md](docs/tool-router.md) |
 | Run with any MCP-capable AI client/model | [Streamable HTTP mode](#streamable-http-mode) |
 | See the architecture diagrams | [docs/architecture/system-overview.md](docs/architecture/system-overview.md) |

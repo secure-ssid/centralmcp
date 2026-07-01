@@ -7,6 +7,7 @@ Use this directory as the organized documentation hub for setup, architecture, o
 | Doc | Use it for |
 |---|---|
 | [getting-started.md](getting-started.md) | Install, configure credentials, connect an MCP client, and build indexes |
+| [mcp-client-recipes.md](mcp-client-recipes.md) | Copy/paste stdio and streamable HTTP MCP client setup recipes |
 | [tool-router.md](tool-router.md) | Low-token router modes, toolsets, optional products, and safe dispatch |
 | [architecture/system-overview.md](architecture/system-overview.md) | End-to-end MCP architecture diagrams and runtime flow |
 | [architecture/RAG-ARCHITECTURE.md](architecture/RAG-ARCHITECTURE.md) | Embedded RAG design, eval results, and migration rationale |

@@ -72,6 +72,7 @@ debug servers.
 For clients that connect to an already-running HTTP MCP server, copy
 `.mcp.http.json.example` to `.mcp.http.json` and edit the URL if you use a
 different host or port. The copied file is local-only and git-ignored.
+For client-specific examples, see [mcp-client-recipes.md](mcp-client-recipes.md).
 
 Recommended default:
 
