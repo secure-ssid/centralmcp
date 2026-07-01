@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/getting-started.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/mcp-client-recipes.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/optional-products.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/product-workflows.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/tool-router.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/example-prompts.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/release-indexes.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/troubleshooting.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/architecture/system-overview.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/architecture/RAG-ARCHITECTURE.html</loc>
+  </url>
+</urlset>

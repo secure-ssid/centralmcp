@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /centralmcp/
+
+Sitemap: https://secure-ssid.github.io/centralmcp/sitemap.xml
