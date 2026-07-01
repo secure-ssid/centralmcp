@@ -51,6 +51,40 @@ def test_list_active_alerts_calls_expected_endpoint(monkeypatch):
     )
 
 
+def test_legacy_list_alerts_forwards_offset(monkeypatch):
+    mcp_client = MagicMock()
+    mcp_client.get_alerts.return_value = []
+    monkeypatch.setattr(monitoring, "get_mcp_client", lambda: mcp_client)
+
+    result = monitoring.list_alerts(severity="CRITICAL", limit=25, offset=-10)
+
+    assert result == []
+    mcp_client.get_alerts.assert_called_once_with(
+        site_id=None,
+        severity="CRITICAL",
+        limit=25,
+        offset=0,
+    )
+
+
+def test_list_clients_forwards_offset(monkeypatch):
+    mcp_client = MagicMock()
+    mcp_client.get_clients.return_value = []
+    monkeypatch.setattr(monitoring, "get_mcp_client", lambda: mcp_client)
+
+    result = monitoring.list_clients(site_id="site-1", limit=25, offset=10)
+
+    assert result == []
+    mcp_client.get_clients.assert_called_once_with(
+        site_id="site-1",
+        serial_number=None,
+        ssid=None,
+        connection_type=None,
+        limit=25,
+        offset=10,
+    )
+
+
 def test_list_alert_classifications_calls_expected_endpoint(monkeypatch):
     client = MagicMock()
     client.get.return_value = {"Critical": 2}

@@ -166,20 +166,23 @@ def list_clients(
     ssid_contains: str | None = None,
     site_contains: str | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """List connected clients. ALWAYS filter — unfiltered returns all clients.
 
     Server-side: site_id, serial_number, ssid, connection_type (Wireless/Wired).
     Client-side substring (case-insensitive, prefer for natural-language queries):
     hostname_contains, os_contains, device_type_contains, ssid_contains, site_contains.
-    No server-side offset pagination — narrow filters to page.
+    Server-side limit/offset pagination is used before client-side substring filters.
     """
+    off = max(0, offset)
     clients = get_mcp_client().get_clients(
         site_id=site_id,
         serial_number=serial_number,
         ssid=ssid,
         connection_type=connection_type,
         limit=clamp_limit(limit),
+        offset=off,
     )
 
     # Client-side substring filters. Each filter checks multiple possible field
@@ -207,7 +210,10 @@ def list_clients(
     if filters and isinstance(clients, list):
         clients = [c for c in clients if all(_match(c, needle, fields) for needle, fields in filters)]
 
-    return maybe_bound(clients, limit=limit, offset=0)
+    wrapped = maybe_bound(clients, limit=limit, offset=0)
+    if isinstance(wrapped, dict) and "_pagination" in wrapped:
+        wrapped["_pagination"]["offset"] = off
+    return wrapped
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -334,12 +340,17 @@ def list_alerts(
     site_id: str | None = None,
     severity: str | None = None,
     limit: int = 50,
+    offset: int = 0,
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """List active alerts. severity: CRITICAL/MAJOR/MINOR. No server-side offset pagination — narrow filters to page."""
+    """List active alerts. severity: CRITICAL/MAJOR/MINOR. Server-side limit/offset pagination."""
+    off = max(0, offset)
     alerts = get_mcp_client().get_alerts(
-        site_id=site_id, severity=severity, limit=clamp_limit(limit)
+        site_id=site_id, severity=severity, limit=clamp_limit(limit), offset=off
     )
-    return maybe_bound(alerts, limit=limit, offset=0)
+    wrapped = maybe_bound(alerts, limit=limit, offset=0)
+    if isinstance(wrapped, dict) and "_pagination" in wrapped:
+        wrapped["_pagination"]["offset"] = off
+    return wrapped
 
 
 @mcp.tool(annotations=READ_ONLY)

@@ -157,6 +157,7 @@ class MCPClient:
         site_id: Optional[str] = None,
         severity: Optional[str] = None,
         limit: int = _DEFAULT_LIST_LIMIT,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Return active alerts, optionally filtered by site or severity.
 
@@ -167,7 +168,11 @@ class MCPClient:
             filters.append(f"siteId eq '{site_id}'")
         if severity:
             filters.append(f"severity eq '{severity.capitalize()}'")
-        params: dict[str, Any] = {"filter": " and ".join(filters), "limit": _bounded_limit(limit)}
+        params: dict[str, Any] = {
+            "filter": " and ".join(filters),
+            "limit": _bounded_limit(limit),
+            "offset": max(0, offset),
+        }
         try:
             result = self._client.get("/network-notifications/v1/alerts", params=params)
             return result.get("alerts", result.get("items", []))
@@ -236,9 +241,10 @@ class MCPClient:
         ssid: Optional[str] = None,
         connection_type: Optional[str] = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Return connected clients, optionally filtered by site, device serial, SSID, or type."""
-        params: dict[str, Any] = {"limit": _bounded_limit(limit)}
+        params: dict[str, Any] = {"limit": _bounded_limit(limit), "offset": max(0, offset)}
         if site_id:
             params["site-id"] = site_id
         if serial_number:
