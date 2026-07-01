@@ -59,3 +59,10 @@ def test_current_rag_architecture_avoids_removed_qdrant_implementation_names():
 
     assert "qdrant_client" not in architecture
     assert "qdrant-client" not in architecture
+
+
+def test_current_rag_architecture_does_not_claim_embedding_batches_are_sequential():
+    architecture = (REPO_ROOT / "docs" / "architecture" / "RAG-ARCHITECTURE.md").read_text()
+
+    assert "embed_batch` is sequential" not in architecture
+    assert "40k-call serial loop" not in architecture
