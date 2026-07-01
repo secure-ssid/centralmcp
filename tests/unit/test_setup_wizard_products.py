@@ -118,5 +118,6 @@ def test_catalog_build_receives_product_access_env(monkeypatch):
     command, _, env = catalog_calls[0]
     assert command[-2:] == ["--products", "clearpass"]
     assert env is not None
+    assert set(env) == {"CENTRALMCP_PRODUCTS", "CENTRALMCP_PRODUCT_ACCESS"}
     assert env["CENTRALMCP_PRODUCTS"] == "clearpass"
     assert env["CENTRALMCP_PRODUCT_ACCESS"] == "read-only"

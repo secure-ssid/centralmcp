@@ -391,6 +391,14 @@ def _merge_json_env(target: Path, server_name: str, env: dict[str, str]) -> Step
     return Step(_rel(target), "OK", "added optional product selector")
 
 
+def _catalog_env(env: dict[str, str]) -> dict[str, str]:
+    return {
+        name: env[name]
+        for name in ("CENTRALMCP_PRODUCTS", "CENTRALMCP_PRODUCT_ACCESS")
+        if name in env
+    }
+
+
 def _run(command: list[str], label: str, *, env: dict[str, str] | None = None) -> Step:
     run_env = os.environ.copy()
     if env:
@@ -556,7 +564,7 @@ def main() -> int:
         command = ["uv", "run", "python", "scripts/ingest_tools.py"]
         if selected_products:
             command.extend(["--products", ",".join(selected_products)])
-        steps.append(_run(command, "tool catalog", env=product_env or None))
+        steps.append(_run(command, "tool catalog", env=_catalog_env(product_env) or None))
 
     if not args.skip_doctor and _ask("Run the local doctor now?", True, assume_yes=args.yes):
         steps.append(
