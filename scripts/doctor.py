@@ -14,6 +14,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_HTTP_PORT = 8010
+OPTIONAL_PRODUCT_ENVS = {
+    "clearpass": ("CLEARPASS_BASE_URL", "CLEARPASS_API_TOKEN"),
+    "mist": ("MIST_HOST", "MIST_API_TOKEN"),
+    "apstra": ("APSTRA_BASE_URL", "APSTRA_API_TOKEN"),
+    "aos8": ("AOS8_BASE_URL", "AOS8_API_TOKEN"),
+    "edgeconnect": ("EDGECONNECT_BASE_URL", "EDGECONNECT_API_TOKEN"),
+}
 
 
 @dataclass(frozen=True)
@@ -46,6 +53,25 @@ def _path_check(path: Path, name: str, *, missing_detail: str) -> Check:
     if path.exists():
         return Check("OK", name, f"{_display_path(path)} exists")
     return Check("WARN", name, missing_detail)
+
+
+def _csv_values(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip().lower() for item in value.split(",") if item.strip()]
+
+
+def _enabled_optional_products(products: str, toolsets: str | None) -> set[str]:
+    product_values = set(_csv_values(products))
+    toolset_values = set(_csv_values(toolsets))
+    known_products = set(OPTIONAL_PRODUCT_ENVS)
+
+    enabled = product_values & known_products
+    if "all" in toolset_values:
+        enabled.update(known_products)
+    else:
+        enabled.update(toolset_values & known_products)
+    return enabled
 
 
 def _port_listening(host: str, port: int) -> bool:
@@ -209,7 +235,8 @@ def _runtime_checks() -> list[Check]:
         else f"CENTRALMCP_TOOLSETS={toolsets!r}"
     )
 
-    return [
+    unknown_products = sorted(set(_csv_values(products)) - set(OPTIONAL_PRODUCT_ENVS))
+    checks = [
         Check(
             "OK" if mode in (None, "minimal") else "WARN",
             "Router mode",
@@ -228,6 +255,13 @@ def _runtime_checks() -> list[Check]:
             else f"CENTRALMCP_PRODUCTS={products!r}; optional backends increase tool catalog scope",
         ),
         Check(
+            "OK" if not unknown_products else "WARN",
+            "Optional product names",
+            "all CENTRALMCP_PRODUCTS names are recognized"
+            if not unknown_products
+            else f"unknown names are ignored by the router: {', '.join(unknown_products)}",
+        ),
+        Check(
             "OK" if listening else "WARN",
             "HTTP router listener",
             f"{host}:{port} is listening"
@@ -238,6 +272,21 @@ def _runtime_checks() -> list[Check]:
             ),
         ),
     ]
+
+    for product in sorted(_enabled_optional_products(products, toolsets)):
+        required = OPTIONAL_PRODUCT_ENVS[product]
+        missing = [name for name in required if not os.getenv(name, "").strip()]
+        checks.append(
+            Check(
+                "OK" if not missing else "WARN",
+                f"{product} required env",
+                "required env vars are set"
+                if not missing
+                else f"missing: {', '.join(missing)}",
+            )
+        )
+
+    return checks
 
 
 def main() -> int:
