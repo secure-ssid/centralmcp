@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability or credential exposure
+    url: https://github.com/secure-ssid/centralmcp/blob/main/SECURITY.md
+    about: Do not open a public issue with exploitable details or real credentials.
