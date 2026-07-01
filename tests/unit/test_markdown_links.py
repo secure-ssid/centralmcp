@@ -32,3 +32,23 @@ def test_tracked_markdown_local_links_resolve():
                 missing.append(f"{path.relative_to(REPO_ROOT)} -> {target}")
 
     assert missing == []
+
+
+def test_validation_docs_describe_current_guard_coverage():
+    expected_phrases = [
+        "committed low-token MCP config examples",
+        "local-only config files",
+        "router product/toolset docs",
+        "public tool-count claims",
+        "tool-count docstrings",
+        "tracked Markdown local links",
+    ]
+    combined_docs = "\n".join(
+        [
+            (REPO_ROOT / "README.md").read_text(),
+            (REPO_ROOT / "docs" / "README.md").read_text(),
+        ]
+    )
+
+    for phrase in expected_phrases:
+        assert phrase in combined_docs

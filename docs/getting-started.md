@@ -91,7 +91,7 @@ uv run pytest tests/unit -q
 uv run python scripts/validate_release.py
 ```
 
-The unit suite includes static guards that keep async MCP tools off sync HTTP calls, prevent direct `CentralClient.session` bypasses, and keep direct runtime dependencies on `httpx` instead of `pycentral` or `requests`.
+The unit suite includes static guards that keep async MCP tools off sync HTTP calls, prevent direct `CentralClient.session` bypasses, keep direct runtime dependencies on `httpx` instead of `pycentral` or `requests`, and protect the committed low-token MCP config examples.
 
 ## Optional product starters
 
