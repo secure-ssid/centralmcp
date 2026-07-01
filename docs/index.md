@@ -4,6 +4,16 @@ Low-token Model Context Protocol tooling for HPE Aruba Central, HPE GreenLake
 Platform, embedded docs/API lookup, and optional ClearPass, Mist, Apstra,
 ArubaOS 8, EdgeConnect, and UXI starter backends.
 
+## Search keywords
+
+HPE Networking MCP server, HPE Aruba Networking MCP server, HPE Aruba Central
+MCP server, Aruba Central AI tools, HPE GreenLake Platform MCP, GreenLake
+Platform MCP, FastMCP network automation, Model Context Protocol networking,
+network configuration MCP, Aruba API RAG, Aruba Central OpenAPI lookup,
+ClearPass MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, AOS8 automation,
+HPE Aruba EdgeConnect MCP, HPE Aruba UXI MCP, guarded read/write lab automation,
+EdgeConnect zones, zone-based firewall MCP, Python `httpx` network automation.
+
 ## Start fast
 
 ```bash
