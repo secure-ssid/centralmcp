@@ -54,7 +54,13 @@ def test_public_docs_list_wizard_product_env_vars():
             assert set(spec["vars"]) <= documented
 
 
-def test_product_access_defaults_to_read_write_for_products():
+def test_product_access_defaults_to_read_only_for_products():
+    args = argparse.Namespace(product_access="read-only", yes=False)
+
+    assert setup_wizard._product_access(args, ["clearpass"]) == "read-only"
+
+
+def test_product_access_accepts_explicit_read_write_for_labs():
     args = argparse.Namespace(product_access="read-write", yes=False)
 
     assert setup_wizard._product_access(args, ["clearpass"]) == "read-write"

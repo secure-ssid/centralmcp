@@ -7,8 +7,9 @@ from scripts import ingest_tools
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL_COUNT_RE = re.compile(r"\((\d+) tools\)")
 PUBLIC_TOOL_COUNT_RE = re.compile(
-    r"(?P<core>\d+) core tools(?:,\s+or|\s*/)\s+"
-    r"(?P<all>\d+) with optional product starters"
+    r"(?P<core>\d+) core tools\s*/\s+"
+    r"(?P<read_only>\d+) read-only optional starters\s*/\s+"
+    r"(?P<read_write>\d+) read-write optional starters"
 )
 
 
@@ -49,9 +50,11 @@ def test_module_docstring_tool_counts_match_registered_tools():
 
 def test_public_tool_count_claims_match_registered_catalog(monkeypatch):
     monkeypatch.delenv("CENTRALMCP_PRODUCTS", raising=False)
-    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     core_count = len(ingest_tools._collect())
-    all_count = len(ingest_tools._collect("all"))
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+    read_only_count = len(ingest_tools._collect("all"))
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+    read_write_count = len(ingest_tools._collect("all"))
     claim_paths = []
 
     for path in sorted([REPO_ROOT / "README.md", *(REPO_ROOT / "docs").rglob("*.md")]):
@@ -61,6 +64,7 @@ def test_public_tool_count_claims_match_registered_catalog(monkeypatch):
                 continue
             claim_paths.append(str(path.relative_to(REPO_ROOT)))
             assert int(match.group("core")) == core_count
-            assert int(match.group("all")) == all_count
+            assert int(match.group("read_only")) == read_only_count
+            assert int(match.group("read_write")) == read_write_count
 
     assert claim_paths == ["README.md", "docs/architecture/RAG-ARCHITECTURE.md"]

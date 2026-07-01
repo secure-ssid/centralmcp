@@ -16,6 +16,7 @@ from mcp_servers.shared import (
     bound_collection_response,
     clamp_limit,
     get_glp_client,
+    redact_sensitive,
     safe_api_path,
 )
 from pipeline.clients.glp_client import _V2BETA1_WRITES_FLAG, _writes_enabled
@@ -32,6 +33,7 @@ _GLP_GET_PREFIXES = (
     "/workspaces/",
     "/reporting/",
 )
+_SENSITIVE_QUERY_PARAMS = {"unredacted"}
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -78,6 +80,24 @@ def _params(**values: Any) -> dict[str, Any]:
     return {key: value for key, value in values.items() if value is not None}
 
 
+def _safe_read_params(params: dict[str, Any] | None) -> tuple[dict[str, Any], list[str]]:
+    safe_params = dict(params or {})
+    removed = [
+        key
+        for key in list(safe_params)
+        if str(key).strip().lower() in _SENSITIVE_QUERY_PARAMS
+    ]
+    for key in removed:
+        safe_params.pop(key, None)
+
+    warnings = []
+    if removed:
+        warnings.append(
+            "GLP unredacted responses are disabled; removed unredacted query parameter."
+        )
+    return safe_params, warnings
+
+
 def _paged_params(limit: int | None = 100, offset: int | None = 0, **values: Any) -> dict[str, Any]:
     return {
         **_params(**values),
@@ -102,6 +122,7 @@ def _glp_read(
     params: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    safe_params, warnings = _safe_read_params(params)
     try:
         safe_api_path(path, _GLP_GET_PREFIXES)
     except ValueError as exc:
@@ -109,14 +130,20 @@ def _glp_read(
     try:
         client = get_glp_client()._client
         if headers:
-            response = client._request("GET", path, params=params or {}, headers=headers)
+            response = client._request("GET", path, params=safe_params, headers=headers)
             response.raise_for_status()
             data = response.json()
         else:
-            data = client.get(path, params=params or {})
-        return {"data": data, "endpoint_used": path, "errors": []}
+            data = client.get(path, params=safe_params)
+        result = {"data": redact_sensitive(data), "endpoint_used": path, "errors": []}
+        if warnings:
+            result["warnings"] = warnings
+        return result
     except Exception as exc:
-        return {"data": None, "endpoint_used": path, "errors": [str(exc)]}
+        result = {"data": None, "endpoint_used": path, "errors": [str(exc)]}
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -137,12 +164,19 @@ def glp_get(
         safe_path = safe_api_path(path, _GLP_GET_PREFIXES)
     except ValueError as exc:
         return {"error": f"Invalid path. {exc}"}
+    safe_params, warnings = _safe_read_params(params)
     try:
-        data = get_glp_client()._client.get(safe_path, params=params or {})
-        data = bound_collection_response(data, limit=limit, offset=offset)
-        return {"data": data, "endpoint_used": safe_path}
+        data = get_glp_client()._client.get(safe_path, params=safe_params)
+        data = redact_sensitive(bound_collection_response(data, limit=limit, offset=offset))
+        result = {"data": data, "endpoint_used": safe_path}
+        if warnings:
+            result["warnings"] = warnings
+        return result
     except Exception as exc:
-        return {"error": str(exc), "endpoint_used": safe_path}
+        result = {"error": str(exc), "endpoint_used": safe_path}
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -341,7 +375,6 @@ def list_glp_service_provisions(
     next_cursor: str | None = None,
     limit: int = 100,
     filter: str | None = None,
-    unredacted: bool | None = None,
     all_workspaces: bool | None = None,
 ) -> dict[str, Any]:
     """List GreenLake service provisions, optionally scoped by workspace ID."""
@@ -352,7 +385,6 @@ def list_glp_service_provisions(
             limit,
             next_cursor,
             filter=filter,
-            unredacted=unredacted,
             all=all_workspaces,
         ),
         headers=headers,
@@ -362,12 +394,10 @@ def list_glp_service_provisions(
 @mcp.tool(annotations=READ_ONLY)
 def get_glp_service_provision(
     provision_id: str,
-    unredacted: bool | None = None,
 ) -> dict[str, Any]:
     """Fetch a GreenLake service provision by ID."""
     return _glp_read(
         f"/service-catalog/v1beta1/service-provisions/{_path_part(provision_id)}",
-        _params(unredacted=unredacted),
     )
 
 

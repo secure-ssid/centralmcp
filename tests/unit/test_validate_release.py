@@ -55,12 +55,23 @@ def test_release_tool_catalog_count_uses_read_write_catalog(monkeypatch):
 
 def test_public_docs_tool_counts_match_catalog():
     core_count = validate_release._tool_catalog_count(None)
-    optional_count = validate_release._tool_catalog_count("all")
-    expected = f"{core_count} core tools, or {optional_count} with optional product starters"
-    compact_expected = f"{core_count} core tools / {optional_count} with optional product starters"
+    previous_access = os.environ.get("CENTRALMCP_PRODUCT_ACCESS")
+    os.environ["CENTRALMCP_PRODUCT_ACCESS"] = "read-only"
+    try:
+        read_only_count = len(ingest_tools._collect("all"))
+    finally:
+        if previous_access is None:
+            os.environ.pop("CENTRALMCP_PRODUCT_ACCESS", None)
+        else:
+            os.environ["CENTRALMCP_PRODUCT_ACCESS"] = previous_access
+    read_write_count = validate_release._tool_catalog_count("all")
+    expected = (
+        f"{core_count} core tools / {read_only_count} read-only optional starters / "
+        f"{read_write_count} read-write optional starters"
+    )
 
     assert expected in README.read_text()
-    assert compact_expected in RAG_ARCHITECTURE.read_text()
+    assert expected in RAG_ARCHITECTURE.read_text()
 
 
 def test_validate_tool_count_accepts_count_at_floor():

@@ -35,6 +35,17 @@ def test_glp_get_rejects_dot_segments():
     assert "dot segments" in result["error"]
 
 
+def test_glp_get_rejects_encoded_query_delimiter_bypass(monkeypatch):
+    def fail_client():
+        raise AssertionError("GLP client should not be called for encoded query delimiters")
+
+    monkeypatch.setattr(glp, "get_glp_client", fail_client)
+
+    result = glp.glp_get("/service-catalog/v1beta1/service-provisions%3Funredacted=true")
+
+    assert "encoded query or fragment delimiters" in result["error"]
+
+
 def test_glp_get_rejects_unsupported_prefix():
     result = glp.glp_get("/admin/v1/secrets")
 
@@ -237,7 +248,6 @@ def test_glp_service_provisions_can_send_workspace_header(monkeypatch):
         next_cursor="cursor-1",
         limit=999,
         filter="slug eq 'AC'",
-        unredacted=True,
         all_workspaces=False,
     )
 
@@ -250,13 +260,45 @@ def test_glp_service_provisions_can_send_workspace_header(monkeypatch):
             {
                 "next": "cursor-1",
                 "filter": "slug eq 'AC'",
-                "unredacted": True,
                 "all": False,
                 "limit": 200,
             },
             {"Hpe-workspace-id": "workspace-1"},
         )
     ]
+
+
+def test_glp_service_provision_reads_strip_unredacted_and_redact(monkeypatch):
+    calls = []
+
+    class DummyCentral:
+        def get(self, path, params=None):
+            calls.append((path, params))
+            return {
+                "id": "provision-1",
+                "clientSecret": "secret-value",
+                "nested": {"access_token": "token-value"},
+            }
+
+    class DummyGLP:
+        _client = DummyCentral()
+
+    monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
+
+    result = glp.glp_get(
+        "/service-catalog/v1beta1/service-provisions/provision-1",
+        {"unredacted": True, "filter": "id eq 'provision-1'"},
+    )
+
+    assert calls == [
+        (
+            "/service-catalog/v1beta1/service-provisions/provision-1",
+            {"filter": "id eq 'provision-1'"},
+        )
+    ]
+    assert result["data"]["clientSecret"] == "******"
+    assert result["data"]["nested"]["access_token"] == "******"
+    assert "unredacted responses are disabled" in result["warnings"][0]
 
 
 def test_glp_add_device_fails_closed_when_writes_disabled(monkeypatch):

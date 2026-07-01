@@ -1033,6 +1033,7 @@ def test_aos8_get_calls_httpx(monkeypatch):
 
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(aos8.aos8_get("/v1/configuration/object", {"limit": 1}))
@@ -1081,6 +1082,7 @@ def test_aos8_show_command_calls_showcommand_and_strips_envelope(monkeypatch):
 
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -1141,6 +1143,7 @@ def test_aos8_list_aps_runs_show_ap_database_and_compacts(monkeypatch):
 
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(aos8.aos8_list_aps(config_path="/md/branch1", limit=1))
@@ -4291,6 +4294,7 @@ def test_optional_product_write_dry_run_previews(
 ):
     monkeypatch.setenv(env_base, base_url)
     monkeypatch.setenv(env_token, "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         write_func(
@@ -4367,6 +4371,7 @@ def test_aos8_typed_config_writes_dry_run_preview(
 ):
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(tool_call())
 
@@ -4395,6 +4400,7 @@ def test_aos8_typed_config_write_rejects_invalid_action_and_missing_identifier(m
 
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
 
     bad_action = asyncio.run(
@@ -4439,6 +4445,7 @@ def test_aos8_typed_config_write_executes_and_returns_write_memory_hint(monkeypa
 
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -4504,6 +4511,7 @@ def test_aos8_typed_config_write_does_not_hint_write_memory_on_failure(
 
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -4541,6 +4549,7 @@ def test_aos8_write_memory_uses_dedicated_endpoint(monkeypatch):
 
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(aos8.aos8_write_memory("/md/lab", dry_run=False, confirm=True))
@@ -4645,6 +4654,7 @@ def test_optional_product_write_requires_confirm_when_not_dry_run(
 
     monkeypatch.setenv(env_base, base_url)
     monkeypatch.setenv(env_token, "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -4719,6 +4729,7 @@ def test_optional_product_write_executes_with_default_bearer_auth(
 
     monkeypatch.setenv(env_base, base_url)
     monkeypatch.setenv(env_token, "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.delenv("EDGECONNECT_AUTH_HEADER", raising=False)
     monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
 
@@ -4757,6 +4768,7 @@ def test_edgeconnect_write_executes_with_custom_auth_header(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
     monkeypatch.setenv("EDGECONNECT_AUTH_HEADER", "X-Auth-Token")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -4780,7 +4792,7 @@ def test_edgeconnect_write_executes_with_custom_auth_header(monkeypatch):
 def test_edgeconnect_save_changes_previews_with_nepk(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(edgeconnect.edgeconnect_save_changes(ne_pk="1.NE", body={"save": True}))
 
@@ -4825,7 +4837,7 @@ def test_edgeconnect_save_changes_executes_with_confirm(monkeypatch):
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -4847,7 +4859,7 @@ def test_edgeconnect_save_changes_executes_with_confirm(monkeypatch):
 def test_edgeconnect_set_maintenance_mode_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         edgeconnect.edgeconnect_set_maintenance_mode(
@@ -4895,7 +4907,7 @@ def test_edgeconnect_set_maintenance_mode_executes_with_confirm(monkeypatch):
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -4915,7 +4927,7 @@ def test_edgeconnect_set_maintenance_mode_executes_with_confirm(monkeypatch):
 def test_edgeconnect_set_appliance_network_role_site_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         edgeconnect.edgeconnect_set_appliance_network_role_site(
@@ -4970,7 +4982,7 @@ def test_edgeconnect_set_appliance_network_role_site_executes_with_confirm(monke
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -4992,7 +5004,7 @@ def test_edgeconnect_set_appliance_network_role_site_executes_with_confirm(monke
 def test_edgeconnect_set_route_labels_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         edgeconnect.edgeconnect_set_route_labels(
@@ -5040,7 +5052,7 @@ def test_edgeconnect_set_route_labels_executes_with_confirm(monkeypatch):
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -5060,7 +5072,7 @@ def test_edgeconnect_set_route_labels_executes_with_confirm(monkeypatch):
 def test_edgeconnect_set_interface_labels_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     body = {
         "wan": {"1": {"name": "MPLS", "active": True, "topology": 0}},
@@ -5084,7 +5096,7 @@ def test_edgeconnect_set_interface_labels_previews(monkeypatch):
 def test_edgeconnect_apply_interface_labels_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(edgeconnect.edgeconnect_apply_interface_labels(" 1.NE "))
 
@@ -5099,6 +5111,7 @@ def test_edgeconnect_apply_interface_labels_previews(monkeypatch):
 def test_edgeconnect_apply_interface_labels_requires_nepk(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(edgeconnect.edgeconnect_apply_interface_labels(" "))
 
@@ -5175,7 +5188,7 @@ def test_edgeconnect_interface_label_writes_execute_with_confirm(
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(tool_call())
@@ -5190,7 +5203,7 @@ def test_edgeconnect_interface_label_writes_execute_with_confirm(
 def test_edgeconnect_set_bypass_mode_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(edgeconnect.edgeconnect_set_bypass_mode(True, [" 1.NE ", "2.NE"]))
 
@@ -5214,6 +5227,7 @@ def test_edgeconnect_set_bypass_mode_blocks_when_read_only(monkeypatch):
 def test_edgeconnect_set_bypass_mode_requires_nepks(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(edgeconnect.edgeconnect_set_bypass_mode(False, [" "]))
 
@@ -5242,7 +5256,7 @@ def test_edgeconnect_set_bypass_mode_executes_with_confirm(monkeypatch):
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -5285,7 +5299,7 @@ def _link_integrity_body() -> dict:
 def test_edgeconnect_run_link_integrity_test_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     body = _link_integrity_body()
     out = asyncio.run(edgeconnect.edgeconnect_run_link_integrity_test(body))
@@ -5310,6 +5324,7 @@ def test_edgeconnect_run_link_integrity_test_blocks_when_read_only(monkeypatch):
 def test_edgeconnect_run_link_integrity_test_requires_two_nepks(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(edgeconnect.edgeconnect_run_link_integrity_test({"nePks": ["1.NE"]}))
 
@@ -5338,7 +5353,7 @@ def test_edgeconnect_run_link_integrity_test_executes_with_confirm(monkeypatch):
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     body = _link_integrity_body()
@@ -5360,7 +5375,7 @@ def test_edgeconnect_run_link_integrity_test_executes_with_confirm(monkeypatch):
 def test_edgeconnect_set_address_group_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     body = {
         "name": "OfficeNetwork",
@@ -5381,7 +5396,7 @@ def test_edgeconnect_set_address_group_previews(monkeypatch):
 def test_edgeconnect_set_service_group_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     body = {
         "name": "WebServices",
@@ -5413,7 +5428,7 @@ def test_edgeconnect_set_service_group_previews(monkeypatch):
 def test_edgeconnect_delete_ip_object_groups_preview(monkeypatch, tool_call, expected_path):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(tool_call())
 
@@ -5435,6 +5450,7 @@ def test_edgeconnect_delete_ip_object_groups_preview(monkeypatch, tool_call, exp
 def test_edgeconnect_delete_ip_object_groups_require_name(monkeypatch, tool_call):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(tool_call())
 
@@ -5538,7 +5554,7 @@ def test_edgeconnect_ip_object_group_writes_execute_with_confirm(
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(tool_call())
@@ -5553,7 +5569,7 @@ def test_edgeconnect_ip_object_group_writes_execute_with_confirm(
 def test_edgeconnect_set_services_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     body = {"zscaler_west": {"name": "Zscaler West", "enabled": True}}
     out = asyncio.run(edgeconnect.edgeconnect_set_services(body))
@@ -5597,7 +5613,7 @@ def test_edgeconnect_set_services_executes_with_confirm(monkeypatch):
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     body = {"zscaler_west": {"name": "Zscaler West", "enabled": True}}
@@ -5615,7 +5631,7 @@ def test_edgeconnect_set_services_executes_with_confirm(monkeypatch):
 def test_edgeconnect_set_zones_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         edgeconnect.edgeconnect_set_zones(
@@ -5635,7 +5651,7 @@ def test_edgeconnect_set_zones_previews(monkeypatch):
 def test_edgeconnect_set_zone_firewall_status_previews(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(edgeconnect.edgeconnect_set_zone_firewall_status(enabled=True))
 
@@ -5649,7 +5665,7 @@ def test_edgeconnect_set_zone_firewall_status_previews(monkeypatch):
 def test_edgeconnect_set_next_zone_id_previews_and_validates(monkeypatch):
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(edgeconnect.edgeconnect_set_next_zone_id(next_id=10))
     invalid = asyncio.run(edgeconnect.edgeconnect_set_next_zone_id(next_id=0))
@@ -5743,7 +5759,7 @@ def test_edgeconnect_zone_writes_execute_with_confirm(
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
     monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
-    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(tool_call())

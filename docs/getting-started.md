@@ -195,8 +195,9 @@ Or let the wizard enable only the products you want:
 python3 scripts/setup_wizard.py --products clearpass,mist --product-access read-write
 ```
 
-Optional product read/write mode is lab-friendly: write tools are exposed, but
-they dry-run by default and require `confirm=True` to execute.
+Optional products default to read-only. Explicit read/write mode is lab-friendly:
+write tools are exposed, but they dry-run by default and require `confirm=True`
+to execute.
 
 ## 5. Optional: build the docs/API RAG indexes
 

@@ -4,13 +4,13 @@ from mcp_servers import shared, tool_router
 from scripts import ingest_tools
 
 
-def test_product_access_defaults_to_read_write_when_unset(monkeypatch):
+def test_product_access_defaults_to_read_only_when_unset(monkeypatch):
     monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
 
-    assert shared.optional_product_access_mode() == "read-write"
-    assert shared.optional_product_writes_allowed() is True
-    assert tool_router._product_access() == "read-write"
-    assert ingest_tools._product_access() == "read-write"
+    assert shared.optional_product_access_mode() == "read-only"
+    assert shared.optional_product_writes_allowed() is False
+    assert tool_router._product_access() == "read-only"
+    assert ingest_tools._product_access() == "read-only"
 
 
 def test_product_access_accepts_read_write_aliases(monkeypatch):

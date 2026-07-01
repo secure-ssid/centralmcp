@@ -106,7 +106,7 @@ Optional product starters are disabled unless you enable them:
 
 ```env
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
-CENTRALMCP_PRODUCT_ACCESS=read-write
+CENTRALMCP_PRODUCT_ACCESS=read-only
 ```
 
 Example prompt:
@@ -152,6 +152,10 @@ invoke_read_tool("uxi_get_sensor_status", {"sensor_id": "SENSOR_ID"})
 ```
 
 Lab write dry-run prompt:
+
+```env
+CENTRALMCP_PRODUCT_ACCESS=read-write
+```
 
 ```text
 Find the Mist alarm acknowledgement tool and show the dry-run payload for alarm ALARM_ID at site SITE_ID. Do not execute it.

@@ -43,5 +43,5 @@ def test_http_router_loads_lab_safety_flags():
 def test_http_router_banner_shows_product_access_mode():
     text = _script_text()
 
-    assert 'export CENTRALMCP_PRODUCT_ACCESS="${CENTRALMCP_PRODUCT_ACCESS:-read-write}"' in text
+    assert 'export CENTRALMCP_PRODUCT_ACCESS="${CENTRALMCP_PRODUCT_ACCESS:-read-only}"' in text
     assert "access:   ${CENTRALMCP_PRODUCT_ACCESS}" in text

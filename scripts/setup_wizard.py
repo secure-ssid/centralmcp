@@ -348,7 +348,7 @@ def _product_env(
     selected_products: list[str],
     *,
     assume_yes: bool,
-    product_access: str = "read-write",
+    product_access: str = "read-only",
 ) -> dict[str, str]:
     env: dict[str, str] = {}
     if not selected_products:
@@ -497,8 +497,11 @@ def main() -> int:
     parser.add_argument(
         "--product-access",
         choices=("read-only", "read-write"),
-        default="read-write",
-        help="optional product access mode for generated local configs (default: read-write)",
+        default="read-only",
+        help=(
+            "optional product access mode for generated local configs "
+            "(default: read-only; use read-write for lab write workflows)"
+        ),
     )
     parser.add_argument("--skip-install", action="store_true", help="do not run uv sync")
     parser.add_argument(

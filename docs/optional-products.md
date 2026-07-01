@@ -31,10 +31,12 @@ possible so broad API calls do not flood the MCP context.
 Write-capable optional product tools are intended for lab and controlled
 operations. They are annotated as write/destructive, default to `dry_run=True`,
 and require `dry_run=False` plus `confirm=True` before sending API changes.
-Set `CENTRALMCP_PRODUCT_ACCESS=read-only` to hide optional product write tools
-from router discovery and block write-tool execution. The setup wizard defaults
-to `read-write` so lab workflows can preview and execute writes when explicitly
-confirmed. Unrecognized manual access-mode values fail closed as read-only.
+Optional product access now defaults to `read-only`, which hides optional write
+tools from router discovery and blocks direct write-tool execution. Set
+`CENTRALMCP_PRODUCT_ACCESS=read-write` or run the setup wizard with
+`--product-access read-write` only for trusted lab workflows where confirmed
+writes are expected. Unrecognized manual access-mode values fail closed as
+read-only.
 
 For ArubaOS 8 typed configuration-object writes, the manage tools return
 `requires_write_memory_for` with each affected `config_path`. Run
@@ -56,8 +58,8 @@ flowchart TD
     subset["--products clearpass,mist"]
     all["--with-products"]
     access{"Product access mode"}
+    ro["read-only default<br/>write tools hidden and blocked"]
     rw["read-write lab mode<br/>writes visible<br/>dry_run=False + confirm=True required"]
-    ro["read-only posture<br/>write tools hidden and blocked"]
     env[".env<br/>CENTRALMCP_PRODUCTS<br/>CENTRALMCP_PRODUCT_ACCESS<br/>product URLs/tokens"]
     config["Local MCP configs<br/>.mcp.json / .mcp.http.json<br/>product selector only, no tokens"]
     catalog["Router catalog<br/>scripts/ingest_tools.py"]
@@ -68,8 +70,8 @@ flowchart TD
     choose --> all
     subset --> access
     all --> access
-    access -->|"default"| rw
-    access -->|"--product-access read-only"| ro
+    access -->|"default"| ro
+    access -->|"--product-access read-write"| rw
     rw --> env
     ro --> env
     env --> config
@@ -92,27 +94,32 @@ Real `.env`, `.mcp.json`, and `.vscode/mcp.json` files are git-ignored.
 
 ## Manual setup
 
-The wizard defaults optional products to read/write lab mode and records that
-access mode in local `.env` / MCP config files:
+The wizard defaults optional products to read-only and records the access mode
+in local `.env` / MCP config files. Use explicit read/write lab mode when you
+want write tools visible and still guarded by `dry_run=False` plus
+`confirm=True`:
 
 ```bash
 python3 scripts/setup_wizard.py --products clearpass,mist --product-access read-write
 ```
 
-Use `--product-access read-only` if you want generated local configs to document
-a read-only operating posture.
+Omit `--product-access read-write` if you want generated local configs to keep
+the safer read-only operating posture.
 
 For manual shell setup:
 
 ```bash
 export CENTRALMCP_PRODUCTS=clearpass,mist
-export CENTRALMCP_PRODUCT_ACCESS=read-write
+export CENTRALMCP_PRODUCT_ACCESS=read-only
 export CLEARPASS_BASE_URL=https://clearpass.example.com
 export CLEARPASS_API_TOKEN=...
 export MIST_HOST=https://api.mist.com
 export MIST_API_TOKEN=...
 uv run python scripts/ingest_tools.py --products clearpass,mist
 ```
+
+Set `CENTRALMCP_PRODUCT_ACCESS=read-write` in the same shell only when you want
+lab write tools indexed and visible.
 
 For streamable HTTP, `scripts/run_http_router.sh` safely loads expected local
 `.env` assignments before starting the router, including the product selector,

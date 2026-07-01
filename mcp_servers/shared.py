@@ -105,7 +105,7 @@ _READ_WRITE_ACCESS_VALUES = {"read-write", "readwrite", "read_write", "rw"}
 def optional_product_access_mode() -> str:
     raw = os.getenv("CENTRALMCP_PRODUCT_ACCESS")
     if raw is None:
-        return "read-write"
+        return "read-only"
     value = raw.strip().lower()
     if value in _READ_WRITE_ACCESS_VALUES:
         return "read-write"
@@ -242,6 +242,7 @@ _central_client: CentralClient | None = None
 _mcp_client: MCPClient | None = None
 _glp_client: GLPClient | None = None
 _ENCODED_PATH_RESERVED = re.compile(r"%(?:2e|2f|5c)", re.IGNORECASE)
+_ENCODED_PATH_DELIMITERS = re.compile(r"%(?:23|3f)", re.IGNORECASE)
 
 
 def get_client() -> CentralClient:
@@ -338,9 +339,13 @@ def safe_api_path(path: str, allowed_prefixes: tuple[str, ...]) -> str:
         raise ValueError(
             "path must be a relative API path without scheme, host, query, or fragment"
         )
+    if _ENCODED_PATH_DELIMITERS.search(parsed.path):
+        raise ValueError("path must not contain encoded query or fragment delimiters")
     if _ENCODED_PATH_RESERVED.search(parsed.path):
         raise ValueError("path must not contain encoded dot, slash, or backslash characters")
     decoded = unquote(parsed.path)
+    if _ENCODED_PATH_DELIMITERS.search(decoded) or "?" in decoded or "#" in decoded:
+        raise ValueError("path must not contain encoded query or fragment delimiters")
     if _ENCODED_PATH_RESERVED.search(decoded):
         raise ValueError("path must not contain double-encoded dot, slash, or backslash characters")
     if "\\" in decoded:

@@ -311,6 +311,7 @@ def test_clearpass_find_guest_by_email_uses_filter(monkeypatch):
 def test_clearpass_write_dry_run_previews_request(monkeypatch):
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         clearpass.clearpass_write(
@@ -345,6 +346,7 @@ def test_clearpass_write_blocks_when_product_access_read_only(monkeypatch):
 def test_clearpass_write_preview_redacts_sensitive_values(monkeypatch):
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         clearpass.clearpass_write(
@@ -362,6 +364,7 @@ def test_clearpass_write_preview_redacts_sensitive_values(monkeypatch):
 def test_clearpass_write_requires_confirm_when_not_dry_run(monkeypatch):
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         clearpass.clearpass_write(
@@ -405,6 +408,7 @@ def test_clearpass_write_executes_with_confirm(monkeypatch):
 
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(clearpass.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -430,6 +434,7 @@ def test_clearpass_write_executes_with_confirm(monkeypatch):
 def test_clearpass_update_endpoint_attributes_builds_patch_preview(monkeypatch):
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         clearpass.clearpass_update_endpoint_attributes(
@@ -459,6 +464,7 @@ def test_clearpass_set_guest_enabled_requires_one_identifier(monkeypatch):
 def test_clearpass_delete_guest_by_username_previews(monkeypatch):
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(clearpass.clearpass_delete_guest(username="lab user"))
 

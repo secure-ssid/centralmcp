@@ -98,7 +98,9 @@ The wizard can enable only the starters you choose, write the matching local
 python3 scripts/setup_wizard.py --products clearpass,mist
 ```
 
-Use `--with-products` only when you want every starter backend enabled.
+Use `--with-products` only when you want every starter backend enabled. Add
+`--product-access read-write` only for trusted lab sessions that need guarded
+write tools visible.
 
 ## Verify local setup
 

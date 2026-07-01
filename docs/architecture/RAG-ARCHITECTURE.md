@@ -114,7 +114,7 @@ Metrics: `recall@5` (did an expected source appear in top-5), `mrr` (rank of fir
 **Final evaluated corpus (2026-06-03 full rebuild):** 53,052 chunks / 7
 ingested sources (Redis index had 40,900 and was missing `aos_techdocs`,
 `openapi_specs`, and most of `techdocs_html`) + 213-spec SQLite index + router
-tool index (currently 213 core tools / 346 with optional product starters).
+tool index (currently 213 core tools / 312 read-only optional starters / 346 read-write optional starters).
 18/20 eval questions hit at rank 1. Shippable artifacts: `data/docs.lance`
 (190 MB), `data/specs.sqlite` (18 MB), `data/tools.lance` (0.6 MB).
 

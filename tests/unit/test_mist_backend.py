@@ -332,6 +332,7 @@ def test_mist_list_alarms_strips_none_params_and_compacts(monkeypatch):
 def test_mist_write_dry_run_previews_request(monkeypatch):
     monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
     monkeypatch.setenv("MIST_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         mist.mist_write(
@@ -366,6 +367,7 @@ def test_mist_write_blocks_when_product_access_read_only(monkeypatch):
 def test_mist_write_preview_redacts_sensitive_values(monkeypatch):
     monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
     monkeypatch.setenv("MIST_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         mist.mist_write(
@@ -383,6 +385,7 @@ def test_mist_write_preview_redacts_sensitive_values(monkeypatch):
 def test_mist_write_requires_confirm_when_not_dry_run(monkeypatch):
     monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
     monkeypatch.setenv("MIST_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(
         mist.mist_write(
@@ -426,6 +429,7 @@ def test_mist_write_executes_with_confirm(monkeypatch):
 
     monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
     monkeypatch.setenv("MIST_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
     monkeypatch.setattr(mist.httpx, "AsyncClient", _FakeAsyncClient)
 
     out = asyncio.run(
@@ -449,6 +453,7 @@ def test_mist_write_executes_with_confirm(monkeypatch):
 def test_mist_ack_alarm_builds_preview(monkeypatch):
     monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
     monkeypatch.setenv("MIST_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(mist.mist_ack_alarm("site 1", "alarm 1", note="checked"))
 
@@ -461,6 +466,7 @@ def test_mist_ack_alarm_builds_preview(monkeypatch):
 def test_mist_unack_alarm_builds_preview(monkeypatch):
     monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
     monkeypatch.setenv("MIST_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(mist.mist_unack_alarm("site1", "alarm1"))
 
@@ -473,6 +479,7 @@ def test_mist_unack_alarm_builds_preview(monkeypatch):
 def test_mist_delete_wlan_builds_preview(monkeypatch):
     monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
     monkeypatch.setenv("MIST_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     out = asyncio.run(mist.mist_delete_wlan("site1", "wlan1"))
 
