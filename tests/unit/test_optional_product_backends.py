@@ -1334,6 +1334,51 @@ def test_edgeconnect_list_tunnels_filters_and_compacts(monkeypatch):
     assert out["tunnels"]["_pagination"]["truncated"] is True
 
 
+def test_edgeconnect_get_tunnel_metadata_sets_metadata_param(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"totalTunnels":12}'
+
+        def json(self):
+            return {
+                "totalTunnels": 12,
+                "physicalTunnels": 8,
+                "bondedTunnels": 4,
+                "raw": "omitted",
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_tunnel_metadata())
+
+    assert called["url"] == "https://orch.example.com/gms/rest/tunnels2"
+    assert called["params"] == {"metaData": True}
+    assert out["tunnel_metadata"] == {
+        "totalTunnels": 12,
+        "physicalTunnels": 8,
+        "bondedTunnels": 4,
+    }
+
+
 @pytest.mark.parametrize(
     ("write_func", "env_base", "env_token", "base_url", "path", "expected_url"),
     [

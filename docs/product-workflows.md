@@ -92,6 +92,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Appliance system info | `edgeconnect_get_system_info` | Model/version/status/alarm summary from `/rest/json/systemInfo` |
 | Appliance alarms | `edgeconnect_list_alarms` | Outstanding alarms from `/rest/json/alarm`, bounded by `limit` / `offset` |
 | Tunnel health | `edgeconnect_list_tunnels` | Physical tunnel status from `/gms/rest/tunnels2/physical`, with optional filters |
+| Tunnel metadata | `edgeconnect_get_tunnel_metadata` | Compact tunnel count metadata from `/gms/rest/tunnels2?metaData=true` |
 | Generic lab write | `edgeconnect_write` | Guarded POST/PUT/PATCH/DELETE to Orchestrator REST paths; dry-run default |
 
 ## Remaining optional typed candidates

@@ -90,6 +90,20 @@ _TUNNEL_FIELDS = (
     "state",
     "status",
 )
+_TUNNEL_METADATA_FIELDS = (
+    "total",
+    "count",
+    "totalTunnels",
+    "tunnelCount",
+    "physical",
+    "physicalTunnels",
+    "bonded",
+    "bondedTunnels",
+    "thirdParty",
+    "thirdPartyTunnels",
+    "ipsec",
+    "ipsecTunnels",
+)
 
 
 def _edgeconnect_config() -> tuple[str | None, str | None, str]:
@@ -231,6 +245,17 @@ async def edgeconnect_list_tunnels(
             _TUNNEL_FIELDS,
             ("tunnels", "physicalTunnels"),
         )
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_tunnel_metadata() -> dict[str, Any]:
+    """Get EdgeConnect tunnel count metadata from Orchestrator."""
+    out = await edgeconnect_get("/gms/rest/tunnels2", {"metaData": True})
+    if "data" in out:
+        data = out.pop("data")
+        metadata = _compact_record(data, _TUNNEL_METADATA_FIELDS)
+        out["tunnel_metadata"] = metadata or data
     return out
 
 
