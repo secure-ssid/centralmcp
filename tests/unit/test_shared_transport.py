@@ -11,7 +11,7 @@ class _DummyMCP:
     def __init__(self) -> None:
         self.settings = SimpleNamespace(
             host="127.0.0.1",
-            port=8000,
+            port=8010,
             transport_security=TransportSecuritySettings(
                 allowed_hosts=["127.0.0.1:*"],
                 allowed_origins=["http://127.0.0.1:*"],
@@ -36,13 +36,26 @@ def test_run_server_configures_http_settings_without_host_port_kwargs(monkeypatc
     assert server.run_calls == [{"transport": "streamable-http"}]
 
 
+def test_run_server_defaults_http_to_8010(monkeypatch):
+    server = _DummyMCP()
+    monkeypatch.setenv("MCP_TRANSPORT", "streamable-http")
+    monkeypatch.delenv("MCP_HOST", raising=False)
+    monkeypatch.delenv("MCP_PORT", raising=False)
+
+    run_server(server)
+
+    assert server.settings.host == "127.0.0.1"
+    assert server.settings.port == 8010
+    assert server.run_calls == [{"transport": "streamable-http"}]
+
+
 def test_configure_http_transport_applies_security_allowlists(monkeypatch):
     server = _DummyMCP()
     monkeypatch.setenv("MCP_ALLOWED_HOSTS", "mcp.example.com,localhost:*")
     monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "https://app.example.com,http://localhost:*")
     monkeypatch.setenv("MCP_DNS_REBINDING_PROTECTION", "true")
 
-    _configure_http_transport(server, "127.0.0.1", 8000)
+    _configure_http_transport(server, "127.0.0.1", 8010)
 
     security = server.settings.transport_security
     assert security.enable_dns_rebinding_protection is True

@@ -138,7 +138,8 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio")
 MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
-MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
+DEFAULT_HTTP_PORT = 8010
+MCP_PORT = int(os.environ.get("MCP_PORT", str(DEFAULT_HTTP_PORT)))
 
 
 def _csv_env(name: str) -> list[str]:
@@ -219,7 +220,7 @@ def run_server(mcp_instance, default_port: int | None = None) -> None:
 
     MCP_TRANSPORT: 'stdio' (default) or 'streamable-http'
     MCP_HOST: bind address (default 127.0.0.1)
-    MCP_PORT: port (default 8000, or default_port if provided)
+    MCP_PORT: port (default 8010, or default_port if provided)
     MCP_ALLOWED_HOSTS / MCP_ALLOWED_ORIGINS: comma-separated DNS rebinding allowlists
     """
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
@@ -227,7 +228,8 @@ def run_server(mcp_instance, default_port: int | None = None) -> None:
         mcp_instance.run()
     else:
         host = os.environ.get("MCP_HOST", "127.0.0.1")
-        port = int(os.environ.get("MCP_PORT", str(default_port or 8000)))
+        fallback_port = default_port if default_port is not None else DEFAULT_HTTP_PORT
+        port = int(os.environ.get("MCP_PORT", str(fallback_port)))
         _configure_http_transport(mcp_instance, host, port)
         mcp_instance.run(transport=transport)
 
