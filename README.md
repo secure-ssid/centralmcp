@@ -254,7 +254,7 @@ and prints the listener details plus the `kill <PID>` stop command.
 | `GLP_BASE_URL` | Override GLP API base URL | HPE default |
 | `MCP_TRANSPORT` | `stdio` or `streamable-http` | `stdio` |
 | `MCP_HOST` | HTTP bind address for streamable HTTP mode | `127.0.0.1` |
-| `MCP_PORT` | HTTP port for streamable HTTP mode; `scripts/run_http_router.sh` defaults to `8010` | `8000` |
+| `MCP_PORT` | HTTP port for streamable HTTP mode; `scripts/run_http_router.sh` defaults to `8010` | `8010` |
 
 Product starter backends also use product-specific URL/token variables. See [docs/getting-started.md](docs/getting-started.md).
 
