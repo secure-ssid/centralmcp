@@ -7,6 +7,7 @@ name = "centralmcp"
 version = "0.2.4"
 description = "Low-token HPE Aruba Networking MCP server for Aruba Central, GreenLake Platform, RAG/OpenAPI lookup, EdgeConnect SD-WAN, UXI, and optional product automation."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 keywords = [
     "ai-for-networking",
