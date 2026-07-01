@@ -164,15 +164,7 @@ def _product_access(args: argparse.Namespace, selected_products: list[str]) -> s
     value = args.product_access
     if value not in {"read-only", "read-write"}:
         raise SystemExit("--product-access must be one of: read-only, read-write")
-    if value == "read-write" or args.yes:
-        return value
-    if _ask(
-        "Enable optional product write tools for lab use? They still dry-run by default.",
-        False,
-        assume_yes=False,
-    ):
-        return "read-write"
-    return "read-only"
+    return value
 
 
 def _choose_base_url(label: str, *, default: str, assume_yes: bool) -> str:

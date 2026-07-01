@@ -42,6 +42,23 @@ def test_product_access_defaults_to_read_write_for_products():
     assert setup_wizard._product_access(args, ["clearpass"]) == "read-write"
 
 
+def test_product_access_respects_read_only_without_prompt(monkeypatch):
+    args = argparse.Namespace(product_access="read-only", yes=False)
+    monkeypatch.setattr(
+        setup_wizard,
+        "_ask",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected prompt")),
+    )
+
+    assert setup_wizard._product_access(args, ["clearpass"]) == "read-only"
+
+
+def test_product_access_no_products_stays_read_only():
+    args = argparse.Namespace(product_access="read-write", yes=False)
+
+    assert setup_wizard._product_access(args, []) == "read-only"
+
+
 def test_write_env_file_merges_existing_values_without_overwriting_tokens(tmp_path):
     target = tmp_path / ".env"
     target.write_text(
