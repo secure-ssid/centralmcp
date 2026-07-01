@@ -40,7 +40,9 @@ def test_package_indexes_embeds_source_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(package_indexes, "DATA_DIR", data_dir)
     monkeypatch.setattr(package_indexes, "SOURCE_MANIFEST", source_manifest)
 
-    archive, _ = package_indexes.package_indexes("vtest", tmp_path / "dist")
+    output_dir = tmp_path / "dist"
+    archive, _ = package_indexes.package_indexes("vtest", output_dir)
+    latest_archive, latest_checksum = package_indexes.write_latest_alias(archive, output_dir)
 
     with tarfile.open(archive, "r:gz") as tar:
         names = set(tar.getnames())
@@ -51,3 +53,6 @@ def test_package_indexes_embeds_source_manifest(tmp_path, monkeypatch):
 
     assert source_data == [{"source": "docs"}]
     assert index_data["source_manifest"]["sources"] == ["docs"]
+    assert latest_archive.name == "centralmcp-rag-index-latest.tar.gz"
+    assert latest_archive.read_bytes() == archive.read_bytes()
+    assert latest_checksum.read_text().endswith("  centralmcp-rag-index-latest.tar.gz\n")

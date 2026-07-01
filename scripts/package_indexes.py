@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sqlite3
 import tarfile
 import tempfile
@@ -17,6 +18,7 @@ DATA_DIR = ROOT / "data"
 DIST_DIR = ROOT / "dist"
 REQUIRED_ARTIFACTS = ("docs.lance", "tools.lance", "specs.sqlite")
 SOURCE_MANIFEST = ROOT / "ingestion" / "source_manifest.json"
+LATEST_ARCHIVE = "centralmcp-rag-index-latest.tar.gz"
 
 
 def _project_version() -> str:
@@ -134,6 +136,16 @@ def package_indexes(version: str, output_dir: Path) -> tuple[Path, Path]:
     return archive, checksum
 
 
+def write_latest_alias(archive: Path, output_dir: Path) -> tuple[Path, Path]:
+    latest_archive = output_dir / LATEST_ARCHIVE
+    latest_checksum = latest_archive.with_suffix(latest_archive.suffix + ".sha256")
+
+    if archive.resolve(strict=False) != latest_archive.resolve(strict=False):
+        shutil.copyfile(archive, latest_archive)
+    latest_checksum.write_text(f"{_sha256(latest_archive)}  {latest_archive.name}\n")
+    return latest_archive, latest_checksum
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -147,11 +159,20 @@ def main() -> int:
         default=DIST_DIR,
         help="Directory for generated archive and checksum",
     )
+    parser.add_argument(
+        "--skip-latest-copy",
+        action="store_true",
+        help="Only write the versioned archive/checksum, not the downloader-friendly latest copy.",
+    )
     args = parser.parse_args()
 
     archive, checksum = package_indexes(args.version, args.output_dir)
     print(f"Wrote {archive}")
     print(f"Wrote {checksum}")
+    if not args.skip_latest_copy:
+        latest_archive, latest_checksum = write_latest_alias(archive, args.output_dir)
+        print(f"Wrote {latest_archive}")
+        print(f"Wrote {latest_checksum}")
     return 0
 
 

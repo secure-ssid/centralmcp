@@ -51,12 +51,14 @@ The script writes:
 ```text
 dist/centralmcp-rag-index-v<project-version>.tar.gz
 dist/centralmcp-rag-index-v<project-version>.tar.gz.sha256
+dist/centralmcp-rag-index-latest.tar.gz
+dist/centralmcp-rag-index-latest.tar.gz.sha256
 ```
 
-Upload the archive and checksum to the GitHub Release. For convenience, also
-upload copies named `centralmcp-rag-index-latest.tar.gz` and
-`centralmcp-rag-index-latest.tar.gz.sha256` so the downloader can always use and
-verify the latest release URL.
+Upload both the versioned archive/checksum and the `latest` archive/checksum to
+the GitHub Release so the downloader can always use and verify the latest
+release URL. Use `--skip-latest-copy` only if you intentionally want to package
+versioned assets without the downloader alias.
 
 ## What is inside
 
