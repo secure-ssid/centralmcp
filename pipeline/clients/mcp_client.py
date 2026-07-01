@@ -1,9 +1,7 @@
-"""Read-only adapter for the central-mcp-server tools.
+"""Read-only adapter for Central monitoring and configuration APIs.
 
-All reads that go through this client use the MCP server's tool layer,
-keeping read operations isolated from the write-path CentralClient.
-The MCP server must be running and configured with credentials for the
-account being queried.
+All reads that go through this client use the shared CentralClient HTTP layer,
+keeping read operations isolated from write-path pipeline code.
 
 In unit tests, replace this class with a mock — all public methods
 take simple Python types and return plain dicts.
@@ -28,7 +26,7 @@ def _bounded_limit(limit: int) -> int:
 
 
 def _inventory_device_type_to_event_context(device_type: str | None) -> str:
-    """Map device-inventory ``deviceType`` to ``/network-troubleshooting/v1/events`` context-type."""
+    """Map device inventory type to troubleshooting event context type."""
     raw = (device_type or "").upper()
     if "ACCESS_POINT" in raw or raw == "AP":
         return "ACCESS_POINT"
@@ -50,8 +48,8 @@ def _rfc3339_utc_ms(dt: datetime) -> str:
 class MCPClient:
     """Thin read-only wrapper around New Central monitoring APIs.
 
-    Uses the same CentralClient HTTP layer but only calls read endpoints,
-    mirroring the tools exposed by central-mcp-server.
+    Uses the same CentralClient HTTP layer as the MCP tools but only calls read
+    endpoints.
     """
 
     def __init__(self, central_client: CentralClient):
