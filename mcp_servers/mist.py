@@ -54,6 +54,7 @@ async def mist_get(
     """Perform a read-only GET request to Mist API.
 
     Safety guard: only allows paths beginning with `/api/v1/`.
+    List payloads are bounded with `limit` and `offset`.
     """
     host, token = _mist_config()
     if not host or not token:

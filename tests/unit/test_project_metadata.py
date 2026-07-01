@@ -116,6 +116,11 @@ def test_generic_read_only_get_tools_bound_list_responses():
 
         if "limit" not in arg_names or "offset" not in arg_names:
             violations.append(f"{relative_path}:{function_name} missing limit/offset")
+        docstring = ast.get_docstring(function) or ""
+        if "limit" not in docstring or "offset" not in docstring:
+            violations.append(
+                f"{relative_path}:{function_name} docstring does not describe limit/offset"
+            )
         if not _calls_name(function, "bound_collection_response"):
             violations.append(
                 f"{relative_path}:{function_name} does not call bound_collection_response"

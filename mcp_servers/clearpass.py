@@ -54,6 +54,7 @@ async def clearpass_get(
     """Perform a read-only GET request to ClearPass REST API.
 
     Safety guard: only allows paths beginning with `/api/`.
+    List payloads are bounded with `limit` and `offset`.
     """
     base_url, token = _clearpass_config()
     if not base_url or not token:

@@ -54,6 +54,7 @@ async def aos8_get(
     """Perform a read-only GET request to ArubaOS 8 API.
 
     Safety guard: only allows paths beginning with `/v1/`.
+    List payloads are bounded with `limit` and `offset`.
     """
     base_url, token = _aos8_config()
     if not base_url or not token:

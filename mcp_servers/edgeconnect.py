@@ -57,6 +57,7 @@ async def edgeconnect_get(
     """Perform a read-only GET request to EdgeConnect Orchestrator API.
 
     Safety guard: only allows paths beginning with `/gms/rest/` or `/rest/json/`.
+    List payloads are bounded with `limit` and `offset`.
     """
     base_url, token, header = _edgeconnect_config()
     if not base_url or not token:

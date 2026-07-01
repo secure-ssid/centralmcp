@@ -78,6 +78,7 @@ def glp_get(
     Useful for exploring GLP service-catalog, workspaces, reporting, and
     adjacent read-only APIs before adding dedicated typed wrappers. Path must
     be relative and begin with one of the documented GLP API family prefixes.
+    List payloads are bounded with `limit` and `offset`.
     """
     try:
         safe_path = safe_api_path(path, _GLP_GET_PREFIXES)

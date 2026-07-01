@@ -54,6 +54,7 @@ async def apstra_get(
     """Perform a read-only GET request to Apstra API.
 
     Safety guard: only allows paths beginning with `/api/`.
+    List payloads are bounded with `limit` and `offset`.
     """
     base_url, token = _apstra_config()
     if not base_url or not token:
