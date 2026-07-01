@@ -163,6 +163,29 @@ _MAINTENANCE_MODE_FIELDS = (
     "endTime",
     "timestamp",
 )
+_NETWORK_ROLE_SITE_FIELDS = (
+    "id",
+    "nePk",
+    "applianceId",
+    "hostName",
+    "hostname",
+    "name",
+    "site",
+    "siteId",
+    "siteName",
+    "siteLabel",
+    "sitePriority",
+    "networkRole",
+    "role",
+    "roleName",
+    "region",
+    "zone",
+    "group",
+    "groupName",
+    "deployment",
+    "state",
+    "status",
+)
 _TOPOLOGY_LINK_FIELDS = (
     "id",
     "linkId",
@@ -628,6 +651,70 @@ def _compact_maintenance_mode(data: Any, *, limit: int, offset: int) -> Any:
     )
 
 
+def _normalize_network_role_site_records(data: Any) -> list[Any] | None:
+    records = _collection_records(
+        data,
+        ("appliances", "networkRoleAndSite", "roles", "sites"),
+    )
+    if records is not None:
+        return records
+    if not isinstance(data, dict):
+        return None
+
+    for key in ("appliances", "networkRoleAndSite", "data"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            records = _normalize_network_role_site_records(nested)
+            if records is not None:
+                return records
+
+    if _looks_like_record(data, _NETWORK_ROLE_SITE_FIELDS):
+        return [data]
+
+    records = []
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        record = dict(value)
+        if not any(field in record for field in ("id", "nePk", "applianceId")):
+            record["nePk"] = key
+        records.append(record)
+    return records or None
+
+
+def _compact_network_role_site(
+    data: Any,
+    *,
+    ne_pk: str,
+    limit: int,
+    offset: int,
+) -> Any:
+    records = _normalize_network_role_site_records(data)
+    if records is None:
+        return _compact_collection(
+            data,
+            _NETWORK_ROLE_SITE_FIELDS,
+            ("appliances", "networkRoleAndSite", "roles", "sites"),
+        )
+
+    compacted = []
+    for record in records:
+        if isinstance(record, dict) and not any(
+            field in record for field in ("id", "nePk", "applianceId")
+        ):
+            record = {**record, "nePk": ne_pk}
+        compacted.append(_compact_record(record, _NETWORK_ROLE_SITE_FIELDS))
+
+    if len(compacted) == 1:
+        return compacted[0]
+    return bound_collection_response(
+        {"appliances": compacted},
+        limit=limit,
+        offset=offset,
+        list_key="appliances",
+    )
+
+
 @mcp.tool(annotations=READ_ONLY)
 def edgeconnect_status() -> dict[str, Any]:
     """Report whether EdgeConnect backend is configured."""
@@ -1055,6 +1142,52 @@ async def edgeconnect_list_vrf_segments(
                 offset=offset,
             )
     return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_appliance_network_role_site(
+    ne_pk: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get compact EdgeConnect appliance network role and site assignment."""
+    out = await _edgeconnect_get(
+        "/gms/rest/appliance/networkRoleAndSite",
+        {"nePk": ne_pk},
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["network_role_site"] = _compact_network_role_site(
+            out.pop("data"),
+            ne_pk=ne_pk,
+            limit=limit,
+            offset=offset,
+        )
+        out["ne_pk"] = ne_pk
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_appliance_network_role_site(
+    ne_pk: str,
+    body: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Update EdgeConnect appliance network role and site assignment with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_appliance_network_role_site")
+
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/appliance/networkRoleAndSite",
+        params={"nePk": ne_pk},
+        body=body,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
 
 
 @mcp.tool(annotations=READ_ONLY)

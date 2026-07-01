@@ -2936,6 +2936,40 @@ def test_edgeconnect_get_maintenance_mode_bounds_upstream_lists(monkeypatch):
     assert out["maintenance_mode"]["suppressAlarm"]["_pagination"]["truncated"] is True
 
 
+def test_edgeconnect_get_appliance_network_role_site_compacts(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/appliance/networkRoleAndSite"
+        assert params == {"nePk": "1.NE"}
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "hostName": "ec-1",
+                "site": "Lab",
+                "sitePriority": 100,
+                "networkRole": "1",
+                "region": "us-west",
+                "groupName": "wan-edge",
+                "raw": "omitted",
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_appliance_network_role_site(ne_pk="1.NE"))
+
+    assert out["ne_pk"] == "1.NE"
+    assert out["network_role_site"] == {
+        "nePk": "1.NE",
+        "hostName": "ec-1",
+        "site": "Lab",
+        "sitePriority": 100,
+        "networkRole": "1",
+        "region": "us-west",
+        "groupName": "wan-edge",
+    }
+
+
 def test_edgeconnect_list_alarms_compacts_outstanding(monkeypatch):
     called = {}
 
@@ -4289,3 +4323,80 @@ def test_edgeconnect_set_maintenance_mode_executes_with_confirm(monkeypatch):
     assert called["method"] == "POST"
     assert called["url"] == "https://orch.example.com/gms/rest/maintenanceMode"
     assert called["json"] == {"nePks": ["1.NE"], "enabled": False}
+
+
+def test_edgeconnect_set_appliance_network_role_site_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_set_appliance_network_role_site(
+            "1.NE",
+            {"site": "Lab", "sitePriority": 100, "networkRole": "1"},
+        )
+    )
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/appliance/networkRoleAndSite"
+    assert out["params"] == {"nePk": "1.NE"}
+    assert out["json"] == {"site": "Lab", "sitePriority": 100, "networkRole": "1"}
+    assert "execute_hint" in out
+
+
+def test_edgeconnect_set_appliance_network_role_site_blocks_when_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_set_appliance_network_role_site(
+            "1.NE",
+            {"site": "Lab"},
+        )
+    )
+
+    assert out["status"] == "blocked"
+    assert out["tool"] == "edgeconnect_set_appliance_network_role_site"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+def test_edgeconnect_set_appliance_network_role_site_executes_with_confirm(monkeypatch):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_set_appliance_network_role_site(
+            "1.NE",
+            {"site": "Lab", "sitePriority": 100, "networkRole": "1"},
+            dry_run=False,
+            confirm=True,
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert called["method"] == "POST"
+    assert called["url"] == "https://orch.example.com/gms/rest/appliance/networkRoleAndSite"
+    assert called["params"] == {"nePk": "1.NE"}
+    assert called["json"] == {"site": "Lab", "sitePriority": 100, "networkRole": "1"}
