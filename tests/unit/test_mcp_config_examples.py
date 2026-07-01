@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -10,6 +11,12 @@ CLIENT_CONFIGS = [
 COMMITTED_CONFIGS = [
     *CLIENT_CONFIGS,
     REPO_ROOT / ".cursor" / "mcp.dev.json",
+]
+LOCAL_ONLY_CONFIGS = [
+    ".mcp.json",
+    ".claude/mcp.json",
+    ".claude/settings.local.json",
+    ".vscode/mcp.json",
 ]
 
 
@@ -38,3 +45,13 @@ def test_committed_mcp_configs_do_not_include_local_filesystem_servers():
 
         assert "obsidian-vault" not in servers
         assert "/Users/" not in text
+
+
+def test_local_only_mcp_configs_are_not_tracked():
+    tracked = subprocess.check_output(
+        ["git", "ls-files", *LOCAL_ONLY_CONFIGS],
+        cwd=REPO_ROOT,
+        text=True,
+    ).splitlines()
+
+    assert tracked == []
