@@ -3,13 +3,13 @@ Ingest Aruba/HPE docs into the RAG backend.
 
 Default backend is the embedded stack (no servers): chunk prose -> fastembed
 (in-process ONNX, nomic prefixes) -> LanceDB at data/, plus parse OpenAPI
-specs -> SQLite (data/specs.sqlite). `--backend redis` keeps the legacy
-Redis Stack + Ollama path for the optional server deployment.
+specs -> SQLite (data/specs.sqlite). `--backend redis` keeps the optional
+Redis Stack + Ollama server deployment path.
 
 Usage:
     python ingestion/ingest_docs.py                     # all sources -> LanceDB (full rebuild)
-    python ingestion/ingest_docs.py --backend redis     # legacy Redis Stack path
-    python ingestion/ingest_docs.py --source nac_docs   # one Redis-only source
+    python ingestion/ingest_docs.py --backend redis     # optional Redis Stack path
+    python ingestion/ingest_docs.py --source nac_docs   # one source only
     python ingestion/ingest_docs.py --dry-run           # count chunks, no upload
 """
 

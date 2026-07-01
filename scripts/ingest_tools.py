@@ -1,7 +1,7 @@
 """Embed FastMCP tool definitions into the router tools index.
 
 Usage: uv run python scripts/ingest_tools.py                  # LanceDB (embedded, default)
-       uv run python scripts/ingest_tools.py --backend redis  # legacy Redis Stack
+       uv run python scripts/ingest_tools.py --backend redis  # optional Redis Stack
        uv run python scripts/ingest_tools.py --products clearpass,mist
 
 Reads the servers by direct module import (no subprocess) and walks the
