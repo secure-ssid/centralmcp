@@ -143,7 +143,6 @@ state/
 outputs/
 ingestion/sources/
 ingestion/markdown*/
-qdrant_data/
 redis_data/
 ollama_data/
 ```
