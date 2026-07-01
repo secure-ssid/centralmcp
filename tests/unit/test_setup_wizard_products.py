@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from scripts import setup_wizard
 
@@ -71,3 +72,51 @@ def test_merge_json_env_adds_product_access(tmp_path):
     assert env["CENTRALMCP_ROUTER_MODE"] == "minimal"
     assert env["CENTRALMCP_PRODUCTS"] == "clearpass,mist"
     assert env["CENTRALMCP_PRODUCT_ACCESS"] == "read-write"
+
+
+def test_catalog_build_receives_product_access_env(monkeypatch):
+    calls: list[tuple[list[str], str, dict[str, str] | None]] = []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "setup_wizard.py",
+            "--yes",
+            "--skip-install",
+            "--skip-credentials",
+            "--skip-stdio",
+            "--skip-http",
+            "--skip-doctor",
+            "--products",
+            "clearpass",
+            "--product-access",
+            "read-only",
+        ],
+    )
+    monkeypatch.setattr(
+        setup_wizard,
+        "_write_env_file",
+        lambda *args, **kwargs: setup_wizard.Step(".env", "OK", "captured"),
+    )
+
+    def fake_run(
+        command: list[str],
+        label: str,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> setup_wizard.Step:
+        calls.append((command, label, env))
+        return setup_wizard.Step(label, "OK", "captured")
+
+    monkeypatch.setattr(setup_wizard, "_run", fake_run)
+
+    assert setup_wizard.main() == 0
+
+    catalog_calls = [call for call in calls if call[1] == "tool catalog"]
+    assert len(catalog_calls) == 1
+    command, _, env = catalog_calls[0]
+    assert command[-2:] == ["--products", "clearpass"]
+    assert env is not None
+    assert env["CENTRALMCP_PRODUCTS"] == "clearpass"
+    assert env["CENTRALMCP_PRODUCT_ACCESS"] == "read-only"

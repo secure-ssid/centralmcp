@@ -556,7 +556,7 @@ def main() -> int:
         command = ["uv", "run", "python", "scripts/ingest_tools.py"]
         if selected_products:
             command.extend(["--products", ",".join(selected_products)])
-        steps.append(_run(command, "tool catalog"))
+        steps.append(_run(command, "tool catalog", env=product_env or None))
 
     if not args.skip_doctor and _ask("Run the local doctor now?", True, assume_yes=args.yes):
         steps.append(
