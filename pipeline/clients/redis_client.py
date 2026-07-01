@@ -1,14 +1,14 @@
-"""Redis Stack vector search client for document RAG.
+"""Legacy Redis Stack vector search client for document RAG.
 
-Replaces Qdrant. Uses RedisSearch (RediSearch module) with HNSW vector index.
-Redis Stack includes RediSearch, RedisJSON, and RedisInsight out of the box.
+This is the optional server backend. The default download-and-run path uses
+LanceDB + SQLite + fastembed.
 """
 
-import json
 import os
+
 import numpy as np
 import redis
-from redis.commands.search.field import TextField, TagField, VectorField, NumericField
+from redis.commands.search.field import NumericField, TagField, TextField, VectorField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 
@@ -73,7 +73,7 @@ def upsert_docs(
 ) -> int:
     """Upsert documents with embeddings into Redis.
 
-    Each doc must have: id (str), text, source, doc_type, file_path, chunk_index, embedding (list[float])
+    Each doc must have id, text, source, doc_type, file_path, chunk_index, and embedding.
     Returns count of documents upserted.
     """
     pipe = client.pipeline(transaction=False)

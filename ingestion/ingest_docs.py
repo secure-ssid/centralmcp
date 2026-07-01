@@ -9,7 +9,7 @@ Redis Stack + Ollama path for the optional server deployment.
 Usage:
     python ingestion/ingest_docs.py                     # all sources -> LanceDB (full rebuild)
     python ingestion/ingest_docs.py --backend redis     # legacy Redis Stack path
-    python ingestion/ingest_docs.py --source nac_docs   # one source (redis only; lancedb always rebuilds all)
+    python ingestion/ingest_docs.py --source nac_docs   # one Redis-only source
     python ingestion/ingest_docs.py --dry-run           # count chunks, no upload
 """
 
@@ -31,7 +31,6 @@ from pipeline.clients.redis_client import (
     ensure_index,
     get_client,
     upsert_docs,
-    doc_count,
 )
 
 SOURCES_DIR = Path(__file__).parent / "sources"
@@ -68,7 +67,7 @@ def read_file(path: Path) -> str | None:
 
 
 def _md5_uuid(key: str) -> str:
-    """Return MD5 hash formatted as UUID string (matches Qdrant's auto-conversion)."""
+    """Return a stable UUID string derived from an MD5 hash."""
     return str(uuid.UUID(hashlib.md5(key.encode()).hexdigest()))
 
 
@@ -298,7 +297,9 @@ def main():
     args = parser.parse_args()
 
     if args.backend == "lancedb" and args.source:
-        parser.error("--source only applies to --backend redis; lancedb always rebuilds all sources")
+        parser.error(
+            "--source only applies to --backend redis; lancedb always rebuilds all sources"
+        )
 
     sources = (
         {args.source: SOURCE_META.get(args.source, "unknown")}
