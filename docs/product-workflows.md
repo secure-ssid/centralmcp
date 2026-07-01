@@ -163,7 +163,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Workflow | Tool | Notes |
 |---|---|---|
 | Backend status | `uxi_status` | Shows whether UXI OAuth client credentials are configured |
-| Guarded UXI GET | `uxi_get` | Read-only GET limited to selected UXI list endpoints and `/sensors/{id}/status` |
+| Guarded UXI GET | `uxi_get` | Read-only GET limited to selected UXI list endpoints and `/sensors/{id}/status`; list payloads are bounded with `limit` / `offset` |
 | Sensor inventory and status | `uxi_list_sensors` / `uxi_get_sensor_status` | Compact sensor identity/model/MAC/group/location fields plus online/testing status |
 | Agent and group inventory | `uxi_list_agents` / `uxi_list_groups` | Compact agent and group reads with cursor-style pagination |
 | Network and service-test inventory | `uxi_list_wired_networks` / `uxi_list_wireless_networks` / `uxi_list_service_tests` | Read-only network and service test views |
