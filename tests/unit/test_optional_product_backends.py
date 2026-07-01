@@ -1886,6 +1886,81 @@ def test_aos8_events_audit_show_tools_map_commands_and_compact(
             },
             False,
         ),
+        (
+            lambda: aos8.aos8_get_ap_wired_ports(ap_name=" ap-1 ", limit=1),
+            "show ap port status ap-name ap-1",
+            {
+                "AP Wired Ports": [
+                    {
+                        "AP Name": "ap-1",
+                        "Port": "0",
+                        "Status": "up",
+                        "Mode": "access",
+                        "VLAN": 20,
+                        "Speed": "1G",
+                        "Duplex": "full",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "AP Name": "ap-1",
+                        "Port": "1",
+                        "Status": "down",
+                        "Mode": "access",
+                        "VLAN": 30,
+                        "Speed": "auto",
+                        "Duplex": "auto",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "wired_ports",
+            {
+                "AP Name": "ap-1",
+                "Port": "0",
+                "Status": "up",
+                "Mode": "access",
+                "VLAN": 20,
+                "Speed": "1G",
+                "Duplex": "full",
+            },
+            False,
+        ),
+        (
+            lambda: aos8.aos8_get_ipsec_tunnels(limit=1),
+            "show crypto ipsec sa",
+            {
+                "IPsec SAs": [
+                    {
+                        "Peer IP": "198.51.100.10",
+                        "Local IP": "192.0.2.10",
+                        "Remote IP": "198.51.100.10",
+                        "SPI": "0x1234",
+                        "State": "established",
+                        "Uptime": "1d",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Peer IP": "198.51.100.11",
+                        "Local IP": "192.0.2.10",
+                        "Remote IP": "198.51.100.11",
+                        "SPI": "0x5678",
+                        "State": "established",
+                        "Uptime": "2h",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "ipsec_tunnels",
+            {
+                "Peer IP": "198.51.100.10",
+                "Local IP": "192.0.2.10",
+                "Remote IP": "198.51.100.10",
+                "SPI": "0x1234",
+                "State": "established",
+                "Uptime": "1d",
+            },
+            False,
+        ),
     ],
 )
 def test_aos8_differentiator_show_tools_map_commands_and_compact(
@@ -1947,6 +2022,15 @@ def test_aos8_get_rf_neighbors_requires_ap_name(monkeypatch):
     monkeypatch.setenv("AOS8_API_TOKEN", "secret")
 
     out = asyncio.run(aos8.aos8_get_rf_neighbors(ap_name=" "))
+
+    assert out == {"error": "ap_name is required."}
+
+
+def test_aos8_get_ap_wired_ports_requires_ap_name(monkeypatch):
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+
+    out = asyncio.run(aos8.aos8_get_ap_wired_ports(ap_name=" "))
 
     assert out == {"error": "ap_name is required."}
 

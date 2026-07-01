@@ -296,6 +296,56 @@ _CLUSTER_STATE_FIELDS = (
     "Priority",
     "priority",
 )
+_AP_WIRED_PORT_FIELDS = (
+    "AP Name",
+    "ap_name",
+    "Port",
+    "port",
+    "Interface",
+    "interface",
+    "Status",
+    "status",
+    "State",
+    "state",
+    "Mode",
+    "mode",
+    "VLAN",
+    "vlan",
+    "Native VLAN",
+    "native_vlan",
+    "Speed",
+    "speed",
+    "Duplex",
+    "duplex",
+    "PoE",
+    "poe",
+)
+_IPSEC_TUNNEL_FIELDS = (
+    "Peer",
+    "peer",
+    "Peer IP",
+    "peer_ip",
+    "Local IP",
+    "local_ip",
+    "Remote IP",
+    "remote_ip",
+    "Tunnel",
+    "tunnel",
+    "Tunnel ID",
+    "tunnel_id",
+    "SPI",
+    "spi",
+    "State",
+    "state",
+    "Status",
+    "status",
+    "Uptime",
+    "uptime",
+    "Packets",
+    "packets",
+    "Bytes",
+    "bytes",
+)
 _ARM_HISTORY_FIELDS = (
     "Time",
     "time",
@@ -1016,6 +1066,50 @@ async def aos8_get_cluster_state(limit: int = 50, offset: int = 0) -> dict[str, 
         out["cluster_state"] = _compact_primary_list(
             out.pop("data"),
             _CLUSTER_STATE_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_ap_wired_ports(
+    ap_name: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get wired-port status for one AP from `show ap port status ap-name`."""
+    normalized_ap = ap_name.strip()
+    if not normalized_ap:
+        return {"error": "ap_name is required."}
+    out = await aos8_show_command(
+        f"show ap port status ap-name {normalized_ap}",
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["wired_ports"] = _compact_primary_list(
+            out.pop("data"),
+            _AP_WIRED_PORT_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+        out["ap_name"] = normalized_ap
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_ipsec_tunnels(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """Get site-to-site and Remote AP IPsec tunnel state."""
+    out = await aos8_show_command(
+        "show crypto ipsec sa",
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["ipsec_tunnels"] = _compact_primary_list(
+            out.pop("data"),
+            _IPSEC_TUNNEL_FIELDS,
             limit=limit,
             offset=offset,
         )

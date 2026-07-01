@@ -94,6 +94,8 @@ Promote a generic GET pattern to a typed tool when it is:
 | MD hierarchy | `aos8_get_md_hierarchy` | Bounded root-scope `show configuration node-hierarchy` read |
 | RF neighbors | `aos8_get_rf_neighbors` | Bounded `show ap arm-neighbors ap-name` read scoped by AP name and `config_path` |
 | Cluster state | `aos8_get_cluster_state` | Bounded root-scope `show lc-cluster group-membership` read |
+| AP wired ports | `aos8_get_ap_wired_ports` | Bounded root-scope `show ap port status ap-name` read for one AP |
+| IPsec tunnel state | `aos8_get_ipsec_tunnels` | Bounded root-scope `show crypto ipsec sa` read |
 | System logs | `aos8_get_system_logs` | Bounded root-scope `show log system` diagnostic read with capped count |
 | ARM history | `aos8_get_ap_arm_history` | Bounded `show ap arm history` RF diagnostic read scoped by `config_path` |
 | AP monitor stats | `aos8_get_ap_monitor_stats` | Bounded `show ap monitor stats` RF diagnostic read scoped by `config_path` |
