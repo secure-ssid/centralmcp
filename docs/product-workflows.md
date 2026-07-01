@@ -95,6 +95,8 @@ Promote a generic GET pattern to a typed tool when it is:
 | Appliance inventory | `edgeconnect_list_appliances` | IDs/names/site/status only |
 | Appliance system info | `edgeconnect_get_system_info` | Model/version/status/alarm summary from `/rest/json/systemInfo` |
 | Appliance alarms | `edgeconnect_list_alarms` | Outstanding alarms from `/rest/json/alarm`, bounded by `limit` / `offset` |
+| Overlay configuration | `edgeconnect_list_overlays` | Compact overlay configs from `/gms/rest/gms/overlays/config`, with optional overlay ID filter |
+| Overlay priority | `edgeconnect_get_overlay_priority` | Compact overlay priority order from `/gms/rest/gms/overlays/priority` |
 | Tunnel health | `edgeconnect_list_tunnels` | Physical tunnel status from `/gms/rest/tunnels2/physical`, with optional filters |
 | Tunnel metadata | `edgeconnect_get_tunnel_metadata` | Compact tunnel count metadata from `/gms/rest/tunnels2?metaData=true` |
 | VRF/routing segments | `edgeconnect_list_vrf_segments` | Compact routing-segment inventory from `/gms/rest/vrf/config/segments`, with optional segment ID filter |

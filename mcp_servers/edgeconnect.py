@@ -73,6 +73,29 @@ _ALARM_FIELDS = (
     "timestamp",
     "time",
 )
+_OVERLAY_FIELDS = (
+    "id",
+    "overlayId",
+    "name",
+    "overlayName",
+    "displayName",
+    "description",
+    "mode",
+    "topology",
+    "type",
+    "enabled",
+    "state",
+    "status",
+)
+_OVERLAY_PRIORITY_FIELDS = (
+    "id",
+    "overlayId",
+    "name",
+    "overlayName",
+    "priority",
+    "order",
+    "rank",
+)
 _TUNNEL_FIELDS = (
     "id",
     "tunnelId",
@@ -146,6 +169,17 @@ def _compact_collection(data: Any, fields: tuple[str, ...], list_keys: tuple[str
     return out
 
 
+def _collection_records(data: Any, list_keys: tuple[str, ...]) -> list[Any] | None:
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return None
+    for key in (*list_keys, "items", "results", "data"):
+        if isinstance(data.get(key), list):
+            return data[key]
+    return None
+
+
 def _int_or_none(value: Any) -> int | None:
     try:
         return int(str(value))
@@ -154,13 +188,8 @@ def _int_or_none(value: Any) -> int | None:
 
 
 def _normalize_vrf_segments(data: Any) -> list[Any] | None:
-    if isinstance(data, list):
-        return data
     if not isinstance(data, dict):
         return None
-    for key in ("segments", "vrfs", "items", "results", "data"):
-        if isinstance(data.get(key), list):
-            return data[key]
 
     records: list[Any] = []
     for key, value in data.items():
@@ -185,6 +214,34 @@ def _matches_vrf_segment(record: Any, segment_id: int | None) -> bool:
     return False
 
 
+def _normalize_id_keyed_records(data: Any, id_key: str) -> list[Any] | None:
+    if not isinstance(data, dict):
+        return None
+
+    records: list[Any] = []
+    for key, value in data.items():
+        record_id = _int_or_none(key)
+        if record_id is None or not isinstance(value, dict):
+            continue
+        record = dict(value)
+        if id_key not in record and "id" not in record:
+            record[id_key] = record_id
+        records.append(record)
+    return records or None
+
+
+def _matches_id(record: Any, target_id: int | None, keys: tuple[str, ...]) -> bool:
+    if target_id is None:
+        return True
+    if not isinstance(record, dict):
+        return False
+    return any(_int_or_none(record.get(key)) == target_id for key in keys)
+
+
+def _looks_like_record(data: Any, fields: tuple[str, ...]) -> bool:
+    return isinstance(data, dict) and any(key in data for key in fields)
+
+
 @mcp.tool(annotations=READ_ONLY)
 def edgeconnect_status() -> dict[str, Any]:
     """Report whether EdgeConnect backend is configured."""
@@ -197,18 +254,13 @@ def edgeconnect_status() -> dict[str, Any]:
     }
 
 
-@mcp.tool(annotations=READ_ONLY)
-async def edgeconnect_get(
+async def _edgeconnect_get(
     path: str,
     params: dict[str, Any] | None = None,
     limit: int = 50,
     offset: int = 0,
+    paginate: bool = True,
 ) -> dict[str, Any]:
-    """Perform a read-only GET request to EdgeConnect Orchestrator API.
-
-    Safety guard: only allows paths beginning with `/gms/rest/` or `/rest/json/`.
-    List payloads are bounded with `limit` and `offset`.
-    """
     base_url, token, header = _edgeconnect_config()
     if not base_url or not token:
         return {
@@ -231,10 +283,30 @@ async def edgeconnect_get(
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(url, headers=headers, params=params or {})
-        payload = bound_collection_response(response_payload(resp), limit=limit, offset=offset)
+        payload = response_payload(resp)
+        if paginate:
+            payload = bound_collection_response(payload, limit=limit, offset=offset)
         return {"status_code": resp.status_code, "data": payload, "url": url}
     except httpx.HTTPError as exc:
         return {"error": str(exc), "url": url}
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get(
+    path: str,
+    params: dict[str, Any] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Perform a read-only GET request to EdgeConnect Orchestrator API.
+
+    Safety guard: only allows paths beginning with `/gms/rest/` or `/rest/json/`.
+    List payloads are bounded with `limit` and `offset`.
+    """
+    out = await _edgeconnect_get(path, params, limit=limit, offset=offset, paginate=False)
+    if "data" in out:
+        out["data"] = bound_collection_response(out["data"], limit=limit, offset=offset)
+    return out
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -261,6 +333,73 @@ async def edgeconnect_list_alarms(limit: int = 50, offset: int = 0) -> dict[str,
     out = await edgeconnect_get("/rest/json/alarm", limit=limit, offset=offset)
     if "data" in out:
         out["alarms"] = _compact_collection(out.pop("data"), _ALARM_FIELDS, ("outstanding",))
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_overlays(
+    overlay_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List EdgeConnect overlay configurations with compact fields."""
+    params: dict[str, Any] = {}
+    if overlay_id is not None:
+        params["overlayId"] = overlay_id
+    out = await _edgeconnect_get(
+        "/gms/rest/gms/overlays/config",
+        params,
+        limit=limit,
+        offset=offset,
+        paginate=overlay_id is None,
+    )
+    if "data" in out:
+        data = out.pop("data")
+        records = _normalize_id_keyed_records(data, "overlayId")
+        if records is None and overlay_id is not None:
+            records = _collection_records(data, ("overlays",))
+
+        if records is not None:
+            filtered = [
+                record for record in records if _matches_id(record, overlay_id, ("id", "overlayId"))
+            ]
+            compacted = [_compact_record(record, _OVERLAY_FIELDS) for record in filtered]
+            out["overlays"] = bound_collection_response(compacted, limit=limit, offset=offset)
+        elif overlay_id is not None and _looks_like_record(data, _OVERLAY_FIELDS):
+            compacted = _compact_record(data, _OVERLAY_FIELDS)
+            out["overlays"] = bound_collection_response([compacted], limit=limit, offset=offset)
+        else:
+            out["overlays"] = _compact_collection(data, _OVERLAY_FIELDS, ("overlays",))
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_overlay_priority(
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get EdgeConnect overlay priority order mapping."""
+    out = await edgeconnect_get(
+        "/gms/rest/gms/overlays/priority",
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        data = out.pop("data")
+        records = _normalize_id_keyed_records(data, "overlayId")
+        if records is None:
+            out["overlay_priority"] = _compact_collection(
+                data,
+                _OVERLAY_PRIORITY_FIELDS,
+                ("overlays", "priorities"),
+            )
+        else:
+            compacted = [_compact_record(record, _OVERLAY_PRIORITY_FIELDS) for record in records]
+            out["overlay_priority"] = bound_collection_response(
+                compacted,
+                limit=limit,
+                offset=offset,
+            )
     return out
 
 
@@ -320,15 +459,18 @@ async def edgeconnect_list_vrf_segments(
     params: dict[str, Any] = {}
     if segment_id is not None:
         params["id"] = segment_id
-    out = await edgeconnect_get(
+    out = await _edgeconnect_get(
         "/gms/rest/vrf/config/segments",
         params,
         limit=limit,
         offset=offset,
+        paginate=segment_id is None,
     )
     if "data" in out:
         data = out.pop("data")
         records = _normalize_vrf_segments(data)
+        if records is None and segment_id is not None:
+            records = _collection_records(data, ("segments", "vrfs"))
         if records is None:
             out["vrf_segments"] = _compact_collection(
                 data,

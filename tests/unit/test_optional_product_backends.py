@@ -1471,6 +1471,224 @@ def test_edgeconnect_list_alarms_compacts_outstanding(monkeypatch):
     assert out["alarms"]["_pagination"]["truncated"] is True
 
 
+def test_edgeconnect_list_overlays_filters_keyed_map_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"1":{"name":"Corp"}}'
+
+        def json(self):
+            return {
+                "1": {
+                    "name": "Corp",
+                    "mode": "mesh",
+                    "status": "active",
+                    "raw": "omitted",
+                },
+                "2": {
+                    "name": "Guest",
+                    "mode": "hub-spoke",
+                    "status": "active",
+                    "raw": "omitted",
+                },
+                "metadata": {"raw": "not an overlay"},
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_overlays(overlay_id=1, limit=1))
+
+    assert called["url"] == "https://orch.example.com/gms/rest/gms/overlays/config"
+    assert called["params"] == {"overlayId": 1}
+    assert out["overlays"]["items"] == [
+        {
+            "overlayId": 1,
+            "name": "Corp",
+            "mode": "mesh",
+            "status": "active",
+        }
+    ]
+    assert out["overlays"]["_pagination"]["total"] == 1
+
+
+def test_edgeconnect_list_overlays_compacts_single_overlay_response(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"overlayId":1}'
+
+        def json(self):
+            return {
+                "overlayId": 1,
+                "name": "Corp",
+                "mode": "mesh",
+                "status": "active",
+                "raw": "omitted",
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_overlays(overlay_id=1))
+
+    assert called["url"] == "https://orch.example.com/gms/rest/gms/overlays/config"
+    assert called["params"] == {"overlayId": 1}
+    assert out["overlays"]["items"] == [
+        {
+            "overlayId": 1,
+            "name": "Corp",
+            "mode": "mesh",
+            "status": "active",
+        }
+    ]
+
+
+def test_edgeconnect_list_overlays_filters_list_shape_before_paging(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"overlays":[{"overlayId":1}]}'
+
+        def json(self):
+            return {
+                "overlays": [
+                    {
+                        "overlayId": 1,
+                        "name": "Corp",
+                        "status": "active",
+                        "raw": "omitted",
+                    },
+                    {
+                        "overlayId": 2,
+                        "name": "Guest",
+                        "status": "active",
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_overlays(overlay_id=2, limit=1))
+
+    assert called["url"] == "https://orch.example.com/gms/rest/gms/overlays/config"
+    assert called["params"] == {"overlayId": 2}
+    assert out["overlays"]["items"] == [
+        {
+            "overlayId": 2,
+            "name": "Guest",
+            "status": "active",
+        }
+    ]
+
+
+def test_edgeconnect_get_overlay_priority_preserves_pagination(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"priorities":[{"overlayId":1}]}'
+
+        def json(self):
+            return {
+                "priorities": [
+                    {
+                        "overlayId": 1,
+                        "name": "Corp",
+                        "priority": 10,
+                        "raw": "omitted",
+                    },
+                    {
+                        "overlayId": 2,
+                        "name": "Guest",
+                        "priority": 20,
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_overlay_priority(limit=1))
+
+    assert called["url"] == "https://orch.example.com/gms/rest/gms/overlays/priority"
+    assert called["params"] == {}
+    assert out["overlay_priority"]["priorities"] == [
+        {"overlayId": 1, "name": "Corp", "priority": 10}
+    ]
+    assert out["overlay_priority"]["_pagination"]["truncated"] is True
+
+
 def test_edgeconnect_list_tunnels_filters_and_compacts(monkeypatch):
     called = {}
 
@@ -1655,6 +1873,66 @@ def test_edgeconnect_list_vrf_segments_filters_and_compacts(monkeypatch):
     ]
     assert out["vrf_segments"]["_pagination"]["total"] == 1
     assert out["vrf_segments"]["_pagination"]["truncated"] is False
+
+
+def test_edgeconnect_list_vrf_segments_filters_list_shape(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"segments":[{"id":1}]}'
+
+        def json(self):
+            return {
+                "segments": [
+                    {
+                        "id": 1,
+                        "name": "Corp",
+                        "vrfName": "corp-vrf",
+                        "status": "active",
+                        "raw": "omitted",
+                    },
+                    {
+                        "id": 2,
+                        "name": "Guest",
+                        "vrfName": "guest-vrf",
+                        "status": "active",
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_vrf_segments(segment_id=2, limit=1))
+
+    assert called["url"] == "https://orch.example.com/gms/rest/vrf/config/segments"
+    assert called["params"] == {"id": 2}
+    assert out["vrf_segments"]["items"] == [
+        {
+            "id": 2,
+            "name": "Guest",
+            "vrfName": "guest-vrf",
+            "status": "active",
+        }
+    ]
 
 
 @pytest.mark.parametrize(
