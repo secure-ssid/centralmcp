@@ -268,7 +268,7 @@ Product starter backends also use product-specific URL/token variables. See [doc
 .cursor/                 Cursor MCP profiles: router default and direct-server dev mode
 .vscode/                 VS Code MCP example config
 config/                  Credentials template; real credentials stay git-ignored
-docker-compose.yml       Optional Redis/Ollama server backend for power users
+docker-compose.yml       Optional localhost-only Redis/Ollama server backend for power users
 
 mcp_servers/
   tool_router.py        Low-token MCP entrypoint

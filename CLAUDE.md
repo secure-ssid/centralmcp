@@ -37,7 +37,7 @@ scripts/
   run_http_router.sh   Start the minimal router over streamable HTTP
   validate_release.py  Local pre-push gate: unit tests, optional RAG/API eval, tool catalog floor
 data/                  Embedded indexes (git-ignored): docs.lance, tools.lance, specs.sqlite — rebuild via ingest or download prebuilt
-docker-compose.yml     OPTIONAL server backend: Redis Stack + Ollama (set CENTRALMCP_RAG_BACKEND=redis)
+docker-compose.yml     OPTIONAL localhost-only server backend: Redis Stack + Ollama (set CENTRALMCP_RAG_BACKEND=redis)
 config/credentials.yaml  API credentials (never commit)
 resources/             Postman API collections (monitoring + config endpoints)
 inputs/                CSV files for batch migration

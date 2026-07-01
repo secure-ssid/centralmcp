@@ -39,6 +39,7 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | `scripts/download_indexes.py` | Restore prebuilt docs/API/tool indexes from GitHub Releases |
 | `scripts/package_indexes.py` | Package local indexes for a GitHub Release asset |
 | `scripts/run_http_router.sh` | Start the minimal router over streamable HTTP |
+| `docker-compose.yml` | Optional localhost-only Redis/Ollama server backend for power users |
 | `scripts/doctor.py` | Check local setup without making API calls |
 | `scripts/` | Tool-catalog ingestion, release validation, local sync helpers |
 | `.mcp.json.example` | Generic stdio MCP client example using the minimal router |

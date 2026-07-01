@@ -73,7 +73,9 @@ ingestion/
 data/                 # prebuilt, shippable: docs.lance/  +  specs.sqlite   (attach to GitHub Release)
 ```
 
-No `docker-compose.yml` requirement for the default path. `redis-stack` stays documented under an optional "Server backend" section for power users.
+No `docker-compose.yml` requirement for the default path. `redis-stack` stays
+available as an optional localhost-only "Server backend" for power users, with
+Docker named volumes so Redis/Ollama state does not clutter the repository.
 
 ---
 

@@ -3,10 +3,10 @@ services:
     image: redis/redis-stack:latest
     container_name: redis-stack
     ports:
-      - "6379:6379"
-      - "8001:8001"  # RedisInsight web UI
+      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:8001:8001"  # RedisInsight local web UI
     volumes:
-      - ./redis_data:/data
+      - redis_data:/data
     environment:
       - REDIS_ARGS=--save 60 1 --loglevel warning
     restart: unless-stopped
@@ -15,9 +15,9 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
-      - ./ollama_data:/root/.ollama
+      - ollama_data:/root/.ollama
     restart: unless-stopped
     # Uncomment for GPU support (requires nvidia-container-toolkit):
     # deploy:
@@ -27,3 +27,7 @@ services:
     #         - driver: nvidia
     #           count: 1
     #           capabilities: [gpu]
+
+volumes:
+  redis_data:
+  ollama_data:

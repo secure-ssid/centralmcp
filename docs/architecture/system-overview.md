@@ -126,7 +126,7 @@ tests/                   Unit, integration, and eval coverage
 
 .mcp.json.example        Generic stdio MCP client example
 .mcp.http.json.example   Generic streamable HTTP MCP client example
-docker-compose.yml       Optional Redis/Ollama server backend
+docker-compose.yml       Optional localhost-only Redis/Ollama server backend
 run_pipeline.py          Migration pipeline CLI
 run_ssid.py              SSID helper CLI
 ```
