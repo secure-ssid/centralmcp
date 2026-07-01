@@ -235,6 +235,118 @@ def test_apstra_list_anomalies_quotes_blueprint_id_and_compacts(monkeypatch):
     ]
 
 
+def test_apstra_list_racks_quotes_blueprint_id_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"items":[{"id":"rack1"}]}'
+
+        def json(self):
+            return {
+                "items": [
+                    {
+                        "id": "rack1",
+                        "label": "Rack 1",
+                        "rack_type": "rack_based",
+                        "leaf_count": 2,
+                        "spine_count": 0,
+                        "raw": "omitted",
+                    },
+                    {
+                        "id": "rack2",
+                        "label": "Rack 2",
+                        "rack_type": "rack_based",
+                        "leaf_count": 2,
+                        "spine_count": 0,
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_list_racks("bp 1", limit=1))
+
+    assert called["url"] == "https://apstra.example.com/api/blueprints/bp%201/racks"
+    assert out["blueprint_id"] == "bp 1"
+    assert out["racks"]["items"] == [
+        {
+            "id": "rack1",
+            "label": "Rack 1",
+            "rack_type": "rack_based",
+            "leaf_count": 2,
+            "spine_count": 0,
+        }
+    ]
+    assert out["racks"]["_pagination"]["truncated"] is True
+
+
+def test_apstra_list_routing_zones_quotes_blueprint_id_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"items":[{"id":"sz1"}]}'
+
+        def json(self):
+            return {
+                "items": [
+                    {
+                        "id": "sz1",
+                        "label": "default",
+                        "vni": 10001,
+                        "vrf_name": "default",
+                        "raw": "omitted",
+                    }
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_list_routing_zones("bp 1"))
+
+    assert called["url"] == (
+        "https://apstra.example.com/api/blueprints/bp%201/security-zones"
+    )
+    assert out["blueprint_id"] == "bp 1"
+    assert out["routing_zones"]["items"] == [
+        {"id": "sz1", "label": "default", "vni": 10001, "vrf_name": "default"}
+    ]
+
+
 def test_apstra_get_system_info_quotes_blueprint_id_and_compacts(monkeypatch):
     called = {}
 

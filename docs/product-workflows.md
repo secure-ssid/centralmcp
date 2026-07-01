@@ -62,6 +62,8 @@ Promote a generic GET pattern to a typed tool when it is:
 |---|---|---|
 | List blueprints | `apstra_list_blueprints` | IDs/names/state only |
 | Blueprint anomalies | `apstra_list_anomalies` | Read-only fabric health |
+| Blueprint racks | `apstra_list_racks` | Compact rack topology from `/api/blueprints/{id}/racks` |
+| Blueprint routing zones | `apstra_list_routing_zones` | Compact security-zone/VRF view from `/api/blueprints/{id}/security-zones` |
 | Blueprint system info | `apstra_get_system_info` | Compact systems/devices from `/api/blueprints/{id}/experience/web/system-info` |
 | Generic lab write | `apstra_write` | Guarded POST/PUT/PATCH/DELETE to `/api/*`; dry-run default |
 

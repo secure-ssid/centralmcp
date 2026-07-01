@@ -52,6 +52,31 @@ _ANOMALY_FIELDS = (
     "description",
     "acknowledged",
 )
+_RACK_FIELDS = (
+    "id",
+    "label",
+    "name",
+    "description",
+    "rack_type",
+    "template_name",
+    "fabric_connectivity_design",
+    "leaf_count",
+    "spine_count",
+    "systems_count",
+    "tags",
+)
+_ROUTING_ZONE_FIELDS = (
+    "id",
+    "label",
+    "name",
+    "description",
+    "vni",
+    "vlan_id",
+    "vrf_name",
+    "sz_type",
+    "routing_policy",
+    "rt_policy",
+)
 _SYSTEM_FIELDS = (
     "id",
     "system_id",
@@ -171,6 +196,40 @@ async def apstra_list_anomalies(
     out = await apstra_get(path, limit=limit, offset=offset)
     if "data" in out:
         out["anomalies"] = _compact_collection(out.pop("data"), _ANOMALY_FIELDS)
+        out["blueprint_id"] = blueprint_id
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_list_racks(
+    blueprint_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List racks in one Apstra blueprint with compact topology fields."""
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/racks"
+    out = await apstra_get(path, limit=limit, offset=offset)
+    if "data" in out:
+        out["racks"] = _compact_collection(out.pop("data"), _RACK_FIELDS, ("racks",))
+        out["blueprint_id"] = blueprint_id
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_list_routing_zones(
+    blueprint_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List routing/security zones in one Apstra blueprint with compact fields."""
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/security-zones"
+    out = await apstra_get(path, limit=limit, offset=offset)
+    if "data" in out:
+        out["routing_zones"] = _compact_collection(
+            out.pop("data"),
+            _ROUTING_ZONE_FIELDS,
+            ("security_zones", "securityZones", "routing_zones"),
+        )
         out["blueprint_id"] = blueprint_id
     return out
 
