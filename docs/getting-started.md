@@ -52,6 +52,9 @@ cp .mcp.json.example .mcp.json
 
 Edit `.mcp.json` and replace `/path/to/centralmcp` with your local clone path.
 For VS Code, copy `.vscode/mcp.json.example` to `.vscode/mcp.json`.
+For Claude launch profiles, use `.claude/launch.json`; the first profile is the
+same minimal `aruba-tool-router` setup and the remaining profiles are direct
+debug servers.
 
 Recommended default:
 

@@ -84,3 +84,13 @@ def test_repo_agent_docs_reference_claude_launch_router_config():
     for text in (claude_md, mcp_engineer):
         assert ".claude/launch.json" in text
         assert "CENTRALMCP_TOOLSETS=central,glp,rag" in text
+
+
+def test_public_setup_docs_reference_claude_launch_router_config():
+    readme = (REPO_ROOT / "README.md").read_text()
+    getting_started = (REPO_ROOT / "docs" / "getting-started.md").read_text()
+
+    for text in (readme, getting_started):
+        assert ".claude/launch.json" in text
+        assert "minimal" in text
+        assert "aruba-tool-router" in text

@@ -60,6 +60,8 @@ Edit:
 
 - `config/credentials.yaml` with your Central / GLP OAuth credentials.
 - `.mcp.json` and replace `/path/to/centralmcp` with your local clone path.
+- `.claude/launch.json` if you use Claude launch profiles; choose the minimal
+  `aruba-tool-router` profile for daily use.
 
 Build the lightweight router tool index:
 
