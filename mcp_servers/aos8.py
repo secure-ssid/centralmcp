@@ -226,6 +226,76 @@ _EVENT_FIELDS = (
     "Message",
     "message",
 )
+_MD_HIERARCHY_FIELDS = (
+    "Configuration node",
+    "configuration_node",
+    "Node",
+    "node",
+    "Name",
+    "name",
+    "Path",
+    "path",
+    "Config Path",
+    "config_path",
+    "Device Type",
+    "device_type",
+    "Type",
+    "type",
+    "IP Address",
+    "ip_address",
+    "Role",
+    "role",
+    "Status",
+    "status",
+)
+_RF_NEIGHBOR_FIELDS = (
+    "AP Name",
+    "ap_name",
+    "Neighbor AP Name",
+    "neighbor_ap_name",
+    "BSSID",
+    "bssid",
+    "SSID",
+    "ssid",
+    "Radio",
+    "radio",
+    "Band",
+    "band",
+    "Channel",
+    "channel",
+    "RSSI",
+    "rssi",
+    "SNR",
+    "snr",
+    "Noise Floor",
+    "noise_floor",
+    "Type",
+    "type",
+    "Status",
+    "status",
+)
+_CLUSTER_STATE_FIELDS = (
+    "Cluster",
+    "cluster",
+    "Group",
+    "group",
+    "Name",
+    "name",
+    "Controller",
+    "controller",
+    "Switch IP",
+    "switch_ip",
+    "IP Address",
+    "ip_address",
+    "Role",
+    "role",
+    "State",
+    "state",
+    "Status",
+    "status",
+    "Priority",
+    "priority",
+)
 _ARM_HISTORY_FIELDS = (
     "Time",
     "time",
@@ -884,6 +954,71 @@ async def aos8_get_events(
             offset=offset,
         )
         out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_md_hierarchy(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """Get Mobility Conductor hierarchy from `show configuration node-hierarchy`."""
+    out = await aos8_show_command(
+        "show configuration node-hierarchy",
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["md_hierarchy"] = _compact_primary_list(
+            out.pop("data"),
+            _MD_HIERARCHY_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_rf_neighbors(
+    ap_name: str,
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get ARM RF neighbors for an AP by name."""
+    normalized_ap = ap_name.strip()
+    if not normalized_ap:
+        return {"error": "ap_name is required."}
+    out = await aos8_show_command(
+        f"show ap arm-neighbors ap-name {normalized_ap}",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["rf_neighbors"] = _compact_primary_list(
+            out.pop("data"),
+            _RF_NEIGHBOR_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+        out["ap_name"] = normalized_ap
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_cluster_state(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """Get AOS8 LC-cluster membership and failover state."""
+    out = await aos8_show_command(
+        "show lc-cluster group-membership",
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["cluster_state"] = _compact_primary_list(
+            out.pop("data"),
+            _CLUSTER_STATE_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
     return out
 
 

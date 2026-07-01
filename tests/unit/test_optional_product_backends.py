@@ -1775,6 +1775,183 @@ def test_aos8_events_audit_show_tools_map_commands_and_compact(
 
 
 @pytest.mark.parametrize(
+    ("tool_call", "expected_command", "payload", "output_key", "expected_item", "expect_path"),
+    [
+        (
+            lambda: aos8.aos8_get_md_hierarchy(limit=1),
+            "show configuration node-hierarchy",
+            {
+                "Configuration node hierarchy": [
+                    {
+                        "Config Path": "/md/branch1",
+                        "Name": "branch1",
+                        "Device Type": "managed-device",
+                        "IP Address": "192.0.2.10",
+                        "Status": "up",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Config Path": "/md/branch2",
+                        "Name": "branch2",
+                        "Device Type": "managed-device",
+                        "IP Address": "192.0.2.11",
+                        "Status": "up",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "md_hierarchy",
+            {
+                "Config Path": "/md/branch1",
+                "Name": "branch1",
+                "Device Type": "managed-device",
+                "IP Address": "192.0.2.10",
+                "Status": "up",
+            },
+            False,
+        ),
+        (
+            lambda: aos8.aos8_get_rf_neighbors(
+                ap_name=" ap-1 ",
+                config_path="/md/branch1",
+                limit=1,
+            ),
+            "show ap arm-neighbors ap-name ap-1",
+            {
+                "ARM Neighbors": [
+                    {
+                        "AP Name": "ap-1",
+                        "Neighbor AP Name": "ap-2",
+                        "BSSID": "aa:bb:cc:dd:ee:ff",
+                        "Channel": 36,
+                        "RSSI": -67,
+                        "SNR": 28,
+                        "Raw": "omitted",
+                    },
+                    {
+                        "AP Name": "ap-1",
+                        "Neighbor AP Name": "ap-3",
+                        "BSSID": "aa:bb:cc:dd:ee:00",
+                        "Channel": 40,
+                        "RSSI": -72,
+                        "SNR": 22,
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "rf_neighbors",
+            {
+                "AP Name": "ap-1",
+                "Neighbor AP Name": "ap-2",
+                "BSSID": "aa:bb:cc:dd:ee:ff",
+                "Channel": 36,
+                "RSSI": -67,
+                "SNR": 28,
+            },
+            True,
+        ),
+        (
+            lambda: aos8.aos8_get_cluster_state(limit=1),
+            "show lc-cluster group-membership",
+            {
+                "Cluster Members": [
+                    {
+                        "Cluster": "cluster1",
+                        "Controller": "md-1",
+                        "IP Address": "192.0.2.20",
+                        "Role": "master",
+                        "State": "up",
+                        "Status": "active",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Cluster": "cluster1",
+                        "Controller": "md-2",
+                        "IP Address": "192.0.2.21",
+                        "Role": "standby",
+                        "State": "up",
+                        "Status": "active",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "cluster_state",
+            {
+                "Cluster": "cluster1",
+                "Controller": "md-1",
+                "IP Address": "192.0.2.20",
+                "Role": "master",
+                "State": "up",
+                "Status": "active",
+            },
+            False,
+        ),
+    ],
+)
+def test_aos8_differentiator_show_tools_map_commands_and_compact(
+    monkeypatch,
+    tool_call,
+    expected_command,
+    payload,
+    output_key,
+    expected_item,
+    expect_path,
+):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"rows":[]}'
+
+        def json(self):
+            return {
+                "_global_result": {"status": "0"},
+                "_meta": {"rows": []},
+                **payload,
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(tool_call())
+
+    assert called["url"] == "https://mm.example.com/v1/configuration/showcommand"
+    expected_params = {"command": expected_command}
+    if expect_path:
+        expected_params["config_path"] = "/md/branch1"
+        assert out["config_path"] == "/md/branch1"
+    assert called["params"] == expected_params
+    list_key = next(key for key in out[output_key] if key != "_pagination")
+    assert out[output_key][list_key] == [expected_item]
+    assert out[output_key]["_pagination"]["truncated"] is True
+
+
+def test_aos8_get_rf_neighbors_requires_ap_name(monkeypatch):
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+
+    out = asyncio.run(aos8.aos8_get_rf_neighbors(ap_name=" "))
+
+    assert out == {"error": "ap_name is required."}
+
+
+@pytest.mark.parametrize(
     ("tool_func", "expected_command", "payload", "output_key", "expected_item"),
     [
         (
