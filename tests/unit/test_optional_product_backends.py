@@ -2526,6 +2526,226 @@ def test_edgeconnect_get_system_info_compacts(monkeypatch):
     }
 
 
+def test_edgeconnect_get_interface_state_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"interfaces":[{"name":"wan0"}]}'
+
+        def json(self):
+            return {
+                "interfaces": [
+                    {
+                        "name": "wan0",
+                        "ifName": "wan0",
+                        "ipAddress": "192.0.2.10",
+                        "adminStatus": "up",
+                        "operStatus": "up",
+                        "speed": "1G",
+                        "raw": "omitted",
+                    },
+                    {
+                        "name": "lan0",
+                        "ifName": "lan0",
+                        "ipAddress": "192.0.2.11",
+                        "adminStatus": "up",
+                        "operStatus": "down",
+                        "speed": "1G",
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_get_interface_state(ne_pk="1.NE", cached=False, limit=1)
+    )
+
+    assert called["url"] == "https://orch.example.com/gms/rest/interfaceState"
+    assert called["params"] == {"nePk": "1.NE", "cached": False}
+    assert out["ne_pk"] == "1.NE"
+    assert out["interface_state"]["interfaces"] == [
+        {
+            "name": "wan0",
+            "ifName": "wan0",
+            "ipAddress": "192.0.2.10",
+            "adminStatus": "up",
+            "operStatus": "up",
+            "speed": "1G",
+        }
+    ]
+    assert out["interface_state"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_get_interface_state_sends_cached_default(monkeypatch):
+    called = {}
+
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        called["path"] = path
+        called["params"] = params
+        called["paginate"] = paginate
+        return {"status_code": 200, "data": {"interfaces": []}}
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_interface_state(ne_pk="1.NE"))
+
+    assert called == {
+        "path": "/gms/rest/interfaceState",
+        "params": {"nePk": "1.NE", "cached": True},
+        "paginate": False,
+    }
+    assert out["interface_state"]["interfaces"] == []
+
+
+def test_edgeconnect_get_disk_report_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"disks":[{"name":"disk0"}]}'
+
+        def json(self):
+            return {
+                "disks": [
+                    {
+                        "name": "disk0",
+                        "model": "SSD",
+                        "serial": "abc123",
+                        "capacity": "256GB",
+                        "used": "100GB",
+                        "health": "ok",
+                        "raw": "omitted",
+                    },
+                    {
+                        "name": "disk1",
+                        "model": "SSD",
+                        "serial": "def456",
+                        "capacity": "256GB",
+                        "used": "120GB",
+                        "health": "ok",
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_disk_report(ne_pk="1.NE", limit=1))
+
+    assert called["url"] == "https://orch.example.com/gms/rest/configReportDisk"
+    assert called["params"] == {"nePk": "1.NE"}
+    assert out["ne_pk"] == "1.NE"
+    assert out["disk_report"]["disks"] == [
+        {
+            "name": "disk0",
+            "model": "SSD",
+            "serial": "abc123",
+            "capacity": "256GB",
+            "used": "100GB",
+            "health": "ok",
+        }
+    ]
+    assert out["disk_report"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_get_disk_report_compacts_documented_maps(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/configReportDisk"
+        assert params == {"nePk": "1.NE"}
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "disks": {
+                    "disk0": {
+                        "model": "SSD",
+                        "serial": "abc123",
+                        "capacity": "256GB",
+                        "used": "100GB",
+                        "health": "ok",
+                        "raw": "omitted",
+                    }
+                },
+                "controller": {
+                    "model": "RAID",
+                    "status": "ok",
+                    "raw": "omitted",
+                },
+                "diskImage": {
+                    "version": "9.5.2.1",
+                    "active": True,
+                    "raw": "omitted",
+                },
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_disk_report(ne_pk="1.NE"))
+
+    assert out["disk_report"]["disks"] == [
+        {
+            "disk": "disk0",
+            "model": "SSD",
+            "serial": "abc123",
+            "capacity": "256GB",
+            "used": "100GB",
+            "health": "ok",
+        }
+    ]
+    assert out["disk_report"]["controllers"] == [
+        {
+            "controller": "controller",
+            "model": "RAID",
+            "status": "ok",
+        }
+    ]
+    assert out["disk_report"]["disk_images"] == [
+        {
+            "diskImage": "diskImage",
+            "version": "9.5.2.1",
+            "active": True,
+        }
+    ]
+
+
 def test_edgeconnect_list_alarms_compacts_outstanding(monkeypatch):
     called = {}
 

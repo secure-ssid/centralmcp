@@ -61,6 +61,51 @@ _SYSTEM_INFO_FIELDS = (
     "deploymentMode",
     "alarmSummary",
 )
+_INTERFACE_STATE_FIELDS = (
+    "id",
+    "name",
+    "ifName",
+    "interface",
+    "label",
+    "lanOrWan",
+    "mac",
+    "ip",
+    "ipAddress",
+    "admin",
+    "adminStatus",
+    "oper",
+    "operStatus",
+    "state",
+    "status",
+    "speed",
+    "duplex",
+    "mtu",
+    "vlan",
+    "zone",
+)
+_DISK_REPORT_FIELDS = (
+    "id",
+    "name",
+    "disk",
+    "diskImage",
+    "device",
+    "controller",
+    "model",
+    "serial",
+    "type",
+    "version",
+    "build",
+    "release",
+    "image",
+    "active",
+    "size",
+    "capacity",
+    "used",
+    "free",
+    "health",
+    "state",
+    "status",
+)
 _TOPOLOGY_LINK_FIELDS = (
     "id",
     "linkId",
@@ -349,6 +394,74 @@ def _normalize_route_maps(data: Any) -> list[Any] | None:
     return None
 
 
+def _disk_report_records(value: Any, identity_key: str, identity_value: str) -> list[Any] | None:
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, dict):
+        return None
+    if _looks_like_record(value, _DISK_REPORT_FIELDS):
+        record = dict(value)
+        if not any(key in record for key in ("id", "name", identity_key)):
+            record[identity_key] = identity_value
+        return [record]
+
+    records: list[Any] = []
+    for key, item in value.items():
+        if not isinstance(item, dict):
+            continue
+        record = dict(item)
+        if not any(field in record for field in ("id", "name", identity_key)):
+            record[identity_key] = key
+        records.append(record)
+    return records or None
+
+
+def _normalize_disk_report(data: Any) -> dict[str, list[Any]] | None:
+    if isinstance(data, list):
+        return {"disks": data}
+    if not isinstance(data, dict):
+        return None
+
+    normalized: dict[str, list[Any]] = {}
+    for source_key, target_key, identity_key in (
+        ("disks", "disks", "disk"),
+        ("diskInfo", "disks", "disk"),
+        ("controllers", "controllers", "controller"),
+        ("controller", "controllers", "controller"),
+        ("volumes", "volumes", "name"),
+        ("diskImage", "disk_images", "diskImage"),
+    ):
+        records = _disk_report_records(data.get(source_key), identity_key, source_key)
+        if records is not None:
+            normalized.setdefault(target_key, []).extend(records)
+    return normalized or None
+
+
+def _compact_disk_report(data: Any, *, limit: int, offset: int) -> Any:
+    records_by_key = _normalize_disk_report(data)
+    if records_by_key is None:
+        return _compact_collection(
+            data,
+            _DISK_REPORT_FIELDS,
+            ("disks", "diskInfo", "controllers", "volumes"),
+        )
+
+    compacted = {
+        key: [_compact_record(record, _DISK_REPORT_FIELDS) for record in records]
+        for key, records in records_by_key.items()
+    }
+    primary_key = next(
+        (key for key in ("disks", "controllers", "volumes", "disk_images") if key in compacted),
+        None,
+    )
+    return bound_collection_response(
+        compacted,
+        limit=limit,
+        offset=offset,
+        list_key=primary_key,
+    )
+
+
 @mcp.tool(annotations=READ_ONLY)
 def edgeconnect_status() -> dict[str, Any]:
     """Report whether EdgeConnect backend is configured."""
@@ -431,6 +544,62 @@ async def edgeconnect_get_system_info() -> dict[str, Any]:
     out = await edgeconnect_get("/rest/json/systemInfo")
     if "data" in out:
         out["system_info"] = _compact_record(out.pop("data"), _SYSTEM_INFO_FIELDS)
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_interface_state(
+    ne_pk: str,
+    cached: bool = True,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get compact EdgeConnect appliance interface state by appliance nePk."""
+    out = await _edgeconnect_get(
+        "/gms/rest/interfaceState",
+        {"nePk": ne_pk, "cached": cached},
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        data = out.pop("data")
+        records = _collection_records(data, ("interfaces", "interfaceStates", "ports"))
+        if records is None:
+            out["interface_state"] = _compact_collection(
+                data,
+                _INTERFACE_STATE_FIELDS,
+                ("interfaces", "interfaceStates", "ports"),
+            )
+        else:
+            compacted = [_compact_record(record, _INTERFACE_STATE_FIELDS) for record in records]
+            out["interface_state"] = bound_collection_response(
+                {"interfaces": compacted},
+                limit=limit,
+                offset=offset,
+                list_key="interfaces",
+            )
+        out["ne_pk"] = ne_pk
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_disk_report(
+    ne_pk: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get compact EdgeConnect appliance disk and storage-controller report."""
+    out = await _edgeconnect_get(
+        "/gms/rest/configReportDisk",
+        {"nePk": ne_pk},
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["disk_report"] = _compact_disk_report(out.pop("data"), limit=limit, offset=offset)
+        out["ne_pk"] = ne_pk
     return out
 
 
