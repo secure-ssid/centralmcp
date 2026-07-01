@@ -179,6 +179,10 @@ docs/
 
 .vscode/
   mcp.json.example      VS Code MCP example using the minimal router profile
+
+.mcp.json.example       Generic stdio MCP client example using the minimal router
+.mcp.http.json.example  Generic streamable HTTP MCP client example
+scripts/run_http_router.sh  Start the minimal router over streamable HTTP
 ```
 
 ## RAG and API lookup

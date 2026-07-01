@@ -32,6 +32,7 @@ ingestion/
   sources/             Raw scraped docs (git-ignored — regenerable)
 scripts/
   ingest_tools.py      Re-index the find_tool catalog → LanceDB (default) or Redis Stack (--backend redis)
+  run_http_router.sh   Start the minimal router over streamable HTTP
   validate_release.py  Local pre-push gate: unit tests, optional RAG/API eval, tool catalog floor
 data/                  Embedded indexes (git-ignored): docs.lance, tools.lance, specs.sqlite — rebuild via ingest or download prebuilt
 docker-compose.yml     OPTIONAL server backend: Redis Stack + Ollama (set CENTRALMCP_RAG_BACKEND=redis)
@@ -43,6 +44,8 @@ state/                 Pipeline state store (idempotent runs)
 .cursor/
   mcp.json             Router-only entry (aruba-tool-router) — low token overhead
   mcp.dev.json         6 core Aruba servers directly — full introspection for debugging
+.mcp.json.example       Generic stdio MCP client example — router minimal mode
+.mcp.http.json.example  Generic streamable HTTP MCP client example
 .claude/launch.json    Claude launch profiles — minimal router (`CENTRALMCP_TOOLSETS=central,glp,rag`) plus direct debug servers
 .vscode/mcp.json.example  VS Code MCP example — router minimal mode
 ```
