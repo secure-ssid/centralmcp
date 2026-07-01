@@ -95,3 +95,5 @@ invoke_read_tool("list_active_alerts", {"severity": "CRITICAL", "limit": 20})
 ```
 
 Use `invoke_read_tool` for investigations. Use `invoke_tool` only after intentional write/destructive user intent.
+
+For more copy/paste examples, see [example-prompts.md](example-prompts.md).

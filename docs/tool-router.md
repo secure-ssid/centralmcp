@@ -17,6 +17,9 @@ find_tool("show active critical alerts")
 invoke_read_tool("list_active_alerts", {"severity": "CRITICAL"})
 ```
 
+See [example-prompts.md](example-prompts.md) for more copy/paste prompt and
+router-call examples.
+
 ## Router tools
 
 | Tool | Safety | Use |
