@@ -122,3 +122,14 @@ uv run python scripts/download_indexes.py
 - [README](https://github.com/secure-ssid/centralmcp#readme)
 - [Setup wizard source](https://github.com/secure-ssid/centralmcp/blob/main/scripts/setup_wizard.py)
 - [Local setup doctor](https://github.com/secure-ssid/centralmcp/blob/main/scripts/doctor.py)
+
+## Related projects and thanks
+
+centralmcp is an independent HPE Networking MCP toolkit. It is improved by
+watching the official MCP ecosystem and community work; thanks to these projects
+for useful patterns and references:
+
+- [HewlettPackard/gl-mcp](https://github.com/HewlettPackard/gl-mcp) - official GreenLake Platform MCP server
+- [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) - MCP Python SDK
+- [KarthikSKumar98/central-mcp-server](https://github.com/KarthikSKumar98/central-mcp-server) - community Aruba Central MCP server
+- [nowireless4u/hpe-networking-mcp](https://github.com/nowireless4u/hpe-networking-mcp) - unified HPE networking MCP reference
