@@ -111,14 +111,18 @@ Metrics: `recall@5` (did an expected source appear in top-5), `mrr` (rank of fir
 | `mrr` | 0.339 | 0.679 | **0.90** | ≥ 0.50 ✅ |
 | `keyword_hit` | — | 0.80 | **1.00** | — |
 
-**Final corpus (full rebuild):** 53,052 chunks / 7 sources (Redis index had 40,900 and was missing `aos_techdocs`, `openapi_specs`, and most of `techdocs_html`) + 213-spec SQLite index + router tool index (currently 213 core tools / 346 with optional product starters). 18/20 eval questions hit at rank 1. Shippable artifacts: `data/docs.lance` (190 MB), `data/specs.sqlite` (18 MB), `data/tools.lance` (0.6 MB).
+**Final evaluated corpus (2026-06-03 full rebuild):** 53,052 chunks / 7
+ingested sources (Redis index had 40,900 and was missing `aos_techdocs`,
+`openapi_specs`, and most of `techdocs_html`) + 213-spec SQLite index + router
+tool index (currently 213 core tools / 346 with optional product starters).
+18/20 eval questions hit at rank 1. Shippable artifacts: `data/docs.lance`
+(190 MB), `data/specs.sqlite` (18 MB), `data/tools.lance` (0.6 MB).
 
-Tracked RAG refresh targets live in `ingestion/source_manifest.json`. Keep
-DevHub (`https://devhub.arubanetworks.com`), New Central techdocs
-(`https://arubanetworking.hpe.com/techdocs/new-central/content/home.htm`), and
-Switching Feature Navigator
-(`https://feature-navigator.arubanetworking.hpe.com/wired?mode=explore`)
-represented in the local `ingestion/sources/` inputs before packaging public
+Tracked RAG refresh targets live in `ingestion/source_manifest.json`. The
+current manifest covers 9 rebuild sources: the evaluated default source set plus
+DevHub (`https://devhub.arubanetworks.com`) and Switching Feature Navigator
+(`https://feature-navigator.arubanetworking.hpe.com/wired?mode=explore`). Keep
+those inputs represented in local `ingestion/sources/` before packaging public
 RAG indexes.
 
 The API-lookup rows almost all missed the spec sources at baseline — direct empirical evidence of **R2** (OpenAPI specs absent from the active index). `howto` retrieval is already decent, confirming the redesign's value is concentrated in (a) structured API lookup and (b) hybrid+rerank for exact identifiers, not in replacing vector search wholesale. Re-run `uv run --with pyyaml python tests/eval/run_eval.py` after each change.
