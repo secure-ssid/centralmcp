@@ -39,11 +39,13 @@ SOURCES_DIR = Path(__file__).parent / "sources"
 # Each source has a distinct doc_type so provenance survives filtering.
 # `doc_type` is kept for back-compat; new code should filter by `source`.
 SOURCE_META = {
+    "devhub": "devhub",
     "developer_docs": "developer-docs",
     "tech_docs": "tech-docs",
     "nac_docs": "nac",
     "vsg_docs": "vsg",
     "techdocs_html": "techdocs-html",
+    "feature_navigator": "feature-navigator",
     "openapi_specs": "openapi",
     "aos_techdocs": "aos-techdocs",
 }

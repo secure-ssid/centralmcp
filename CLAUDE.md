@@ -20,6 +20,7 @@ mcp_servers/
   apstra.py            Optional Apstra starter backend
   aos8.py              Optional ArubaOS 8 starter backend
   edgeconnect.py       Optional EdgeConnect starter backend
+  uxi.py               Optional HPE Aruba UXI starter backend
   shared.py            Shared utilities and helpers
 pipeline/
   clients/             CentralClient, GLPClient, MCPClient, TokenManager, EmbedClient (fastembed),
@@ -56,7 +57,7 @@ state/                 Pipeline state store (idempotent runs)
 Six core Aruba domain servers — `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, `rag.py` — each registered in `.cursor/mcp.dev.json`. For day-to-day use, `tool_router.py` is the single entrypoint registered in `.cursor/mcp.json`, `.claude/launch.json`, or copied from `.vscode/mcp.json.example`, and proxies to enabled backends.
 Tools follow `verb_noun` naming — no prefix. The server name provides context (`aruba-monitoring`, `aruba-config`, `aruba-ops`, `aruba-nac`, `aruba-glp`, `aruba-rag`).
 
-Optional product starters (`clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect`) are loaded only when enabled with `CENTRALMCP_PRODUCTS` or `CENTRALMCP_TOOLSETS`. Keep new product backends opt-in so default tool-list token cost stays low.
+Optional product starters (`clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect`, `uxi`) are loaded only when enabled with `CENTRALMCP_PRODUCTS` or `CENTRALMCP_TOOLSETS`. Keep new product backends opt-in so default tool-list token cost stays low.
 Use router `invoke_read_tool` for read-only dispatch. Keep router `invoke_tool` annotated `DESTRUCTIVE`; it is a generic dispatcher and can reach destructive backend tools.
 
 | Verb | Meaning |

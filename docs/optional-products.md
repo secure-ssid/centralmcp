@@ -22,6 +22,7 @@ python3 scripts/setup_wizard.py --with-products
 | Apstra | status, guarded GET/write, blueprint, template, anomaly, rack, routing-zone, virtual-network, remote-gateway, connectivity-template, application-endpoint, diff-status, protocol-session, and system-info reads | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` | Read/write starter; writes dry-run by default |
 | ArubaOS 8 | status, guarded GET/write, show-command, controller/version/license, AP inventory/active/client lookup/detail/history/radio/BSS, hierarchy/cluster/RF-neighbor/AP-port/IPsec reads, alarms/audit/events, system-log/ARM/monitor diagnostics, WLAN/AP-group/virtual-AP/user-role reads, and typed lab writes for SSID profiles, virtual APs, AP groups, user roles, VLANs, and write-memory | `AOS8_BASE_URL`, `AOS8_API_TOKEN` | Read/write starter; writes dry-run by default |
 | EdgeConnect | status, guarded GET/write, appliance inventory/system/alarm/interface/disk/reachability/maintenance/network-role-site/overlay/topology/tunnel, route-map/route-label, firewall-zone/zone-based firewall, interface-label, ACL IP/service object-group, overlay internet-service, bypass-mode, link-integrity diagnostics, tunnel-metadata, VRF-segment reads, and save-changes lab write | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` | Read/write starter; writes dry-run by default |
+| UXI | status, guarded GET, sensor/agent/group/network/service-test inventories, sensor status, and group-assignment reads | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Read-only starter |
 
 The generic GET tools reject absolute URLs and stay bounded to the configured
 product host. List-like responses are paged with `limit` and `offset` when
@@ -103,4 +104,5 @@ call, for example:
 | "Perform a write/remediation action" | Yes, with explicit destructive annotations and confirmation |
 
 See [Typed product workflow roadmap](product-workflows.md) for implemented
-ClearPass, Mist, Apstra, ArubaOS 8, and EdgeConnect workflows plus candidates.
+ClearPass, Mist, Apstra, ArubaOS 8, EdgeConnect, and UXI workflows plus
+candidates.

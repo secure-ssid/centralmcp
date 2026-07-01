@@ -26,13 +26,14 @@ def test_build_backends_enables_clearpass(monkeypatch):
 
 def test_build_backends_enables_multiple_products(monkeypatch):
     monkeypatch.delenv("CENTRALMCP_TOOLSETS", raising=False)
-    monkeypatch.setenv("CENTRALMCP_PRODUCTS", "clearpass,mist,apstra,aos8,edgeconnect")
+    monkeypatch.setenv("CENTRALMCP_PRODUCTS", "clearpass,mist,apstra,aos8,edgeconnect,uxi")
     backends = router._build_backends()
     assert backends.get("clearpass-core") == "mcp_servers.clearpass"
     assert backends.get("mist-core") == "mcp_servers.mist"
     assert backends.get("apstra-core") == "mcp_servers.apstra"
     assert backends.get("aos8-core") == "mcp_servers.aos8"
     assert backends.get("edgeconnect-core") == "mcp_servers.edgeconnect"
+    assert backends.get("uxi-core") == "mcp_servers.uxi"
 
 
 def test_build_backends_toolsets_narrow_core(monkeypatch):
@@ -62,6 +63,7 @@ def test_build_backends_toolsets_all_includes_known_optional(monkeypatch):
     assert "apstra-core" in backends
     assert "aos8-core" in backends
     assert "edgeconnect-core" in backends
+    assert "uxi-core" in backends
 
 
 def test_load_all_backends_filters_optional_writes_when_read_only(monkeypatch):

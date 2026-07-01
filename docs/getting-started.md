@@ -233,7 +233,7 @@ The unit suite includes static guards that keep async MCP tools off sync HTTP ca
 Optional product backends are disabled by default.
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
 CENTRALMCP_PRODUCT_ACCESS=read-write
 ```
 
@@ -253,6 +253,7 @@ python3 scripts/setup_wizard.py --products clearpass
 | Apstra | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` |
 | AOS8 | `AOS8_BASE_URL`, `AOS8_API_TOKEN` |
 | EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` |
+| UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
 
 ## Safety defaults
 

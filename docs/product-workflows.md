@@ -2,8 +2,9 @@
 
 The optional product starters are intentionally small and lab-friendly. They
 give users a safe way to connect ClearPass, Mist, Apstra, ArubaOS 8, and
-EdgeConnect with read workflows plus guarded write tools, without loading every
-possible product workflow into the MCP tool list.
+EdgeConnect with read workflows plus guarded write tools, and UXI with compact
+read-only workflows, without loading every possible product workflow into the
+MCP tool list.
 
 Use this page as the implementation roadmap for typed tools that should graduate
 from generic GET exploration into named MCP workflows.
@@ -157,6 +158,17 @@ Promote a generic GET pattern to a typed tool when it is:
 | Persist appliance changes | `edgeconnect_save_changes` | Guarded lab write to `/gms/rest/appliance/saveChanges`, dry-run default and `confirm=True` required |
 | Generic lab write | `edgeconnect_write` | Guarded POST/PUT/PATCH/DELETE to Orchestrator REST paths; dry-run default |
 
+## UXI implemented starters
+
+| Workflow | Tool | Notes |
+|---|---|---|
+| Backend status | `uxi_status` | Shows whether UXI OAuth client credentials are configured |
+| Guarded UXI GET | `uxi_get` | Read-only GET limited to selected UXI list endpoints and `/sensors/{id}/status` |
+| Sensor inventory and status | `uxi_list_sensors` / `uxi_get_sensor_status` | Compact sensor identity/model/MAC/group/location fields plus online/testing status |
+| Agent and group inventory | `uxi_list_agents` / `uxi_list_groups` | Compact agent and group reads with cursor-style pagination |
+| Network and service-test inventory | `uxi_list_wired_networks` / `uxi_list_wireless_networks` / `uxi_list_service_tests` | Read-only network and service test views |
+| Group assignments | `uxi_list_agent_group_assignments` / `uxi_list_sensor_group_assignments` / `uxi_list_network_group_assignments` / `uxi_list_service_test_group_assignments` | Assignment-list views for agents, sensors, networks, and service tests |
+
 ## Remaining optional typed candidates
 
 No verified optional typed candidates are queued. Continue promoting new reads
@@ -166,7 +178,8 @@ public references.
 ## Design constraints
 
 1. Keep optional products opt-in via `CENTRALMCP_PRODUCTS`.
-2. Include both read and guarded write options for lab workflows.
+2. Include both read and guarded write options for lab workflows where verified
+   write endpoints are in scope.
 3. Keep outputs compact and paginated.
 4. Require explicit write/destructive annotations and confirmation for writes.
 5. Keep product tokens in `.env`; do not duplicate them into MCP client configs.

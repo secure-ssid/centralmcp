@@ -73,8 +73,18 @@ PRODUCT_ENV = {
             "EDGECONNECT_AUTH_HEADER": "Authorization",
         },
     },
+    "uxi": {
+        "label": "HPE Aruba UXI",
+        "vars": {
+            "UXI_CLIENT_ID": "YOUR_UXI_CLIENT_ID",
+            "UXI_CLIENT_SECRET": "YOUR_UXI_CLIENT_SECRET",
+            "UXI_BASE_URL": "https://api.capenetworks.com/networking-uxi/v1alpha1",
+            "UXI_TOKEN_URL": "https://sso.common.cloud.hpe.com/as/token.oauth2",
+        },
+    },
 }
 PLACEHOLDER_MARKERS = ("YOUR_", "REPLACE_ME", "PLACEHOLDER")
+SECRET_ENV_SUFFIXES = ("_TOKEN", "_SECRET", "_PASSWORD", "_API_KEY")
 
 
 @dataclass
@@ -110,6 +120,10 @@ def _ask_text(prompt: str, default: str = "") -> str:
 def _ask_secret(prompt: str, default: str) -> str:
     answer = getpass.getpass(f"{prompt} [leave blank to keep placeholder]: ").strip()
     return answer or default
+
+
+def _is_secret_env_var(name: str) -> bool:
+    return name.endswith(SECRET_ENV_SUFFIXES)
 
 
 def _csv(values: str) -> list[str]:
@@ -330,7 +344,7 @@ def _product_env(
         for name, default in meta["vars"].items():
             if assume_yes:
                 env[name] = default
-            elif name.endswith("_TOKEN"):
+            elif _is_secret_env_var(name):
                 env[name] = _ask_secret(name, default)
             else:
                 env[name] = _ask_text(name, default)
@@ -426,7 +440,7 @@ def main() -> int:
         default="",
         help=(
             "comma-separated optional products to enable "
-            "(clearpass,mist,apstra,aos8,edgeconnect,all)"
+            "(clearpass,mist,apstra,aos8,edgeconnect,uxi,all)"
         ),
     )
     parser.add_argument(

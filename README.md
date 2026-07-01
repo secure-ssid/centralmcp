@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-FastMCP-brightgreen)](https://modelcontextprotocol.io/)
 
-**Low-token Model Context Protocol (MCP) server for HPE Networking automation: Aruba Central, HPE GreenLake Platform, ClearPass, Juniper Mist, Apstra, ArubaOS 8, and EdgeConnect.**
+**Low-token Model Context Protocol (MCP) server for HPE Networking automation: Aruba Central, HPE GreenLake Platform, ClearPass, Juniper Mist, Apstra, ArubaOS 8, EdgeConnect, and HPE Aruba UXI.**
 
 centralmcp gives MCP-capable AI clients a low-token way to search Aruba/HPE docs, look up exact OpenAPI details, inspect Central health, run troubleshooting workflows, manage configuration, and use guarded GreenLake Platform operations.
 
@@ -16,7 +16,7 @@ flowchart LR
     router["aruba-tool-router<br/>find_tool<br/>invoke_read_tool<br/>invoke_tool"]
     rag["Embedded RAG<br/>LanceDB docs<br/>SQLite OpenAPI lookup"]
     core["Core Aruba backends<br/>Central monitoring/config/NAC/ops<br/>GreenLake Platform"]
-    optional["Optional starters<br/>ClearPass, Mist, Apstra<br/>AOS8, EdgeConnect"]
+    optional["Optional starters<br/>ClearPass, Mist, Apstra<br/>AOS8, EdgeConnect, UXI"]
 
     client -->|"stdio or streamable HTTP"| router
     router -->|"search_docs / ask_docs / lookup_api"| rag
@@ -32,10 +32,11 @@ Platform MCP, GreenLake service catalog MCP, GreenLake reporting status MCP,
 FastMCP network automation, Model Context Protocol networking, network
 configuration MCP, Aruba API RAG, Aruba Central OpenAPI lookup, ClearPass MCP,
 Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, AOS8 automation, HPE Aruba
-EdgeConnect MCP, EdgeConnect MCP, guarded read/write lab automation, EdgeConnect
-zones, EdgeConnect interface labels, zone-based firewall MCP, Python `httpx`
-network automation, EdgeConnect ACL object groups, EdgeConnect services,
-EdgeConnect bypass mode, EdgeConnect link integrity diagnostics.
+EdgeConnect MCP, EdgeConnect MCP, HPE Aruba UXI MCP, UXI sensor status MCP,
+guarded read/write lab automation, EdgeConnect zones, EdgeConnect interface
+labels, zone-based firewall MCP, Python `httpx` network automation,
+EdgeConnect ACL object groups, EdgeConnect services, EdgeConnect bypass mode,
+EdgeConnect link integrity diagnostics.
 
 ## Who this is for
 
@@ -45,7 +46,7 @@ EdgeConnect bypass mode, EdgeConnect link integrity diagnostics.
 | Ask questions about Aruba/HPE docs and APIs | Use embedded LanceDB + SQLite RAG/OpenAPI lookup without Docker |
 | Inspect Central health, devices, clients, alerts, events, or sites | Discover tools with `find_tool` and call read-only tools through `invoke_read_tool` |
 | Automate migrations or SSID workflows | Use the 8-stage migration pipeline and SSID helpers |
-| Experiment with ClearPass, Mist, Apstra, AOS8, or EdgeConnect | Enable optional starter backends only when needed |
+| Experiment with ClearPass, Mist, Apstra, AOS8, EdgeConnect, or UXI | Enable optional starter backends only when needed |
 
 ## Quick links
 
@@ -75,12 +76,12 @@ EdgeConnect bypass mode, EdgeConnect link integrity diagnostics.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 213 core tools, or 333 with optional product starters indexed |
+| MCP tools | 213 core tools, or 346 with optional product starters indexed |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |
 | GLP | Devices, subscriptions, users, audit logs, workspaces, reporting statuses, service catalog, guarded read-only GLP GET, and feature-gated writes |
-| Optional products | ClearPass, Mist, Apstra, AOS8, and EdgeConnect starter backends |
+| Optional products | ClearPass, Mist, Apstra, AOS8, EdgeConnect, and UXI starter backends |
 | Pipeline | 8-stage migration flow plus SSID build/delete helpers |
 
 ## Why the router matters
@@ -131,7 +132,7 @@ products, build the router catalog, and run the local doctor.
 Review:
 
 - `config/credentials.yaml` with your Central / GLP OAuth credentials.
-- `.env` if you enabled ClearPass, Mist, Apstra, AOS8, or EdgeConnect.
+- `.env` if you enabled ClearPass, Mist, Apstra, AOS8, EdgeConnect, or UXI.
 - `.mcp.json` if you want to tune the generated stdio MCP client config.
 - `.mcp.http.json` if your MCP client connects to an already-running
   streamable HTTP server instead of launching stdio.
@@ -163,6 +164,10 @@ scraped docs/API source files first, then run:
 uv run python ingestion/ingest_docs.py
 ```
 
+RAG source targets are tracked in
+[`ingestion/source_manifest.json`](ingestion/source_manifest.json), including
+DevHub, New Central techdocs, and the Switching Feature Navigator seeds.
+
 Check the local setup without making API calls:
 
 ```bash
@@ -188,7 +193,7 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 Enable optional products only when needed:
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
 CENTRALMCP_PRODUCT_ACCESS=read-write
 ```
 
@@ -200,12 +205,12 @@ one local file:
 python3 scripts/setup_wizard.py --products clearpass,mist
 ```
 
-The optional product starter tools include read and guarded write options for
-lab workflows. Generic GET tools page list responses with `limit` / `offset`,
-typed ClearPass/Mist read workflows return compact troubleshooting fields, and
-optional product writes default to `dry_run=True` with `confirm=True` required
-for execution. Set `CENTRALMCP_PRODUCT_ACCESS=read-only` to hide and block
-optional product write tools.
+The optional product starter tools are lab-friendly. Write-capable products
+include guarded writes that default to `dry_run=True` with `confirm=True`
+required for execution; UXI starts as compact read-only workflows for sensors,
+agents, groups, networks, service tests, and assignments. Set
+`CENTRALMCP_PRODUCT_ACCESS=read-only` to hide and block optional product write
+tools.
 
 ## Streamable HTTP mode
 
@@ -291,6 +296,7 @@ docs/
 
 inputs/                  Example CSV inputs for migration workflows
 resources/               Postman/API reference material and resource notes
+ingestion/source_manifest.json  RAG source seed URLs and source folders
 scripts/                 Tool catalog ingest, local doctor, HTTP router helper, release validation
 tests/                   Unit, integration, and RAG eval tests
 
@@ -347,6 +353,10 @@ uv run python scripts/validate_release.py
 The release helper runs unit tests, optional RAG/API eval when indexes exist, tool catalog floor checks, and local tool-index freshness checks. Unit tests also include static guards for the active MCP/pipeline code, committed low-token MCP config examples, local-only config files, router product/toolset docs, bounded generic read-only GET tools, MCP list default bounds, RAG/search top_k bounds, public tool-count claims, tool-count docstrings, and tracked Markdown local links.
 
 ## Related projects
+
+With appreciation to these projects and maintainers for official APIs, MCP
+patterns, and community references that helped shape centralmcp's low-token,
+lab-friendly direction:
 
 - [HewlettPackard/gl-mcp](https://github.com/HewlettPackard/gl-mcp) - official GreenLake Platform MCP server
 - [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) - MCP Python SDK

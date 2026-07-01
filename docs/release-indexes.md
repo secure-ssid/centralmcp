@@ -59,3 +59,26 @@ always use the latest release URL.
 | `data/specs.sqlite` | `lookup_api` | Exact OpenAPI endpoint/schema lookup |
 | `data/tools.lance` | `find_tool` | Semantic router tool discovery |
 | `data/INDEX-MANIFEST.json` | humans / doctor output | Build metadata and artifact sizes |
+
+## Refresh RAG source inputs
+
+Scraped source files live under git-ignored `ingestion/sources/`; keep the
+tracked source list in [`ingestion/source_manifest.json`](../ingestion/source_manifest.json)
+current before rebuilding public indexes.
+
+| Source | Seed / target | Destination |
+|---|---|---|
+| DevHub | `https://devhub.arubanetworks.com` | `ingestion/sources/devhub` |
+| New Central developer docs | `https://developer.arubanetworks.com/new-central/...` | `ingestion/sources/developer_docs` and `ingestion/sources/openapi_specs` |
+| Tech docs | `https://arubanetworking.hpe.com/techdocs/` | `ingestion/sources/tech_docs` |
+| NAC docs | CNAC/NAC developer and reference pages | `ingestion/sources/nac_docs` |
+| Validated Solution Guides | `https://arubanetworking.hpe.com/techdocs/VSG/docs/` | `ingestion/sources/vsg_docs` |
+| New Central techdocs | `https://arubanetworking.hpe.com/techdocs/new-central/content/home.htm` plus `ingestion/techdocs_paths.json` | `ingestion/sources/techdocs_html` |
+| Switching Feature Navigator | `https://feature-navigator.arubanetworking.hpe.com/wired?mode=explore` | `ingestion/sources/feature_navigator` |
+| OpenAPI specs | New Central OpenAPI JSON specs | `ingestion/sources/openapi_specs` |
+| AOS techdocs | `https://arubanetworking.hpe.com/techdocs/aos/` | `ingestion/sources/aos_techdocs` |
+
+The New Central techdocs host can block plain HTTP clients, so use the paced
+Playwright scraper (`ingestion/scrape_techdocs_pw.py`) when refreshing that
+source. Do not commit scraped content; rebuild `data/docs.lance` and package the
+index archive instead.

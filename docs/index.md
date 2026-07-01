@@ -2,7 +2,7 @@
 
 Low-token Model Context Protocol tooling for HPE Aruba Central, HPE GreenLake
 Platform, embedded docs/API lookup, and optional ClearPass, Mist, Apstra,
-ArubaOS 8, and EdgeConnect starter backends.
+ArubaOS 8, EdgeConnect, and UXI starter backends.
 
 ## Start fast
 
@@ -25,7 +25,7 @@ flowchart TD
     clone["git clone centralmcp"]
     wizard["scripts/setup_wizard.py"]
     credentials["Central / GLP credentials<br/>config/credentials.yaml"]
-    products["Optional products<br/>ClearPass, Mist, Apstra, AOS8, EdgeConnect"]
+    products["Optional products<br/>ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI"]
     access{"Product access"}
     readonly["read-only<br/>write tools hidden/blocked"]
     readwrite["read-write lab mode<br/>dry-run previews<br/>confirm=True to execute"]
@@ -54,7 +54,7 @@ flowchart TD
 |---|---|
 | Install and connect an MCP client | [Getting started](getting-started.md) |
 | Copy/paste stdio or HTTP client config | [MCP client recipes](mcp-client-recipes.md) |
-| Enable ClearPass, Mist, Apstra, AOS8, or EdgeConnect | [Optional product starters](optional-products.md) |
+| Enable ClearPass, Mist, Apstra, AOS8, EdgeConnect, or UXI | [Optional product starters](optional-products.md) |
 | Plan typed product-specific workflows | [Typed product workflow roadmap](product-workflows.md) |
 | Fix setup, credentials, HTTP, or catalog issues | [Troubleshooting](troubleshooting.md) |
 | Download or package prebuilt RAG/OpenAPI indexes | [Prebuilt RAG/OpenAPI indexes](release-indexes.md) |
@@ -90,6 +90,7 @@ Available starters:
 | Apstra | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` |
 | ArubaOS 8 | `AOS8_BASE_URL`, `AOS8_API_TOKEN` |
 | EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN` |
+| UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET` |
 
 See the [optional product matrix](optional-products.md) for the full setup and
 safety model.

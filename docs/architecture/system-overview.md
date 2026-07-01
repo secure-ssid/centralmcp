@@ -13,7 +13,7 @@ flowchart LR
     docs["data/docs.lance<br/>hybrid docs index"]
     specs["data/specs.sqlite<br/>exact OpenAPI lookup"]
     core["Core Aruba servers<br/>monitoring, config, ops, nac, glp"]
-    optional["Optional product starters<br/>clearpass, mist, apstra,<br/>aos8, edgeconnect"]
+    optional["Optional product starters<br/>clearpass, mist, apstra,<br/>aos8, edgeconnect, uxi"]
     apis["External APIs<br/>Aruba Central, GreenLake,<br/>optional products"]
 
     client -->|"stdio or streamable HTTP"| router
@@ -37,7 +37,7 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 Optional products are disabled until explicitly enabled:
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
 ```
 
 ## Tool discovery and dispatch
@@ -73,7 +73,7 @@ flowchart TD
     clone["git clone"]
     wizard["scripts/setup_wizard.py<br/>install, region, credentials"]
     products{"Enable optional<br/>product starters?"}
-    selected["Select products<br/>clearpass, mist, apstra,<br/>aos8, edgeconnect, or all"]
+    selected["Select products<br/>clearpass, mist, apstra,<br/>aos8, edgeconnect, uxi, or all"]
     access{"Product access mode"}
     ro["read-only<br/>hide/block optional writes"]
     rw["read-write lab mode<br/>writes visible, dry-run default,<br/>dry_run=False + confirm=True required"]

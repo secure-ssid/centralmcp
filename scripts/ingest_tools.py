@@ -34,6 +34,7 @@ OPTIONAL_SERVERS = {
     "apstra": ("apstra-core", "mcp_servers.apstra"),
     "aos8": ("aos8-core", "mcp_servers.aos8"),
     "edgeconnect": ("edgeconnect-core", "mcp_servers.edgeconnect"),
+    "uxi": ("uxi-core", "mcp_servers.uxi"),
 }
 
 
@@ -185,7 +186,7 @@ def main() -> int:
         default=None,
         help=(
             "Optional product catalog entries to include, comma-separated "
-            "(clearpass,mist,apstra,aos8,edgeconnect,all). Defaults to CENTRALMCP_PRODUCTS."
+            "(clearpass,mist,apstra,aos8,edgeconnect,uxi,all). Defaults to CENTRALMCP_PRODUCTS."
         ),
     )
     args = ap.parse_args()

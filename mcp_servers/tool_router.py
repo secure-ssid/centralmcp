@@ -5,7 +5,7 @@ discovery wrappers) and retrieves the full tool catalog on demand. Backend
 servers are imported in-process and dispatched by name — no subprocess overhead.
 
 Optional product backends can be enabled with:
-  CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+  CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
 
 Toolsets can narrow loaded backends:
   CENTRALMCP_TOOLSETS=central,rag
@@ -69,6 +69,7 @@ _OPTIONAL_BACKENDS = {
     "apstra": ("apstra-core", "mcp_servers.apstra"),
     "aos8": ("aos8-core", "mcp_servers.aos8"),
     "edgeconnect": ("edgeconnect-core", "mcp_servers.edgeconnect"),
+    "uxi": ("uxi-core", "mcp_servers.uxi"),
 }
 _OPTIONAL_SERVER_NAMES = {server_name for server_name, _ in _OPTIONAL_BACKENDS.values()}
 _TOOLSET_BACKENDS = {
@@ -84,6 +85,7 @@ _TOOLSET_BACKENDS = {
     "apstra": {"apstra-core"},
     "aos8": {"aos8-core"},
     "edgeconnect": {"edgeconnect-core"},
+    "uxi": {"uxi-core"},
 }
 
 
@@ -122,7 +124,7 @@ def _build_backends() -> dict[str, str]:
     """Build backend module map, including optional product backends.
 
     Optional products/toolsets are enabled via:
-      CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+      CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
       CENTRALMCP_TOOLSETS=central,glp,rag
     Unknown product names are ignored.
     """

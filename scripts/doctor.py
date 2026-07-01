@@ -22,6 +22,7 @@ OPTIONAL_PRODUCT_ENVS = {
     "apstra": ("APSTRA_BASE_URL", "APSTRA_API_TOKEN"),
     "aos8": ("AOS8_BASE_URL", "AOS8_API_TOKEN"),
     "edgeconnect": ("EDGECONNECT_BASE_URL", "EDGECONNECT_API_TOKEN"),
+    "uxi": ("UXI_CLIENT_ID", "UXI_CLIENT_SECRET"),
 }
 PLACEHOLDER_MARKERS = ("YOUR_", "REPLACE_ME", "PLACEHOLDER")
 
@@ -63,6 +64,10 @@ def _has_placeholders(path: Path) -> bool:
         return False
     text = path.read_text(errors="replace")
     return any(marker in text for marker in PLACEHOLDER_MARKERS)
+
+
+def _is_placeholder_value(value: str) -> bool:
+    return any(marker in value for marker in PLACEHOLDER_MARKERS)
 
 
 def _load_json(path: Path) -> tuple[dict[str, object] | None, str | None]:
@@ -475,14 +480,19 @@ def _runtime_checks() -> list[Check]:
 
     for product in sorted(_enabled_optional_products(products, toolsets)):
         required = OPTIONAL_PRODUCT_ENVS[product]
-        missing = [name for name in required if not os.getenv(name, "").strip()]
+        missing = [
+            name
+            for name in required
+            if not (value := os.getenv(name, "").strip())
+            or _is_placeholder_value(value)
+        ]
         checks.append(
             Check(
                 "OK" if not missing else "WARN",
                 f"{product} required env",
                 "required env vars are set"
                 if not missing
-                else f"missing: {', '.join(missing)}",
+                else f"missing or placeholder: {', '.join(missing)}",
             )
         )
 

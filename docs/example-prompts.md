@@ -105,7 +105,7 @@ find_tool("device health by serial number")
 Optional product starters are disabled unless you enable them:
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
 CENTRALMCP_PRODUCT_ACCESS=read-write
 ```
 
@@ -134,6 +134,19 @@ Router flow:
 ```text
 find_tool("Apstra list blueprints")
 invoke_read_tool("apstra_list_blueprints", {"limit": 10})
+```
+
+UXI read prompt:
+
+```text
+List the first 10 UXI sensors and include only compact identity/status fields.
+```
+
+Router flow:
+
+```text
+find_tool("UXI list sensors")
+invoke_read_tool("uxi_list_sensors", {"page_size": 10})
 ```
 
 Lab write dry-run prompt:

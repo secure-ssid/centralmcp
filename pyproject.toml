@@ -26,6 +26,7 @@ keywords = [
     "greenlake",
     "greenlake-reporting",
     "greenlake-service-catalog",
+    "hpe-aruba-uxi",
     "hpe-aruba-networking",
     "hpe-greenlake",
     "hpe-networking",
@@ -35,6 +36,8 @@ keywords = [
     "network-automation",
     "openapi",
     "rag",
+    "uxi",
+    "user-experience-insight",
     "zone-based-firewall",
 ]
 classifiers = [

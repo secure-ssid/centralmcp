@@ -71,7 +71,7 @@ If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and inclu
 | `ops` | Troubleshooting and operational tools |
 | `glp` | GreenLake Platform tools for devices, subscriptions, users, audit logs, workspaces, reporting statuses, service catalog, and guarded GLP writes |
 | `rag` | `ask_docs`, `search_docs`, `lookup_api` |
-| `clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect` | Optional starter backends |
+| `clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect`, `uxi` | Optional starter backends |
 | `all` | All core and optional backends |
 
 ## Optional products
@@ -79,22 +79,22 @@ If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and inclu
 Optional products can be enabled either by `CENTRALMCP_TOOLSETS` or by `CENTRALMCP_PRODUCTS`.
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
 CENTRALMCP_PRODUCT_ACCESS=read-write
 ```
 
-The optional product starters intentionally expose a small read/write lab
-surface:
+The optional product starters intentionally expose a small lab-friendly surface:
 
 - `<product>_status`
 - guarded `<product>_get`
-- guarded `<product>_write` for lab POST/PUT/PATCH/DELETE calls
+- guarded `<product>_write` for lab POST/PUT/PATCH/DELETE calls on write-capable starters
 - typed ClearPass troubleshooting lookups
 - typed Mist site/client/WLAN/alarm lookups
 - typed Apstra blueprint/anomaly, AOS8 show/config-object diagnostics and
   guarded WLAN/VLAN lab writes, and EdgeConnect appliance, route, tunnel, VRF,
   interface-label, ACL object-group, service, bypass, link-integrity, and
   firewall-zone workflows
+- typed UXI sensor, agent, group, network, service-test, and assignment reads
 
 Generic GET responses are paginated with `limit` and `offset` when the response
 contains a list. This keeps token cost low while leaving room to add

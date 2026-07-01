@@ -1,0 +1,94 @@
+[
+  {
+    "source": "devhub",
+    "doc_type": "devhub",
+    "purpose": "HPE Aruba Networking DevHub landing, SDK, package, sample, and developer guidance pages for RAG discovery.",
+    "seed_urls": [
+      "https://devhub.arubanetworks.com"
+    ],
+    "output_dir": "ingestion/sources/devhub",
+    "notes": "Do not commit scraped content. Capture only pages allowed by the site terms and preserve source URLs in generated files."
+  },
+  {
+    "source": "developer_docs",
+    "doc_type": "developer-docs",
+    "purpose": "New Central developer and API how-to pages from the Aruba developer portal.",
+    "seed_urls": [
+      "https://developer.arubanetworks.com/new-central/docs/getting-started-with-rest-apis",
+      "https://developer.arubanetworks.com/new-central/docs/introduction-to-configuration-apis"
+    ],
+    "output_dir": "ingestion/sources/developer_docs",
+    "notes": "Refresh with ingestion/scrape.py, scrape_reference.py, and scrape_cnac_spec.py, then rebuild data/docs.lance and data/specs.sqlite."
+  },
+  {
+    "source": "tech_docs",
+    "doc_type": "tech-docs",
+    "purpose": "General HPE Aruba technical documentation used by docs RAG retrieval.",
+    "seed_urls": [
+      "https://arubanetworking.hpe.com/techdocs/"
+    ],
+    "output_dir": "ingestion/sources/tech_docs",
+    "notes": "Keep generated markdown or HTML under the git-ignored source folder with source URL comments."
+  },
+  {
+    "source": "nac_docs",
+    "doc_type": "nac",
+    "purpose": "Network access control, MAC registration, visitor, MPSK, DPP, and certificate reference material.",
+    "seed_urls": [
+      "https://developer.arubanetworks.com/new-central-config/reference/mac-registration"
+    ],
+    "output_dir": "ingestion/sources/nac_docs",
+    "notes": "Pair prose refreshes with the CNAC OpenAPI extraction when NAC API pages change."
+  },
+  {
+    "source": "vsg_docs",
+    "doc_type": "vsg",
+    "purpose": "Validated Solution Guide pages and design guidance used by architecture and workflow RAG answers.",
+    "seed_urls": [
+      "https://arubanetworking.hpe.com/techdocs/VSG/docs/"
+    ],
+    "output_dir": "ingestion/sources/vsg_docs",
+    "notes": "Refresh with ingestion/scrape_vsg.py from a vetted URL list; the site may require Playwright."
+  },
+  {
+    "source": "techdocs_html",
+    "doc_type": "techdocs-html",
+    "purpose": "New Central product documentation, feature pages, workflows, and UI terminology.",
+    "seed_urls": [
+      "https://arubanetworking.hpe.com/techdocs/new-central/content/home.htm"
+    ],
+    "url_seed_file": "ingestion/techdocs_paths.json",
+    "output_dir": "ingestion/sources/techdocs_html",
+    "notes": "The site can block plain HTTP clients; use ingestion/scrape_techdocs_pw.py with paced Playwright scraping."
+  },
+  {
+    "source": "feature_navigator",
+    "doc_type": "feature-navigator",
+    "purpose": "Switching Feature Navigator wired feature/platform/release availability pages for RAG answers about CX feature support.",
+    "seed_urls": [
+      "https://feature-navigator.arubanetworking.hpe.com/wired?mode=explore"
+    ],
+    "output_dir": "ingestion/sources/feature_navigator",
+    "notes": "Dynamic explorer content should be exported or captured with source URLs before ingesting."
+  },
+  {
+    "source": "openapi_specs",
+    "doc_type": "openapi",
+    "purpose": "Authoritative OpenAPI specs for exact endpoint, schema, field, and enum lookup.",
+    "seed_urls": [
+      "https://developer.arubanetworks.com/new-central-config/reference/"
+    ],
+    "output_dir": "ingestion/sources/openapi_specs",
+    "notes": "JSON specs are parsed into docs chunks and data/specs.sqlite; include CNAC via ingestion/scrape_cnac_spec.py."
+  },
+  {
+    "source": "aos_techdocs",
+    "doc_type": "aos-techdocs",
+    "purpose": "AOS 10 techdocs books for Wi-Fi design, location services, private 5G, and AOS operations.",
+    "seed_urls": [
+      "https://arubanetworking.hpe.com/techdocs/aos/"
+    ],
+    "output_dir": "ingestion/sources/aos_techdocs",
+    "notes": "Discover URLs with ingestion/discover_aos_urls.py and refresh with ingestion/scrape_aos_pw.py."
+  }
+]

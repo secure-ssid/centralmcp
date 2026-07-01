@@ -7,6 +7,7 @@ import pytest
 import mcp_servers.aos8 as aos8
 import mcp_servers.apstra as apstra
 import mcp_servers.edgeconnect as edgeconnect
+import mcp_servers.uxi as uxi
 
 
 class _Resp:
@@ -52,6 +53,148 @@ def test_optional_product_status_unconfigured(
 
     assert out["configured"] is False
     assert out["has_token"] is False
+
+
+def test_uxi_status_unconfigured(monkeypatch):
+    monkeypatch.delenv("UXI_CLIENT_ID", raising=False)
+    monkeypatch.delenv("UXI_CLIENT_SECRET", raising=False)
+
+    out = uxi.uxi_status()
+
+    assert out["configured"] is False
+    assert out["has_client_id"] is False
+    assert out["has_client_secret"] is False
+
+
+def test_uxi_get_rejects_absolute_url(monkeypatch):
+    monkeypatch.setenv("UXI_CLIENT_ID", "client")
+    monkeypatch.setenv("UXI_CLIENT_SECRET", "secret")
+
+    out = asyncio.run(uxi.uxi_get("https://evil.example/sensors"))
+
+    assert "error" in out
+    assert "relative API path" in out["error"]
+
+
+def test_uxi_get_rejects_unsupported_path(monkeypatch):
+    monkeypatch.setenv("UXI_CLIENT_ID", "client")
+    monkeypatch.setenv("UXI_CLIENT_SECRET", "secret")
+
+    out = asyncio.run(uxi.uxi_get("/admin/secrets"))
+
+    assert "error" in out
+    assert "/sensors/{id}/status" in out["error"]
+
+
+def test_uxi_get_rejects_sensor_paths_other_than_status(monkeypatch):
+    monkeypatch.setenv("UXI_CLIENT_ID", "client")
+    monkeypatch.setenv("UXI_CLIENT_SECRET", "secret")
+
+    out = asyncio.run(uxi.uxi_get("/sensors/s1/details"))
+
+    assert "error" in out
+    assert "/sensors/{id}/status" in out["error"]
+
+
+def test_uxi_list_sensors_fetches_token_and_compacts(monkeypatch):
+    calls = []
+
+    class _TokenResp:
+        status_code = 200
+        text = '{"access_token":"tok","expires_in":3600}'
+
+        def json(self):
+            return {"access_token": "tok", "expires_in": 3600}
+
+    class _SensorsResp:
+        status_code = 200
+        text = '{"items":[{"id":"s1","name":"Sensor","raw":"omit"}],"next":null}'
+
+        def json(self):
+            return {
+                "items": [
+                    {
+                        "id": "s1",
+                        "name": "Sensor",
+                        "modelNumber": "G6",
+                        "ethernetMacAddress": "00:11:22:33:44:55",
+                        "groupName": "Lab",
+                        "raw": "omit",
+                    }
+                ],
+                "next": None,
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            calls.append(("init", timeout))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, data=None, headers=None):
+            calls.append(("post", url, data, headers))
+            return _TokenResp()
+
+        async def get(self, url, headers=None, params=None):
+            calls.append(("get", url, headers, params))
+            return _SensorsResp()
+
+    monkeypatch.setenv("UXI_CLIENT_ID", "client")
+    monkeypatch.setenv("UXI_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("UXI_BASE_URL", "https://api.capenetworks.com/networking-uxi/v1alpha1")
+    monkeypatch.setattr(uxi, "_TOKEN_CACHE", {})
+    monkeypatch.setattr(uxi.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(uxi.uxi_list_sensors(next_cursor="cursor", page_size=999))
+
+    assert out["status_code"] == 200
+    assert out["data"]["items"] == [
+        {
+            "id": "s1",
+            "name": "Sensor",
+            "modelNumber": "G6",
+            "ethernetMacAddress": "00:11:22:33:44:55",
+            "groupName": "Lab",
+        }
+    ]
+    assert ("post", "https://sso.common.cloud.hpe.com/as/token.oauth2", {
+        "grant_type": "client_credentials",
+        "client_id": "client",
+        "client_secret": "secret",
+    }, {"Content-Type": "application/x-www-form-urlencoded"}) in calls
+    assert calls[-1] == (
+        "get",
+        "https://api.capenetworks.com/networking-uxi/v1alpha1/sensors",
+        {"Authorization": "Bearer tok", "Accept": "application/json"},
+        {"limit": 100, "next": "cursor"},
+    )
+
+
+def test_uxi_rejects_unsafe_token_url_before_sending_secret(monkeypatch):
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            raise AssertionError("token request should not be attempted")
+
+    monkeypatch.setenv("UXI_CLIENT_ID", "client")
+    monkeypatch.setenv("UXI_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("UXI_TOKEN_URL", "https://127.0.0.1/token")
+    monkeypatch.setattr(uxi.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(uxi.uxi_list_sensors())
+
+    assert "error" in out
+    assert "UXI token URL" in out["error"]
+
+
+def test_uxi_sensor_status_rejects_unsafe_id():
+    out = asyncio.run(uxi.uxi_get_sensor_status("../bad"))
+
+    assert "error" in out
+    assert "UXI resource IDs" in out["error"]
 
 
 def test_apstra_get_rejects_non_api_path(monkeypatch):

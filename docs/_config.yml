@@ -1,4 +1,4 @@
 title: centralmcp
-description: HPE Networking MCP server for Aruba Central, GreenLake, RAG/OpenAPI lookup, and optional ClearPass, Mist, Apstra, AOS8, and EdgeConnect starters.
+description: HPE Networking MCP server for Aruba Central, GreenLake, RAG/OpenAPI lookup, and optional ClearPass, Mist, Apstra, AOS8, EdgeConnect, and UXI starters.
 theme: jekyll-theme-cayman
 show_downloads: true

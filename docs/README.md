@@ -13,7 +13,7 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | [getting-started.md](getting-started.md) | Wizard install, credentials, optional products, MCP client setup, and indexes |
 | [mcp-client-recipes.md](mcp-client-recipes.md) | Copy/paste stdio and streamable HTTP MCP client setup recipes |
 | [optional-products.md](optional-products.md) | Optional product matrix, wizard behavior, env vars, and safety surface |
-| [product-workflows.md](product-workflows.md) | Typed ClearPass/Mist/Apstra/AOS8/EdgeConnect workflow roadmap |
+| [product-workflows.md](product-workflows.md) | Typed ClearPass/Mist/Apstra/AOS8/EdgeConnect/UXI workflow roadmap |
 | [release-indexes.md](release-indexes.md) | Download, package, and release prebuilt RAG/OpenAPI indexes |
 | [troubleshooting.md](troubleshooting.md) | Setup wizard, credentials, HTTP mode, router catalog, and first-call fixes |
 | [example-prompts.md](example-prompts.md) | Practical low-token prompt examples and router call patterns |
@@ -34,6 +34,7 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | `mcp_servers/` | FastMCP servers, low-token router, prompts, middleware, optional product starters |
 | `pipeline/` | Migration pipeline, typed clients, credentials loading, state store, SSID helpers |
 | `ingestion/` | Docs/API ingestion into LanceDB and SQLite |
+| `ingestion/source_manifest.json` | RAG source seed URLs for DevHub, New Central techdocs, Feature Navigator, and developer references |
 | `scripts/setup_wizard.py` | Guided install, Central region, credentials, optional products, MCP configs, catalog, and doctor |
 | `scripts/download_indexes.py` | Restore prebuilt docs/API/tool indexes from GitHub Releases |
 | `scripts/package_indexes.py` | Package local indexes for a GitHub Release asset |

@@ -16,7 +16,7 @@ You are the MCP server engineer for the `centralmcp` repo. You know this codebas
 - `mcp_servers/ops.py` — `aruba-ops` — device troubleshooting + actions (22 tools).
 - `mcp_servers/glp.py` — `aruba-glp` — GreenLake inventory/licensing/users plus guarded `glp_get` (12 tools). GLP write tools fail closed unless `CENTRALMCP_GLP_V2BETA1_WRITES=1`.
 - `mcp_servers/{monitoring,config,nac,rag}.py` — core Central/RAG servers.
-- `mcp_servers/{clearpass,mist,apstra,aos8,edgeconnect}.py` — optional product starter backends.
+- `mcp_servers/{clearpass,mist,apstra,aos8,edgeconnect,uxi}.py` — optional product starter backends.
 - `.mcp.json.example` / `.cursor/mcp.json` / `.claude/launch.json` / `.vscode/mcp.json.example` — lean stdio client registration: router minimal mode with `CENTRALMCP_TOOLSETS=central,glp,rag`.
 - `.mcp.http.json.example` / `scripts/run_http_router.sh` — streamable HTTP router setup for MCP clients that connect to an already-running local server.
 - `pyproject.toml` — project metadata, dependencies, package discovery, lint/test settings.
