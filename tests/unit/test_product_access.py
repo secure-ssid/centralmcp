@@ -30,3 +30,12 @@ def test_product_access_invalid_value_fails_closed(monkeypatch):
     assert shared.optional_product_writes_allowed() is False
     assert tool_router._product_access() == "read-only"
     assert ingest_tools._product_access() == "read-only"
+
+
+def test_direct_write_block_message_mentions_invalid_access(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-wrtie")
+
+    out = shared.optional_product_write_blocked("clearpass_write")
+
+    assert out["status"] == "blocked"
+    assert "read-only or invalid" in out["error"]

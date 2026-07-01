@@ -333,7 +333,8 @@ async def _dispatch_tool(ctx: Context, name: str, arguments: dict[str, Any] | No
     if _optional_write_disabled(name):
         return {
             "error": (
-                f"Tool '{name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only. "
+                f"Tool '{name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only "
+                "or invalid. "
                 "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows."
             ),
             "tool": name,

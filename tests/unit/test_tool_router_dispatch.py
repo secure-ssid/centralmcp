@@ -152,6 +152,19 @@ class TestDispatch:
         assert out["status"] == "blocked"
         assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
 
+    def test_optional_write_dispatch_blocked_when_product_access_invalid(
+        self,
+        wired_router,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-wrtie")
+        router._tool_backend_names["write_echo"] = "clearpass-core"
+
+        out = _invoke("write_echo", {"value": 7})
+
+        assert out["status"] == "blocked"
+        assert "read-only or invalid" in out["error"]
+
     def test_ctx_stripped_from_published_schema(self, wired_router):
         # FastMCP must hide ``ctx`` from the schema callers see, so invoke_tool
         # only ever forwards real arguments.

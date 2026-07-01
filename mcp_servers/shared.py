@@ -121,7 +121,8 @@ def optional_product_writes_allowed() -> bool:
 def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
     return {
         "error": (
-            f"Tool '{tool_name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only. "
+            f"Tool '{tool_name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only "
+            "or invalid. "
             "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows."
         ),
         "tool": tool_name,
