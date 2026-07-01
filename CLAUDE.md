@@ -31,6 +31,7 @@ ingestion/
   ingest_docs.py       Chunk + embed docs → LanceDB + specs SQLite (default) or Redis Stack (--backend redis)
   sources/             Raw scraped docs (git-ignored — regenerable)
 scripts/
+  doctor.py           Local setup diagnostic; no API calls
   ingest_tools.py      Re-index the find_tool catalog → LanceDB (default) or Redis Stack (--backend redis)
   run_http_router.sh   Start the minimal router over streamable HTTP
   validate_release.py  Local pre-push gate: unit tests, optional RAG/API eval, tool catalog floor

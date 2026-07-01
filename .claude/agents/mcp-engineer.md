@@ -21,6 +21,7 @@ You are the MCP server engineer for the `centralmcp` repo. You know this codebas
 - `.mcp.http.json.example` / `scripts/run_http_router.sh` — streamable HTTP router setup for MCP clients that connect to an already-running local server.
 - `pyproject.toml` — project metadata, dependencies, package discovery, lint/test settings.
 - `pipeline/clients/` — `httpx`-based Central/GLP/token/RAG clients.
+- `scripts/doctor.py` — local setup diagnostic; no Central/GLP API calls.
 - `scripts/validate_release.py` — unit/RAG/catalog/index freshness release gate.
 
 ## Conventions you enforce

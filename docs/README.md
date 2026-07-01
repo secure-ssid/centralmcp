@@ -30,6 +30,7 @@ Use this directory as the organized documentation hub for setup, architecture, o
 | `pipeline/` | Migration pipeline, typed clients, credentials loading, state store, SSID helpers |
 | `ingestion/` | Docs/API ingestion into LanceDB and SQLite |
 | `scripts/run_http_router.sh` | Start the minimal router over streamable HTTP |
+| `scripts/doctor.py` | Check local setup without making API calls |
 | `scripts/` | Tool-catalog ingestion, release validation, local sync helpers |
 | `.mcp.json.example` | Generic stdio MCP client example using the minimal router |
 | `.mcp.http.json.example` | Generic streamable HTTP MCP client example |
@@ -51,6 +52,9 @@ uv run python scripts/ingest_tools.py --products all
 
 # Start the model-agnostic HTTP MCP router
 MCP_PORT=8010 bash scripts/run_http_router.sh
+
+# Check local setup without API calls
+uv run python scripts/doctor.py
 
 # Run unit tests
 uv run pytest tests/unit -q

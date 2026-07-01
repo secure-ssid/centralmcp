@@ -84,6 +84,12 @@ For full RAG docs/API search, download the prebuilt release index if available o
 uv run python ingestion/ingest_docs.py
 ```
 
+Check the local setup without making API calls:
+
+```bash
+uv run python scripts/doctor.py
+```
+
 See [docs/getting-started.md](docs/getting-started.md) for the full setup path.
 
 ## Default MCP client profile
@@ -183,6 +189,7 @@ docs/
 .mcp.json.example       Generic stdio MCP client example using the minimal router
 .mcp.http.json.example  Generic streamable HTTP MCP client example
 scripts/run_http_router.sh  Start the minimal router over streamable HTTP
+scripts/doctor.py           Local setup diagnostic; no API calls
 ```
 
 ## RAG and API lookup
