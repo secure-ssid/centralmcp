@@ -88,6 +88,9 @@ Promote a generic GET pattern to a typed tool when it is:
 | Client lookup | `aos8_find_client` | Bounded `show user-table` lookup by exactly one MAC, IP, or username |
 | Client detail | `aos8_get_client_detail` | Bounded verbose `show user-table verbose mac` read scoped by `config_path` |
 | Client association history | `aos8_get_client_history` | Bounded root-scope `show ap association history client-mac` read |
+| Active alarms | `aos8_get_alarms` | Bounded `show alarms` read scoped by `config_path` |
+| Audit trail | `aos8_get_audit_trail` | Bounded root-scope `show audit-trail` read |
+| Events | `aos8_get_events` | Bounded `show events` read scoped by `config_path` |
 | System logs | `aos8_get_system_logs` | Bounded root-scope `show log system` diagnostic read with capped count |
 | ARM history | `aos8_get_ap_arm_history` | Bounded `show ap arm history` RF diagnostic read scoped by `config_path` |
 | AP monitor stats | `aos8_get_ap_monitor_stats` | Bounded `show ap monitor stats` RF diagnostic read scoped by `config_path` |

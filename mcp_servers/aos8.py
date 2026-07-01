@@ -156,6 +156,76 @@ _SYSTEM_LOG_FIELDS = (
     "Description",
     "description",
 )
+_ALARM_FIELDS = (
+    "Time",
+    "time",
+    "Timestamp",
+    "timestamp",
+    "Date",
+    "date",
+    "Severity",
+    "severity",
+    "Category",
+    "category",
+    "Type",
+    "type",
+    "Code",
+    "code",
+    "Description",
+    "description",
+    "Message",
+    "message",
+    "Status",
+    "status",
+)
+_AUDIT_TRAIL_FIELDS = (
+    "Time",
+    "time",
+    "Timestamp",
+    "timestamp",
+    "Date",
+    "date",
+    "User",
+    "user",
+    "Username",
+    "username",
+    "IP Address",
+    "ip_address",
+    "Command",
+    "command",
+    "Config Path",
+    "config_path",
+    "Action",
+    "action",
+    "Result",
+    "result",
+    "Message",
+    "message",
+)
+_EVENT_FIELDS = (
+    "Time",
+    "time",
+    "Timestamp",
+    "timestamp",
+    "Date",
+    "date",
+    "Type",
+    "type",
+    "Severity",
+    "severity",
+    "Category",
+    "category",
+    "Source",
+    "source",
+    "Module",
+    "module",
+    "Event",
+    "event",
+    "Description",
+    "description",
+    "Message",
+    "message",
+)
 _ARM_HISTORY_FIELDS = (
     "Time",
     "time",
@@ -752,6 +822,68 @@ async def aos8_get_system_logs(
             offset=offset,
         )
         out["count"] = bounded_count
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_alarms(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List active AOS8 alarms from `show alarms`."""
+    out = await aos8_show_command(
+        "show alarms",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["alarms"] = _compact_primary_list(
+            out.pop("data"),
+            _ALARM_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_audit_trail(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """Get AOS8 controller-wide audit trail from `show audit-trail`."""
+    out = await aos8_show_command("show audit-trail", limit=limit, offset=offset)
+    if "data" in out:
+        out["audit_trail"] = _compact_primary_list(
+            out.pop("data"),
+            _AUDIT_TRAIL_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_events(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get recent AOS8 events from `show events`."""
+    out = await aos8_show_command(
+        "show events",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["events"] = _compact_primary_list(
+            out.pop("data"),
+            _EVENT_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+        out["config_path"] = config_path
     return out
 
 

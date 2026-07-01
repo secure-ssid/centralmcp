@@ -1614,6 +1614,167 @@ def test_aos8_get_system_logs_caps_count_and_does_not_send_config_path(monkeypat
 
 
 @pytest.mark.parametrize(
+    ("tool_call", "expected_command", "payload", "output_key", "expected_item", "expect_path"),
+    [
+        (
+            lambda: aos8.aos8_get_alarms(config_path="/md/branch1", limit=1),
+            "show alarms",
+            {
+                "Alarms": [
+                    {
+                        "Time": "2026-07-01 01:00:00",
+                        "Severity": "critical",
+                        "Category": "AP",
+                        "Description": "AP down",
+                        "Status": "active",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Time": "2026-07-01 00:55:00",
+                        "Severity": "minor",
+                        "Category": "License",
+                        "Description": "License warning",
+                        "Status": "active",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "alarms",
+            {
+                "Time": "2026-07-01 01:00:00",
+                "Severity": "critical",
+                "Category": "AP",
+                "Description": "AP down",
+                "Status": "active",
+            },
+            True,
+        ),
+        (
+            lambda: aos8.aos8_get_audit_trail(limit=1),
+            "show audit-trail",
+            {
+                "Audit Trail": [
+                    {
+                        "Time": "2026-07-01 01:00:00",
+                        "User": "admin",
+                        "IP Address": "192.0.2.10",
+                        "Command": "configure terminal",
+                        "Config Path": "/md/branch1",
+                        "Result": "success",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Time": "2026-07-01 00:50:00",
+                        "User": "ops",
+                        "IP Address": "192.0.2.11",
+                        "Command": "show switches",
+                        "Config Path": "/md",
+                        "Result": "success",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "audit_trail",
+            {
+                "Time": "2026-07-01 01:00:00",
+                "User": "admin",
+                "IP Address": "192.0.2.10",
+                "Command": "configure terminal",
+                "Config Path": "/md/branch1",
+                "Result": "success",
+            },
+            False,
+        ),
+        (
+            lambda: aos8.aos8_get_events(config_path="/md/branch1", limit=1),
+            "show events",
+            {
+                "Events": [
+                    {
+                        "Time": "2026-07-01 01:00:00",
+                        "Type": "system",
+                        "Severity": "warning",
+                        "Source": "controller",
+                        "Description": "AP rebooted",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Time": "2026-07-01 00:45:00",
+                        "Type": "auth",
+                        "Severity": "info",
+                        "Source": "aaa",
+                        "Description": "Client authenticated",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "events",
+            {
+                "Time": "2026-07-01 01:00:00",
+                "Type": "system",
+                "Severity": "warning",
+                "Source": "controller",
+                "Description": "AP rebooted",
+            },
+            True,
+        ),
+    ],
+)
+def test_aos8_events_audit_show_tools_map_commands_and_compact(
+    monkeypatch,
+    tool_call,
+    expected_command,
+    payload,
+    output_key,
+    expected_item,
+    expect_path,
+):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"rows":[]}'
+
+        def json(self):
+            return {
+                "_global_result": {"status": "0"},
+                "_meta": {"rows": []},
+                **payload,
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(tool_call())
+
+    assert called["url"] == "https://mm.example.com/v1/configuration/showcommand"
+    expected_params = {"command": expected_command}
+    if expect_path:
+        expected_params["config_path"] = "/md/branch1"
+        assert out["config_path"] == "/md/branch1"
+    assert called["params"] == expected_params
+    list_key = next(key for key in out[output_key] if key != "_pagination")
+    assert out[output_key][list_key] == [expected_item]
+    assert out[output_key]["_pagination"]["truncated"] is True
+
+
+@pytest.mark.parametrize(
     ("tool_func", "expected_command", "payload", "output_key", "expected_item"),
     [
         (
