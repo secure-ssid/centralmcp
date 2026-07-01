@@ -81,6 +81,10 @@ _API_QUERY_HINTS = {
 }
 
 
+def _clamp_top_k(value: int, max_value: int) -> int:
+    return max(1, min(value, max_value))
+
+
 def _shape(rows: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
     return [
         {
@@ -138,12 +142,12 @@ def search_docs(
 
     Args:
         query:    Natural language question or keywords.
-        top_k:    Results to return (default 5, max 20).
+        top_k:    Results to return (default 5, range 1-20).
         source:   Filter by source folder — developer_docs, tech_docs, nac_docs,
                   vsg_docs, techdocs_html, aos_techdocs, or openapi_specs.
         doc_type: DEPRECATED — use source instead.
     """
-    top_k = min(top_k, 20)
+    top_k = _clamp_top_k(top_k, 20)
 
     # Map legacy doc_type to source name when source is not provided
     source_filter = source
@@ -168,10 +172,10 @@ def lookup_api(query: str, top_k: int = 10) -> list[dict[str, Any]]:
     Args:
         query: Natural language question or keywords (e.g. "auth-type enum
                values for an auth profile", "firmware compliance endpoint").
-        top_k: Results to return (default 10, max 20).
+        top_k: Results to return (default 10, range 1-20).
     """
     try:
-        return specs_index.lookup(query, top_k=min(top_k, 20))
+        return specs_index.lookup(query, top_k=_clamp_top_k(top_k, 20))
     except FileNotFoundError as exc:
         return [{"error": str(exc)}]
 

@@ -57,3 +57,32 @@ def test_ask_docs_returns_error_without_citations(monkeypatch):
     out = rag.ask_docs("How do I configure WLANs?", top_k=3)
 
     assert out == {"answer": "index missing", "citations": [], "mode": "search_docs"}
+
+
+def test_search_docs_clamps_negative_top_k_to_one(monkeypatch):
+    calls = []
+
+    def fake_search(query, top_k, source_filter):
+        calls.append((query, top_k, source_filter))
+        return []
+
+    monkeypatch.setattr(rag, "_BACKEND", "lancedb")
+    monkeypatch.setattr(rag, "_search_lancedb", fake_search)
+
+    rag.search_docs("wlan", top_k=-5)
+
+    assert calls == [("wlan", 1, None)]
+
+
+def test_lookup_api_clamps_negative_top_k_to_one(monkeypatch):
+    calls = []
+
+    def fake_lookup(query, top_k):
+        calls.append((query, top_k))
+        return []
+
+    monkeypatch.setattr(rag.specs_index, "lookup", fake_lookup)
+
+    rag.lookup_api("wlan endpoint", top_k=-5)
+
+    assert calls == [("wlan endpoint", 1)]
