@@ -71,6 +71,7 @@ def test_public_docs_list_router_products_and_toolsets():
 
     assert f"CENTRALMCP_PRODUCTS={optional_products}" in readme
     assert f"CENTRALMCP_PRODUCTS={optional_products}" in getting_started
+    assert f"CENTRALMCP_PRODUCTS={optional_products}" in tool_router
 
     for toolset in {*router._TOOLSET_BACKENDS, "all"}:
         assert f"`{toolset}`" in tool_router

@@ -10,8 +10,8 @@ Optional product backends can be enabled with:
 Toolsets can narrow loaded backends:
   CENTRALMCP_TOOLSETS=central,rag
 
-Point MCP clients at THIS server instead of the 6 individual ones to cut
-context cost ~80% and let small local models pick tools reliably.
+Point MCP clients at THIS server instead of individual backend servers to keep
+context cost low and let small local models pick tools reliably.
 """
 
 import importlib
@@ -380,7 +380,12 @@ if _ROUTER_MODE != "minimal" and "aruba-rag" in _BACKENDS:
 
 
     @mcp.tool(annotations=READ_ONLY)
-    async def search_docs(ctx: Context, query: str, top_k: int = 5, source: str | None = None) -> Any:
+    async def search_docs(
+        ctx: Context,
+        query: str,
+        top_k: int = 5,
+        source: str | None = None,
+    ) -> Any:
         """Search Aruba/HPE documentation (Central config, APIs, NAC, VSG).
 
         For EXACT API questions (enum values, endpoints, schema fields) prefer

@@ -68,7 +68,7 @@ If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and inclu
 Optional products can be enabled either by `CENTRALMCP_TOOLSETS` or by `CENTRALMCP_PRODUCTS`.
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
 ```
 
 The optional product starters intentionally expose a small read-only surface:
