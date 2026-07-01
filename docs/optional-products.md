@@ -49,6 +49,35 @@ testing against localhost or private IPs, set
 
 When you select products, the setup wizard:
 
+```mermaid
+flowchart TD
+    start["scripts/setup_wizard.py"]
+    choose{"Choose optional products"}
+    subset["--products clearpass,mist"]
+    all["--with-products"]
+    access{"Product access mode"}
+    rw["read-write lab mode<br/>writes visible<br/>dry_run=False + confirm=True required"]
+    ro["read-only posture<br/>write tools hidden and blocked"]
+    env[".env<br/>CENTRALMCP_PRODUCTS<br/>CENTRALMCP_PRODUCT_ACCESS<br/>product URLs/tokens"]
+    config["Local MCP configs<br/>.mcp.json / .mcp.http.json<br/>product selector only, no tokens"]
+    catalog["Router catalog<br/>scripts/ingest_tools.py"]
+    doctor["Local doctor<br/>scripts/doctor.py"]
+
+    start --> choose
+    choose --> subset
+    choose --> all
+    subset --> access
+    all --> access
+    access -->|"default"| rw
+    access -->|"--product-access read-only"| ro
+    rw --> env
+    ro --> env
+    env --> config
+    env --> catalog
+    config --> catalog
+    catalog --> doctor
+```
+
 1. Adds or merges `CENTRALMCP_PRODUCTS`, `CENTRALMCP_PRODUCT_ACCESS`, and
    product URL/token settings into local `.env`; existing non-placeholder token
    values are preserved unless you pass `--force`.
