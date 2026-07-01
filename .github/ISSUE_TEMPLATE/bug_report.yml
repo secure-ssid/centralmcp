@@ -1,6 +1,7 @@
 name: Bug report
 description: Report a reproducible centralmcp problem using fake or redacted data.
 title: "[Bug]: "
+labels: ["bug"]
 body:
   - type: markdown
     attributes:

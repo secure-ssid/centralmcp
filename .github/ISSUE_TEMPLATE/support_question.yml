@@ -1,6 +1,7 @@
 name: Support question
 description: Ask for setup, docs, MCP client, or usage help with fake or redacted details.
 title: "[Support]: "
+labels: ["question"]
 body:
   - type: markdown
     attributes:
