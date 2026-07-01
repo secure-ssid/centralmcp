@@ -59,4 +59,7 @@ uv run pytest tests/unit -q
 uv run python scripts/validate_release.py
 ```
 
+The HTTP helper exits with listener details instead of starting a duplicate
+router when the selected port is already in use.
+
 The release helper enforces the documented tool catalog floor and checks local LanceDB tool-index freshness when `data/tools.lance` exists. The unit suite also carries static regression guards for async-safe MCP tools, shared `httpx` client boundaries, project metadata (`centralmcp` package name with no direct `pycentral`/`requests` runtime dependencies), committed low-token MCP config examples, local-only config files, router product/toolset docs, bounded generic read-only GET tools, MCP list default bounds, RAG/search top_k bounds, public tool-count claims, tool-count docstrings, and tracked Markdown local links.

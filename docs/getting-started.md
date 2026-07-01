@@ -86,8 +86,10 @@ http://127.0.0.1:8010/mcp
 ```
 
 The HTTP example in `.mcp.http.json.example` points at that local endpoint.
-Stop the foreground server with `Ctrl-C`. If you launched it in the background,
-find the listener and stop that PID:
+If the port is already in use, `scripts/run_http_router.sh` exits before
+starting another router and prints the listener details. Stop the foreground
+server with `Ctrl-C`. If you launched it in the background, find the listener
+and stop that PID:
 
 ```bash
 lsof -nP -iTCP:8010 -sTCP:LISTEN

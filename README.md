@@ -124,6 +124,8 @@ http://127.0.0.1:8010/mcp
 Use [`.mcp.http.json.example`](.mcp.http.json.example) as a generic HTTP client
 snippet. Plain `curl` is only useful for checking that the server is listening;
 real MCP clients use streaming headers such as `Accept: text/event-stream`.
+If the port is already in use, the helper exits before starting another router
+and prints the listener details plus the `kill <PID>` stop command.
 
 ## Common environment variables
 
