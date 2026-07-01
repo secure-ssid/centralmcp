@@ -7,10 +7,10 @@ specs -> SQLite (data/specs.sqlite). `--backend redis` keeps the optional
 Redis Stack + Ollama server deployment path.
 
 Usage:
-    python ingestion/ingest_docs.py                     # all sources -> LanceDB (full rebuild)
-    python ingestion/ingest_docs.py --backend redis     # optional Redis Stack path
-    python ingestion/ingest_docs.py --source nac_docs   # one source only
-    python ingestion/ingest_docs.py --dry-run           # count chunks, no upload
+    uv run python ingestion/ingest_docs.py                     # full LanceDB rebuild
+    uv run python ingestion/ingest_docs.py --backend redis     # optional Redis Stack path
+    uv run python ingestion/ingest_docs.py --source nac_docs   # one source only
+    uv run python ingestion/ingest_docs.py --dry-run           # count chunks, no upload
 """
 
 import argparse

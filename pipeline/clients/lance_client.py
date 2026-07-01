@@ -2,7 +2,7 @@
 
 Replaces the Redis Stack backend for the default download-and-run path: the
 whole index lives in data/ (docs.lance + tools.lance), ships prebuilt via
-GitHub Release, and rebuilds with `python ingestion/ingest_docs.py`.
+GitHub Release, and rebuilds with `uv run python ingestion/ingest_docs.py`.
 
 Hybrid search (R5): vector similarity + native BM25 FTS, fused with Reciprocal
 Rank Fusion — this catches exact identifiers (WPA3_SAE, endpoint paths) that
@@ -73,7 +73,7 @@ def hybrid_search(
     if table is None:
         raise FileNotFoundError(
             f"LanceDB docs table missing under {DATA_DIR} — build it with "
-            "`python ingestion/ingest_docs.py` or download the prebuilt "
+            "`uv run python ingestion/ingest_docs.py` or download the prebuilt "
             "index from the GitHub Release."
         )
     top_k = _clamp_top_k(top_k)
