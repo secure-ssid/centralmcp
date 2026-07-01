@@ -541,6 +541,76 @@ def test_apstra_list_connectivity_templates_quotes_blueprint_id_and_compacts(mon
     assert out["connectivity_templates"]["_pagination"]["truncated"] is True
 
 
+def test_apstra_list_application_endpoints_uses_read_only_post_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"application_points":[{"id":"if1"}]}'
+
+        def json(self):
+            return {
+                "application_points": [
+                    {
+                        "id": "if1",
+                        "label": "leaf1:xe-0/0/1",
+                        "system_id": "leaf1",
+                        "interface_id": "xe-0/0/1",
+                        "interface_name": "xe-0/0/1",
+                        "assigned": False,
+                        "raw": "omitted",
+                    },
+                    {
+                        "id": "if2",
+                        "label": "leaf1:xe-0/0/2",
+                        "system_id": "leaf1",
+                        "interface_id": "xe-0/0/2",
+                        "interface_name": "xe-0/0/2",
+                        "assigned": True,
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, headers=None):
+            called["url"] = url
+            called["headers"] = headers or {}
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_list_application_endpoints("bp 1", limit=1))
+
+    assert called["url"] == (
+        "https://apstra.example.com/api/blueprints/bp%201/obj-policy-application-points"
+    )
+    assert "Authorization" in called["headers"]
+    assert out["blueprint_id"] == "bp 1"
+    assert out["application_endpoints"]["application_points"] == [
+        {
+            "id": "if1",
+            "label": "leaf1:xe-0/0/1",
+            "system_id": "leaf1",
+            "interface_id": "xe-0/0/1",
+            "interface_name": "xe-0/0/1",
+            "assigned": False,
+        }
+    ]
+    assert out["application_endpoints"]["_pagination"]["truncated"] is True
+
+
 def test_apstra_get_diff_status_quotes_blueprint_id_and_compacts(monkeypatch):
     called = {}
 

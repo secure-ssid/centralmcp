@@ -119,6 +119,23 @@ _CONNECTIVITY_TEMPLATE_FIELDS = (
     "status",
     "state",
 )
+_APPLICATION_ENDPOINT_FIELDS = (
+    "id",
+    "label",
+    "name",
+    "system_id",
+    "system_label",
+    "node_id",
+    "interface_id",
+    "interface_name",
+    "if_name",
+    "port_channel_id",
+    "lag_id",
+    "policy_id",
+    "policy_label",
+    "assigned",
+    "tags",
+)
 _DIFF_STATUS_FIELDS = (
     "status",
     "state",
@@ -247,6 +264,37 @@ async def apstra_get(
         return {"error": str(exc), "url": url}
 
 
+async def _apstra_read_post(
+    path: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """POST to a read-only Apstra endpoint with a fixed, typed wrapper."""
+    base_url, token = _apstra_config()
+    if not base_url or not token:
+        return {"error": "Apstra not configured. Set APSTRA_BASE_URL and APSTRA_API_TOKEN."}
+    try:
+        path = safe_api_path(path, ("/api/",))
+    except ValueError as exc:
+        return {"error": f"Invalid path. {exc}"}
+    path = quote(path, safe="/")
+
+    try:
+        base_url = validate_product_base_url(base_url, product="Apstra")
+    except ValueError as exc:
+        return {"error": str(exc)}
+    url = f"{base_url}{path}"
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers)
+        payload = bound_collection_response(response_payload(resp), limit=limit, offset=offset)
+        return {"status_code": resp.status_code, "data": payload, "url": url}
+    except httpx.HTTPError as exc:
+        return {"error": str(exc), "url": url}
+
+
 @mcp.tool(annotations=READ_ONLY)
 async def apstra_list_blueprints(limit: int = 50, offset: int = 0) -> dict[str, Any]:
     """List Apstra blueprints with compact ID/name/status fields."""
@@ -357,6 +405,25 @@ async def apstra_list_connectivity_templates(
             out.pop("data"),
             _CONNECTIVITY_TEMPLATE_FIELDS,
             ("policies", "templates", "connectivity_templates", "obj_policies"),
+        )
+        out["blueprint_id"] = blueprint_id
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_list_application_endpoints(
+    blueprint_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List interfaces that can receive connectivity-template assignments."""
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-application-points"
+    out = await _apstra_read_post(path, limit=limit, offset=offset)
+    if "data" in out:
+        out["application_endpoints"] = _compact_collection(
+            out.pop("data"),
+            _APPLICATION_ENDPOINT_FIELDS,
+            ("application_points", "applicationPoints", "endpoints", "interfaces"),
         )
         out["blueprint_id"] = blueprint_id
     return out

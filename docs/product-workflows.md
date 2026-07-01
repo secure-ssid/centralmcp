@@ -67,6 +67,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Blueprint virtual networks | `apstra_list_virtual_networks` | Compact VN/subnet/binding view from `/api/blueprints/{id}/virtual-networks` |
 | Blueprint remote gateways | `apstra_list_remote_gateways` | Compact remote EVPN gateway view from `/api/blueprints/{id}/remote_gateways` |
 | Blueprint connectivity templates | `apstra_list_connectivity_templates` | Compact assignable policy view from `/api/blueprints/{id}/obj-policy-export` |
+| Blueprint application endpoints | `apstra_list_application_endpoints` | Compact CT attachment-point view from `/api/blueprints/{id}/obj-policy-application-points` |
 | Blueprint diff status | `apstra_get_diff_status` | Compact staging-vs-active status from `/api/blueprints/{id}/diff-status` |
 | Blueprint protocol sessions | `apstra_list_protocol_sessions` | Compact protocol/BGP session status from `/api/blueprints/{id}/protocol-sessions` |
 | Blueprint system info | `apstra_get_system_info` | Compact systems/devices from `/api/blueprints/{id}/experience/web/system-info` |
