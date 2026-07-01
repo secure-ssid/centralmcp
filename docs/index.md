@@ -20,21 +20,27 @@ optional products, build the router catalog, and run the local doctor.
 
 ## Setup flow
 
-```text
-clone repo
-   |
-   v
-run setup_wizard.py
-   |
-   +--> choose Central region / credentials
-   +--> choose stdio or streamable HTTP
-   +--> optionally enable ClearPass, Mist, Apstra, AOS8, EdgeConnect
-   |
-   v
-run doctor.py
-   |
-   v
-connect MCP client to aruba-tool-router
+```mermaid
+flowchart TD
+    clone["git clone centralmcp"]
+    wizard["scripts/setup_wizard.py"]
+    credentials["Central / GLP credentials<br/>config/credentials.yaml"]
+    products["Optional products<br/>ClearPass, Mist, Apstra, AOS8, EdgeConnect"]
+    access["Product access<br/>read-only or read-write"]
+    config["Local MCP config<br/>stdio or streamable HTTP"]
+    catalog["Router tool catalog"]
+    doctor["scripts/doctor.py"]
+    ready["MCP client connected<br/>to aruba-tool-router"]
+
+    clone --> wizard
+    wizard --> credentials
+    wizard --> products
+    products --> access
+    access --> config
+    credentials --> catalog
+    config --> catalog
+    catalog --> doctor
+    doctor --> ready
 ```
 
 ## Pick your path

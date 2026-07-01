@@ -5,7 +5,35 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "centralmcp"
 version = "0.2.1"
+description = "Low-token HPE Networking MCP server for Aruba Central, GreenLake, RAG/OpenAPI lookup, and optional product automation."
+readme = "README.md"
 requires-python = ">=3.10"
+keywords = [
+    "ai-for-networking",
+    "apstra",
+    "aruba-central",
+    "clearpass",
+    "edgeconnect",
+    "fastmcp",
+    "greenlake",
+    "hpe-networking",
+    "mcp-server",
+    "mist",
+    "model-context-protocol",
+    "network-automation",
+    "openapi",
+    "rag",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Networking",
+]
 dependencies = [
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0.0",
@@ -26,6 +54,12 @@ dependencies = [
 [project.scripts]
 run-pipeline = "run_pipeline:main"
 run-ssid = "run_ssid:main"
+
+[project.urls]
+Homepage = "https://secure-ssid.github.io/centralmcp/"
+Repository = "https://github.com/secure-ssid/centralmcp"
+Documentation = "https://secure-ssid.github.io/centralmcp/"
+Issues = "https://github.com/secure-ssid/centralmcp/issues"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

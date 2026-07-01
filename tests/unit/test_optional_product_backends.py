@@ -476,6 +476,173 @@ def test_apstra_list_remote_gateways_quotes_blueprint_id_and_compacts(monkeypatc
     ]
 
 
+def test_apstra_list_connectivity_templates_quotes_blueprint_id_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"policies":[{"id":"ct1"}]}'
+
+        def json(self):
+            return {
+                "policies": [
+                    {
+                        "id": "ct1",
+                        "label": "Access VLAN",
+                        "policy_type": "batch",
+                        "visible": True,
+                        "used": False,
+                        "raw": "omitted",
+                    },
+                    {
+                        "id": "ct2",
+                        "label": "Trunk",
+                        "policy_type": "batch",
+                        "visible": True,
+                        "used": True,
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_list_connectivity_templates("bp 1", limit=1))
+
+    assert called["url"] == (
+        "https://apstra.example.com/api/blueprints/bp%201/obj-policy-export"
+    )
+    assert out["blueprint_id"] == "bp 1"
+    assert out["connectivity_templates"]["policies"] == [
+        {
+            "id": "ct1",
+            "label": "Access VLAN",
+            "policy_type": "batch",
+            "visible": True,
+            "used": False,
+        }
+    ]
+    assert out["connectivity_templates"]["_pagination"]["truncated"] is True
+
+
+def test_apstra_get_diff_status_quotes_blueprint_id_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"status":"staged"}'
+
+        def json(self):
+            return {
+                "status": "staged",
+                "staging_version": 7,
+                "active_version": 6,
+                "has_uncommitted_changes": True,
+                "raw": "omitted",
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_get_diff_status("bp 1"))
+
+    assert called["url"] == "https://apstra.example.com/api/blueprints/bp%201/diff-status"
+    assert out["blueprint_id"] == "bp 1"
+    assert out["diff_status"] == {
+        "status": "staged",
+        "staging_version": 7,
+        "active_version": 6,
+        "has_uncommitted_changes": True,
+    }
+
+
+def test_apstra_list_protocol_sessions_quotes_blueprint_id_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"sessions":[{"id":"bgp1"}]}'
+
+        def json(self):
+            return {
+                "sessions": [
+                    {
+                        "id": "bgp1",
+                        "protocol": "bgp",
+                        "local_system_id": "leaf1",
+                        "remote_system_id": "spine1",
+                        "state": "Established",
+                        "raw": "omitted",
+                    }
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_list_protocol_sessions("bp 1"))
+
+    assert called["url"] == (
+        "https://apstra.example.com/api/blueprints/bp%201/protocol-sessions"
+    )
+    assert out["blueprint_id"] == "bp 1"
+    assert out["protocol_sessions"]["sessions"] == [
+        {
+            "id": "bgp1",
+            "protocol": "bgp",
+            "local_system_id": "leaf1",
+            "remote_system_id": "spine1",
+            "state": "Established",
+        }
+    ]
+
+
 def test_apstra_get_system_info_quotes_blueprint_id_and_compacts(monkeypatch):
     called = {}
 

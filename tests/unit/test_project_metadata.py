@@ -93,29 +93,32 @@ def test_active_runtime_code_does_not_reference_removed_qdrant_backend():
     assert violations == []
 
 
-def test_active_runtime_code_does_not_reference_pycentral_sdk():
+def test_active_runtime_code_does_not_reference_removed_central_sdk():
+    removed_sdk = "py" + "central"
     violations: list[str] = []
 
     for dirname in ACTIVE_CODE_DIRS:
         for path in sorted((REPO_ROOT / dirname).rglob("*.py")):
-            if "pycentral" in path.read_text().lower():
+            if removed_sdk in path.read_text().lower():
                 violations.append(str(path.relative_to(REPO_ROOT)))
 
     assert violations == []
 
 
-def test_doc_scraper_excludes_pycentral_specific_pages():
-    assert "pycentral" not in SCRAPER.read_text().lower()
+def test_doc_scraper_excludes_removed_central_sdk_pages():
+    removed_sdk = "py" + "central"
+    assert removed_sdk not in SCRAPER.read_text().lower()
 
 
-def test_direct_runtime_dependencies_do_not_include_pycentral_or_requests():
+def test_direct_runtime_dependencies_do_not_include_removed_sdks():
+    removed_sdk = "py" + "central"
     dependencies = _project_dependencies(PYPROJECT.read_text())
     names = {
         dependency.split("[", 1)[0].split(">", 1)[0].split("=", 1)[0]
         for dependency in dependencies
     }
 
-    assert "pycentral" not in names
+    assert removed_sdk not in names
     assert "requests" not in names
     assert "httpx" in names
 

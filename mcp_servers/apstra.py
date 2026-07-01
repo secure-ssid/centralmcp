@@ -106,6 +106,48 @@ _REMOTE_GATEWAY_FIELDS = (
     "status",
     "state",
 )
+_CONNECTIVITY_TEMPLATE_FIELDS = (
+    "id",
+    "label",
+    "name",
+    "description",
+    "policy_type",
+    "visible",
+    "used",
+    "assigned",
+    "tags",
+    "status",
+    "state",
+)
+_DIFF_STATUS_FIELDS = (
+    "status",
+    "state",
+    "staging_version",
+    "active_version",
+    "deployed",
+    "has_uncommitted_changes",
+    "uncommitted_changes",
+    "diff_summary",
+    "warnings",
+    "errors",
+)
+_PROTOCOL_SESSION_FIELDS = (
+    "id",
+    "label",
+    "name",
+    "protocol",
+    "role",
+    "local_system_id",
+    "remote_system_id",
+    "local_asn",
+    "remote_asn",
+    "local_ip",
+    "remote_ip",
+    "status",
+    "state",
+    "established",
+    "last_change",
+)
 _SYSTEM_FIELDS = (
     "id",
     "system_id",
@@ -296,6 +338,55 @@ async def apstra_list_remote_gateways(
             out.pop("data"),
             _REMOTE_GATEWAY_FIELDS,
             ("remote_gateways", "remoteGateways"),
+        )
+        out["blueprint_id"] = blueprint_id
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_list_connectivity_templates(
+    blueprint_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List connectivity templates visible in one Apstra blueprint."""
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-export"
+    out = await apstra_get(path, limit=limit, offset=offset)
+    if "data" in out:
+        out["connectivity_templates"] = _compact_collection(
+            out.pop("data"),
+            _CONNECTIVITY_TEMPLATE_FIELDS,
+            ("policies", "templates", "connectivity_templates", "obj_policies"),
+        )
+        out["blueprint_id"] = blueprint_id
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_get_diff_status(blueprint_id: str) -> dict[str, Any]:
+    """Get compact staging-vs-active diff status for one Apstra blueprint."""
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/diff-status"
+    out = await apstra_get(path)
+    if "data" in out:
+        out["diff_status"] = _compact_record(out.pop("data"), _DIFF_STATUS_FIELDS)
+        out["blueprint_id"] = blueprint_id
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_list_protocol_sessions(
+    blueprint_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List protocol sessions in one Apstra blueprint with compact status fields."""
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/protocol-sessions"
+    out = await apstra_get(path, limit=limit, offset=offset)
+    if "data" in out:
+        out["protocol_sessions"] = _compact_collection(
+            out.pop("data"),
+            _PROTOCOL_SESSION_FIELDS,
+            ("protocol_sessions", "protocolSessions", "sessions"),
         )
         out["blueprint_id"] = blueprint_id
     return out

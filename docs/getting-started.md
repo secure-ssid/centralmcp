@@ -17,6 +17,40 @@ files, replace MCP path placeholders, choose a Central API gateway region, fill
 credentials without echoing secrets, enable optional products, build the router
 tool catalog, and run the local doctor.
 
+```mermaid
+flowchart TD
+    start["Run scripts/setup_wizard.py"]
+    install{"Install or sync dependencies?"}
+    creds{"Configure Central / GLP credentials?"}
+    products{"Enable optional products?"}
+    access{"Product access mode"}
+    transport{"MCP transport"}
+    catalog["Build router catalog<br/>scripts/ingest_tools.py"]
+    doctor["Run local doctor<br/>scripts/doctor.py"]
+    env[".env<br/>CENTRALMCP_PRODUCTS<br/>CENTRALMCP_PRODUCT_ACCESS<br/>product URLs/tokens"]
+    yaml["config/credentials.yaml<br/>Central / GLP credentials"]
+    stdio[".mcp.json<br/>stdio MCP client config"]
+    http[".mcp.http.json<br/>streamable HTTP client config"]
+    ready["MCP client connects to<br/>aruba-tool-router"]
+
+    start --> install
+    install --> creds
+    creds --> yaml
+    creds --> products
+    products --> env
+    products --> access
+    access -->|"read-only or read-write"| env
+    access --> transport
+    transport --> stdio
+    transport --> http
+    env --> catalog
+    yaml --> catalog
+    stdio --> catalog
+    http --> catalog
+    catalog --> doctor
+    doctor --> ready
+```
+
 If dependencies are already installed, or you want to skip any wizard phase:
 
 ```bash
@@ -192,7 +226,7 @@ or transport mismatches, indexes, low-token router env, optional product names
 and required product env vars, and the HTTP router port without calling Central
 or GLP APIs.
 
-The unit suite includes static guards that keep async MCP tools off sync HTTP calls, prevent direct `CentralClient.session` bypasses, keep direct runtime dependencies on `httpx` instead of `pycentral` or `requests`, and protect the committed low-token MCP config examples.
+The unit suite includes static guards that keep async MCP tools off sync HTTP calls, prevent direct `CentralClient.session` bypasses, keep direct runtime dependencies on `httpx` instead of sync SDKs or `requests`, and protect the committed low-token MCP config examples.
 
 ## Optional product starters
 

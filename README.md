@@ -4,11 +4,11 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-FastMCP-brightgreen)](https://modelcontextprotocol.io/)
 
-**Low-token Model Context Protocol (MCP) server for HPE Aruba Central, HPE GreenLake Platform, ClearPass, Juniper Mist, Apstra, ArubaOS 8, and EdgeConnect automation.**
+**Low-token Model Context Protocol (MCP) server for HPE Networking automation: Aruba Central, HPE GreenLake Platform, ClearPass, Juniper Mist, Apstra, ArubaOS 8, and EdgeConnect.**
 
 centralmcp gives MCP-capable AI clients a low-token way to search Aruba/HPE docs, look up exact OpenAPI details, inspect Central health, run troubleshooting workflows, manage configuration, and use guarded GreenLake Platform operations.
 
-It is built around direct REST calls with `httpx`. `pycentral` is not a runtime dependency.
+It is built around direct REST calls with `httpx`.
 
 ```mermaid
 flowchart LR
@@ -26,10 +26,11 @@ flowchart LR
 
 ## Search keywords
 
-HPE Aruba Central MCP server, Aruba Central AI tools, GreenLake Platform MCP,
-FastMCP network automation, Model Context Protocol networking, Aruba API RAG,
-Aruba Central OpenAPI lookup, ClearPass MCP, Juniper Mist MCP, Apstra MCP,
-ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
+HPE Networking MCP server, HPE Aruba Central MCP server, Aruba Central AI
+tools, GreenLake Platform MCP, FastMCP network automation, Model Context
+Protocol networking, Aruba API RAG, Aruba Central OpenAPI lookup, ClearPass
+MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, EdgeConnect MCP, guarded
+read/write lab automation, Python `httpx` network automation.
 
 ## Who this is for
 
@@ -69,7 +70,7 @@ ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 194 core tools, or 239 with optional product starters indexed |
+| MCP tools | 194 core tools, or 242 with optional product starters indexed |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |
