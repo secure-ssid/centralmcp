@@ -32,7 +32,7 @@ Platform MCP, GreenLake service catalog MCP, GreenLake reporting status MCP,
 FastMCP network automation, Model Context Protocol networking, network
 configuration MCP, Aruba API RAG, Aruba Central OpenAPI lookup, ClearPass MCP,
 Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, AOS8 automation, HPE Aruba
-EdgeConnect MCP, EdgeConnect MCP, HPE Aruba UXI MCP, UXI sensor status MCP,
+EdgeConnect MCP, EdgeConnect SD-WAN MCP, HPE Aruba UXI MCP, UXI sensor status MCP,
 guarded read/write lab automation, EdgeConnect zones, EdgeConnect interface
 labels, zone-based firewall MCP, Python `httpx` network automation,
 EdgeConnect ACL object groups, EdgeConnect services, EdgeConnect bypass mode,
