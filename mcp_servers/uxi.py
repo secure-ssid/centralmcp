@@ -215,7 +215,10 @@ async def uxi_get(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Perform a guarded read-only GET against selected UXI v1alpha1 paths."""
+    """Perform a guarded read-only GET against selected UXI v1alpha1 paths.
+
+    List payloads are bounded with `limit` and `offset`.
+    """
     return await _uxi_get_request(path, params, limit=limit, offset=offset)
 
 

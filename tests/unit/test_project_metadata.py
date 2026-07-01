@@ -12,6 +12,7 @@ BOUNDED_GENERIC_GET_TOOLS = {
     "mcp_servers/apstra.py": "apstra_get",
     "mcp_servers/aos8.py": "aos8_get",
     "mcp_servers/edgeconnect.py": "edgeconnect_get",
+    "mcp_servers/uxi.py": "uxi_get",
 }
 MAX_MCP_LIST_DEFAULT = 200
 
@@ -44,6 +45,26 @@ def _calls_name(node: ast.AST, name: str) -> bool:
     for child in ast.walk(node):
         if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
             if child.func.id == name:
+                return True
+    return False
+
+
+def _calls_name_directly_or_via_helper(
+    tree: ast.Module,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    name: str,
+) -> bool:
+    if _calls_name(function, name):
+        return True
+    helpers = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+    for child in ast.walk(function):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+            helper = helpers.get(child.func.id)
+            if helper is not None and _calls_name(helper, name):
                 return True
     return False
 
@@ -128,7 +149,8 @@ def test_generic_read_only_get_tools_bound_list_responses():
 
     for relative_path, function_name in BOUNDED_GENERIC_GET_TOOLS.items():
         path = REPO_ROOT / relative_path
-        function = _function_node(ast.parse(path.read_text()), function_name)
+        tree = ast.parse(path.read_text())
+        function = _function_node(tree, function_name)
         arg_names = [arg.arg for arg in function.args.args]
 
         if "limit" not in arg_names or "offset" not in arg_names:
@@ -138,7 +160,7 @@ def test_generic_read_only_get_tools_bound_list_responses():
             violations.append(
                 f"{relative_path}:{function_name} docstring does not describe limit/offset"
             )
-        if not _calls_name(function, "bound_collection_response"):
+        if not _calls_name_directly_or_via_helper(tree, function, "bound_collection_response"):
             violations.append(
                 f"{relative_path}:{function_name} does not call bound_collection_response"
             )
