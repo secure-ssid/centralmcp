@@ -66,7 +66,7 @@ Router flow:
 
 ```text
 find_tool("ask Aruba docs with citations")
-invoke_read_tool("ask_docs", {"query": "WPA3 SAE transition mode", "top_k": 5})
+invoke_read_tool("ask_docs", {"question": "WPA3 SAE transition mode", "top_k": 5})
 ```
 
 ## Look up exact API details
