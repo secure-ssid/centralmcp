@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import mcp_servers.tool_router as router
 
@@ -161,6 +162,44 @@ def test_find_tool_can_include_schema_when_requested(monkeypatch):
     result = router.find_tool("create vlan", top_k=1, include_schema=True)
 
     assert result[0]["schema"] == {"properties": {"vlan_id": {"type": "integer"}}}
+
+
+def test_find_tool_hydrates_annotations_for_semantic_only_results(monkeypatch):
+    def load_tools():
+        router._tool_index["search_docs"] = SimpleNamespace(
+            annotations=SimpleNamespace(
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+            )
+        )
+
+    monkeypatch.setattr(router, "_BACKEND", "lancedb")
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-rag": "mcp_servers.rag"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_keyword_hits", lambda query, limit, include_schema=False: [])
+    monkeypatch.setattr(router, "_load_all_backends", load_tools)
+    monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
+    monkeypatch.setattr(router._lance, "connect", lambda: object())
+    monkeypatch.setattr(
+        router._lance,
+        "search_tools",
+        lambda db, query, vec, top_k: [
+            {
+                "name": "search_docs",
+                "server": "aruba-rag",
+                "description": "Search docs",
+                "schema_json": "{}",
+                "score": 0.9,
+            }
+        ],
+    )
+
+    result = router.find_tool("documentation help", top_k=1)
+
+    assert result[0]["read_only"] is True
+    assert result[0]["destructive"] is False
+    assert result[0]["idempotent"] is True
 
 
 def test_find_tool_reports_semantic_error_without_keyword_fallback(monkeypatch):

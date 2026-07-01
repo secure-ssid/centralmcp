@@ -202,6 +202,12 @@ def _annotation_flags(tool: Any) -> dict[str, bool]:
     }
 
 
+def _annotation_flags_for_name(name: str) -> dict[str, bool]:
+    if name not in _tool_index:
+        _load_all_backends()
+    return _annotation_flags(_tool_index.get(name))
+
+
 @mcp.tool(annotations=READ_ONLY)
 def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[dict[str, Any]]:
     """Find tools by query. Combines semantic search + tool-name keyword match.
@@ -254,7 +260,7 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
                 "params": list((schema.get("properties") or {}).keys()),
                 "score": h.get("score", 0.0),
                 "match": "semantic",
-                **_annotation_flags(_tool_index.get(name)),
+                **_annotation_flags_for_name(name),
             }
             if include_schema:
                 item["schema"] = schema
