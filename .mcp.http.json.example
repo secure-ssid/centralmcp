@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "aruba-tool-router-http": {
+      "url": "http://127.0.0.1:8010/mcp",
+      "transport": "streamable-http"
+    }
+  }
+}

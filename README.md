@@ -60,6 +60,8 @@ Edit:
 
 - `config/credentials.yaml` with your Central / GLP OAuth credentials.
 - `.mcp.json` and replace `/path/to/centralmcp` with your local clone path.
+- `.mcp.http.json.example` if your MCP client connects to an already-running
+  streamable HTTP server instead of launching stdio.
 - `.claude/launch.json` if you use Claude launch profiles; choose the minimal
   `aruba-tool-router` profile for daily use.
 
@@ -101,6 +103,27 @@ CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
 The optional product starter GET tools are read-only and page list responses with
 `limit` / `offset` so broad API calls do not flood the MCP context.
 
+## Streamable HTTP mode
+
+The MCP server is model-agnostic: any AI client/model that supports MCP
+streamable HTTP can connect to the same router endpoint.
+
+Start the low-token HTTP router in the foreground:
+
+```bash
+MCP_PORT=8010 bash scripts/run_http_router.sh
+```
+
+Then point your MCP client at:
+
+```text
+http://127.0.0.1:8010/mcp
+```
+
+Use [`.mcp.http.json.example`](.mcp.http.json.example) as a generic HTTP client
+snippet. Plain `curl` is only useful for checking that the server is listening;
+real MCP clients use streaming headers such as `Accept: text/event-stream`.
+
 ## Common environment variables
 
 | Variable | Purpose | Default |
@@ -115,6 +138,8 @@ The optional product starter GET tools are read-only and page list responses wit
 | `GLP_TOKEN_URL` | Override GLP SSO token URL | HPE default |
 | `GLP_BASE_URL` | Override GLP API base URL | HPE default |
 | `MCP_TRANSPORT` | `stdio` or `streamable-http` | `stdio` |
+| `MCP_HOST` | HTTP bind address for streamable HTTP mode | `127.0.0.1` |
+| `MCP_PORT` | HTTP port for streamable HTTP mode | `8000` |
 
 Product starter backends also use product-specific URL/token variables. See [docs/getting-started.md](docs/getting-started.md).
 

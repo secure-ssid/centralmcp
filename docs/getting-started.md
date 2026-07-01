@@ -55,6 +55,8 @@ For VS Code, copy `.vscode/mcp.json.example` to `.vscode/mcp.json`.
 For Claude launch profiles, use `.claude/launch.json`; the first profile is the
 same minimal `aruba-tool-router` setup and the remaining profiles are direct
 debug servers.
+For clients that connect to an already-running HTTP MCP server, use
+`.mcp.http.json.example` as the starting point.
 
 Recommended default:
 
@@ -64,6 +66,36 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 ```
 
 This exposes only the router discovery/dispatch surface and keeps tool-list token cost low.
+
+### Streamable HTTP instead of stdio
+
+Any MCP-capable AI client/model can connect over streamable HTTP if the client
+supports remote MCP servers.
+
+Start the minimal router:
+
+```bash
+MCP_PORT=8010 bash scripts/run_http_router.sh
+```
+
+Connect your client to:
+
+```text
+http://127.0.0.1:8010/mcp
+```
+
+The HTTP example in `.mcp.http.json.example` points at that local endpoint.
+Stop the foreground server with `Ctrl-C`. If you launched it in the background,
+find the listener and stop that PID:
+
+```bash
+lsof -nP -iTCP:8010 -sTCP:LISTEN
+kill <PID>
+```
+
+Plain `curl` requests are expected to fail unless they send MCP streaming
+headers such as `Accept: text/event-stream`; use an MCP client for actual tool
+calls.
 
 ## 4. Build the tool catalog
 
