@@ -86,3 +86,9 @@ invoke_read_tool("list_active_alerts", {"severity": "CRITICAL", "limit": 20})
 
 Use `invoke_read_tool` for investigations. Use `invoke_tool` only when you
 intend to run a write/destructive backend tool.
+
+## GitHub Pages deployment
+
+| Symptom | Fix |
+|---|---|
+| Pages build succeeds but deploy fails with `due to in progress deployment` | Wait for the earlier Pages deployment to complete, then rerun the failed workflow or push a follow-up commit. This is a transient GitHub Pages deployment queue race, not a docs/Jekyll build failure. |

@@ -15,7 +15,7 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | [optional-products.md](optional-products.md) | Optional product matrix, wizard behavior, env vars, and safety surface |
 | [product-workflows.md](product-workflows.md) | Typed ClearPass/Mist/Apstra/AOS8/EdgeConnect/UXI workflow roadmap |
 | [release-indexes.md](release-indexes.md) | Download, package, and release prebuilt RAG/OpenAPI indexes |
-| [troubleshooting.md](troubleshooting.md) | Setup wizard, credentials, HTTP mode, router catalog, and first-call fixes |
+| [troubleshooting.md](troubleshooting.md) | Setup wizard, credentials, HTTP mode, router catalog, GitHub Pages deploys, and first-call fixes |
 | [example-prompts.md](example-prompts.md) | Practical low-token prompt examples and router call patterns |
 | [tool-router.md](tool-router.md) | Low-token router modes, toolsets, optional products, and safe dispatch |
 | [architecture/system-overview.md](architecture/system-overview.md) | End-to-end MCP architecture diagrams and runtime flow |
