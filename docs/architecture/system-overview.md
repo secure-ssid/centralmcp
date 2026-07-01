@@ -103,7 +103,7 @@ mismatches, optional product env, and listener status.
 .cursor/                 Cursor MCP profiles
 .vscode/                 VS Code MCP example config
 config/                  Credentials template
-docs/                    User, architecture, audit, operation, and plan docs
+docs/                    User, architecture, setup, router, and product docs
 ingestion/               Docs/API ingestion into LanceDB and SQLite
 inputs/                  Example migration input templates
 mcp_servers/             FastMCP servers and low-token router

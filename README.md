@@ -283,9 +283,6 @@ docs/
   getting-started.md    Setup and MCP connection guide
   tool-router.md        Router modes and low-token usage
   architecture/         System overview and RAG design notes
-  audits/               Historical audits and remediation notes
-  operations/           Endpoint/runbook notes
-  plans/                Planning documents
 
 inputs/                  Example CSV inputs for migration workflows
 resources/               Postman/API reference material and resource notes

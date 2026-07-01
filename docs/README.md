@@ -1,6 +1,7 @@
 # centralmcp documentation
 
-Use this directory as the organized documentation hub for setup, architecture, operations, audits, and planning notes.
+Use this directory as the organized documentation hub for setup, architecture,
+router usage, optional products, troubleshooting, and release artifacts.
 
 This folder can also be served as a GitHub Pages site from `main` / `docs`.
 
@@ -19,18 +20,12 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | [tool-router.md](tool-router.md) | Low-token router modes, toolsets, optional products, and safe dispatch |
 | [architecture/system-overview.md](architecture/system-overview.md) | End-to-end MCP architecture diagrams and runtime flow |
 | [architecture/RAG-ARCHITECTURE.md](architecture/RAG-ARCHITECTURE.md) | Embedded RAG design, eval results, and migration rationale |
-| [operations/hpe-support-events-endpoint.md](operations/hpe-support-events-endpoint.md) | HPE support events endpoint notes |
-| [audits/AUDIT-2026-06-03.md](audits/AUDIT-2026-06-03.md) | Historical deep audit and remediation notes |
-| [plans/agentic-rag-plan.md](plans/agentic-rag-plan.md) | Historical original Qdrant/Ollama RAG plan; current design is the architecture doc above |
 
 ## Documentation sections
 
 | Section | Contents |
 |---|---|
 | [architecture/](architecture/) | System design, RAG architecture, data stores, eval rationale |
-| [audits/](audits/) | Time-bound reviews, findings, and remediation history |
-| [operations/](operations/) | Endpoint notes and operator-facing runbook material |
-| [plans/](plans/) | Historical plans and larger implementation tracks |
 
 ## Repo map
 
