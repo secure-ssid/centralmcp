@@ -42,14 +42,14 @@ uv run python scripts/ingest_tools.py --products all
 Package them:
 
 ```bash
-uv run python scripts/package_indexes.py --version v0.2.1
+uv run python scripts/package_indexes.py
 ```
 
 The script writes:
 
 ```text
-dist/centralmcp-rag-index-v0.2.1.tar.gz
-dist/centralmcp-rag-index-v0.2.1.tar.gz.sha256
+dist/centralmcp-rag-index-v<project-version>.tar.gz
+dist/centralmcp-rag-index-v<project-version>.tar.gz.sha256
 ```
 
 Upload the archive and checksum to the GitHub Release. For convenience, also

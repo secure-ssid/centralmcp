@@ -47,7 +47,7 @@ body:
     id: version
     attributes:
       label: Commit, release, or branch
-      placeholder: main at abc1234, v0.2.1, or another ref
+      placeholder: main at abc1234, latest release tag, or another ref
     validations:
       required: true
   - type: textarea
