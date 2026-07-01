@@ -71,7 +71,12 @@ Use `invoke_read_tool` for normal investigations. Use `invoke_tool` only when th
 ```mermaid
 flowchart TD
     clone["git clone"]
-    wizard["scripts/setup_wizard.py<br/>install, region, credentials,<br/>optional products"]
+    wizard["scripts/setup_wizard.py<br/>install, region, credentials"]
+    products{"Enable optional<br/>product starters?"}
+    selected["Select products<br/>clearpass, mist, apstra,<br/>aos8, edgeconnect, or all"]
+    access{"Product access mode"}
+    ro["read-only<br/>hide/block optional writes"]
+    rw["read-write lab mode<br/>writes visible, dry-run default,<br/>dry_run=False + confirm=True required"]
     catalog["uv run python scripts/ingest_tools.py"]
     doctor["uv run python scripts/doctor.py"]
     creds["config/credentials.yaml<br/>.env or environment variables"]
@@ -80,7 +85,14 @@ flowchart TD
     ready["MCP client connected to aruba-tool-router"]
 
     clone --> wizard
-    wizard --> catalog
+    wizard --> products
+    products -->|"yes / --products / --with-products"| selected
+    products -->|"no"| catalog
+    selected --> access
+    access -->|"--product-access read-only"| ro
+    access -->|"default read-write"| rw
+    ro --> catalog
+    rw --> catalog
     catalog --> doctor
     doctor --> creds
     creds --> stdio

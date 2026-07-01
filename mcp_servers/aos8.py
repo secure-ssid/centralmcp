@@ -137,6 +137,70 @@ _CLIENT_HISTORY_FIELDS = (
     "Status",
     "status",
 )
+_SYSTEM_LOG_FIELDS = (
+    "Time",
+    "time",
+    "Timestamp",
+    "timestamp",
+    "Date",
+    "date",
+    "Module",
+    "module",
+    "Severity",
+    "severity",
+    "Level",
+    "level",
+    "Message",
+    "message",
+    "Description",
+    "description",
+)
+_ARM_HISTORY_FIELDS = (
+    "Time",
+    "time",
+    "Timestamp",
+    "timestamp",
+    "AP Name",
+    "ap_name",
+    "Radio",
+    "radio",
+    "Band",
+    "band",
+    "Channel",
+    "channel",
+    "Event",
+    "event",
+    "Reason",
+    "reason",
+    "Status",
+    "status",
+)
+_MONITOR_STATS_FIELDS = (
+    "AP Name",
+    "ap_name",
+    "BSSID",
+    "bssid",
+    "SSID",
+    "ssid",
+    "Radio",
+    "radio",
+    "Band",
+    "band",
+    "Channel",
+    "channel",
+    "RSSI",
+    "rssi",
+    "SNR",
+    "snr",
+    "Noise Floor",
+    "noise_floor",
+    "Utilization",
+    "utilization",
+    "Clients",
+    "clients",
+    "Status",
+    "status",
+)
 _CONTROLLER_FIELDS = (
     "Name",
     "name",
@@ -253,6 +317,14 @@ def _strip_aos8_envelope(data: Any) -> Any:
     if len(out) == 1 and isinstance(payload, (dict, list)):
         return payload
     return out
+
+
+def _bounded_show_count(value: int, *, default: int = 100, maximum: int = 200) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(count, maximum))
 
 
 def _compact_aos8_data(data: Any, *, limit: int, offset: int = 0) -> Any:
@@ -524,6 +596,78 @@ async def aos8_get_client_history(
             limit=limit,
             offset=offset,
         )
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_system_logs(
+    count: int = 100,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get recent AOS8 system log entries with a capped show-command count."""
+    bounded_count = _bounded_show_count(count)
+    out = await aos8_show_command(
+        f"show log system {bounded_count}",
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["system_logs"] = _compact_primary_list(
+            out.pop("data"),
+            _SYSTEM_LOG_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+        out["count"] = bounded_count
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_ap_arm_history(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get AOS8 Adaptive Radio Management history for AP/radio troubleshooting."""
+    out = await aos8_show_command(
+        "show ap arm history",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["arm_history"] = _compact_primary_list(
+            out.pop("data"),
+            _ARM_HISTORY_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_ap_monitor_stats(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get AOS8 AP monitor statistics for RF/debug investigations."""
+    out = await aos8_show_command(
+        "show ap monitor stats",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["monitor_stats"] = _compact_primary_list(
+            out.pop("data"),
+            _MONITOR_STATS_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
+        out["config_path"] = config_path
     return out
 
 
