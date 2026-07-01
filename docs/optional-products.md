@@ -49,8 +49,9 @@ testing against localhost or private IPs, set
 
 When you select products, the setup wizard:
 
-1. Adds `CENTRALMCP_PRODUCTS`, `CENTRALMCP_PRODUCT_ACCESS`, and product
-   URL/token settings to local `.env`.
+1. Adds or merges `CENTRALMCP_PRODUCTS`, `CENTRALMCP_PRODUCT_ACCESS`, and
+   product URL/token settings into local `.env`; existing token values are
+   preserved unless you pass `--force`.
 2. Adds only `CENTRALMCP_PRODUCTS` and `CENTRALMCP_PRODUCT_ACCESS` to local MCP
    config files, leaving product tokens in `.env`.
 3. Builds the router tool catalog with the selected product starters (or every

@@ -42,6 +42,57 @@ def test_product_access_defaults_to_read_write_for_products():
     assert setup_wizard._product_access(args, ["clearpass"]) == "read-write"
 
 
+def test_write_env_file_merges_existing_values_without_overwriting_tokens(tmp_path):
+    target = tmp_path / ".env"
+    target.write_text(
+        "\n".join(
+            [
+                "# local lab tokens",
+                "export CENTRALMCP_PRODUCTS=clearpass",
+                "export CLEARPASS_API_TOKEN=real-token",
+                "",
+            ]
+        )
+    )
+
+    step = setup_wizard._write_env_file(
+        target,
+        {
+            "CENTRALMCP_PRODUCTS": "clearpass,mist",
+            "CENTRALMCP_PRODUCT_ACCESS": "read-write",
+            "CLEARPASS_API_TOKEN": "YOUR_CLEARPASS_API_TOKEN",
+            "MIST_HOST": "https://api.mist.com",
+            "MIST_API_TOKEN": "YOUR_MIST_API_TOKEN",
+        },
+        force=False,
+    )
+
+    text = target.read_text()
+    assert step.status == "OK"
+    assert "export CENTRALMCP_PRODUCTS=clearpass,mist" in text
+    assert "export CENTRALMCP_PRODUCT_ACCESS=read-write" in text
+    assert "export CLEARPASS_API_TOKEN=real-token" in text
+    assert "YOUR_CLEARPASS_API_TOKEN" not in text
+    assert "export MIST_API_TOKEN=YOUR_MIST_API_TOKEN" in text
+
+
+def test_write_env_file_force_replaces_existing_env(tmp_path):
+    target = tmp_path / ".env"
+    target.write_text("export CENTRALMCP_PRODUCTS=clearpass\n")
+
+    step = setup_wizard._write_env_file(
+        target,
+        {
+            "CENTRALMCP_PRODUCTS": "mist",
+            "CENTRALMCP_PRODUCT_ACCESS": "read-only",
+        },
+        force=True,
+    )
+
+    assert step.status == "OK"
+    assert "CENTRALMCP_PRODUCTS=mist" in target.read_text()
+
+
 def test_merge_json_env_adds_product_access(tmp_path):
     target = tmp_path / ".mcp.json"
     target.write_text(
