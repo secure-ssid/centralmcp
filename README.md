@@ -96,6 +96,9 @@ Enable optional products only when needed:
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
 ```
 
+The optional product starter GET tools are read-only and page list responses with
+`limit` / `offset` so broad API calls do not flood the MCP context.
+
 ## Common environment variables
 
 | Variable | Purpose | Default |

@@ -71,3 +71,39 @@ def test_clearpass_get_calls_httpx(monkeypatch):
     assert out["status_code"] == 200
     assert out["data"] == {"ok": True}
     assert called["url"] == "https://cp.example.com/api/session"
+
+
+def test_clearpass_get_bounds_list_payloads(monkeypatch):
+    class _Resp:
+        status_code = 200
+        text = '[{"id":1},{"id":2},{"id":3}]'
+
+        def json(self):
+            return [{"id": 1}, {"id": 2}, {"id": 3}]
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            return _Resp()
+
+    monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
+    monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setattr(clearpass.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(clearpass.clearpass_get("/api/session", limit=2))
+
+    assert out["data"]["items"] == [{"id": 1}, {"id": 2}]
+    assert out["data"]["_pagination"] == {
+        "offset": 0,
+        "limit": 2,
+        "total": 3,
+        "truncated": True,
+    }

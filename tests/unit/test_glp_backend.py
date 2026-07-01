@@ -59,6 +59,32 @@ def test_glp_get_calls_guarded_path(monkeypatch):
     }
 
 
+def test_glp_get_bounds_list_payloads(monkeypatch):
+    class DummyCentral:
+        def get(self, path, params=None):
+            return [{"id": 1}, {"id": 2}, {"id": 3}]
+
+    class DummyGLP:
+        _client = DummyCentral()
+
+    monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
+
+    result = glp.glp_get("/service-catalog/v1/services", limit=2, offset=1)
+
+    assert result == {
+        "data": {
+            "items": [{"id": 2}, {"id": 3}],
+            "_pagination": {
+                "offset": 1,
+                "limit": 2,
+                "total": 3,
+                "truncated": False,
+            },
+        },
+        "endpoint_used": "/service-catalog/v1/services",
+    }
+
+
 def test_glp_add_device_fails_closed_when_writes_disabled(monkeypatch):
     monkeypatch.delenv("CENTRALMCP_GLP_V2BETA1_WRITES", raising=False)
 

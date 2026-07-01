@@ -7,9 +7,15 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_servers.shared import (
+    DESTRUCTIVE,
+    IDEMPOTENT_WRITE,
+    READ_ONLY,
+    bound_collection_response,
+    get_glp_client,
+    safe_api_path,
+)
 from pipeline.clients.glp_client import _V2BETA1_WRITES_FLAG, _writes_enabled
-
-from mcp_servers.shared import DESTRUCTIVE, IDEMPOTENT_WRITE, READ_ONLY, get_glp_client, safe_api_path
 
 mcp = FastMCP("aruba-glp")
 
@@ -61,7 +67,12 @@ def _write_disabled(tool_name: str, payload: dict[str, Any]) -> dict[str, Any] |
 
 
 @mcp.tool(annotations=READ_ONLY)
-def glp_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+def glp_get(
+    path: str,
+    params: dict[str, Any] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
     """Perform a guarded read-only GET against selected GLP API families.
 
     Useful for exploring GLP service-catalog, workspaces, reporting, and
@@ -74,6 +85,7 @@ def glp_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return {"error": f"Invalid path. {exc}"}
     try:
         data = get_glp_client()._client.get(safe_path, params=params or {})
+        data = bound_collection_response(data, limit=limit, offset=offset)
         return {"data": data, "endpoint_used": safe_path}
     except Exception as exc:
         return {"error": str(exc), "endpoint_used": safe_path}

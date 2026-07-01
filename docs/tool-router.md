@@ -76,7 +76,9 @@ The optional product starters intentionally expose a small read-only surface:
 - `<product>_status`
 - guarded `<product>_get`
 
-This keeps token cost low while leaving room to add product-specific tools later.
+Generic GET responses are paginated with `limit` and `offset` when the response
+contains a list. This keeps token cost low while leaving room to add
+product-specific tools later.
 
 ## Why `invoke_tool` is destructive
 

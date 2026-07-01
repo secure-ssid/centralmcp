@@ -17,6 +17,14 @@ class _Resp:
         return {"ok": True}
 
 
+class _ListResp:
+    status_code = 200
+    text = '[{"id":1},{"id":2},{"id":3}]'
+
+    def json(self):
+        return [{"id": 1}, {"id": 2}, {"id": 3}]
+
+
 @pytest.mark.parametrize(
     ("module", "status_func", "env_base", "env_token"),
     [
@@ -105,6 +113,37 @@ def test_apstra_get_calls_httpx(monkeypatch):
     assert out["data"] == {"ok": True}
     assert called["url"] == "https://apstra.example.com/api/blueprints"
     assert called["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_apstra_get_bounds_list_payloads(monkeypatch):
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            return _ListResp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_get("/api/blueprints", limit=2, offset=1))
+
+    assert out["data"] == {
+        "items": [{"id": 2}, {"id": 3}],
+        "_pagination": {
+            "offset": 1,
+            "limit": 2,
+            "total": 3,
+            "truncated": False,
+        },
+    }
 
 
 def test_aos8_get_rejects_non_v1_path(monkeypatch):

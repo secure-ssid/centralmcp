@@ -72,3 +72,43 @@ def test_mist_get_calls_httpx(monkeypatch):
     assert out["data"] == {"ok": True}
     assert called["url"] == "https://api.mist.com/api/v1/self"
     assert called["headers"]["Authorization"] == "Token secret"
+
+
+def test_mist_get_bounds_nested_list_payloads(monkeypatch):
+    class _Resp:
+        status_code = 200
+        text = '{"results":[1,2,3],"ok":true}'
+
+        def json(self):
+            return {"results": [1, 2, 3], "ok": True}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            return _Resp()
+
+    monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
+    monkeypatch.setenv("MIST_API_TOKEN", "secret")
+    monkeypatch.setattr(mist.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(mist.mist_get("/api/v1/sites", limit=2, offset=1))
+
+    assert out["data"] == {
+        "results": [2, 3],
+        "ok": True,
+        "_pagination": {
+            "offset": 1,
+            "limit": 2,
+            "total": 3,
+            "truncated": False,
+            "list_key": "results",
+        },
+    }
