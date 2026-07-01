@@ -106,6 +106,40 @@ _DISK_REPORT_FIELDS = (
     "state",
     "status",
 )
+_REACHABILITY_FIELDS = (
+    "id",
+    "nePk",
+    "applianceId",
+    "hostName",
+    "hostname",
+    "name",
+    "site",
+    "ipAddress",
+    "reachable",
+    "reachability",
+    "connected",
+    "rest",
+    "ssh",
+    "https",
+    "webSocket",
+    "websocket",
+    "webProtocol",
+    "userName",
+    "username",
+    "unsavedChanges",
+    "lastReachable",
+    "lastSeen",
+    "timestamp",
+    "status",
+    "state",
+    "reason",
+    "error",
+)
+_REACHABILITY_PATHS = {
+    "appliance": "/gms/rest/reachability/appliance",
+    "gms": "/gms/rest/reachability/gms",
+    "gms2": "/gms/rest/reachability/gms2",
+}
 _TOPOLOGY_LINK_FIELDS = (
     "id",
     "linkId",
@@ -462,6 +496,57 @@ def _compact_disk_report(data: Any, *, limit: int, offset: int) -> Any:
     )
 
 
+def _normalize_reachability_records(data: Any) -> list[Any] | None:
+    records = _collection_records(
+        data,
+        ("appliances", "appliancesReachability", "reachability", "states"),
+    )
+    if records is not None:
+        return records
+    if not isinstance(data, dict):
+        return None
+
+    for key in ("appliances", "appliancesReachability", "reachability", "states", "data"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            records = _normalize_reachability_records(nested)
+            if records is not None:
+                return records
+
+    if _looks_like_record(data, _REACHABILITY_FIELDS):
+        return [data]
+
+    records = []
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        record = dict(value)
+        if not any(field in record for field in ("id", "nePk", "applianceId")):
+            record["nePk"] = key
+        records.append(record)
+    return records or None
+
+
+def _compact_reachability(data: Any, *, limit: int, offset: int, single: bool = False) -> Any:
+    records = _normalize_reachability_records(data)
+    if records is None:
+        return _compact_collection(
+            data,
+            _REACHABILITY_FIELDS,
+            ("appliances", "appliancesReachability", "reachability", "states"),
+        )
+
+    compacted = [_compact_record(record, _REACHABILITY_FIELDS) for record in records]
+    if single and len(compacted) == 1:
+        return compacted[0]
+    return bound_collection_response(
+        {"appliances": compacted},
+        limit=limit,
+        offset=offset,
+        list_key="appliances",
+    )
+
+
 @mcp.tool(annotations=READ_ONLY)
 def edgeconnect_status() -> dict[str, Any]:
     """Report whether EdgeConnect backend is configured."""
@@ -600,6 +685,59 @@ async def edgeconnect_get_disk_report(
     if "data" in out:
         out["disk_report"] = _compact_disk_report(out.pop("data"), limit=limit, offset=offset)
         out["ne_pk"] = ne_pk
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_appliance_reachability(
+    ne_pk: str,
+    source: str = "gms2",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get compact EdgeConnect reachability for one appliance from Orchestrator."""
+    path = _REACHABILITY_PATHS.get(source)
+    if path is None:
+        allowed = ", ".join(sorted(_REACHABILITY_PATHS))
+        return {"error": f"source must be one of: {allowed}"}
+
+    out = await _edgeconnect_get(
+        path,
+        {"nePk": ne_pk},
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["reachability"] = _compact_reachability(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+            single=True,
+        )
+        out["ne_pk"] = ne_pk
+        out["source"] = source
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_appliance_reachability(
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List compact EdgeConnect appliance reachability from Orchestrator."""
+    out = await _edgeconnect_get(
+        "/gms/rest/reachability/gms2/appliancesReachability",
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["reachability"] = _compact_reachability(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+        )
     return out
 
 

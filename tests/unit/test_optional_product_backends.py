@@ -2746,6 +2746,134 @@ def test_edgeconnect_get_disk_report_compacts_documented_maps(monkeypatch):
     ]
 
 
+def test_edgeconnect_get_appliance_reachability_compacts(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/reachability/appliance"
+        assert params == {"nePk": "1.NE"}
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "hostName": "ec-1",
+                "ipAddress": "192.0.2.10",
+                "reachable": True,
+                "rest": True,
+                "ssh": False,
+                "https": True,
+                "websocket": False,
+                "webProtocol": "https",
+                "userName": "admin",
+                "unsavedChanges": False,
+                "lastSeen": 123456,
+                "raw": "omitted",
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_get_appliance_reachability(ne_pk="1.NE", source="appliance")
+    )
+
+    assert out["ne_pk"] == "1.NE"
+    assert out["source"] == "appliance"
+    assert out["reachability"] == {
+        "hostName": "ec-1",
+        "ipAddress": "192.0.2.10",
+        "reachable": True,
+        "rest": True,
+        "ssh": False,
+        "https": True,
+        "websocket": False,
+        "webProtocol": "https",
+        "userName": "admin",
+        "unsavedChanges": False,
+        "lastSeen": 123456,
+    }
+
+
+def test_edgeconnect_get_appliance_reachability_compacts_gms_fields(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/reachability/gms"
+        assert params == {"nePk": "1.NE"}
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "hostName": "ec-1",
+                "reachable": True,
+                "webSocket": "connected",
+                "username": "operator",
+                "status": "ok",
+                "raw": "omitted",
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_get_appliance_reachability(ne_pk="1.NE", source="gms")
+    )
+
+    assert out["reachability"] == {
+        "hostName": "ec-1",
+        "reachable": True,
+        "webSocket": "connected",
+        "username": "operator",
+        "status": "ok",
+    }
+
+
+def test_edgeconnect_get_appliance_reachability_rejects_unknown_source():
+    out = asyncio.run(
+        edgeconnect.edgeconnect_get_appliance_reachability(ne_pk="1.NE", source="bad")
+    )
+
+    assert "error" in out
+    assert "appliance" in out["error"]
+    assert "gms2" in out["error"]
+
+
+def test_edgeconnect_list_appliance_reachability_compacts_map(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/reachability/gms2/appliancesReachability"
+        assert params is None
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "1.NE": {
+                    "hostName": "ec-1",
+                    "reachable": True,
+                    "webSocket": "connected",
+                    "lastSeen": 123456,
+                    "raw": "omitted",
+                },
+                "2.NE": {
+                    "hostName": "ec-2",
+                    "reachable": False,
+                    "reason": "timeout",
+                    "raw": "omitted",
+                },
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_appliance_reachability(limit=1))
+
+    assert out["reachability"]["appliances"] == [
+        {
+            "nePk": "1.NE",
+            "hostName": "ec-1",
+            "reachable": True,
+            "webSocket": "connected",
+            "lastSeen": 123456,
+        }
+    ]
+    assert out["reachability"]["_pagination"]["truncated"] is True
+
+
 def test_edgeconnect_list_alarms_compacts_outstanding(monkeypatch):
     called = {}
 

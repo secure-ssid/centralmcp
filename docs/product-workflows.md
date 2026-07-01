@@ -122,6 +122,8 @@ Promote a generic GET pattern to a typed tool when it is:
 | Appliance alarms | `edgeconnect_list_alarms` | Outstanding alarms from `/rest/json/alarm`, bounded by `limit` / `offset` |
 | Appliance interface state | `edgeconnect_get_interface_state` | Compact interface admin/oper/IP/speed view from `/gms/rest/interfaceState`, scoped by appliance `nePk` |
 | Appliance disk report | `edgeconnect_get_disk_report` | Compact disk/storage health view from `/gms/rest/configReportDisk`, scoped by appliance `nePk` |
+| Appliance reachability | `edgeconnect_get_appliance_reachability` | Compact reachability from `/gms/rest/reachability/{appliance,gms,gms2}`, scoped by appliance `nePk` |
+| Fleet reachability | `edgeconnect_list_appliance_reachability` | Compact all-appliance reachability from `/gms/rest/reachability/gms2/appliancesReachability` |
 | Overlay configuration | `edgeconnect_list_overlays` | Compact overlay configs from `/gms/rest/gms/overlays/config`, with optional overlay ID filter |
 | Overlay priority | `edgeconnect_get_overlay_priority` | Compact overlay priority order from `/gms/rest/gms/overlays/priority` |
 | Topology link status | `edgeconnect_get_topology_link_info` | Sparse topology link status from `/gms/rest/gms/topologyConfig/linkInfo/v2`, scoped by overlay ID |
