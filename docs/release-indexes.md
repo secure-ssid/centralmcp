@@ -66,18 +66,20 @@ always use the latest release URL.
 
 Scraped source files live under git-ignored `ingestion/sources/`; keep the
 tracked source list in [`ingestion/source_manifest.json`](../ingestion/source_manifest.json)
-current before rebuilding public indexes.
+current before rebuilding public indexes. The table below mirrors the tracked
+manifest so release rebuilds can cite the exact source seeds used for DevHub,
+New Central, techdocs, Feature Navigator, and OpenAPI lookup.
 
 | Source | Seed / target | Destination |
 |---|---|---|
 | DevHub | `https://devhub.arubanetworks.com` | `ingestion/sources/devhub` |
-| New Central developer docs | `https://developer.arubanetworks.com/new-central/...` | `ingestion/sources/developer_docs` and `ingestion/sources/openapi_specs` |
+| New Central developer docs | `https://developer.arubanetworks.com/new-central/docs/getting-started-with-rest-apis` and `https://developer.arubanetworks.com/new-central/docs/introduction-to-configuration-apis` | `ingestion/sources/developer_docs` |
 | Tech docs | `https://arubanetworking.hpe.com/techdocs/` | `ingestion/sources/tech_docs` |
-| NAC docs | CNAC/NAC developer and reference pages | `ingestion/sources/nac_docs` |
+| NAC docs | `https://developer.arubanetworks.com/new-central-config/reference/mac-registration` | `ingestion/sources/nac_docs` |
 | Validated Solution Guides | `https://arubanetworking.hpe.com/techdocs/VSG/docs/` | `ingestion/sources/vsg_docs` |
 | New Central techdocs | `https://arubanetworking.hpe.com/techdocs/new-central/content/home.htm` plus `ingestion/techdocs_paths.json` | `ingestion/sources/techdocs_html` |
 | Switching Feature Navigator | `https://feature-navigator.arubanetworking.hpe.com/wired?mode=explore` | `ingestion/sources/feature_navigator` |
-| OpenAPI specs | New Central OpenAPI JSON specs | `ingestion/sources/openapi_specs` |
+| OpenAPI specs | `https://developer.arubanetworks.com/new-central-config/reference/` plus CNAC extraction with `ingestion/scrape_cnac_spec.py` | `ingestion/sources/openapi_specs` |
 | AOS techdocs | `https://arubanetworking.hpe.com/techdocs/aos/` | `ingestion/sources/aos_techdocs` |
 
 The New Central techdocs host can block plain HTTP clients, so use the paced
