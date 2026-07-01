@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "centralmcp"
-version = "0.2.7"
+version = "0.2.8"
 description = "Low-token HPE Aruba Networking MCP server for Aruba Central, GreenLake Platform, RAG/OpenAPI lookup, EdgeConnect SD-WAN, UXI, and optional product automation."
 readme = "README.md"
 license = "MIT"
