@@ -13,7 +13,10 @@ Starting centralmcp HTTP router
   mode:     ${CENTRALMCP_ROUTER_MODE}
   toolsets: ${CENTRALMCP_TOOLSETS}
 
-Stop with Ctrl-C when running in the foreground.
+Foreground stop: Ctrl-C
+Background stop:
+  lsof -nP -iTCP:${MCP_PORT} -sTCP:LISTEN
+  kill <PID>
 EOF
 
 exec uv run python -m mcp_servers.tool_router

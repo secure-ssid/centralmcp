@@ -29,7 +29,10 @@ Use this directory as the organized documentation hub for setup, architecture, o
 | `mcp_servers/` | FastMCP servers, low-token router, prompts, middleware, optional product starters |
 | `pipeline/` | Migration pipeline, typed clients, credentials loading, state store, SSID helpers |
 | `ingestion/` | Docs/API ingestion into LanceDB and SQLite |
+| `scripts/run_http_router.sh` | Start the minimal router over streamable HTTP |
 | `scripts/` | Tool-catalog ingestion, release validation, local sync helpers |
+| `.mcp.json.example` | Generic stdio MCP client example using the minimal router |
+| `.mcp.http.json.example` | Generic streamable HTTP MCP client example |
 | `tests/unit/` | Mocked unit coverage for tools, clients, middleware, routing, RAG, release gates |
 | `tests/eval/` | RAG/API eval data and runner |
 | `data/` | Local built indexes, git-ignored |
@@ -45,6 +48,9 @@ uv run python scripts/ingest_tools.py
 
 # Include optional product starters in the tool catalog
 uv run python scripts/ingest_tools.py --products all
+
+# Start the model-agnostic HTTP MCP router
+MCP_PORT=8010 bash scripts/run_http_router.sh
 
 # Run unit tests
 uv run pytest tests/unit -q
