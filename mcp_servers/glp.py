@@ -1,9 +1,11 @@
-"""MCP server — GreenLake Platform (GLP): inventory, licensing, and user management (12 tools).
+"""MCP server — GreenLake Platform (GLP): inventory, licensing, users, and service catalog (31 tools).
 
-Covers: GLP device lifecycle, subscription assignment, bulk onboarding, audit logs, users.
+Covers: GLP device lifecycle, subscription assignment, bulk onboarding, audit logs, users,
+workspaces, reporting statuses, and service-catalog reads.
 Uses the target_account (glp_account) credentials.
 """
 from typing import Any
+from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
 
@@ -23,6 +25,7 @@ mcp = FastMCP("aruba-glp")
 _GLP_GET_PREFIXES = (
     "/devices/",
     "/subscriptions/",
+    "/audit-log/",
     "/audit-logs/",
     "/identity/",
     "/service-catalog/",
@@ -65,6 +68,55 @@ def _write_disabled(tool_name: str, payload: dict[str, Any]) -> dict[str, Any] |
         "flag": _V2BETA1_WRITES_FLAG,
         "would_have_sent": payload,
     }
+
+
+def _path_part(value: str) -> str:
+    return quote(str(value), safe="")
+
+
+def _params(**values: Any) -> dict[str, Any]:
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def _paged_params(limit: int | None = 100, offset: int | None = 0, **values: Any) -> dict[str, Any]:
+    return {
+        **_params(**values),
+        "limit": clamp_limit(limit),
+        "offset": max(0, offset or 0),
+    }
+
+
+def _cursor_params(
+    limit: int | None = 100,
+    next_cursor: str | None = None,
+    **values: Any,
+) -> dict[str, Any]:
+    return {
+        **_params(next=next_cursor, **values),
+        "limit": clamp_limit(limit),
+    }
+
+
+def _glp_read(
+    path: str,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    try:
+        safe_api_path(path, _GLP_GET_PREFIXES)
+    except ValueError as exc:
+        return {"data": None, "endpoint_used": path, "errors": [f"Invalid path. {exc}"]}
+    try:
+        client = get_glp_client()._client
+        if headers:
+            response = client._request("GET", path, params=params or {}, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        else:
+            data = client.get(path, params=params or {})
+        return {"data": data, "endpoint_used": path, "errors": []}
+    except Exception as exc:
+        return {"data": None, "endpoint_used": path, "errors": [str(exc)]}
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -130,6 +182,12 @@ def get_glp_device(serial_number: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_ONLY)
+def get_glp_device_by_id(device_id: str) -> dict[str, Any]:
+    """Fetch a GLP device by its official device resource ID."""
+    return _glp_read(f"/devices/v1/devices/{_path_part(device_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
 def list_glp_subscriptions(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     """List subscriptions with `limit` / `offset` pagination."""
     glp = get_glp_client()
@@ -169,6 +227,12 @@ def list_glp_users(limit: int = 100, offset: int = 0) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_ONLY)
+def get_glp_user(user_id: str) -> dict[str, Any]:
+    """Fetch a single GLP identity user by ID."""
+    return _glp_read(f"/identity/v1/users/{_path_part(user_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
 def list_glp_audit_logs(
     limit: int = 100,
     offset: int = 0,
@@ -193,6 +257,171 @@ def list_glp_audit_logs(
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_audit_log_detail(audit_log_id: str) -> dict[str, Any]:
+    """Fetch official GLP audit-log details for entries with details enabled."""
+    return _glp_read(f"/audit-log/v1/logs/{_path_part(audit_log_id)}/detail")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_workspace(workspace_id: str) -> dict[str, Any]:
+    """Fetch basic GreenLake workspace information by workspace ID."""
+    return _glp_read(f"/workspaces/v1/workspaces/{_path_part(workspace_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_workspace_contact(workspace_id: str) -> dict[str, Any]:
+    """Fetch detailed GreenLake workspace contact information."""
+    return _glp_read(f"/workspaces/v1/workspaces/{_path_part(workspace_id)}/contact")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_reporting_statuses(
+    filter: str | None = None,
+    sort: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List GreenLake reporting status records with bounded pagination."""
+    return _glp_read(
+        "/reporting/v1/statuses",
+        _paged_params(limit, offset, filter=filter, sort=sort),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_reporting_status(status_id: str) -> dict[str, Any]:
+    """Fetch a single GreenLake reporting status record by ID."""
+    return _glp_read(f"/reporting/v1/statuses/{_path_part(status_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_service_offers(
+    next_cursor: str | None = None,
+    limit: int = 100,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List GreenLake service-catalog offers with cursor pagination."""
+    return _glp_read(
+        "/service-catalog/v1beta1/service-offers",
+        _cursor_params(limit, next_cursor, filter=filter),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_service_offer(offer_id: str) -> dict[str, Any]:
+    """Fetch a GreenLake service-catalog offer by ID."""
+    return _glp_read(f"/service-catalog/v1beta1/service-offers/{_path_part(offer_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_service_offer_regions(
+    next_cursor: str | None = None,
+    limit: int = 100,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List GreenLake service-offer regions with cursor pagination."""
+    return _glp_read(
+        "/service-catalog/v1beta1/service-offer-regions",
+        _cursor_params(limit, next_cursor, filter=filter),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_service_offer_region(region_id: str) -> dict[str, Any]:
+    """Fetch a GreenLake service-offer region by ID."""
+    return _glp_read(f"/service-catalog/v1beta1/service-offer-regions/{_path_part(region_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_service_provisions(
+    workspace_id: str | None = None,
+    next_cursor: str | None = None,
+    limit: int = 100,
+    filter: str | None = None,
+    unredacted: bool | None = None,
+    all_workspaces: bool | None = None,
+) -> dict[str, Any]:
+    """List GreenLake service provisions, optionally scoped by workspace ID."""
+    headers = {"Hpe-workspace-id": workspace_id} if workspace_id else None
+    return _glp_read(
+        "/service-catalog/v1beta1/service-provisions",
+        _cursor_params(
+            limit,
+            next_cursor,
+            filter=filter,
+            unredacted=unredacted,
+            all=all_workspaces,
+        ),
+        headers=headers,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_service_provision(
+    provision_id: str,
+    unredacted: bool | None = None,
+) -> dict[str, Any]:
+    """Fetch a GreenLake service provision by ID."""
+    return _glp_read(
+        f"/service-catalog/v1beta1/service-provisions/{_path_part(provision_id)}",
+        _params(unredacted=unredacted),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_service_managers(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List GreenLake service managers."""
+    return _glp_read(
+        "/service-catalog/v1/service-managers",
+        _paged_params(limit, offset),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_service_manager(manager_id: str) -> dict[str, Any]:
+    """Fetch a GreenLake service manager by ID."""
+    return _glp_read(f"/service-catalog/v1/service-managers/{_path_part(manager_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_service_manager_provisions(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List GreenLake service-manager provisions."""
+    return _glp_read(
+        "/service-catalog/v1/service-manager-provisions",
+        _paged_params(limit, offset, filter=filter),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_service_manager_provision(provision_id: str) -> dict[str, Any]:
+    """Fetch a GreenLake service-manager provision by ID."""
+    return _glp_read(f"/service-catalog/v1/service-manager-provisions/{_path_part(provision_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_per_region_service_managers(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List GreenLake per-region service-manager mappings."""
+    return _glp_read(
+        "/service-catalog/v1/per-region-service-managers",
+        _paged_params(limit, offset, filter=filter),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_service_managers_for_region(region_id: str) -> dict[str, Any]:
+    """Fetch GreenLake service managers available for a region mapping ID."""
+    return _glp_read(f"/service-catalog/v1/per-region-service-managers/{_path_part(region_id)}")
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)

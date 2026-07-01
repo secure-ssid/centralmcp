@@ -13,7 +13,7 @@ mcp_servers/
   config.py            Config tools — SSIDs, VLANs, profiles, webhooks, firmware
   ops.py               Ops tools — reboots, ping, cable test, PoE bounce, GLP mgmt
   nac.py               NAC tools — MAC reg, MPSK, visitors, auth servers, AAA profiles, AAA test
-  glp.py               GreenLake Platform tools — devices, subscriptions, users, audit logs, guarded GLP GET
+  glp.py               GreenLake Platform tools — devices, subscriptions, users, audit logs, workspaces, reporting, service catalog, guarded GLP GET
   rag.py               RAG tools — ask_docs/search_docs (LanceDB hybrid) + lookup_api (exact OpenAPI lookup, SQLite)
   clearpass.py         Optional ClearPass starter backend
   mist.py              Optional Juniper Mist starter backend

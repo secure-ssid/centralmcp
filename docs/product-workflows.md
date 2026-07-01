@@ -19,6 +19,15 @@ Promote a generic GET pattern to a typed tool when it is:
 | Useful across tenants | More than a one-off lab endpoint |
 | Write/destructive | Needs explicit MCP annotations and confirmation |
 
+## GreenLake Platform implemented starters
+
+| Workflow | Tool | Notes |
+|---|---|---|
+| Device, user, audit, and workspace detail | `get_glp_device_by_id` / `get_glp_user` / `get_glp_audit_log_detail` / `get_glp_workspace` / `get_glp_workspace_contact` | Official GLP read-only detail wrappers layered on the existing guarded GLP client |
+| Reporting status | `list_glp_reporting_statuses` / `get_glp_reporting_status` | Bounded reporting status lookup from `/reporting/v1/statuses` |
+| Service catalog | `list_glp_service_offers` / `get_glp_service_offer` / `list_glp_service_provisions` / `get_glp_service_provision` | Cursor-bounded service catalog read workflows, including optional workspace header for service provisions |
+| Service managers | `list_glp_service_managers` / `get_glp_service_manager` / `list_glp_service_manager_provisions` / `get_glp_service_manager_provision` / `list_glp_per_region_service_managers` / `get_glp_service_managers_for_region` | Official service-manager and per-region service-manager views |
+
 ## ClearPass implemented starters
 
 | Workflow | Tool | Notes |

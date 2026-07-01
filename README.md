@@ -28,12 +28,13 @@ flowchart LR
 
 HPE Networking MCP server, HPE Aruba Networking MCP server, HPE Aruba Central
 MCP server, Aruba Central AI tools, HPE GreenLake Platform MCP, GreenLake
-Platform MCP, FastMCP network automation, Model Context Protocol networking,
-network configuration MCP, Aruba API RAG, Aruba Central OpenAPI lookup,
-ClearPass MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, AOS8 automation,
-HPE Aruba EdgeConnect MCP, EdgeConnect MCP, guarded read/write lab automation,
-EdgeConnect zones, EdgeConnect interface labels, zone-based firewall MCP, Python
-`httpx` network automation, EdgeConnect ACL object groups, EdgeConnect services,
+Platform MCP, GreenLake service catalog MCP, GreenLake reporting status MCP,
+FastMCP network automation, Model Context Protocol networking, network
+configuration MCP, Aruba API RAG, Aruba Central OpenAPI lookup, ClearPass MCP,
+Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, AOS8 automation, HPE Aruba
+EdgeConnect MCP, EdgeConnect MCP, guarded read/write lab automation, EdgeConnect
+zones, EdgeConnect interface labels, zone-based firewall MCP, Python `httpx`
+network automation, EdgeConnect ACL object groups, EdgeConnect services,
 EdgeConnect bypass mode, EdgeConnect link integrity diagnostics.
 
 ## Who this is for
@@ -74,11 +75,11 @@ EdgeConnect bypass mode, EdgeConnect link integrity diagnostics.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 194 core tools, or 314 with optional product starters indexed |
+| MCP tools | 213 core tools, or 333 with optional product starters indexed |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |
-| GLP | Devices, subscriptions, users, audit logs, guarded read-only GLP GET, and feature-gated writes |
+| GLP | Devices, subscriptions, users, audit logs, workspaces, reporting statuses, service catalog, guarded read-only GLP GET, and feature-gated writes |
 | Optional products | ClearPass, Mist, Apstra, AOS8, and EdgeConnect starter backends |
 | Pipeline | 8-stage migration flow plus SSID build/delete helpers |
 

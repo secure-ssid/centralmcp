@@ -59,6 +59,24 @@ def test_glp_get_calls_guarded_path(monkeypatch):
     }
 
 
+def test_glp_get_accepts_official_audit_log_prefix(monkeypatch):
+    class DummyCentral:
+        def get(self, path, params=None):
+            return {"path": path, "params": params}
+
+    class DummyGLP:
+        _client = DummyCentral()
+
+    monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
+
+    result = glp.glp_get("/audit-log/v1/logs", {"limit": 5})
+
+    assert result == {
+        "data": {"path": "/audit-log/v1/logs", "params": {"limit": 5}},
+        "endpoint_used": "/audit-log/v1/logs",
+    }
+
+
 def test_glp_get_bounds_list_payloads(monkeypatch):
     class DummyCentral:
         def get(self, path, params=None):
@@ -116,6 +134,128 @@ def test_glp_list_tools_clamp_limit_and_forward_offset(monkeypatch):
         ("subscriptions", 200, 2),
         ("users", 200, 3),
         ("audit", 200, 4, "USER_MANAGEMENT"),
+    ]
+
+
+def test_glp_official_id_wrappers_encode_and_call_paths(monkeypatch):
+    calls = []
+
+    class DummyCentral:
+        def get(self, path, params=None):
+            calls.append((path, params))
+            return {"path": path, "params": params}
+
+    class DummyGLP:
+        _client = DummyCentral()
+
+    monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
+
+    assert glp.get_glp_device_by_id("device 1")["data"]["path"] == "/devices/v1/devices/device%201"
+    assert glp.get_glp_audit_log_detail("audit-1")["data"]["path"] == (
+        "/audit-log/v1/logs/audit-1/detail"
+    )
+    assert glp.get_glp_user("user 1")["data"]["path"] == "/identity/v1/users/user%201"
+    assert glp.get_glp_workspace("workspace-1")["data"]["path"] == (
+        "/workspaces/v1/workspaces/workspace-1"
+    )
+    assert glp.get_glp_reporting_status("report-1")["data"]["path"] == (
+        "/reporting/v1/statuses/report-1"
+    )
+    assert calls == [
+        ("/devices/v1/devices/device%201", {}),
+        ("/audit-log/v1/logs/audit-1/detail", {}),
+        ("/identity/v1/users/user%201", {}),
+        ("/workspaces/v1/workspaces/workspace-1", {}),
+        ("/reporting/v1/statuses/report-1", {}),
+    ]
+
+
+def test_glp_official_list_wrappers_clamp_and_forward_params(monkeypatch):
+    calls = []
+
+    class DummyCentral:
+        def get(self, path, params=None):
+            calls.append((path, params))
+            return {"items": []}
+
+    class DummyGLP:
+        _client = DummyCentral()
+
+    monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
+
+    assert glp.list_glp_reporting_statuses(
+        filter="type eq 'REPORT'",
+        sort="name asc",
+        limit=999,
+        offset=-2,
+    )["errors"] == []
+    assert glp.list_glp_service_offers(
+        next_cursor="cursor-1",
+        limit=999,
+        filter="status eq 'ONBOARDED'",
+    )["errors"] == []
+    assert glp.list_glp_service_manager_provisions(limit=999, offset=3)["errors"] == []
+
+    assert calls == [
+        (
+            "/reporting/v1/statuses",
+            {"filter": "type eq 'REPORT'", "sort": "name asc", "limit": 200, "offset": 0},
+        ),
+        (
+            "/service-catalog/v1beta1/service-offers",
+            {"next": "cursor-1", "filter": "status eq 'ONBOARDED'", "limit": 200},
+        ),
+        (
+            "/service-catalog/v1/service-manager-provisions",
+            {"limit": 200, "offset": 3},
+        ),
+    ]
+
+
+def test_glp_service_provisions_can_send_workspace_header(monkeypatch):
+    calls = []
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"items": []}
+
+    class DummyCentral:
+        def _request(self, method, path, params=None, headers=None):
+            calls.append((method, path, params, headers))
+            return DummyResponse()
+
+    class DummyGLP:
+        _client = DummyCentral()
+
+    monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
+
+    result = glp.list_glp_service_provisions(
+        workspace_id="workspace-1",
+        next_cursor="cursor-1",
+        limit=999,
+        filter="slug eq 'AC'",
+        unredacted=True,
+        all_workspaces=False,
+    )
+
+    assert result["errors"] == []
+    assert result["data"] == {"items": []}
+    assert calls == [
+        (
+            "GET",
+            "/service-catalog/v1beta1/service-provisions",
+            {
+                "next": "cursor-1",
+                "filter": "slug eq 'AC'",
+                "unredacted": True,
+                "all": False,
+                "limit": 200,
+            },
+            {"Hpe-workspace-id": "workspace-1"},
+        )
     ]
 
 

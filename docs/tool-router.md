@@ -69,7 +69,7 @@ If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and inclu
 | `monitoring` | Health, alerts, events, clients, devices |
 | `nac` | MAC registration, MPSK, visitors, auth policy tools |
 | `ops` | Troubleshooting and operational tools |
-| `glp` | GreenLake Platform tools |
+| `glp` | GreenLake Platform tools for devices, subscriptions, users, audit logs, workspaces, reporting statuses, service catalog, and guarded GLP writes |
 | `rag` | `ask_docs`, `search_docs`, `lookup_api` |
 | `clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect` | Optional starter backends |
 | `all` | All core and optional backends |
