@@ -109,9 +109,13 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 1. Pick the right domain server: `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, or `rag.py`. The `tool_router.py` auto-exposes tools from enabled backends; add router mapping only for a new backend module/toolset.
 2. Add `@mcp.tool(annotations=READ_ONLY|DIAGNOSTIC|DESTRUCTIVE|IDEMPOTENT_WRITE)` with verb_noun naming, no prefix. Import the annotation constant from `mcp_servers.shared`.
 3. Use thin wrapper — delegate to `pipeline/clients/` or inline API call.
-4. Docstring: what it does, key args, and any gotchas.
-5. Update the tool count in the module docstring.
-6. Rebuild/check the router catalog with `uv run python scripts/ingest_tools.py --products all` and run `uv run python scripts/validate_release.py`.
+4. Keep output bounded for MCP clients:
+   - list tools should expose `limit` / `offset` when the backend supports paging.
+   - default `limit` values must stay at or below 200.
+   - generic read-only GET tools must use `bound_collection_response()`.
+5. Docstring: what it does, key args, pagination behavior, and any gotchas.
+6. Update the tool count in the module docstring.
+7. Rebuild/check the router catalog with `uv run python scripts/ingest_tools.py --products all` and run `uv run python scripts/validate_release.py`.
 
 **Before editing:** use `Grep` to find the line, then `Read` only that slice.
 
