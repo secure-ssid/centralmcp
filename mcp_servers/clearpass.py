@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from mcp_servers.shared import READ_ONLY, safe_api_path
+from mcp_servers.shared import READ_ONLY, response_payload, safe_api_path
 
 mcp = FastMCP("clearpass-core")
 
@@ -47,7 +47,9 @@ async def clearpass_get(path: str, params: dict[str, Any] | None = None) -> dict
     """
     base_url, token = _clearpass_config()
     if not base_url or not token:
-        return {"error": "ClearPass not configured. Set CLEARPASS_BASE_URL and CLEARPASS_API_TOKEN."}
+        return {
+            "error": "ClearPass not configured. Set CLEARPASS_BASE_URL and CLEARPASS_API_TOKEN."
+        }
     try:
         path = safe_api_path(path, ("/api/",))
     except ValueError as exc:
@@ -58,11 +60,7 @@ async def clearpass_get(path: str, params: dict[str, Any] | None = None) -> dict
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(url, headers=headers, params=params or {})
-        payload: Any
-        try:
-            payload = resp.json()
-        except Exception:
-            payload = resp.text
+        payload = response_payload(resp)
         return {"status_code": resp.status_code, "data": payload, "url": url}
     except httpx.HTTPError as exc:
         return {"error": str(exc), "url": url}

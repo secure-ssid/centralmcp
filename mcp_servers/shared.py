@@ -191,19 +191,26 @@ def _truncate_text(value: Any, max_chars: int = 240) -> str:
 
 def compact_http_error(resp: Any, endpoint: str | None = None, max_chars: int = 240) -> str:
     """Return a compact HTTP error message with bounded payload preview."""
-    try:
-        body = resp.json()
-    except Exception:
-        body = resp.text
+    body = response_payload(resp)
     where = f" at {endpoint}" if endpoint else ""
     return f"HTTP {resp.status_code}{where}: {_truncate_text(body, max_chars=max_chars)}"
+
+
+def response_payload(resp: Any) -> Any:
+    """Return JSON response content, falling back to text only for non-JSON bodies."""
+    try:
+        return resp.json()
+    except ValueError:
+        return resp.text
 
 
 def safe_api_path(path: str, allowed_prefixes: tuple[str, ...]) -> str:
     """Validate a user-supplied API path before appending it to an authenticated host."""
     parsed = urlsplit(path)
     if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
-        raise ValueError("path must be a relative API path without scheme, host, query, or fragment")
+        raise ValueError(
+            "path must be a relative API path without scheme, host, query, or fragment"
+        )
     if _ENCODED_PATH_RESERVED.search(parsed.path):
         raise ValueError("path must not contain encoded dot, slash, or backslash characters")
     decoded = unquote(parsed.path)

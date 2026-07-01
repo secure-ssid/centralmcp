@@ -129,3 +129,23 @@ def test_atroubleshoot_async_preserves_http_error_compaction():
 
     assert result["status"] is None
     assert result["errors"] == ["HTTP 400: bad payload"]
+
+
+def test_response_payload_falls_back_to_text_only_for_non_json_body():
+    response = MagicMock()
+    response.text = "plain text"
+    response.json.side_effect = ValueError("not json")
+
+    assert shared.response_payload(response) == "plain text"
+
+
+def test_response_payload_does_not_hide_unexpected_json_errors():
+    response = MagicMock()
+    response.json.side_effect = RuntimeError("client bug")
+
+    try:
+        shared.response_payload(response)
+    except RuntimeError as exc:
+        assert str(exc) == "client bug"
+    else:
+        raise AssertionError("unexpected json errors must propagate")
