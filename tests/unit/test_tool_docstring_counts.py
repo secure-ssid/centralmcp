@@ -2,8 +2,14 @@ import ast
 import re
 from pathlib import Path
 
+from scripts import ingest_tools
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL_COUNT_RE = re.compile(r"\((\d+) tools\)")
+PUBLIC_TOOL_COUNT_RE = re.compile(
+    r"(?P<core>\d+) core tools(?:,\s+or|\s*/)\s+"
+    r"(?P<all>\d+) with optional product starters"
+)
 
 
 def _registered_tool_count(tree: ast.Module) -> int:
@@ -39,3 +45,22 @@ def test_module_docstring_tool_counts_match_registered_tools():
         assert _registered_tool_count(tree) == expected, path.relative_to(REPO_ROOT)
 
     assert counted_modules
+
+
+def test_public_tool_count_claims_match_registered_catalog(monkeypatch):
+    monkeypatch.delenv("CENTRALMCP_PRODUCTS", raising=False)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+    core_count = len(ingest_tools._collect())
+    all_count = len(ingest_tools._collect("all"))
+    claim_paths = []
+
+    for path in sorted([REPO_ROOT / "README.md", *(REPO_ROOT / "docs").rglob("*.md")]):
+        for line in path.read_text(errors="replace").splitlines():
+            match = PUBLIC_TOOL_COUNT_RE.search(line)
+            if not match:
+                continue
+            claim_paths.append(str(path.relative_to(REPO_ROOT)))
+            assert int(match.group("core")) == core_count
+            assert int(match.group("all")) == all_count
+
+    assert claim_paths == ["README.md", "docs/architecture/RAG-ARCHITECTURE.md"]
