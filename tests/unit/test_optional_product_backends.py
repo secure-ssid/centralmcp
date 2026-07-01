@@ -347,6 +347,135 @@ def test_apstra_list_routing_zones_quotes_blueprint_id_and_compacts(monkeypatch)
     ]
 
 
+def test_apstra_list_virtual_networks_quotes_blueprint_id_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"items":[{"id":"vn1"}]}'
+
+        def json(self):
+            return {
+                "items": [
+                    {
+                        "id": "vn1",
+                        "label": "App",
+                        "vn_type": "vxlan",
+                        "security_zone_id": "sz1",
+                        "virtual_gateway_ipv4": "10.10.1.1",
+                        "ipv4_subnet": "10.10.1.0/24",
+                        "bound_to": [{"system_id": "leaf1", "vlan_id": 101}],
+                        "raw": "omitted",
+                    },
+                    {
+                        "id": "vn2",
+                        "label": "Db",
+                        "vn_type": "vxlan",
+                        "security_zone_id": "sz1",
+                        "virtual_gateway_ipv4": "10.10.2.1",
+                        "ipv4_subnet": "10.10.2.0/24",
+                        "bound_to": [{"system_id": "leaf2", "vlan_id": 102}],
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_list_virtual_networks("bp 1", limit=1))
+
+    assert called["url"] == (
+        "https://apstra.example.com/api/blueprints/bp%201/virtual-networks"
+    )
+    assert out["blueprint_id"] == "bp 1"
+    assert out["virtual_networks"]["items"] == [
+        {
+            "id": "vn1",
+            "label": "App",
+            "vn_type": "vxlan",
+            "security_zone_id": "sz1",
+            "virtual_gateway_ipv4": "10.10.1.1",
+            "ipv4_subnet": "10.10.1.0/24",
+            "bound_to": [{"system_id": "leaf1", "vlan_id": 101}],
+        }
+    ]
+    assert out["virtual_networks"]["_pagination"]["truncated"] is True
+
+
+def test_apstra_list_remote_gateways_quotes_blueprint_id_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"remote_gateways":[{"id":"gw1"}]}'
+
+        def json(self):
+            return {
+                "remote_gateways": [
+                    {
+                        "id": "gw1",
+                        "gw_name": "remote-a",
+                        "gw_ip": "198.51.100.1",
+                        "gw_asn": 65001,
+                        "evpn_route_types": "all",
+                        "local_gw_nodes": ["leaf1"],
+                        "raw": "omitted",
+                    }
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "secret")
+    monkeypatch.setattr(apstra.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(apstra.apstra_list_remote_gateways("bp 1"))
+
+    assert called["url"] == (
+        "https://apstra.example.com/api/blueprints/bp%201/remote_gateways"
+    )
+    assert out["blueprint_id"] == "bp 1"
+    assert out["remote_gateways"]["remote_gateways"] == [
+        {
+            "id": "gw1",
+            "gw_name": "remote-a",
+            "gw_ip": "198.51.100.1",
+            "gw_asn": 65001,
+            "local_gw_nodes": ["leaf1"],
+            "evpn_route_types": "all",
+        }
+    ]
+
+
 def test_apstra_get_system_info_quotes_blueprint_id_and_compacts(monkeypatch):
     called = {}
 

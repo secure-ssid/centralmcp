@@ -77,6 +77,35 @@ _ROUTING_ZONE_FIELDS = (
     "routing_policy",
     "rt_policy",
 )
+_VIRTUAL_NETWORK_FIELDS = (
+    "id",
+    "label",
+    "name",
+    "vn_type",
+    "security_zone_id",
+    "virtual_gateway_ipv4",
+    "ipv4_subnet",
+    "virtual_gateway_ipv6",
+    "ipv6_subnet",
+    "vni",
+    "vni_id",
+    "reserved_vlan_id",
+    "dhcp_service",
+    "bound_to",
+)
+_REMOTE_GATEWAY_FIELDS = (
+    "id",
+    "label",
+    "name",
+    "gw_name",
+    "gw_ip",
+    "gw_asn",
+    "local_gw_nodes",
+    "evpn_route_types",
+    "evpn_interconnect_group_id",
+    "status",
+    "state",
+)
 _SYSTEM_FIELDS = (
     "id",
     "system_id",
@@ -229,6 +258,44 @@ async def apstra_list_routing_zones(
             out.pop("data"),
             _ROUTING_ZONE_FIELDS,
             ("security_zones", "securityZones", "routing_zones"),
+        )
+        out["blueprint_id"] = blueprint_id
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_list_virtual_networks(
+    blueprint_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List virtual networks in one Apstra blueprint with compact bindings."""
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/virtual-networks"
+    out = await apstra_get(path, limit=limit, offset=offset)
+    if "data" in out:
+        out["virtual_networks"] = _compact_collection(
+            out.pop("data"),
+            _VIRTUAL_NETWORK_FIELDS,
+            ("virtual_networks", "virtualNetworks"),
+        )
+        out["blueprint_id"] = blueprint_id
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_list_remote_gateways(
+    blueprint_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List remote EVPN gateways in one Apstra blueprint with compact fields."""
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/remote_gateways"
+    out = await apstra_get(path, limit=limit, offset=offset)
+    if "data" in out:
+        out["remote_gateways"] = _compact_collection(
+            out.pop("data"),
+            _REMOTE_GATEWAY_FIELDS,
+            ("remote_gateways", "remoteGateways"),
         )
         out["blueprint_id"] = blueprint_id
     return out
