@@ -79,6 +79,9 @@ Promote a generic GET pattern to a typed tool when it is:
 | Workflow | Tool | Notes |
 |---|---|---|
 | Show command | `aos8_show_command` | Only permits `show ...` commands via `/v1/configuration/showcommand` |
+| Controller inventory | `aos8_list_controllers` | Bounded root-scope `show switches` read |
+| Software version | `aos8_get_version` | Bounded root-scope `show version` read |
+| License inventory | `aos8_list_licenses` | Bounded root-scope `show license` read |
 | AP inventory | `aos8_list_aps` | Bounded `show ap database` read scoped by `config_path` |
 | Active APs | `aos8_list_active_aps` | Bounded `show ap active` read scoped by `config_path` |
 | Client visibility | `aos8_list_clients` | Bounded `show user-table` read scoped by `config_path` |

@@ -91,6 +91,42 @@ _CLIENT_FIELDS = (
     "Status",
     "status",
 )
+_CONTROLLER_FIELDS = (
+    "Name",
+    "name",
+    "Switch IP",
+    "switch_ip",
+    "IP Address",
+    "ip_address",
+    "Model",
+    "model",
+    "Type",
+    "type",
+    "Role",
+    "role",
+    "Status",
+    "status",
+    "Version",
+    "version",
+)
+_LICENSE_FIELDS = (
+    "Name",
+    "name",
+    "License",
+    "license",
+    "Feature",
+    "feature",
+    "Installed",
+    "installed",
+    "Used",
+    "used",
+    "Available",
+    "available",
+    "Expires",
+    "expires",
+    "Status",
+    "status",
+)
 _RADIO_FIELDS = (
     "AP Name",
     "ap_name",
@@ -112,6 +148,22 @@ _RADIO_FIELDS = (
     "clients",
     "Status",
     "status",
+)
+_VERSION_FIELDS = (
+    "Version",
+    "version",
+    "ArubaOS Version",
+    "aos_version",
+    "Build",
+    "build",
+    "Build Date",
+    "build_date",
+    "Model",
+    "model",
+    "Uptime",
+    "uptime",
+    "Hostname",
+    "hostname",
 )
 
 
@@ -268,6 +320,15 @@ async def aos8_list_active_aps(
 
 
 @mcp.tool(annotations=READ_ONLY)
+async def aos8_list_controllers(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List AOS8 Mobility Conductor controllers from `show switches`."""
+    out = await aos8_show_command("show switches", limit=limit, offset=offset)
+    if "data" in out:
+        out["controllers"] = _compact_primary_list(out.pop("data"), _CONTROLLER_FIELDS)
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
 async def aos8_list_clients(
     config_path: str = "/md",
     limit: int = 50,
@@ -283,6 +344,24 @@ async def aos8_list_clients(
     if "data" in out:
         out["clients"] = _compact_primary_list(out.pop("data"), _CLIENT_FIELDS)
         out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_version(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """Get AOS8 Mobility Conductor software version from `show version`."""
+    out = await aos8_show_command("show version", limit=limit, offset=offset)
+    if "data" in out:
+        out["version"] = _compact_primary_list(out.pop("data"), _VERSION_FIELDS)
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_list_licenses(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List AOS8 Mobility Conductor licenses from `show license`."""
+    out = await aos8_show_command("show license", limit=limit, offset=offset)
+    if "data" in out:
+        out["licenses"] = _compact_primary_list(out.pop("data"), _LICENSE_FIELDS)
     return out
 
 

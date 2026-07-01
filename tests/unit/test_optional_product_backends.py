@@ -1147,6 +1147,153 @@ def test_aos8_visibility_show_tools_compact_outputs(
     assert out[output_key]["_pagination"]["truncated"] is True
 
 
+@pytest.mark.parametrize(
+    ("tool_func", "expected_command", "payload", "output_key", "expected_item"),
+    [
+        (
+            aos8.aos8_list_controllers,
+            "show switches",
+            {
+                "Switches": [
+                    {
+                        "Name": "mc-1",
+                        "Switch IP": "192.0.2.10",
+                        "Model": "MM-VA",
+                        "Role": "master",
+                        "Status": "up",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Name": "md-1",
+                        "Switch IP": "192.0.2.11",
+                        "Model": "7205",
+                        "Role": "local",
+                        "Status": "up",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "controllers",
+            {
+                "Name": "mc-1",
+                "Switch IP": "192.0.2.10",
+                "Model": "MM-VA",
+                "Role": "master",
+                "Status": "up",
+            },
+        ),
+        (
+            aos8.aos8_get_version,
+            "show version",
+            {
+                "Version": [
+                    {
+                        "ArubaOS Version": "8.10.0.11",
+                        "Build": "123456",
+                        "Build Date": "2026-01-01",
+                        "Model": "MM-VA",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "ArubaOS Version": "8.10.0.10",
+                        "Build": "123455",
+                        "Build Date": "2025-12-01",
+                        "Model": "7205",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "version",
+            {
+                "ArubaOS Version": "8.10.0.11",
+                "Build": "123456",
+                "Build Date": "2026-01-01",
+                "Model": "MM-VA",
+            },
+        ),
+        (
+            aos8.aos8_list_licenses,
+            "show license",
+            {
+                "Licenses": [
+                    {
+                        "Name": "AP",
+                        "Installed": 128,
+                        "Used": 64,
+                        "Expires": "Never",
+                        "Status": "valid",
+                        "Raw": "omitted",
+                    },
+                    {
+                        "Name": "PEF",
+                        "Installed": 128,
+                        "Used": 60,
+                        "Expires": "Never",
+                        "Status": "valid",
+                        "Raw": "omitted",
+                    },
+                ]
+            },
+            "licenses",
+            {
+                "Name": "AP",
+                "Installed": 128,
+                "Used": 64,
+                "Expires": "Never",
+                "Status": "valid",
+            },
+        ),
+    ],
+)
+def test_aos8_conductor_show_tools_do_not_send_config_path_and_compact(
+    monkeypatch,
+    tool_func,
+    expected_command,
+    payload,
+    output_key,
+    expected_item,
+):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"rows":[]}'
+
+        def json(self):
+            return {
+                "_global_result": {"status": "0"},
+                "_meta": {"rows": []},
+                **payload,
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(tool_func(limit=1))
+
+    assert called["url"] == "https://mm.example.com/v1/configuration/showcommand"
+    assert called["params"] == {"command": expected_command}
+    list_key = next(key for key in out[output_key] if key != "_pagination")
+    assert out[output_key][list_key] == [expected_item]
+    assert out[output_key]["_pagination"]["truncated"] is True
+
+
 def test_aos8_list_clients_runs_show_user_table_and_compacts(monkeypatch):
     called = {}
 
