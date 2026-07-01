@@ -177,6 +177,7 @@ Measured on the bundled eval set:
 - The router's `invoke_read_tool` blocks non-read-only backend tools.
 - The generic router `invoke_tool` is marked destructive because it can reach write/destructive tools.
 - Generic GLP and optional product GET tools bound list responses with `limit` / `offset`.
+- MCP tool list defaults are capped at 200 items to protect client context windows.
 
 ## Validation
 
@@ -192,7 +193,7 @@ Run the local release gate:
 uv run python scripts/validate_release.py
 ```
 
-The release helper runs unit tests, optional RAG/API eval when indexes exist, tool catalog floor checks, and local tool-index freshness checks. Unit tests also include static guards for the active MCP/pipeline code, committed low-token MCP config examples, local-only config files, router product/toolset docs, bounded generic read-only GET tools, public tool-count claims, tool-count docstrings, and tracked Markdown local links.
+The release helper runs unit tests, optional RAG/API eval when indexes exist, tool catalog floor checks, and local tool-index freshness checks. Unit tests also include static guards for the active MCP/pipeline code, committed low-token MCP config examples, local-only config files, router product/toolset docs, bounded generic read-only GET tools, MCP list default bounds, public tool-count claims, tool-count docstrings, and tracked Markdown local links.
 
 ## Related projects
 
