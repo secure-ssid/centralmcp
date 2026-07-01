@@ -69,6 +69,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Workflow | Tool | Notes |
 |---|---|---|
 | Show command | `aos8_show_command` | Only permits `show ...` commands via `/v1/configuration/showcommand` |
+| AP inventory | `aos8_list_aps` | Bounded `show ap database` read scoped by `config_path` |
 | AP-group inventory | `aos8_list_ap_groups` | Configuration-object read scoped by `config_path` |
 | SSID profile summary | `aos8_list_ssid_profiles` | Configuration-object read scoped by `config_path` |
 | Generic lab write | `aos8_write` | Guarded POST/PUT/PATCH/DELETE to `/v1/*`; dry-run default |
@@ -87,7 +88,6 @@ Promote a generic GET pattern to a typed tool when it is:
 | Product | Workflow | Proposed tool | Notes |
 |---|---|---|---|
 | Apstra | Device details | `apstra_get_device` | Compact system/fabric role/status |
-| ArubaOS 8 | AP inventory | `aos8_list_aps` | Bound AP inventory when a stable response shape is verified |
 | EdgeConnect | Tunnel health | `edgeconnect_list_tunnels` | Bound output and status filters |
 
 ## Design constraints

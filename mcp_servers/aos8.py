@@ -31,6 +31,26 @@ from mcp_servers.shared import (
 mcp = FastMCP("aos8-core")
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _EXECUTE_HINT = "Review the request, then call again with dry_run=False and confirm=True."
+_AP_FIELDS = (
+    "Name",
+    "name",
+    "AP Name",
+    "ap_name",
+    "Group",
+    "group",
+    "IP Address",
+    "ip_address",
+    "Status",
+    "status",
+    "Flags",
+    "flags",
+    "Switch IP",
+    "switch_ip",
+    "Model",
+    "model",
+    "Serial #",
+    "serial",
+)
 
 
 def _aos8_config() -> tuple[str | None, str | None]:
@@ -52,6 +72,31 @@ def _compact_aos8_data(data: Any, *, limit: int, offset: int = 0) -> Any:
     if isinstance(stripped, dict) and "_pagination" in stripped:
         return stripped
     return bound_collection_response(stripped, limit=limit, offset=offset)
+
+
+def _compact_record(item: Any, fields: tuple[str, ...]) -> Any:
+    if not isinstance(item, dict):
+        return item
+    compacted = {key: item[key] for key in fields if key in item}
+    return compacted or item
+
+
+def _compact_primary_list(data: Any, fields: tuple[str, ...]) -> Any:
+    if isinstance(data, list):
+        return [_compact_record(item, fields) for item in data]
+    if not isinstance(data, dict):
+        return data
+    out = dict(data)
+    candidates = [
+        (key, len(value))
+        for key, value in out.items()
+        if key != "_pagination" and isinstance(value, list)
+    ]
+    if not candidates:
+        return out
+    key = max(candidates, key=lambda kv: (kv[1], kv[0]))[0]
+    out[key] = [_compact_record(item, fields) for item in out[key]]
+    return out
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -119,6 +164,25 @@ async def aos8_show_command(
     if "data" in out:
         out["data"] = _compact_aos8_data(out["data"], limit=limit, offset=offset)
         out["command"] = normalized
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_list_aps(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List AOS8 AP inventory from `show ap database` with bounded output."""
+    out = await aos8_show_command(
+        "show ap database",
+        config_path=config_path,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["aps"] = _compact_primary_list(out.pop("data"), _AP_FIELDS)
+        out["config_path"] = config_path
     return out
 
 
