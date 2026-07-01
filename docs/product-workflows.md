@@ -98,6 +98,12 @@ Promote a generic GET pattern to a typed tool when it is:
 | Virtual AP profiles | `aos8_list_virtual_aps` | Configuration-object read scoped by `config_path` |
 | User roles | `aos8_list_user_roles` | Configuration-object read scoped by `config_path` |
 | Generic lab write | `aos8_write` | Guarded POST/PUT/PATCH/DELETE to `/v1/*`; dry-run default |
+| SSID profile lab write | `aos8_manage_ssid_profile` | Create/update/delete `ssid_prof` objects; dry-run default; returns write-memory hint |
+| Virtual AP lab write | `aos8_manage_virtual_ap` | Create/update/delete `virtual_ap` objects; dry-run default; returns write-memory hint |
+| AP group lab write | `aos8_manage_ap_group` | Create/update/delete `ap_group` objects; dry-run default; returns write-memory hint |
+| User role lab write | `aos8_manage_user_role` | Create/update/delete `role` objects with `rolename`; dry-run default; returns write-memory hint |
+| VLAN lab write | `aos8_manage_vlan` | Create/update/delete `vlan_id` objects; dry-run default; returns write-memory hint |
+| Persist staged AOS8 config | `aos8_write_memory` | POST write-memory for an affected `config_path`; dry-run default |
 
 ## EdgeConnect implemented starters
 

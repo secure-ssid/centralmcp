@@ -2857,6 +2857,268 @@ def test_optional_product_write_dry_run_previews(
 
 
 @pytest.mark.parametrize(
+    ("tool_call", "expected_body"),
+    [
+        (
+            lambda: aos8.aos8_manage_ssid_profile(
+                config_path="/md/lab",
+                action="create",
+                payload={"profile-name": "Corp", "essid": "Corp"},
+            ),
+            {"ssid_prof": {"profile-name": "Corp", "essid": "Corp", "_action": "add"}},
+        ),
+        (
+            lambda: aos8.aos8_manage_virtual_ap(
+                config_path="/md/lab",
+                action="update",
+                payload={"profile-name": "Corp-VAP", "ssid-profile": "Corp"},
+            ),
+            {
+                "virtual_ap": {
+                    "profile-name": "Corp-VAP",
+                    "ssid-profile": "Corp",
+                    "_action": "modify",
+                }
+            },
+        ),
+        (
+            lambda: aos8.aos8_manage_ap_group(
+                config_path="/md/lab",
+                action="delete",
+                payload={"profile-name": "Lab-AP-Group"},
+            ),
+            {"ap_group": {"profile-name": "Lab-AP-Group", "_action": "delete"}},
+        ),
+        (
+            lambda: aos8.aos8_manage_user_role(
+                config_path="/md/lab",
+                action="create",
+                payload={"rolename": "employee", "vlan": 20},
+            ),
+            {"role": {"rolename": "employee", "vlan": 20, "_action": "add"}},
+        ),
+        (
+            lambda: aos8.aos8_manage_vlan(
+                config_path="/md/lab",
+                action="create",
+                payload={"id": 20, "description": "Corp"},
+            ),
+            {"vlan_id": {"id": 20, "description": "Corp", "_action": "add"}},
+        ),
+    ],
+)
+def test_aos8_typed_config_writes_dry_run_preview(
+    monkeypatch,
+    tool_call,
+    expected_body,
+):
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+
+    out = asyncio.run(tool_call())
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["url"] == "https://mm.example.com/v1/configuration/object"
+    assert out["params"] == {"config_path": "/md/lab"}
+    assert out["json"] == expected_body
+    assert out["requires_write_memory_for"] == ["/md/lab"]
+    assert "execute_hint" in out
+
+
+def test_aos8_typed_config_write_rejects_invalid_action_and_missing_identifier(monkeypatch):
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            raise AssertionError("invalid typed write should not execute")
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    bad_action = asyncio.run(
+        aos8.aos8_manage_vlan(
+            config_path="/md/lab",
+            action="merge",
+            payload={"id": 20},
+        )
+    )
+    missing_identifier = asyncio.run(
+        aos8.aos8_manage_user_role(
+            config_path="/md/lab",
+            action="create",
+            payload={"role": "employee"},
+        )
+    )
+
+    assert bad_action == {"error": "action must be one of: create, update, delete"}
+    assert missing_identifier == {"error": "payload must include one of: 'rolename'"}
+
+
+def test_aos8_typed_config_write_executes_and_returns_write_memory_hint(monkeypatch):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        aos8.aos8_manage_ssid_profile(
+            config_path="/md/lab",
+            action="update",
+            payload={"profile-name": "Corp", "essid": "Corp"},
+            dry_run=False,
+            confirm=True,
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert out["requires_write_memory_for"] == ["/md/lab"]
+    assert called["method"] == "POST"
+    assert called["url"] == "https://mm.example.com/v1/configuration/object"
+    assert called["headers"]["Authorization"].startswith("Bearer ")
+    assert called["params"] == {"config_path": "/md/lab"}
+    assert called["json"] == {
+        "ssid_prof": {"profile-name": "Corp", "essid": "Corp", "_action": "modify"}
+    }
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        type(
+            "_AOS8HttpErrorResp",
+            (),
+            {
+                "status_code": 400,
+                "text": '{"error":"bad request"}',
+                "json": lambda self: {"error": "bad request"},
+            },
+        )(),
+        type(
+            "_AOS8GlobalErrorResp",
+            (),
+            {
+                "status_code": 200,
+                "text": '{"_global_result":{"status":"1"}}',
+                "json": lambda self: {"_global_result": {"status": "1", "reason": "invalid"}},
+            },
+        )(),
+    ],
+)
+def test_aos8_typed_config_write_does_not_hint_write_memory_on_failure(
+    monkeypatch,
+    response,
+):
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            return response
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        aos8.aos8_manage_ssid_profile(
+            config_path="/md/lab",
+            action="update",
+            payload={"profile-name": "Corp", "essid": "Corp"},
+            dry_run=False,
+            confirm=True,
+        )
+    )
+
+    assert "requires_write_memory_for" not in out
+
+
+def test_aos8_write_memory_uses_dedicated_endpoint(monkeypatch):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(aos8.aos8_write_memory("/md/lab", dry_run=False, confirm=True))
+
+    assert out["status_code"] == 200
+    assert out["config_path"] == "/md/lab"
+    assert called["method"] == "POST"
+    assert called["url"] == "https://mm.example.com/v1/configuration/object/write_memory"
+    assert called["params"] == {"config_path": "/md/lab"}
+    assert called["json"] == {}
+
+
+def test_aos8_typed_write_blocks_when_product_access_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+
+    out = asyncio.run(
+        aos8.aos8_manage_ssid_profile(
+            config_path="/md/lab",
+            action="create",
+            payload={"profile-name": "Corp"},
+        )
+    )
+
+    assert out["status"] == "blocked"
+    assert out["tool"] == "aos8_manage_ssid_profile"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+@pytest.mark.parametrize(
     ("write_func", "path"),
     [
         (apstra.apstra_write, "/api/blueprints/bp1"),

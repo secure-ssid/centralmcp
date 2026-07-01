@@ -30,6 +30,7 @@ from mcp_servers.shared import (
 
 mcp = FastMCP("aos8-core")
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_CONFIG_ACTIONS = {"create": "add", "update": "modify", "delete": "delete"}
 _EXECUTE_HINT = "Review the request, then call again with dry_run=False and confirm=True."
 _AP_FIELDS = (
     "Name",
@@ -325,6 +326,137 @@ def _bounded_show_count(value: int, *, default: int = 100, maximum: int = 200) -
     except (TypeError, ValueError):
         return default
     return max(1, min(count, maximum))
+
+
+async def _aos8_write_request(
+    method: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | list[Any] | None = None,
+    *,
+    dry_run: bool = True,
+    confirm: bool = False,
+    tool_name: str = "aos8_write",
+) -> dict[str, Any]:
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked(tool_name)
+
+    method = method.upper()
+    if method not in _WRITE_METHODS:
+        return {"error": f"method must be one of: {', '.join(sorted(_WRITE_METHODS))}"}
+
+    base_url, token = _aos8_config()
+    if not base_url or not token:
+        return {"error": "AOS8 not configured. Set AOS8_BASE_URL and AOS8_API_TOKEN."}
+    try:
+        safe_path = safe_api_path(path, ("/v1/",))
+    except ValueError as exc:
+        return {"error": f"Invalid path. {exc}"}
+    safe_path = quote(safe_path, safe="/")
+
+    try:
+        base_url = validate_product_base_url(base_url, product="AOS8")
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    url = f"{base_url}{safe_path}"
+    preview = {
+        "method": method,
+        "path": safe_path,
+        "url": url,
+        "params": redact_sensitive(params or {}),
+        "json": redact_sensitive(body),
+    }
+    if dry_run:
+        return {
+            "dry_run": True,
+            **preview,
+            "execute_hint": _EXECUTE_HINT,
+        }
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True,
+            **preview,
+        }
+
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(
+                method,
+                url,
+                headers=headers,
+                params=params or {},
+                json=body,
+            )
+        return {
+            "status_code": resp.status_code,
+            "data": redact_sensitive(response_payload(resp)),
+            "url": url,
+        }
+    except httpx.HTTPError as exc:
+        return {"error": str(exc), "url": url}
+
+
+def _payload_has_identifier(payload: dict[str, Any], identifier_fields: tuple[str, ...]) -> bool:
+    return any(payload.get(field) not in (None, "") for field in identifier_fields)
+
+
+def _aos8_write_preview(out: dict[str, Any]) -> bool:
+    return out.get("dry_run") is True and "error" not in out
+
+
+def _aos8_write_succeeded(out: dict[str, Any]) -> bool:
+    status_code = out.get("status_code")
+    if not isinstance(status_code, int) or not 200 <= status_code < 300:
+        return False
+    data = out.get("data")
+    if not isinstance(data, dict):
+        return True
+    global_result = data.get("_global_result")
+    if not isinstance(global_result, dict):
+        return True
+    status = global_result.get("status")
+    if status is None:
+        return True
+    return str(status).strip().lower() in {"0", "ok", "success", "succeeded", "true"}
+
+
+async def _aos8_manage_config_object(
+    *,
+    tool_name: str,
+    object_name: str,
+    identifier_fields: tuple[str, ...],
+    config_path: str,
+    action: str,
+    payload: dict[str, Any],
+    dry_run: bool,
+    confirm: bool,
+) -> dict[str, Any]:
+    normalized_action = action.strip().lower()
+    api_action = _CONFIG_ACTIONS.get(normalized_action)
+    if api_action is None:
+        return {"error": "action must be one of: create, update, delete"}
+    if not isinstance(payload, dict):
+        return {"error": "payload must be an object"}
+    if not _payload_has_identifier(payload, identifier_fields):
+        names = ", ".join(repr(field) for field in identifier_fields)
+        return {"error": f"payload must include one of: {names}"}
+
+    body = {object_name: {**payload, "_action": api_action}}
+    out = await _aos8_write_request(
+        "POST",
+        "/v1/configuration/object",
+        {"config_path": config_path},
+        body,
+        dry_run=dry_run,
+        confirm=confirm,
+        tool_name=tool_name,
+    )
+    if _aos8_write_preview(out) or _aos8_write_succeeded(out):
+        out["requires_write_memory_for"] = [config_path]
+    return out
 
 
 def _compact_aos8_data(data: Any, *, limit: int, offset: int = 0) -> Any:
@@ -843,65 +975,141 @@ async def aos8_write(
     configured ArubaOS 8 host. Defaults to `dry_run=True`; execution requires
     `dry_run=False` and `confirm=True`.
     """
-    if not optional_product_writes_allowed():
-        return optional_product_write_blocked("aos8_write")
+    return await _aos8_write_request(
+        method,
+        path,
+        params,
+        body,
+        dry_run=dry_run,
+        confirm=confirm,
+        tool_name="aos8_write",
+    )
 
-    method = method.upper()
-    if method not in _WRITE_METHODS:
-        return {"error": f"method must be one of: {', '.join(sorted(_WRITE_METHODS))}"}
 
-    base_url, token = _aos8_config()
-    if not base_url or not token:
-        return {"error": "AOS8 not configured. Set AOS8_BASE_URL and AOS8_API_TOKEN."}
-    try:
-        safe_path = safe_api_path(path, ("/v1/",))
-    except ValueError as exc:
-        return {"error": f"Invalid path. {exc}"}
-    safe_path = quote(safe_path, safe="/")
+@mcp.tool(annotations=DESTRUCTIVE)
+async def aos8_manage_ssid_profile(
+    config_path: str,
+    action: str,
+    payload: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create, update, or delete an AOS8 SSID profile; requires write memory."""
+    return await _aos8_manage_config_object(
+        tool_name="aos8_manage_ssid_profile",
+        object_name="ssid_prof",
+        identifier_fields=("profile-name",),
+        config_path=config_path,
+        action=action,
+        payload=payload,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
 
-    try:
-        base_url = validate_product_base_url(base_url, product="AOS8")
-    except ValueError as exc:
-        return {"error": str(exc)}
 
-    url = f"{base_url}{safe_path}"
-    preview = {
-        "method": method,
-        "path": safe_path,
-        "url": url,
-        "params": redact_sensitive(params or {}),
-        "json": redact_sensitive(body),
-    }
-    if dry_run:
-        return {
-            "dry_run": True,
-            **preview,
-            "execute_hint": _EXECUTE_HINT,
-        }
-    if not confirm:
-        return {
-            "error": "confirm=True is required when dry_run=False.",
-            "dry_run": True,
-            **preview,
-        }
+@mcp.tool(annotations=DESTRUCTIVE)
+async def aos8_manage_virtual_ap(
+    config_path: str,
+    action: str,
+    payload: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create, update, or delete an AOS8 virtual AP profile; requires write memory."""
+    return await _aos8_manage_config_object(
+        tool_name="aos8_manage_virtual_ap",
+        object_name="virtual_ap",
+        identifier_fields=("profile-name",),
+        config_path=config_path,
+        action=action,
+        payload=payload,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
 
-    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.request(
-                method,
-                url,
-                headers=headers,
-                params=params or {},
-                json=body,
-            )
-        return {
-            "status_code": resp.status_code,
-            "data": redact_sensitive(response_payload(resp)),
-            "url": url,
-        }
-    except httpx.HTTPError as exc:
-        return {"error": str(exc), "url": url}
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def aos8_manage_ap_group(
+    config_path: str,
+    action: str,
+    payload: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create, update, or delete an AOS8 AP group; requires write memory."""
+    return await _aos8_manage_config_object(
+        tool_name="aos8_manage_ap_group",
+        object_name="ap_group",
+        identifier_fields=("profile-name",),
+        config_path=config_path,
+        action=action,
+        payload=payload,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def aos8_manage_user_role(
+    config_path: str,
+    action: str,
+    payload: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create, update, or delete an AOS8 user role; requires write memory."""
+    return await _aos8_manage_config_object(
+        tool_name="aos8_manage_user_role",
+        object_name="role",
+        identifier_fields=("rolename",),
+        config_path=config_path,
+        action=action,
+        payload=payload,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def aos8_manage_vlan(
+    config_path: str,
+    action: str,
+    payload: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create, update, or delete an AOS8 VLAN; requires write memory."""
+    return await _aos8_manage_config_object(
+        tool_name="aos8_manage_vlan",
+        object_name="vlan_id",
+        identifier_fields=("id",),
+        config_path=config_path,
+        action=action,
+        payload=payload,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def aos8_write_memory(
+    config_path: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Persist staged AOS8 configuration for a hierarchy node."""
+    out = await _aos8_write_request(
+        "POST",
+        "/v1/configuration/object/write_memory",
+        {"config_path": config_path},
+        {},
+        dry_run=dry_run,
+        confirm=confirm,
+        tool_name="aos8_write_memory",
+    )
+    if out.get("dry_run") or "error" not in out:
+        out["config_path"] = config_path
+    return out
 
 
 if __name__ == "__main__":

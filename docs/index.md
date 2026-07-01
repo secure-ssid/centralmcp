@@ -26,7 +26,9 @@ flowchart TD
     wizard["scripts/setup_wizard.py"]
     credentials["Central / GLP credentials<br/>config/credentials.yaml"]
     products["Optional products<br/>ClearPass, Mist, Apstra, AOS8, EdgeConnect"]
-    access["Product access<br/>read-only or read-write"]
+    access{"Product access"}
+    readonly["read-only<br/>write tools hidden/blocked"]
+    readwrite["read-write lab mode<br/>dry-run previews<br/>confirm=True to execute"]
     config["Local MCP config<br/>stdio or streamable HTTP"]
     catalog["Router tool catalog"]
     doctor["scripts/doctor.py"]
@@ -36,7 +38,10 @@ flowchart TD
     wizard --> credentials
     wizard --> products
     products --> access
-    access --> config
+    access --> readonly
+    access --> readwrite
+    readonly --> config
+    readwrite --> config
     credentials --> catalog
     config --> catalog
     catalog --> doctor
