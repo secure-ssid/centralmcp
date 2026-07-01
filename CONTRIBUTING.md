@@ -36,6 +36,13 @@ uv run python scripts/validate_release.py --skip-rag
 If you intentionally changed RAG/OpenAPI indexes or eval behavior, run the
 relevant ingestion/eval commands instead of relying only on `--skip-rag`.
 
+## Dependency update pull requests
+
+Dependabot checks the `uv` dependency set monthly and limits open dependency
+pull requests to keep review manageable. Treat dependency PRs like code changes:
+review the changed dependency and lockfile impact, run targeted tests when the
+package touches runtime behavior, and run the local release gate before merging.
+
 ## Security reports
 
 Do not publish exploitable details or secrets in issues or pull requests. Follow
