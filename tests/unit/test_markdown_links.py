@@ -41,6 +41,7 @@ def test_validation_docs_describe_current_guard_coverage():
         "router product/toolset docs",
         "bounded generic read-only GET tools",
         "MCP list default bounds",
+        "RAG/search top_k bounds",
         "public tool-count claims",
         "tool-count docstrings",
         "tracked Markdown local links",
