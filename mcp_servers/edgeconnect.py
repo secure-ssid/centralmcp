@@ -83,6 +83,21 @@ _INTERFACE_STATE_FIELDS = (
     "vlan",
     "zone",
 )
+_INTERFACE_LABEL_FIELDS = (
+    "id",
+    "labelId",
+    "name",
+    "label",
+    "type",
+    "interfaceType",
+    "topology",
+    "active",
+    "enabled",
+    "inUse",
+    "description",
+    "state",
+    "status",
+)
 _DISK_REPORT_FIELDS = (
     "id",
     "name",
@@ -807,6 +822,88 @@ def _compact_route_labels(data: Any, *, limit: int, offset: int) -> Any:
     )
 
 
+def _interface_label_record(
+    label_id: Any,
+    label: Any,
+    label_type: str | None = None,
+) -> Any:
+    if isinstance(label, dict):
+        record = dict(label)
+        if not any(field in record for field in ("id", "labelId")):
+            record["id"] = label_id
+        if label_type and not any(field in record for field in ("type", "interfaceType")):
+            record["type"] = label_type
+        return record
+    if isinstance(label, (str, int, float, bool)):
+        record = {"id": label_id, "name": label}
+        if label_type:
+            record["type"] = label_type
+        return record
+    return label
+
+
+def _normalize_interface_label_records(data: Any) -> list[Any] | None:
+    records = _collection_records(data, ("interfaceLabels", "labels"))
+    if records is not None:
+        return records
+    if not isinstance(data, dict):
+        return None
+
+    for key in ("interfaceLabels", "labels", "data"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            records = _normalize_interface_label_records(nested)
+            if records is not None:
+                return records
+
+    records = []
+    for label_type in ("wan", "lan"):
+        labels = data.get(label_type)
+        if isinstance(labels, dict):
+            for label_id, label in labels.items():
+                record = _interface_label_record(label_id, label, label_type)
+                if isinstance(record, dict):
+                    records.append(record)
+        elif isinstance(labels, list):
+            for label in labels:
+                record = _interface_label_record(None, label, label_type)
+                if isinstance(record, dict):
+                    records.append(record)
+    if records:
+        return records
+
+    if _looks_like_record(data, _INTERFACE_LABEL_FIELDS):
+        return [data]
+
+    for key, value in data.items():
+        if _int_or_none(key) is None and not (
+            isinstance(value, dict) and _looks_like_record(value, _INTERFACE_LABEL_FIELDS)
+        ):
+            continue
+        record = _interface_label_record(key, value)
+        if isinstance(record, dict):
+            records.append(record)
+    return records or None
+
+
+def _compact_interface_labels(data: Any, *, limit: int, offset: int) -> Any:
+    records = _normalize_interface_label_records(data)
+    if records is None:
+        return _compact_collection(
+            data,
+            _INTERFACE_LABEL_FIELDS,
+            ("interfaceLabels", "labels"),
+        )
+
+    compacted = [_compact_record(record, _INTERFACE_LABEL_FIELDS) for record in records]
+    return bound_collection_response(
+        {"interface_labels": compacted},
+        limit=limit,
+        offset=offset,
+        list_key="interface_labels",
+    )
+
+
 def _normalize_zone_records(data: Any) -> list[Any] | None:
     records = _collection_records(data, ("zones", "zoneList", "zoneNames"))
     if records is not None:
@@ -1037,6 +1134,91 @@ async def edgeconnect_get_interface_state(
             )
         out["ne_pk"] = ne_pk
     return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_interface_labels(
+    label_type: str | None = None,
+    active: bool | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List EdgeConnect interface labels with compact WAN/LAN fields."""
+    params: dict[str, Any] = {}
+    if label_type is not None:
+        label_type = label_type.strip().lower()
+        if label_type not in {"wan", "lan"}:
+            return {"error": "label_type must be one of: lan, wan"}
+        params["type"] = label_type
+    if active is not None:
+        params["active"] = active
+
+    out = await _edgeconnect_get(
+        "/gms/rest/gms/interfaceLabels",
+        params or None,
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["interface_labels"] = _compact_interface_labels(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+        )
+        if label_type is not None:
+            out["label_type"] = label_type
+        if active is not None:
+            out["active"] = active
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_interface_labels(
+    body: dict[str, Any],
+    delete_dependencies: bool | None = None,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Replace EdgeConnect interface labels with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_interface_labels")
+
+    params = (
+        {"deleteDependencies": delete_dependencies}
+        if delete_dependencies is not None
+        else None
+    )
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/gms/interfaceLabels",
+        params=params,
+        body=body,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_apply_interface_labels(
+    ne_pk: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Push active EdgeConnect interface labels to one appliance with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_apply_interface_labels")
+    if not ne_pk.strip():
+        return {"error": "ne_pk is required."}
+
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/interfaceLabels",
+        params={"nePk": ne_pk.strip()},
+        body={},
+        dry_run=dry_run,
+        confirm=confirm,
+    )
 
 
 @mcp.tool(annotations=READ_ONLY)

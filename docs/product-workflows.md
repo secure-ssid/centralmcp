@@ -121,6 +121,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Appliance system info | `edgeconnect_get_system_info` | Model/version/status/alarm summary from `/rest/json/systemInfo` |
 | Appliance alarms | `edgeconnect_list_alarms` | Outstanding alarms from `/rest/json/alarm`, bounded by `limit` / `offset` |
 | Appliance interface state | `edgeconnect_get_interface_state` | Compact interface admin/oper/IP/speed view from `/gms/rest/interfaceState`, scoped by appliance `nePk` |
+| Interface labels | `edgeconnect_list_interface_labels` / `edgeconnect_set_interface_labels` / `edgeconnect_apply_interface_labels` | Compact WAN/LAN interface-label read, guarded complete-label-map lab write, and guarded push-to-appliance action |
 | Appliance disk report | `edgeconnect_get_disk_report` | Compact disk/storage health view from `/gms/rest/configReportDisk`, scoped by appliance `nePk` |
 | Appliance reachability | `edgeconnect_get_appliance_reachability` | Compact reachability from `/gms/rest/reachability/{appliance,gms,gms2}`, scoped by appliance `nePk` |
 | Fleet reachability | `edgeconnect_list_appliance_reachability` | Compact all-appliance reachability from `/gms/rest/reachability/gms2/appliancesReachability` |

@@ -2617,6 +2617,76 @@ def test_edgeconnect_get_interface_state_sends_cached_default(monkeypatch):
     assert out["interface_state"]["interfaces"] == []
 
 
+def test_edgeconnect_list_interface_labels_compacts_nested_map(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/gms/interfaceLabels"
+        assert params == {"active": True}
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "wan": {
+                    "1": {"name": "MPLS", "active": True, "topology": 0, "raw": "omitted"},
+                    "2": {
+                        "name": "Internet",
+                        "active": True,
+                        "topology": 0,
+                        "raw": "omitted",
+                    },
+                },
+                "lan": {
+                    "4": {"name": "Voice", "active": True, "topology": 0, "raw": "omitted"},
+                },
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_interface_labels(active=True, limit=2))
+
+    assert out["active"] is True
+    assert out["interface_labels"]["interface_labels"] == [
+        {"id": "1", "name": "MPLS", "type": "wan", "topology": 0, "active": True},
+        {"id": "2", "name": "Internet", "type": "wan", "topology": 0, "active": True},
+    ]
+    assert out["interface_labels"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_list_interface_labels_compacts_type_filter_map(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/gms/interfaceLabels"
+        assert params == {"type": "wan"}
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "1": {"name": "MPLS", "active": True, "topology": 0, "raw": "omitted"},
+                "2": {"name": "Internet", "active": True, "topology": 0, "raw": "omitted"},
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_interface_labels(label_type=" WAN ", limit=1))
+
+    assert out["label_type"] == "wan"
+    assert out["interface_labels"]["interface_labels"] == [
+        {"id": "1", "name": "MPLS", "topology": 0, "active": True}
+    ]
+    assert out["interface_labels"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_list_interface_labels_rejects_unknown_type(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        raise AssertionError("invalid label_type should not execute")
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_interface_labels(label_type="dmz"))
+
+    assert out == {"error": "label_type must be one of: lan, wan"}
+
+
 def test_edgeconnect_get_disk_report_compacts(monkeypatch):
     called = {}
 
@@ -4616,6 +4686,136 @@ def test_edgeconnect_set_route_labels_executes_with_confirm(monkeypatch):
     assert called["method"] == "POST"
     assert called["url"] == "https://orch.example.com/gms/rest/routeLabels"
     assert called["json"] == {"routeLabels": [{"id": 100, "name": "Corp", "active": True}]}
+
+
+def test_edgeconnect_set_interface_labels_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    body = {
+        "wan": {"1": {"name": "MPLS", "active": True, "topology": 0}},
+        "lan": {"4": {"name": "Voice", "active": True, "topology": 0}},
+    }
+    out = asyncio.run(
+        edgeconnect.edgeconnect_set_interface_labels(
+            body,
+            delete_dependencies=False,
+        )
+    )
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/gms/interfaceLabels"
+    assert out["params"] == {"deleteDependencies": False}
+    assert out["json"] == body
+    assert "execute_hint" in out
+
+
+def test_edgeconnect_apply_interface_labels_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    out = asyncio.run(edgeconnect.edgeconnect_apply_interface_labels(" 1.NE "))
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/interfaceLabels"
+    assert out["params"] == {"nePk": "1.NE"}
+    assert out["json"] == {}
+    assert "execute_hint" in out
+
+
+def test_edgeconnect_apply_interface_labels_requires_nepk(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+
+    out = asyncio.run(edgeconnect.edgeconnect_apply_interface_labels(" "))
+
+    assert out == {"error": "ne_pk is required."}
+
+
+@pytest.mark.parametrize(
+    "tool_call",
+    [
+        lambda: edgeconnect.edgeconnect_set_interface_labels({"wan": {}}),
+        lambda: edgeconnect.edgeconnect_apply_interface_labels("1.NE"),
+    ],
+)
+def test_edgeconnect_interface_label_writes_block_when_read_only(monkeypatch, tool_call):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(tool_call())
+
+    assert out["status"] == "blocked"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+@pytest.mark.parametrize(
+    ("tool_call", "expected_url", "expected_params", "expected_body"),
+    [
+        (
+            lambda: edgeconnect.edgeconnect_set_interface_labels(
+                {"wan": {"1": {"name": "MPLS", "active": True, "topology": 0}}},
+                delete_dependencies=True,
+                dry_run=False,
+                confirm=True,
+            ),
+            "https://orch.example.com/gms/rest/gms/interfaceLabels",
+            {"deleteDependencies": True},
+            {"wan": {"1": {"name": "MPLS", "active": True, "topology": 0}}},
+        ),
+        (
+            lambda: edgeconnect.edgeconnect_apply_interface_labels(
+                "1.NE",
+                dry_run=False,
+                confirm=True,
+            ),
+            "https://orch.example.com/gms/rest/interfaceLabels",
+            {"nePk": "1.NE"},
+            {},
+        ),
+    ],
+)
+def test_edgeconnect_interface_label_writes_execute_with_confirm(
+    monkeypatch,
+    tool_call,
+    expected_url,
+    expected_params,
+    expected_body,
+):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(tool_call())
+
+    assert out["status_code"] == 200
+    assert called["method"] == "POST"
+    assert called["url"] == expected_url
+    assert called["params"] == expected_params
+    assert called["json"] == expected_body
 
 
 def test_edgeconnect_set_zones_previews(monkeypatch):

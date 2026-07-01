@@ -32,7 +32,8 @@ Platform MCP, FastMCP network automation, Model Context Protocol networking,
 network configuration MCP, Aruba API RAG, Aruba Central OpenAPI lookup,
 ClearPass MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, AOS8 automation,
 HPE Aruba EdgeConnect MCP, EdgeConnect MCP, guarded read/write lab automation,
-EdgeConnect zones, zone-based firewall MCP, Python `httpx` network automation.
+EdgeConnect zones, EdgeConnect interface labels, zone-based firewall MCP, Python
+`httpx` network automation.
 
 ## Who this is for
 
@@ -72,7 +73,7 @@ EdgeConnect zones, zone-based firewall MCP, Python `httpx` network automation.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 194 core tools, or 298 with optional product starters indexed |
+| MCP tools | 194 core tools, or 301 with optional product starters indexed |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |
