@@ -76,6 +76,8 @@ data/                 # prebuilt, shippable: docs.lance/  +  specs.sqlite   (att
 No `docker-compose.yml` requirement for the default path. `redis-stack` stays
 available as an optional localhost-only "Server backend" for power users, with
 Docker named volumes so Redis/Ollama state does not clutter the repository.
+Compose is allowed to generate project-scoped container names, which avoids
+container-name collisions when multiple local checkouts are tested side by side.
 
 ---
 

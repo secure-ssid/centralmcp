@@ -21,3 +21,10 @@ def test_optional_docker_services_use_named_volumes():
     assert set(config["volumes"]) == {"redis_data", "ollama_data"}
     assert config["services"]["redis"]["volumes"] == ["redis_data:/data"]
     assert config["services"]["ollama"]["volumes"] == ["ollama_data:/root/.ollama"]
+
+
+def test_optional_docker_services_use_project_scoped_container_names():
+    config = yaml.safe_load(COMPOSE.read_text())
+
+    for service_name in ("redis", "ollama"):
+        assert "container_name" not in config["services"][service_name]
