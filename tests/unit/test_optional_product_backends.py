@@ -1471,6 +1471,184 @@ def test_edgeconnect_list_alarms_compacts_outstanding(monkeypatch):
     assert out["alarms"]["_pagination"]["truncated"] is True
 
 
+def test_edgeconnect_get_topology_link_info_compacts_links(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"nePks":["1.NE","2.NE","3.NE"],"linkInfo":[[],[[0,1]],[[0,2]]]}'
+
+        def json(self):
+            return {
+                "nePks": ["1.NE", "2.NE", "3.NE"],
+                "linkInfo": [
+                    [],
+                    [[0, 1]],
+                    [[0, 2]],
+                ],
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_topology_link_info(overlay_id="all", limit=1))
+
+    assert called["url"] == "https://orch.example.com/gms/rest/gms/topologyConfig/linkInfo/v2"
+    assert called["params"] == {"overlayId": "all"}
+    assert out["overlay_id"] == "all"
+    assert out["topology_links"]["items"] == [
+        {
+            "srcNePk": "1.NE",
+            "destNePk": "2.NE",
+            "status": "1",
+        }
+    ]
+    assert out["topology_links"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_get_route_maps_compacts_maps(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"data":{"RM-CORP":{"sequence":10}}}'
+
+        def json(self):
+            return {
+                "options": {"cached": True},
+                "data": {
+                    "RM-CORP": {
+                        "prio": {
+                            "10": {
+                                "match": {"prefix": "10.0.0.0/8"},
+                                "set": {"localPreference": 200},
+                                "comment": "prefer corp",
+                                "gms_marked": False,
+                            }
+                        },
+                        "raw": "omitted",
+                    },
+                    "RM-GUEST": {
+                        "prio": {
+                            "20": {
+                                "match": {"prefix": "192.0.2.0/24"},
+                                "set": {"metric": 50},
+                                "comment": "guest",
+                                "gms_marked": False,
+                            }
+                        },
+                        "raw": "omitted",
+                    },
+                },
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(edgeconnect.edgeconnect_get_route_maps(ne_pk="1.NE", cached=False, limit=1))
+
+    assert called["url"] == "https://orch.example.com/gms/rest/routeMaps"
+    assert called["params"] == {"nePk": "1.NE", "cached": False}
+    assert out["ne_pk"] == "1.NE"
+    assert out["route_maps"]["items"] == [
+        {
+            "name": "RM-CORP",
+            "prio": {
+                "10": {
+                    "match": {"prefix": "10.0.0.0/8"},
+                    "set": {"localPreference": 200},
+                    "comment": "prefer corp",
+                    "gms_marked": False,
+                }
+            },
+        }
+    ]
+    assert out["route_maps"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_empty_topology_and_route_maps_return_paginated_items(monkeypatch):
+    responses = [
+        {"nePks": ["1.NE"], "linkInfo": [[], [], []]},
+        {"options": {"cached": True}, "data": {}},
+    ]
+    called = []
+
+    class _Resp:
+        status_code = 200
+
+        @property
+        def text(self):
+            return "{}"
+
+        def json(self):
+            return responses.pop(0)
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called.append((url, params or {}))
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    topology = asyncio.run(edgeconnect.edgeconnect_get_topology_link_info())
+    routes = asyncio.run(edgeconnect.edgeconnect_get_route_maps(ne_pk="1.NE"))
+
+    assert topology["topology_links"]["items"] == []
+    assert topology["topology_links"]["_pagination"]["total"] == 0
+    assert routes["route_maps"]["items"] == []
+    assert routes["route_maps"]["_pagination"]["total"] == 0
+    assert called == [
+        (
+            "https://orch.example.com/gms/rest/gms/topologyConfig/linkInfo/v2",
+            {"overlayId": "all"},
+        ),
+        ("https://orch.example.com/gms/rest/routeMaps", {"nePk": "1.NE"}),
+    ]
+
+
 def test_edgeconnect_list_overlays_filters_keyed_map_and_compacts(monkeypatch):
     called = {}
 

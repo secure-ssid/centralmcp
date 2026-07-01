@@ -61,6 +61,40 @@ _SYSTEM_INFO_FIELDS = (
     "deploymentMode",
     "alarmSummary",
 )
+_TOPOLOGY_LINK_FIELDS = (
+    "id",
+    "linkId",
+    "overlayId",
+    "overlayName",
+    "source",
+    "target",
+    "srcNePk",
+    "destNePk",
+    "srcTunnelId",
+    "destTunnelId",
+    "state",
+    "status",
+    "operStatus",
+    "adminStatus",
+    "linkStatus",
+)
+_ROUTE_MAP_FIELDS = (
+    "id",
+    "name",
+    "routeMap",
+    "sequence",
+    "description",
+    "enabled",
+    "prio",
+    "match",
+    "set",
+    "metric",
+    "localPreference",
+    "asPathPrepend",
+    "tag",
+    "state",
+    "status",
+)
 _ALARM_FIELDS = (
     "id",
     "uuid",
@@ -242,6 +276,79 @@ def _looks_like_record(data: Any, fields: tuple[str, ...]) -> bool:
     return isinstance(data, dict) and any(key in data for key in fields)
 
 
+def _topology_node(ne_pks: list[Any], index: Any) -> Any:
+    idx = _int_or_none(index)
+    if idx is not None and 0 <= idx < len(ne_pks):
+        return ne_pks[idx]
+    return index
+
+
+def _topology_pair_record(pair: Any, ne_pks: list[Any], status: str | None = None) -> Any:
+    if isinstance(pair, dict):
+        return pair
+    if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+        return pair
+    record: dict[str, Any] = {
+        "srcNePk": _topology_node(ne_pks, pair[0]),
+        "destNePk": _topology_node(ne_pks, pair[1]),
+    }
+    if status:
+        record["status"] = status
+    elif len(pair) > 2 and isinstance(pair[2], str):
+        record["status"] = pair[2]
+    return record
+
+
+def _normalize_topology_links(data: Any) -> list[Any] | None:
+    records = _collection_records(data, ("links", "pairs"))
+    if records is not None:
+        return records
+    if not isinstance(data, dict):
+        return None
+    ne_pks = data.get("nePks")
+    link_info = data.get("linkInfo")
+    if not isinstance(ne_pks, list):
+        return None
+    if isinstance(link_info, list):
+        out: list[Any] = []
+        for status, pairs in enumerate(link_info):
+            if not isinstance(pairs, list):
+                continue
+            out.extend(_topology_pair_record(pair, ne_pks, str(status)) for pair in pairs)
+        return out
+    if not isinstance(link_info, dict):
+        return None
+
+    out: list[Any] = []
+    for status, pairs in link_info.items():
+        if not isinstance(pairs, list):
+            continue
+        out.extend(_topology_pair_record(pair, ne_pks, str(status)) for pair in pairs)
+    return out
+
+
+def _normalize_route_maps(data: Any) -> list[Any] | None:
+    records = _collection_records(data, ("routeMaps", "maps", "policies"))
+    if records is not None:
+        return records
+    if not isinstance(data, dict):
+        return None
+    route_data = data.get("data")
+    if isinstance(route_data, dict):
+        out: list[Any] = []
+        for name, value in route_data.items():
+            if not isinstance(value, dict):
+                continue
+            record = dict(value)
+            if "name" not in record and "routeMap" not in record:
+                record["name"] = name
+            out.append(record)
+        return out
+    if _looks_like_record(data, _ROUTE_MAP_FIELDS):
+        return [data]
+    return None
+
+
 @mcp.tool(annotations=READ_ONLY)
 def edgeconnect_status() -> dict[str, Any]:
     """Report whether EdgeConnect backend is configured."""
@@ -333,6 +440,78 @@ async def edgeconnect_list_alarms(limit: int = 50, offset: int = 0) -> dict[str,
     out = await edgeconnect_get("/rest/json/alarm", limit=limit, offset=offset)
     if "data" in out:
         out["alarms"] = _compact_collection(out.pop("data"), _ALARM_FIELDS, ("outstanding",))
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_topology_link_info(
+    overlay_id: str = "all",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get sparse EdgeConnect topology link status for an overlay."""
+    out = await _edgeconnect_get(
+        "/gms/rest/gms/topologyConfig/linkInfo/v2",
+        {"overlayId": overlay_id},
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        data = out.pop("data")
+        records = _normalize_topology_links(data)
+        if records is None:
+            out["topology_links"] = _compact_collection(
+                data,
+                _TOPOLOGY_LINK_FIELDS,
+                ("links", "pairs"),
+            )
+        else:
+            compacted = [_compact_record(record, _TOPOLOGY_LINK_FIELDS) for record in records]
+            out["topology_links"] = bound_collection_response(
+                compacted,
+                limit=limit,
+                offset=offset,
+            )
+        out["overlay_id"] = overlay_id
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_route_maps(
+    ne_pk: str,
+    cached: bool | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Get EdgeConnect route policy settings for an appliance."""
+    params: dict[str, Any] = {"nePk": ne_pk}
+    if cached is not None:
+        params["cached"] = cached
+    out = await _edgeconnect_get(
+        "/gms/rest/routeMaps",
+        params,
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        data = out.pop("data")
+        records = _normalize_route_maps(data)
+        if records is None:
+            out["route_maps"] = _compact_collection(
+                data,
+                _ROUTE_MAP_FIELDS,
+                ("routeMaps", "maps", "policies"),
+            )
+        else:
+            compacted = [_compact_record(record, _ROUTE_MAP_FIELDS) for record in records]
+            out["route_maps"] = bound_collection_response(
+                compacted,
+                limit=limit,
+                offset=offset,
+            )
+        out["ne_pk"] = ne_pk
     return out
 
 
