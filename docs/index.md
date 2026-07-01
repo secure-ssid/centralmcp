@@ -133,6 +133,14 @@ uv run python scripts/download_indexes.py
 - [Setup wizard source](https://github.com/secure-ssid/centralmcp/blob/main/scripts/setup_wizard.py)
 - [Local setup doctor](https://github.com/secure-ssid/centralmcp/blob/main/scripts/doctor.py)
 
+## Community and support
+
+- [Support guide](https://github.com/secure-ssid/centralmcp/blob/main/SUPPORT.md) - where to ask setup, usage, bug, and feature questions
+- [Contributing guide](https://github.com/secure-ssid/centralmcp/blob/main/CONTRIBUTING.md) - local setup, validation, docs, and no-secret expectations
+- [Code of conduct](https://github.com/secure-ssid/centralmcp/blob/main/CODE_OF_CONDUCT.md) - collaboration expectations
+- [Security policy](https://github.com/secure-ssid/centralmcp/blob/main/SECURITY.md) - private vulnerability and credential-exposure reporting guidance
+- [GitHub issues](https://github.com/secure-ssid/centralmcp/issues) - bug reports and feature requests with fake or redacted details
+
 ## Related projects and thanks
 
 centralmcp is an independent HPE Networking MCP toolkit. It is improved by
