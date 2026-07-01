@@ -17,15 +17,23 @@ python3 scripts/setup_wizard.py --with-products
 
 | Product | Enables | Required settings | Safety surface |
 |---|---|---|---|
-| ClearPass | `clearpass_status`, guarded `clearpass_get` | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | Read-only starter |
-| Juniper Mist | `mist_status`, guarded `mist_get` | `MIST_HOST`, `MIST_API_TOKEN` | Read-only starter |
-| Apstra | `apstra_status`, guarded `apstra_get` | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` | Read-only starter |
-| ArubaOS 8 | `aos8_status`, guarded `aos8_get` | `AOS8_BASE_URL`, `AOS8_API_TOKEN` | Read-only starter |
-| EdgeConnect | `edgeconnect_status`, guarded `edgeconnect_get` | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` | Read-only starter |
+| ClearPass | status, guarded GET/write, typed endpoint/auth/NAD/guest reads and lab writes | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | Read/write starter; writes dry-run by default |
+| Juniper Mist | status, guarded GET/write, typed site/client/WLAN/alarm reads and lab writes | `MIST_HOST`, `MIST_API_TOKEN` | Read/write starter; writes dry-run by default |
+| Apstra | `apstra_status`, guarded `apstra_get`, guarded `apstra_write` | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` | Read/write starter; writes dry-run by default |
+| ArubaOS 8 | `aos8_status`, guarded `aos8_get`, guarded `aos8_write` | `AOS8_BASE_URL`, `AOS8_API_TOKEN` | Read/write starter; writes dry-run by default |
+| EdgeConnect | `edgeconnect_status`, guarded `edgeconnect_get`, guarded `edgeconnect_write` | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` | Read/write starter; writes dry-run by default |
 
 The generic GET tools reject absolute URLs and stay bounded to the configured
 product host. List-like responses are paged with `limit` and `offset` when
 possible so broad API calls do not flood the MCP context.
+
+Write-capable optional product tools are intended for lab and controlled
+operations. They are annotated as write/destructive, default to `dry_run=True`,
+and require `dry_run=False` plus `confirm=True` before sending API changes.
+Set `CENTRALMCP_PRODUCT_ACCESS=read-only` to hide optional product write tools
+from router discovery and block write-tool execution. The setup wizard defaults
+to `read-write` so lab workflows can preview and execute writes when explicitly
+confirmed.
 
 Product base URLs must use HTTPS and public hostnames by default. For local lab
 testing against localhost or private IPs, set
@@ -35,19 +43,33 @@ testing against localhost or private IPs, set
 
 When you select products, the setup wizard:
 
-1. Adds `CENTRALMCP_PRODUCTS` and product URL/token settings to local `.env`.
-2. Adds only `CENTRALMCP_PRODUCTS` to local stdio MCP config files, leaving
-   product tokens in `.env`.
-3. Builds the router tool catalog with only the selected product starters unless
-   you use `--with-products`.
+1. Adds `CENTRALMCP_PRODUCTS`, `CENTRALMCP_PRODUCT_ACCESS`, and product
+   URL/token settings to local `.env`.
+2. Adds only `CENTRALMCP_PRODUCTS` and `CENTRALMCP_PRODUCT_ACCESS` to local MCP
+   config files, leaving product tokens in `.env`.
+3. Builds the router tool catalog with the selected product starters and access
+   mode unless you use `--with-products`.
 4. Lets `scripts/doctor.py` confirm required product variables are present.
 
 Real `.env`, `.mcp.json`, and `.vscode/mcp.json` files are git-ignored.
 
 ## Manual setup
 
+The wizard defaults optional products to read/write lab mode and records that
+access mode in local `.env` / MCP config files:
+
+```bash
+python3 scripts/setup_wizard.py --products clearpass,mist --product-access read-write
+```
+
+Use `--product-access read-only` if you want generated local configs to document
+a read-only operating posture.
+
+For manual shell setup:
+
 ```bash
 export CENTRALMCP_PRODUCTS=clearpass,mist
+export CENTRALMCP_PRODUCT_ACCESS=read-write
 export CLEARPASS_BASE_URL=https://clearpass.example.com
 export CLEARPASS_API_TOKEN=...
 export MIST_HOST=https://api.mist.com

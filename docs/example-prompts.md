@@ -106,6 +106,7 @@ Optional product starters are disabled unless you enable them:
 
 ```env
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+CENTRALMCP_PRODUCT_ACCESS=read-write
 ```
 
 Example prompt:
@@ -120,6 +121,19 @@ Router flow:
 find_tool("Mist backend status")
 invoke_read_tool("mist_status", {})
 find_tool("Mist read-only GET")
+```
+
+Lab write dry-run prompt:
+
+```text
+Find the Mist alarm acknowledgement tool and show the dry-run payload for alarm ALARM_ID at site SITE_ID. Do not execute it.
+```
+
+Router flow:
+
+```text
+find_tool("Mist acknowledge alarm")
+invoke_tool("mist_ack_alarm", {"site_id": "SITE_ID", "alarm_id": "ALARM_ID", "note": "lab verified", "dry_run": true})
 ```
 
 ## Write or destructive work

@@ -41,6 +41,17 @@ def _csv(value: str | None) -> list[str]:
     return [item.strip().lower() for item in (value or "").split(",") if item.strip()]
 
 
+def _product_access() -> str:
+    raw = os.getenv("CENTRALMCP_PRODUCT_ACCESS", "read-write").strip().lower()
+    if raw in {"read-only", "readonly", "read_only", "ro"}:
+        return "read-only"
+    return "read-write"
+
+
+def _is_read_only_tool(tool) -> bool:
+    return bool(getattr(getattr(tool, "annotations", None), "readOnlyHint", False))
+
+
 def _server_specs(products: str | None = None) -> list[tuple[str, str]]:
     """Return core server specs plus optional products requested by arg/env."""
     requested = _csv(products if products is not None else os.getenv("CENTRALMCP_PRODUCTS"))
@@ -59,11 +70,13 @@ def _stable_id(server: str, tool: str) -> str:
     return str(uuid.UUID(h[:32]))
 
 
-def _extract_tools(module_path: str) -> list[dict]:
+def _extract_tools(module_path: str, *, include_writes: bool = True) -> list[dict]:
     mod = importlib.import_module(module_path)
     manager = mod.mcp._tool_manager
     out = []
     for name, tool in manager._tools.items():
+        if not include_writes and not _is_read_only_tool(tool):
+            continue
         schema = tool.parameters if isinstance(tool.parameters, dict) else {}
         params = list((schema.get("properties") or {}).keys())
         out.append({
@@ -87,8 +100,13 @@ def _embed_text(t: dict) -> str:
 
 def _collect(products: str | None = None) -> list[tuple[str, dict]]:
     out = []
+    include_optional_writes = _product_access() == "read-write"
+    optional_server_names = {server for server, _ in OPTIONAL_SERVERS.values()}
     for server, module_path in _server_specs(products):
-        tools = _extract_tools(module_path)
+        tools = _extract_tools(
+            module_path,
+            include_writes=include_optional_writes or server not in optional_server_names,
+        )
         print(f"  {server}: {len(tools)} tools")
         out.extend((server, t) for t in tools)
     return out

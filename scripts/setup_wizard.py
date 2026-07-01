@@ -144,6 +144,23 @@ def _selected_products(args: argparse.Namespace) -> list[str]:
     return validate(_csv(raw))
 
 
+def _product_access(args: argparse.Namespace, selected_products: list[str]) -> str:
+    if not selected_products:
+        return "read-only"
+    value = args.product_access
+    if value not in {"read-only", "read-write"}:
+        raise SystemExit("--product-access must be one of: read-only, read-write")
+    if value == "read-write" or args.yes:
+        return value
+    if _ask(
+        "Enable optional product write tools for lab use? They still dry-run by default.",
+        False,
+        assume_yes=False,
+    ):
+        return "read-write"
+    return "read-only"
+
+
 def _choose_base_url(label: str, *, default: str, assume_yes: bool) -> str:
     if assume_yes:
         return default
@@ -295,12 +312,18 @@ def _write_credentials(target: Path, *, force: bool, assume_yes: bool) -> Step:
     return Step(_rel(target), "OK", "created with region choices and placeholders/secrets")
 
 
-def _product_env(selected_products: list[str], *, assume_yes: bool) -> dict[str, str]:
+def _product_env(
+    selected_products: list[str],
+    *,
+    assume_yes: bool,
+    product_access: str = "read-write",
+) -> dict[str, str]:
     env: dict[str, str] = {}
     if not selected_products:
         return env
 
     env["CENTRALMCP_PRODUCTS"] = ",".join(selected_products)
+    env["CENTRALMCP_PRODUCT_ACCESS"] = product_access
     for product in selected_products:
         meta = PRODUCT_ENV[product]
         print(f"\n{meta['label']} settings")
@@ -335,6 +358,8 @@ def _merge_json_env(target: Path, server_name: str, env: dict[str, str]) -> Step
     mcp_env = {
         "CENTRALMCP_PRODUCTS": env["CENTRALMCP_PRODUCTS"],
     }
+    if "CENTRALMCP_PRODUCT_ACCESS" in env:
+        mcp_env["CENTRALMCP_PRODUCT_ACCESS"] = env["CENTRALMCP_PRODUCT_ACCESS"]
     try:
         data = json.loads(target.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -404,6 +429,12 @@ def main() -> int:
             "(clearpass,mist,apstra,aos8,edgeconnect,all)"
         ),
     )
+    parser.add_argument(
+        "--product-access",
+        choices=("read-only", "read-write"),
+        default="read-write",
+        help="optional product access mode for generated local configs (default: read-write)",
+    )
     parser.add_argument("--skip-install", action="store_true", help="do not run uv sync")
     parser.add_argument(
         "--skip-credentials",
@@ -435,7 +466,12 @@ def main() -> int:
 
     steps: list[Step] = []
     selected_products = _selected_products(args)
-    product_env = _product_env(selected_products, assume_yes=args.yes)
+    product_access = _product_access(args, selected_products)
+    product_env = _product_env(
+        selected_products,
+        assume_yes=args.yes,
+        product_access=product_access,
+    )
 
     if not args.skip_install and _ask(
         "Install dependencies with uv sync?",
@@ -526,6 +562,7 @@ def main() -> int:
     )
     if selected_products:
         print(f"3. Optional products enabled locally: {', '.join(selected_products)}.")
+        print(f"4. Optional product access mode: {product_access}.")
     else:
         print(
             "3. Optional products stayed disabled; enable them later with "

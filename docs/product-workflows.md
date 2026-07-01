@@ -1,8 +1,9 @@
 # Typed product workflow roadmap
 
-The optional product starters are intentionally small and read-only. They give
-users a safe way to connect ClearPass, Mist, Apstra, ArubaOS 8, and EdgeConnect
-without loading every possible product workflow into the MCP tool list.
+The optional product starters are intentionally small and lab-friendly. They
+give users a safe way to connect ClearPass, Mist, Apstra, ArubaOS 8, and
+EdgeConnect with read workflows plus guarded write tools, without loading every
+possible product workflow into the MCP tool list.
 
 Use this page as the implementation roadmap for typed tools that should graduate
 from generic GET exploration into named MCP workflows.
@@ -18,23 +19,42 @@ Promote a generic GET pattern to a typed tool when it is:
 | Useful across tenants | More than a one-off lab endpoint |
 | Write/destructive | Needs explicit MCP annotations and confirmation |
 
-## ClearPass candidates
+## ClearPass implemented starters
 
-| Workflow | Proposed tool | Notes |
+| Workflow | Tool | Notes |
 |---|---|---|
 | Check endpoint by MAC | `clearpass_get_endpoint_by_mac` | Normalize MAC input and return compact endpoint/profile/status fields |
 | List recent auth failures | `clearpass_list_auth_failures` | Bound by `limit` / `offset`; include username, MAC, NAD, reason |
 | Show NAD status | `clearpass_get_network_device` | Useful for RADIUS/TACACS troubleshooting |
 | Find guest by email/name | `clearpass_find_guest` | Read-only lookup only |
 
-## Mist candidates
+## Mist implemented starters
 
-| Workflow | Proposed tool | Notes |
+| Workflow | Tool | Notes |
 |---|---|---|
 | List org sites | `mist_list_sites` | Return site IDs/names/timezone only by default |
 | Client lookup by MAC | `mist_get_client` | Compact client health, AP, WLAN, RSSI/SNR |
 | Site WLAN summary | `mist_list_wlans` | Bound output for model context |
 | Recent site alarms | `mist_list_alarms` | Severity/time bounded |
+
+## ClearPass implemented lab writes
+
+| Workflow | Tool | Notes |
+|---|---|---|
+| Generic lab write | `clearpass_write` | Guarded POST/PUT/PATCH/DELETE to `/api/*`; dry-run default |
+| Endpoint attributes | `clearpass_update_endpoint_attributes` | Patch endpoint attributes by MAC; optional CoA query flag |
+| Delete endpoint | `clearpass_delete_endpoint` | Destructive endpoint delete by MAC |
+| Enable/disable guest | `clearpass_set_guest_enabled` | Patch guest enabled state by username or ID |
+| Delete guest | `clearpass_delete_guest` | Destructive guest delete by username or ID |
+
+## Mist implemented lab writes
+
+| Workflow | Tool | Notes |
+|---|---|---|
+| Generic lab write | `mist_write` | Guarded POST/PUT/PATCH/DELETE to `/api/v1/*`; dry-run default |
+| Ack site alarm | `mist_ack_alarm` | POST site alarm acknowledgement |
+| Unack site alarm | `mist_unack_alarm` | POST site alarm unacknowledgement |
+| Delete WLAN | `mist_delete_wlan` | Destructive site WLAN delete |
 
 ## Apstra candidates
 
@@ -43,6 +63,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | List blueprints | `apstra_list_blueprints` | IDs/names/state only |
 | Blueprint anomalies | `apstra_list_anomalies` | Read-only fabric health |
 | Device details | `apstra_get_device` | Compact system/fabric role/status |
+| Generic lab write | `apstra_write` | Guarded POST/PUT/PATCH/DELETE to `/api/*`; dry-run default |
 
 ## ArubaOS 8 candidates
 
@@ -51,6 +72,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Controller status | `aos8_get_controller_status` | Read-only summary |
 | AP inventory | `aos8_list_aps` | Bound by `limit` / `offset` |
 | WLAN summary | `aos8_list_wlans` | Compact profile/status output |
+| Generic lab write | `aos8_write` | Guarded POST/PUT/PATCH/DELETE to `/v1/*`; dry-run default |
 
 ## EdgeConnect candidates
 
@@ -59,11 +81,14 @@ Promote a generic GET pattern to a typed tool when it is:
 | Appliance inventory | `edgeconnect_list_appliances` | IDs/names/site/status only |
 | Tunnel health | `edgeconnect_list_tunnels` | Bound output and status filters |
 | Alarm summary | `edgeconnect_list_alarms` | Severity/time bounded |
+| Generic lab write | `edgeconnect_write` | Guarded POST/PUT/PATCH/DELETE to Orchestrator REST paths; dry-run default |
 
 ## Design constraints
 
 1. Keep optional products opt-in via `CENTRALMCP_PRODUCTS`.
-2. Prefer read-only typed tools first.
+2. Include both read and guarded write options for lab workflows.
 3. Keep outputs compact and paginated.
-4. Require explicit destructive annotations and confirmation for writes.
+4. Require explicit write/destructive annotations and confirmation for writes.
 5. Keep product tokens in `.env`; do not duplicate them into MCP client configs.
+6. Honor `CENTRALMCP_PRODUCT_ACCESS=read-only` by hiding/blocking optional
+   product write tools.

@@ -267,3 +267,267 @@ def test_edgeconnect_get_calls_httpx_with_custom_auth_header(monkeypatch):
     assert out["data"] == {"ok": True}
     assert called["url"] == "https://orch.example.com/gms/rest/appliance"
     assert called["headers"]["X-Auth-Token"] == "secret"
+
+
+@pytest.mark.parametrize(
+    ("write_func", "env_base", "env_token", "base_url", "path", "expected_url"),
+    [
+        (
+            apstra.apstra_write,
+            "APSTRA_BASE_URL",
+            "APSTRA_API_TOKEN",
+            "https://apstra.example.com",
+            "/api/blueprints/bp1",
+            "https://apstra.example.com/api/blueprints/bp1",
+        ),
+        (
+            aos8.aos8_write,
+            "AOS8_BASE_URL",
+            "AOS8_API_TOKEN",
+            "https://mm.example.com",
+            "/v1/configuration/object",
+            "https://mm.example.com/v1/configuration/object",
+        ),
+        (
+            edgeconnect.edgeconnect_write,
+            "EDGECONNECT_BASE_URL",
+            "EDGECONNECT_API_TOKEN",
+            "https://orch.example.com",
+            "/gms/rest/appliance",
+            "https://orch.example.com/gms/rest/appliance",
+        ),
+    ],
+)
+def test_optional_product_write_dry_run_previews(
+    write_func,
+    env_base,
+    env_token,
+    base_url,
+    path,
+    expected_url,
+    monkeypatch,
+):
+    monkeypatch.setenv(env_base, base_url)
+    monkeypatch.setenv(env_token, "secret")
+
+    out = asyncio.run(
+        write_func(
+            "patch",
+            path,
+            params={"api_key": "abc", "reason": "lab"},
+            body={"password": "secret", "enabled": True},
+        )
+    )
+
+    assert out["dry_run"] is True
+    assert out["method"] == "PATCH"
+    assert out["url"] == expected_url
+    assert out["params"] == {"api_key": "******", "reason": "lab"}
+    assert out["json"] == {"password": "******", "enabled": True}
+    assert "execute_hint" in out
+
+
+@pytest.mark.parametrize(
+    ("write_func", "path"),
+    [
+        (apstra.apstra_write, "/api/blueprints/bp1"),
+        (aos8.aos8_write, "/v1/configuration/object"),
+        (edgeconnect.edgeconnect_write, "/gms/rest/appliance"),
+    ],
+)
+def test_optional_product_write_blocks_when_product_access_read_only(
+    write_func,
+    path,
+    monkeypatch,
+):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(write_func("patch", path, body={"enabled": True}))
+
+    assert out["status"] == "blocked"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+@pytest.mark.parametrize(
+    ("module", "write_func", "env_base", "env_token", "base_url", "path"),
+    [
+        (
+            apstra,
+            apstra.apstra_write,
+            "APSTRA_BASE_URL",
+            "APSTRA_API_TOKEN",
+            "https://apstra.example.com",
+            "/api/blueprints/bp1",
+        ),
+        (
+            aos8,
+            aos8.aos8_write,
+            "AOS8_BASE_URL",
+            "AOS8_API_TOKEN",
+            "https://mm.example.com",
+            "/v1/configuration/object",
+        ),
+        (
+            edgeconnect,
+            edgeconnect.edgeconnect_write,
+            "EDGECONNECT_BASE_URL",
+            "EDGECONNECT_API_TOKEN",
+            "https://orch.example.com",
+            "/gms/rest/appliance",
+        ),
+    ],
+)
+def test_optional_product_write_requires_confirm_when_not_dry_run(
+    module,
+    write_func,
+    env_base,
+    env_token,
+    base_url,
+    path,
+    monkeypatch,
+):
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            raise AssertionError("request should not execute without confirm=True")
+
+    monkeypatch.setenv(env_base, base_url)
+    monkeypatch.setenv(env_token, "secret")
+    monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        write_func("PATCH", path, body={"name": "lab"}, dry_run=False, confirm=False)
+    )
+
+    assert out["dry_run"] is True
+    assert out["error"] == "confirm=True is required when dry_run=False."
+
+
+@pytest.mark.parametrize(
+    ("module", "write_func", "env_base", "env_token", "base_url", "path", "expected_url"),
+    [
+        (
+            apstra,
+            apstra.apstra_write,
+            "APSTRA_BASE_URL",
+            "APSTRA_API_TOKEN",
+            "https://apstra.example.com",
+            "/api/blueprints/bp1",
+            "https://apstra.example.com/api/blueprints/bp1",
+        ),
+        (
+            aos8,
+            aos8.aos8_write,
+            "AOS8_BASE_URL",
+            "AOS8_API_TOKEN",
+            "https://mm.example.com",
+            "/v1/configuration/object",
+            "https://mm.example.com/v1/configuration/object",
+        ),
+        (
+            edgeconnect,
+            edgeconnect.edgeconnect_write,
+            "EDGECONNECT_BASE_URL",
+            "EDGECONNECT_API_TOKEN",
+            "https://orch.example.com",
+            "/gms/rest/appliance",
+            "https://orch.example.com/gms/rest/appliance",
+        ),
+    ],
+)
+def test_optional_product_write_executes_with_default_bearer_auth(
+    module,
+    write_func,
+    env_base,
+    env_token,
+    base_url,
+    path,
+    expected_url,
+    monkeypatch,
+):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv(env_base, base_url)
+    monkeypatch.setenv(env_token, "secret")
+    monkeypatch.delenv("EDGECONNECT_AUTH_HEADER", raising=False)
+    monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        write_func("PATCH", path, body={"name": "lab"}, dry_run=False, confirm=True)
+    )
+
+    assert out["status_code"] == 200
+    assert called["method"] == "PATCH"
+    assert called["url"] == expected_url
+    assert called["headers"]["Authorization"] == "Bearer secret"
+    assert called["json"] == {"name": "lab"}
+
+
+def test_edgeconnect_write_executes_with_custom_auth_header(monkeypatch):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setenv("EDGECONNECT_AUTH_HEADER", "X-Auth-Token")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_write(
+            "POST",
+            "/gms/rest/appliance",
+            body={"name": "lab"},
+            dry_run=False,
+            confirm=True,
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert out["data"] == {"ok": True}
+    assert called["method"] == "POST"
+    assert called["url"] == "https://orch.example.com/gms/rest/appliance"
+    assert called["headers"]["X-Auth-Token"] == "secret"
+    assert called["json"] == {"name": "lab"}

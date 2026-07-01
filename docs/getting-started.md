@@ -158,8 +158,11 @@ uv run python scripts/ingest_tools.py --products all
 Or let the wizard enable only the products you want:
 
 ```bash
-python3 scripts/setup_wizard.py --products clearpass,mist
+python3 scripts/setup_wizard.py --products clearpass,mist --product-access read-write
 ```
+
+Optional product read/write mode is lab-friendly: write tools are exposed, but
+they dry-run by default and require `confirm=True` to execute.
 
 ## 5. Optional: build the docs/API RAG indexes
 
@@ -197,12 +200,13 @@ Optional product backends are disabled by default.
 
 ```env
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+CENTRALMCP_PRODUCT_ACCESS=read-write
 ```
 
 The wizard can prompt for the selected product URL/token settings, write them to
-local git-ignored `.env`, and add the product selector to local stdio MCP
-configs. Use a subset when you only want ClearPass, Mist, or another specific
-starter:
+local git-ignored `.env`, and add the product selector plus access mode to local
+MCP configs. Use a subset when you only want ClearPass, Mist, or another
+specific starter:
 
 ```bash
 python3 scripts/setup_wizard.py --products clearpass

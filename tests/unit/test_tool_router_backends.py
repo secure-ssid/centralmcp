@@ -64,6 +64,35 @@ def test_build_backends_toolsets_all_includes_known_optional(monkeypatch):
     assert "edgeconnect-core" in backends
 
 
+def test_load_all_backends_filters_optional_writes_when_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+    monkeypatch.setattr(router, "_BACKENDS", {"clearpass-core": "mcp_servers.clearpass"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_tool_servers", {})
+    monkeypatch.setattr(router, "_tool_backend_names", {})
+
+    router._load_all_backends()
+
+    assert "clearpass_status" in router._tool_index
+    assert "clearpass_get" in router._tool_index
+    assert "clearpass_write" not in router._tool_index
+    assert "clearpass_delete_guest" not in router._tool_index
+
+
+def test_load_all_backends_exposes_optional_writes_when_read_write(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+    monkeypatch.setattr(router, "_BACKENDS", {"clearpass-core": "mcp_servers.clearpass"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_tool_servers", {})
+    monkeypatch.setattr(router, "_tool_backend_names", {})
+
+    router._load_all_backends()
+
+    assert "clearpass_status" in router._tool_index
+    assert "clearpass_write" in router._tool_index
+    assert "clearpass_delete_guest" in router._tool_index
+
+
 def test_public_docs_list_router_products_and_toolsets():
     readme = (REPO_ROOT / "README.md").read_text()
     getting_started = (REPO_ROOT / "docs" / "getting-started.md").read_text()
@@ -111,6 +140,67 @@ def test_find_tool_filters_semantic_hits_from_disabled_backends(monkeypatch):
     results = router.find_tool("vlan docs", top_k=5)
 
     assert [item["name"] for item in results] == ["search_docs"]
+
+
+def test_find_tool_filters_optional_write_hits_when_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+    monkeypatch.setattr(router, "_BACKEND", "lancedb")
+    monkeypatch.setattr(router, "_BACKENDS", {"clearpass-core": "mcp_servers.clearpass"})
+    monkeypatch.setattr(
+        router,
+        "_tool_index",
+        {
+            "clearpass_write": SimpleNamespace(
+                annotations=SimpleNamespace(
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                )
+            ),
+            "clearpass_status": SimpleNamespace(
+                annotations=SimpleNamespace(
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                )
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        router,
+        "_tool_backend_names",
+        {
+            "clearpass_write": "clearpass-core",
+            "clearpass_status": "clearpass-core",
+        },
+    )
+    monkeypatch.setattr(router, "_keyword_hits", lambda query, limit, include_schema=False: [])
+    monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
+    monkeypatch.setattr(router._lance, "connect", lambda: object())
+    monkeypatch.setattr(
+        router._lance,
+        "search_tools",
+        lambda db, query, vec, top_k: [
+            {
+                "name": "clearpass_write",
+                "server": "clearpass-core",
+                "description": "write tool",
+                "schema_json": "{}",
+                "score": 0.99,
+            },
+            {
+                "name": "clearpass_status",
+                "server": "clearpass-core",
+                "description": "status tool",
+                "schema_json": "{}",
+                "score": 0.8,
+            },
+        ],
+    )
+
+    results = router.find_tool("clearpass write status", top_k=5)
+
+    assert [item["name"] for item in results] == ["clearpass_status"]
 
 
 def test_find_tool_omits_schema_by_default(monkeypatch):

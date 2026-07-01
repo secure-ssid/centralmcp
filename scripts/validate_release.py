@@ -9,6 +9,7 @@ and a stale-tool-index check when the local LanceDB tool table exists.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -30,7 +31,15 @@ def _tool_catalog_count(products: str | None) -> int:
     sys.path.insert(0, str(ROOT))
     from scripts import ingest_tools
 
-    pairs = ingest_tools._collect(products)
+    previous_access = os.environ.get("CENTRALMCP_PRODUCT_ACCESS")
+    os.environ["CENTRALMCP_PRODUCT_ACCESS"] = "read-write"
+    try:
+        pairs = ingest_tools._collect(products)
+    finally:
+        if previous_access is None:
+            os.environ.pop("CENTRALMCP_PRODUCT_ACCESS", None)
+        else:
+            os.environ["CENTRALMCP_PRODUCT_ACCESS"] = previous_access
     return len(pairs)
 
 

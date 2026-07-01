@@ -49,6 +49,70 @@ IDEMPOTENT_WRITE = ToolAnnotations(
     openWorldHint=True,
 )
 
+_SENSITIVE_KEY_EXACT = {
+    "auth",
+    "authorization",
+    "key",
+}
+_SENSITIVE_KEY_SUFFIXES = (
+    "api_key",
+    "apikey",
+    "credential",
+    "credentials",
+    "_key",
+    "passphrase",
+    "password",
+    "psk",
+    "secret",
+    "token",
+)
+_REDACTED = "******"
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    key_text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key).strip())
+    normalized = re.sub(r"[^a-z0-9]+", "_", key_text.lower()).strip("_")
+    return normalized in _SENSITIVE_KEY_EXACT or any(
+        normalized.endswith(suffix) for suffix in _SENSITIVE_KEY_SUFFIXES
+    )
+
+
+def redact_sensitive(value: Any) -> Any:
+    """Recursively redact likely secrets before returning tool previews/results."""
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            if _is_sensitive_key(key):
+                out[key] = _REDACTED
+            else:
+                out[key] = redact_sensitive(item)
+        return out
+    if isinstance(value, list):
+        return [redact_sensitive(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_sensitive(item) for item in value)
+    if isinstance(value, str):
+        stripped = value.strip().lower()
+        if stripped.startswith(("bearer ", "token ", "basic ")):
+            return _REDACTED
+    return value
+
+
+def optional_product_writes_allowed() -> bool:
+    raw = os.getenv("CENTRALMCP_PRODUCT_ACCESS", "read-write").strip().lower()
+    return raw not in {"read-only", "readonly", "read_only", "ro"}
+
+
+def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
+    return {
+        "error": (
+            f"Tool '{tool_name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only. "
+            "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows."
+        ),
+        "tool": tool_name,
+        "status": "blocked",
+    }
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 

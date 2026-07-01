@@ -69,7 +69,7 @@ ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 194 core tools, or 204 with optional product starters indexed |
+| MCP tools | 194 core tools, or 224 with optional product starters indexed |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |
@@ -183,6 +183,7 @@ Enable optional products only when needed:
 
 ```env
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+CENTRALMCP_PRODUCT_ACCESS=read-write
 ```
 
 The setup wizard can enable a subset for you, write the matching local `.env`,
@@ -193,8 +194,12 @@ one local file:
 python3 scripts/setup_wizard.py --products clearpass,mist
 ```
 
-The optional product starter GET tools are read-only and page list responses with
-`limit` / `offset` so broad API calls do not flood the MCP context.
+The optional product starter tools include read and guarded write options for
+lab workflows. Generic GET tools page list responses with `limit` / `offset`,
+typed ClearPass/Mist read workflows return compact troubleshooting fields, and
+optional product writes default to `dry_run=True` with `confirm=True` required
+for execution. Set `CENTRALMCP_PRODUCT_ACCESS=read-only` to hide and block
+optional product write tools.
 
 ## Streamable HTTP mode
 
@@ -231,6 +236,7 @@ and prints the listener details plus the `kill <PID>` stop command.
 | `CENTRALMCP_ROUTER_MODE` | Router mode: `minimal` or `default`; examples use `minimal` for low-token clients | `default` |
 | `CENTRALMCP_TOOLSETS` | Loaded backend profiles; examples use `central,glp,rag` | all core Aruba backends |
 | `CENTRALMCP_PRODUCTS` | Optional product backends | empty |
+| `CENTRALMCP_PRODUCT_ACCESS` | Optional product write-tool visibility: `read-write` or `read-only` | `read-write` |
 | `CENTRALMCP_GLP_V2BETA1_WRITES` | Enable guarded GLP write tools | off |
 | `CENTRALMCP_NORMALIZE_MACS` | Normalize outbound MAC strings in router responses | off |
 | `GLP_TOKEN_URL` | Override GLP SSO token URL | HPE default |

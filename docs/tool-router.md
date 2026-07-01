@@ -80,16 +80,29 @@ Optional products can be enabled either by `CENTRALMCP_TOOLSETS` or by `CENTRALM
 
 ```env
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+CENTRALMCP_PRODUCT_ACCESS=read-write
 ```
 
-The optional product starters intentionally expose a small read-only surface:
+The optional product starters intentionally expose a small read/write lab
+surface:
 
 - `<product>_status`
 - guarded `<product>_get`
+- guarded `<product>_write` for lab POST/PUT/PATCH/DELETE calls
+- typed ClearPass troubleshooting lookups
+- typed Mist site/client/WLAN/alarm lookups
 
 Generic GET responses are paginated with `limit` and `offset` when the response
 contains a list. This keeps token cost low while leaving room to add
 product-specific tools later.
+
+Optional product write tools default to `dry_run=True`. Use `invoke_tool` only
+after reviewing the preview, and execute with `dry_run=False` plus
+`confirm=True`. Set `CENTRALMCP_PRODUCT_ACCESS=read-only` to hide optional
+product write tools from `find_tool` and block direct dispatch through
+`invoke_tool`; the product write tools also return a blocked response if run
+directly with that mode. Use `read-write` for lab workflows that need guarded
+writes.
 
 ## Why `invoke_tool` is destructive
 

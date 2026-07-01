@@ -70,6 +70,7 @@ _OPTIONAL_BACKENDS = {
     "aos8": ("aos8-core", "mcp_servers.aos8"),
     "edgeconnect": ("edgeconnect-core", "mcp_servers.edgeconnect"),
 }
+_OPTIONAL_SERVER_NAMES = {server_name for server_name, _ in _OPTIONAL_BACKENDS.values()}
 _TOOLSET_BACKENDS = {
     "config": {"aruba-config"},
     "monitoring": {"aruba-monitoring"},
@@ -89,6 +90,32 @@ _TOOLSET_BACKENDS = {
 def _csv_env(name: str) -> list[str]:
     raw = os.getenv(name, "")
     return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def _product_access() -> str:
+    raw = os.getenv("CENTRALMCP_PRODUCT_ACCESS", "read-write").strip().lower()
+    if raw in {"read-only", "readonly", "read_only", "ro"}:
+        return "read-only"
+    return "read-write"
+
+
+def _optional_writes_allowed() -> bool:
+    return _product_access() == "read-write"
+
+
+def _is_read_only_tool(tool: Any) -> bool:
+    return bool(getattr(getattr(tool, "annotations", None), "readOnlyHint", False))
+
+
+def _optional_write_disabled(name: str, tool: Any | None = None, server: str | None = None) -> bool:
+    tool = tool or _tool_index.get(name)
+    server = server or _tool_backend_names.get(name)
+    return (
+        server in _OPTIONAL_SERVER_NAMES
+        and not _optional_writes_allowed()
+        and tool is not None
+        and not _is_read_only_tool(tool)
+    )
 
 
 def _build_backends() -> dict[str, str]:
@@ -136,9 +163,16 @@ def _load_all_backends() -> None:
     """Import every backend once and index tools by name."""
     if _tool_index:
         return
+    allow_optional_writes = _optional_writes_allowed()
     for server_name, module_path in _BACKENDS.items():
         mod = importlib.import_module(module_path)
         for name, tool in mod.mcp._tool_manager._tools.items():
+            if (
+                server_name in _OPTIONAL_SERVER_NAMES
+                and not allow_optional_writes
+                and not _is_read_only_tool(tool)
+            ):
+                continue
             _tool_index[name] = tool
             _tool_servers[name] = mod.mcp
             _tool_backend_names[name] = server_name
@@ -167,6 +201,8 @@ def _keyword_hits(query: str, limit: int, include_schema: bool = False) -> list[
         return []
     scored: list[tuple[float, Any]] = []
     for name, tool in _tool_index.items():
+        if _optional_write_disabled(name, tool):
+            continue
         name_tokens = set(name.lower().split("_")) - _STOPWORDS
         overlap = q_tokens & name_tokens
         if not overlap:
@@ -250,6 +286,15 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
             server = h.get("server")
             if not name or name in by_name or server not in _BACKENDS:
                 continue
+            if name not in _tool_index:
+                _load_all_backends()
+            tool = _tool_index.get(name)
+            if (
+                server in _OPTIONAL_SERVER_NAMES
+                and not _optional_writes_allowed()
+                and (tool is None or not _is_read_only_tool(tool))
+            ):
+                continue
             if added >= sem_budget + max(0, kw_budget - len(by_name)):
                 break
             schema = json.loads(h.get("schema_json") or "{}")
@@ -286,6 +331,15 @@ async def _dispatch_tool(ctx: Context, name: str, arguments: dict[str, Any] | No
     backend = _tool_servers.get(name)
     if backend is None:
         return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
+    if _optional_write_disabled(name):
+        return {
+            "error": (
+                f"Tool '{name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only. "
+                "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows."
+            ),
+            "tool": name,
+            "status": "blocked",
+        }
     args = {k: v for k, v in (arguments or {}).items() if v is not None}
     try:
         return await backend._tool_manager.call_tool(name, args, context=ctx)

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from scripts import validate_release
+from scripts import ingest_tools, validate_release
 
 README = validate_release.ROOT / "README.md"
 RAG_ARCHITECTURE = validate_release.ROOT / "docs" / "architecture" / "RAG-ARCHITECTURE.md"
@@ -22,6 +23,34 @@ def test_rag_indexes_available_true_when_present(tmp_path: Path):
 
 def test_tool_catalog_count_includes_optional_products():
     assert validate_release._tool_catalog_count("all") >= MIN_TOOLS
+
+
+def test_optional_product_catalog_can_filter_writes_for_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+    read_only_names = {
+        tool["name"]
+        for server, tool in ingest_tools._collect("clearpass")
+        if server == "clearpass-core"
+    }
+
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+    read_write_names = {
+        tool["name"]
+        for server, tool in ingest_tools._collect("clearpass")
+        if server == "clearpass-core"
+    }
+
+    assert "clearpass_status" in read_only_names
+    assert "clearpass_write" not in read_only_names
+    assert "clearpass_write" in read_write_names
+
+
+def test_release_tool_catalog_count_uses_read_write_catalog(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+    read_only_count = len(ingest_tools._collect("clearpass"))
+
+    assert validate_release._tool_catalog_count("clearpass") > read_only_count
+    assert os.environ["CENTRALMCP_PRODUCT_ACCESS"] == "read-only"
 
 
 def test_public_docs_tool_counts_match_catalog():
