@@ -26,11 +26,13 @@ flowchart LR
 
 ## Search keywords
 
-HPE Networking MCP server, HPE Aruba Central MCP server, Aruba Central AI
-tools, GreenLake Platform MCP, FastMCP network automation, Model Context
-Protocol networking, Aruba API RAG, Aruba Central OpenAPI lookup, ClearPass
-MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, EdgeConnect MCP, guarded
-read/write lab automation, Python `httpx` network automation.
+HPE Networking MCP server, HPE Aruba Networking MCP server, HPE Aruba Central
+MCP server, Aruba Central AI tools, HPE GreenLake Platform MCP, GreenLake
+Platform MCP, FastMCP network automation, Model Context Protocol networking,
+network configuration MCP, Aruba API RAG, Aruba Central OpenAPI lookup,
+ClearPass MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, AOS8 automation,
+HPE Aruba EdgeConnect MCP, EdgeConnect MCP, guarded read/write lab automation,
+Python `httpx` network automation.
 
 ## Who this is for
 
