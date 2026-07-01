@@ -658,6 +658,85 @@ def test_edgeconnect_list_alarms_compacts_outstanding(monkeypatch):
     assert out["alarms"]["_pagination"]["truncated"] is True
 
 
+def test_edgeconnect_list_tunnels_filters_and_compacts(monkeypatch):
+    called = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"tunnels":[{"id":"tun1"}]}'
+
+        def json(self):
+            return {
+                "tunnels": [
+                    {
+                        "id": "tun1",
+                        "alias": "branch-a",
+                        "srcNePk": "1.NE",
+                        "destNePk": "2.NE",
+                        "operStatus": "Up",
+                        "adminStatus": "Up",
+                        "raw": "omitted",
+                    },
+                    {
+                        "id": "tun2",
+                        "alias": "branch-b",
+                        "srcNePk": "1.NE",
+                        "destNePk": "3.NE",
+                        "operStatus": "Down",
+                        "adminStatus": "Up",
+                        "raw": "omitted",
+                    },
+                ]
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        edgeconnect.edgeconnect_list_tunnels(
+            ne_pk="1.NE",
+            state="up|down",
+            matching_alias="branch",
+            limit=1,
+        )
+    )
+
+    assert called["url"] == "https://orch.example.com/gms/rest/tunnels2/physical"
+    assert called["params"] == {
+        "nePk": "1.NE",
+        "state": "up|down",
+        "matchingAlias": "branch",
+        "limit": 1,
+    }
+    assert out["tunnels"]["tunnels"] == [
+        {
+            "id": "tun1",
+            "alias": "branch-a",
+            "srcNePk": "1.NE",
+            "destNePk": "2.NE",
+            "operStatus": "Up",
+            "adminStatus": "Up",
+        }
+    ]
+    assert out["tunnels"]["_pagination"]["truncated"] is True
+
+
 @pytest.mark.parametrize(
     ("write_func", "env_base", "env_token", "base_url", "path", "expected_url"),
     [

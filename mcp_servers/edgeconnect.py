@@ -73,6 +73,23 @@ _ALARM_FIELDS = (
     "timestamp",
     "time",
 )
+_TUNNEL_FIELDS = (
+    "id",
+    "tunnelId",
+    "alias",
+    "tag",
+    "srcNePk",
+    "destNePk",
+    "destTunnelId",
+    "destTunnelAlias",
+    "operStatus",
+    "adminStatus",
+    "remoteIdState",
+    "fecStatus",
+    "fecRatio",
+    "state",
+    "status",
+)
 
 
 def _edgeconnect_config() -> tuple[str | None, str | None, str]:
@@ -179,6 +196,41 @@ async def edgeconnect_list_alarms(limit: int = 50, offset: int = 0) -> dict[str,
     out = await edgeconnect_get("/rest/json/alarm", limit=limit, offset=offset)
     if "data" in out:
         out["alarms"] = _compact_collection(out.pop("data"), _ALARM_FIELDS, ("outstanding",))
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_tunnels(
+    ne_pk: str | None = None,
+    tunnel_id: str | None = None,
+    state: str | None = None,
+    matching_alias: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List EdgeConnect physical tunnels with compact health/status fields."""
+    params: dict[str, Any] = {"limit": limit}
+    if ne_pk:
+        params["nePk"] = ne_pk
+    if tunnel_id:
+        params["tunnelId"] = tunnel_id
+    if state:
+        params["state"] = state
+    if matching_alias:
+        params["matchingAlias"] = matching_alias
+
+    out = await edgeconnect_get(
+        "/gms/rest/tunnels2/physical",
+        params,
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["tunnels"] = _compact_collection(
+            out.pop("data"),
+            _TUNNEL_FIELDS,
+            ("tunnels", "physicalTunnels"),
+        )
     return out
 
 
