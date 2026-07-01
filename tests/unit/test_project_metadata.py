@@ -89,11 +89,13 @@ def test_project_name_matches_repo_name():
     assert 'name = "api-central"' not in text
 
 
-def test_project_declares_mit_license_file():
+def test_project_declares_mit_license_metadata():
     text = PYPROJECT.read_text()
 
-    assert 'license = { file = "LICENSE" }' in text
-    assert "License :: OSI Approved :: MIT License" in text
+    assert 'license = "MIT"' in text
+    assert 'license-files = ["LICENSE"]' in text
+    assert 'license = {' not in text
+    assert "License :: OSI Approved :: MIT License" not in text
 
 
 def test_active_code_does_not_use_legacy_project_aliases():
