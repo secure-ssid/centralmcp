@@ -70,7 +70,7 @@ EdgeConnect link integrity diagnostics.
 | Browse the documentation map | [docs/README.md](docs/README.md) |
 | Review the RAG design | [docs/architecture/RAG-ARCHITECTURE.md](docs/architecture/RAG-ARCHITECTURE.md) |
 | Run validation before pushing | [`scripts/validate_release.py`](scripts/validate_release.py) |
-| Contribute safely | [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) |
+| Contribute safely | [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md) |
 | Agent/developer conventions | [CLAUDE.md](CLAUDE.md) |
 
 ## What is included

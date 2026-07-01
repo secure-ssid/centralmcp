@@ -4,6 +4,9 @@ Thanks for helping improve centralmcp. This project is optimized for low-token,
 lab-friendly HPE Networking MCP workflows, so changes should keep setup simple,
 tool discovery compact, and credentials local.
 
+Please follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) when participating in
+issues, pull requests, reviews, and docs.
+
 ## Start locally
 
 ```bash
