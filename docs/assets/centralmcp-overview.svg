@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">centralmcp architecture overview</title>
+  <desc id="desc">Low-token MCP clients connect to the centralmcp router, which discovers tools, dispatches read-only or write tools, searches embedded RAG indexes, and reaches Aruba Central, GreenLake Platform, and optional product APIs through async httpx clients.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#071827"/>
+      <stop offset="55%" stop-color="#0b2e45"/>
+      <stop offset="100%" stop-color="#0b513f"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.07"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9be7ff"/>
+    </marker>
+    <style>
+      .title { font: 700 52px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+      .subtitle { font: 400 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #c9f4ff; }
+      .label { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+      .small { font: 400 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #d7f7ff; }
+      .tiny { font: 600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0b2e45; }
+      .card { fill: url(#card); stroke: rgba(255,255,255,0.30); stroke-width: 1.5; rx: 24; filter: url(#shadow); }
+      .pill { fill: #99f6e4; rx: 16; }
+      .line { stroke: #9be7ff; stroke-width: 4; fill: none; marker-end: url(#arrow); opacity: 0.9; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="1055" cy="90" r="150" fill="#14b8a6" opacity="0.16"/>
+  <circle cx="120" cy="540" r="180" fill="#38bdf8" opacity="0.12"/>
+
+  <text x="70" y="85" class="title">centralmcp</text>
+  <text x="70" y="123" class="subtitle">Low-token MCP router for HPE Aruba Central, GreenLake, RAG, and network automation</text>
+
+  <rect x="70" y="185" width="230" height="190" class="card"/>
+  <text x="100" y="235" class="label">AI clients</text>
+  <text x="100" y="272" class="small">Claude, Cursor, VS Code</text>
+  <text x="100" y="302" class="small">or any MCP-capable model</text>
+  <rect x="100" y="325" width="145" height="34" class="pill"/>
+  <text x="117" y="348" class="tiny">stdio or HTTP</text>
+
+  <rect x="440" y="160" width="320" height="240" class="card"/>
+  <text x="480" y="213" class="label">aruba-tool-router</text>
+  <text x="480" y="250" class="small">find_tool</text>
+  <text x="480" y="280" class="small">invoke_read_tool</text>
+  <text x="480" y="310" class="small">invoke_tool when intentional</text>
+  <rect x="480" y="340" width="185" height="34" class="pill"/>
+  <text x="497" y="363" class="tiny">minimal low-token profile</text>
+
+  <rect x="900" y="110" width="230" height="150" class="card"/>
+  <text x="930" y="158" class="label">Embedded RAG</text>
+  <text x="930" y="194" class="small">LanceDB docs</text>
+  <text x="930" y="224" class="small">SQLite OpenAPI lookup</text>
+
+  <rect x="900" y="325" width="230" height="190" class="card"/>
+  <text x="930" y="373" class="label">Async APIs</text>
+  <text x="930" y="410" class="small">Aruba Central + GLP</text>
+  <text x="930" y="440" class="small">ClearPass, Mist, Apstra</text>
+  <text x="930" y="470" class="small">AOS8, EdgeConnect</text>
+  <rect x="930" y="490" width="125" height="34" class="pill"/>
+  <text x="953" y="513" class="tiny">httpx REST</text>
+
+  <path d="M 305 280 C 350 280, 385 280, 430 280" class="line"/>
+  <path d="M 765 245 C 820 220, 850 190, 890 175" class="line"/>
+  <path d="M 765 325 C 820 360, 850 400, 890 420" class="line"/>
+
+  <rect x="70" y="455" width="690" height="86" class="card"/>
+  <text x="105" y="500" class="label">204 indexed tools with optional starters</text>
+  <text x="105" y="530" class="small">Direct REST, no pycentral runtime dependency, bounded responses, local doctor diagnostics</text>
+</svg>

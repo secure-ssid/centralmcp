@@ -29,6 +29,7 @@ Use this directory as the organized documentation hub for setup, architecture, o
 | `mcp_servers/` | FastMCP servers, low-token router, prompts, middleware, optional product starters |
 | `pipeline/` | Migration pipeline, typed clients, credentials loading, state store, SSID helpers |
 | `ingestion/` | Docs/API ingestion into LanceDB and SQLite |
+| `docs/assets/centralmcp-overview.svg` | README architecture image for GitHub visitors |
 | `scripts/run_http_router.sh` | Start the minimal router over streamable HTTP |
 | `scripts/doctor.py` | Check local setup without making API calls |
 | `scripts/` | Tool-catalog ingestion, release validation, local sync helpers |

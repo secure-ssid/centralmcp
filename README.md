@@ -1,21 +1,43 @@
-# centralmcp
+# centralmcp — HPE Aruba Central MCP server
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-FastMCP-brightgreen)](https://modelcontextprotocol.io/)
 
-**HPE Aruba Central + GreenLake Platform MCP server and automation toolkit.**
+**Low-token Model Context Protocol (MCP) server for HPE Aruba Central, HPE GreenLake Platform, ClearPass, Juniper Mist, Apstra, ArubaOS 8, and EdgeConnect automation.**
 
 centralmcp gives MCP-capable AI clients a low-token way to search Aruba/HPE docs, look up exact OpenAPI details, inspect Central health, run troubleshooting workflows, manage configuration, and use guarded GreenLake Platform operations.
 
 It is built around direct REST calls with `httpx`. `pycentral` is not a runtime dependency.
 
+![centralmcp architecture overview](docs/assets/centralmcp-overview.svg)
+
+## Search keywords
+
+HPE Aruba Central MCP server, Aruba Central AI tools, GreenLake Platform MCP,
+FastMCP network automation, Model Context Protocol networking, Aruba API RAG,
+Aruba Central OpenAPI lookup, ClearPass MCP, Juniper Mist MCP, Apstra MCP,
+ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
+
+## Who this is for
+
+| You want to... | Use centralmcp to... |
+|---|---|
+| Connect Claude, Cursor, VS Code, or another MCP client to Aruba Central | Run the low-token `aruba-tool-router` over stdio or streamable HTTP |
+| Ask questions about Aruba/HPE docs and APIs | Use embedded LanceDB + SQLite RAG/OpenAPI lookup without Docker |
+| Inspect Central health, devices, clients, alerts, events, or sites | Discover tools with `find_tool` and call read-only tools through `invoke_read_tool` |
+| Automate migrations or SSID workflows | Use the 8-stage migration pipeline and SSID helpers |
+| Experiment with ClearPass, Mist, Apstra, AOS8, or EdgeConnect | Enable optional starter backends only when needed |
+
 ## Quick links
 
 | Need | Start here |
 |---|---|
+| Try it quickly | [Quick start](#quick-start) |
+| Check your local setup | [`scripts/doctor.py`](scripts/doctor.py) |
 | Install and connect an MCP client | [docs/getting-started.md](docs/getting-started.md) |
 | Understand the low-token router | [docs/tool-router.md](docs/tool-router.md) |
+| Run with any MCP-capable AI client/model | [Streamable HTTP mode](#streamable-http-mode) |
 | Browse the documentation map | [docs/README.md](docs/README.md) |
 | Review the RAG design | [docs/architecture/RAG-ARCHITECTURE.md](docs/architecture/RAG-ARCHITECTURE.md) |
 | Run validation before pushing | [`scripts/validate_release.py`](scripts/validate_release.py) |
