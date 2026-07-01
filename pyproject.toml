@@ -18,6 +18,7 @@ keywords = [
     "edgeconnect-acl-groups",
     "edgeconnect",
     "edgeconnect-interface-labels",
+    "edgeconnect-services",
     "edgeconnect-zones",
     "fastmcp",
     "greenlake",

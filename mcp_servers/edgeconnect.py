@@ -274,6 +274,18 @@ _IP_OBJECT_GROUP_FIELDS = (
     "state",
     "status",
 )
+_SERVICE_FIELDS = (
+    "id",
+    "name",
+    "img",
+    "peerName",
+    "enabled",
+    "provider",
+    "type",
+    "description",
+    "state",
+    "status",
+)
 _ALARM_FIELDS = (
     "id",
     "uuid",
@@ -891,6 +903,52 @@ def _compact_ip_object_groups(
         )
 
     compacted = [_compact_record(record, _IP_OBJECT_GROUP_FIELDS) for record in records]
+    return bound_collection_response(
+        {list_key: compacted},
+        limit=limit,
+        offset=offset,
+        list_key=list_key,
+    )
+
+
+def _normalize_service_records(data: Any) -> list[Any] | None:
+    records = _collection_records(data, ("services", "thirdPartyServices"))
+    if records is not None:
+        return records
+    if not isinstance(data, dict):
+        return None
+
+    for key in ("services", "thirdPartyServices", "data"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            records = _normalize_service_records(nested)
+            if records is not None:
+                return records
+
+    if _looks_like_record(data, _SERVICE_FIELDS):
+        return [data]
+
+    records = []
+    for service_id, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        record = dict(value)
+        if "id" not in record:
+            record["id"] = service_id
+        records.append(record)
+    return records or None
+
+
+def _compact_services(data: Any, *, limit: int, offset: int, list_key: str) -> Any:
+    records = _normalize_service_records(data)
+    if records is None:
+        return _compact_collection(
+            data,
+            _SERVICE_FIELDS,
+            ("services", "thirdPartyServices"),
+        )
+
+    compacted = [_compact_record(record, _SERVICE_FIELDS) for record in records]
     return bound_collection_response(
         {list_key: compacted},
         limit=limit,
@@ -1622,6 +1680,66 @@ async def edgeconnect_delete_service_group(
         "DELETE",
         "/gms/rest/ipObjects/serviceGroup",
         params={"name": name},
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_services(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List EdgeConnect overlay internet services with compact fields."""
+    out = await _edgeconnect_get(
+        "/gms/rest/gms/services",
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["services"] = _compact_services(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+            list_key="services",
+        )
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_third_party_services(
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List EdgeConnect third-party cloud services with compact fields."""
+    out = await _edgeconnect_get(
+        "/gms/rest/gms/thirdPartyServices",
+        limit=limit,
+        offset=offset,
+        paginate=False,
+    )
+    if "data" in out:
+        out["third_party_services"] = _compact_services(
+            out.pop("data"),
+            limit=limit,
+            offset=offset,
+            list_key="third_party_services",
+        )
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def edgeconnect_set_services(
+    body: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Replace EdgeConnect overlay internet services with write guards."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked("edgeconnect_set_services")
+
+    return await edgeconnect_write(
+        "POST",
+        "/gms/rest/gms/services",
+        body=body,
         dry_run=dry_run,
         confirm=confirm,
     )

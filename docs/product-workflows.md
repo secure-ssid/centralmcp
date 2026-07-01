@@ -132,6 +132,8 @@ Promote a generic GET pattern to a typed tool when it is:
 | Route labels | `edgeconnect_list_route_labels` / `edgeconnect_set_route_labels` | Compact route-label read plus guarded lab write to `/gms/rest/routeLabels` |
 | ACL address groups | `edgeconnect_list_address_groups` / `edgeconnect_set_address_group` / `edgeconnect_delete_address_group` | Compact ACL address-group read plus guarded create/update/replace/delete lab writes to `/gms/rest/ipObjects/addressGroup` |
 | ACL service groups | `edgeconnect_list_service_groups` / `edgeconnect_set_service_group` / `edgeconnect_delete_service_group` | Compact ACL service-group read plus guarded create/update/replace/delete lab writes to `/gms/rest/ipObjects/serviceGroup` |
+| Overlay internet services | `edgeconnect_list_services` / `edgeconnect_set_services` | Compact overlay internet-service read plus guarded complete-service-list lab write to `/gms/rest/gms/services` |
+| Third-party services | `edgeconnect_list_third_party_services` | Compact built-in/custom third-party cloud services from `/gms/rest/gms/thirdPartyServices` |
 | Firewall zones | `edgeconnect_list_zones` / `edgeconnect_set_zones` | Compact firewall-zone read plus guarded complete-map lab write to `/gms/rest/zones` |
 | Zone-based firewall | `edgeconnect_get_zone_firewall_status` / `edgeconnect_set_zone_firewall_status` | Read and guarded lab write for End-to-End Zone-Based Firewall status at `/gms/rest/zones/eeEnable` |
 | Zone ID allocation | `edgeconnect_get_next_zone_id` / `edgeconnect_set_next_zone_id` | Read and guarded lab write for next firewall-zone ID at `/gms/rest/zones/nextId` |

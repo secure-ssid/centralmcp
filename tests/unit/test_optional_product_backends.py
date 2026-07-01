@@ -3348,6 +3348,86 @@ def test_edgeconnect_list_service_groups_compacts_single(monkeypatch):
     ]
 
 
+def test_edgeconnect_list_services_compacts_map(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/gms/services"
+        assert params is None
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "zscaler_west": {
+                    "name": "Zscaler West",
+                    "img": "/img/zscaler.png",
+                    "peerName": "zscaler-west-tunnel",
+                    "enabled": True,
+                    "raw": "omitted",
+                },
+                "netskope_main": {
+                    "name": "Netskope Main",
+                    "peerName": "netskope-main-tunnel",
+                    "enabled": True,
+                    "raw": "omitted",
+                },
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_services(limit=1))
+
+    assert out["services"]["services"] == [
+        {
+            "id": "zscaler_west",
+            "name": "Zscaler West",
+            "img": "/img/zscaler.png",
+            "peerName": "zscaler-west-tunnel",
+            "enabled": True,
+        }
+    ]
+    assert out["services"]["_pagination"]["truncated"] is True
+
+
+def test_edgeconnect_list_third_party_services_compacts_map(monkeypatch):
+    async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
+        assert path == "/gms/rest/gms/thirdPartyServices"
+        assert params is None
+        assert paginate is False
+        return {
+            "status_code": 200,
+            "data": {
+                "sp_zscaler": {
+                    "name": "Zscaler Cloud",
+                    "img": "/webclient/img/zscaler.png",
+                    "peerName": "Zscaler_*",
+                    "enabled": True,
+                    "raw": "omitted",
+                },
+                "sp_netskope": {
+                    "name": "Netskope Cloud",
+                    "peerName": "Netskope_*",
+                    "enabled": False,
+                    "raw": "omitted",
+                },
+            },
+        }
+
+    monkeypatch.setattr(edgeconnect, "_edgeconnect_get", _fake_get)
+
+    out = asyncio.run(edgeconnect.edgeconnect_list_third_party_services(limit=1))
+
+    assert out["third_party_services"]["third_party_services"] == [
+        {
+            "id": "sp_zscaler",
+            "name": "Zscaler Cloud",
+            "img": "/webclient/img/zscaler.png",
+            "peerName": "Zscaler_*",
+            "enabled": True,
+        }
+    ]
+    assert out["third_party_services"]["_pagination"]["truncated"] is True
+
+
 def test_edgeconnect_list_zones_compacts_map(monkeypatch):
     async def _fake_get(path, params=None, limit=50, offset=0, paginate=True):
         assert path == "/gms/rest/zones"
@@ -5095,6 +5175,68 @@ def test_edgeconnect_ip_object_group_writes_execute_with_confirm(
     assert called["url"] == expected_url
     assert called["params"] == expected_params
     assert called["json"] == expected_body
+
+
+def test_edgeconnect_set_services_previews(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+
+    body = {"zscaler_west": {"name": "Zscaler West", "enabled": True}}
+    out = asyncio.run(edgeconnect.edgeconnect_set_services(body))
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/gms/rest/gms/services"
+    assert out["json"] == body
+    assert "execute_hint" in out
+
+
+def test_edgeconnect_set_services_blocks_when_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(edgeconnect.edgeconnect_set_services({"zscaler_west": {"name": "Zscaler West"}}))
+
+    assert out["status"] == "blocked"
+    assert out["tool"] == "edgeconnect_set_services"
+    assert "CENTRALMCP_PRODUCT_ACCESS=read-only" in out["error"]
+
+
+def test_edgeconnect_set_services_executes_with_confirm(monkeypatch):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    body = {"zscaler_west": {"name": "Zscaler West", "enabled": True}}
+    out = asyncio.run(
+        edgeconnect.edgeconnect_set_services(body, dry_run=False, confirm=True)
+    )
+
+    assert out["status_code"] == 200
+    assert called["method"] == "POST"
+    assert called["url"] == "https://orch.example.com/gms/rest/gms/services"
+    assert called["params"] == {}
+    assert called["json"] == body
 
 
 def test_edgeconnect_set_zones_previews(monkeypatch):
