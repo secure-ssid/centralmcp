@@ -12,6 +12,20 @@ uv sync
 
 Python 3.10+ is required. `uv` is recommended because the lockfile is maintained for this repo.
 
+### Try without API credentials
+
+You can verify dependencies, build the local router catalog, and start the HTTP
+MCP server before adding Central or GLP credentials:
+
+```bash
+uv run python scripts/ingest_tools.py
+uv run python scripts/doctor.py
+MCP_PORT=8010 bash scripts/run_http_router.sh
+```
+
+API-backed tools need credentials later, but this confirms the MCP server and
+local catalog path first.
+
 ## 2. Configure credentials
 
 ```bash

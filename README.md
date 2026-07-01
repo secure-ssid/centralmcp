@@ -33,6 +33,7 @@ ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
 
 | Need | Start here |
 |---|---|
+| Try without API credentials | [Try it locally without credentials](#try-it-locally-without-credentials) |
 | Try it quickly | [Quick start](#quick-start) |
 | Check your local setup | [`scripts/doctor.py`](scripts/doctor.py) |
 | Install and connect an MCP client | [docs/getting-started.md](docs/getting-started.md) |
@@ -66,6 +67,27 @@ The recommended `minimal` router profile keeps the MCP tool list small while sti
 3. Use `invoke_tool` only for intentional write/destructive calls.
 
 `invoke_tool` is deliberately marked destructive because it can dispatch destructive backend tools. This gives MCP clients a safer warning boundary without loading hundreds of direct tools into context.
+
+## Try it locally without credentials
+
+You can verify the install, build the router catalog, and start the MCP HTTP
+server before adding Aruba Central or GreenLake credentials. API-backed tools
+will need credentials later, but the local setup path is safe to test first.
+
+```bash
+git clone https://github.com/secure-ssid/centralmcp.git
+cd centralmcp
+uv sync
+uv run python scripts/ingest_tools.py
+uv run python scripts/doctor.py
+MCP_PORT=8010 bash scripts/run_http_router.sh
+```
+
+Then connect an MCP-capable AI client to:
+
+```text
+http://127.0.0.1:8010/mcp
+```
 
 ## Quick start
 
