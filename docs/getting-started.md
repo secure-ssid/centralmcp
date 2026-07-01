@@ -7,10 +7,21 @@ This guide gets a local clone running as an MCP server with the low-token router
 ```bash
 git clone https://github.com/secure-ssid/centralmcp.git
 cd centralmcp
-uv sync
+python3 scripts/setup_wizard.py
 ```
 
 Python 3.10+ is required. `uv` is recommended because the lockfile is maintained for this repo.
+
+The guided setup wizard can run `uv sync`, create local git-ignored config
+files, replace MCP path placeholders, choose a Central API gateway region, fill
+credentials without echoing secrets, enable optional products, build the router
+tool catalog, and run the local doctor.
+
+If dependencies are already installed, or you want to skip any wizard phase:
+
+```bash
+python3 scripts/setup_wizard.py --skip-install
+```
 
 ### Try without API credentials
 
@@ -18,7 +29,7 @@ You can verify dependencies, build the local router catalog, and start the HTTP
 MCP server before adding Central or GLP credentials:
 
 ```bash
-uv run python scripts/ingest_tools.py
+python3 scripts/setup_wizard.py --yes
 uv run python scripts/doctor.py
 MCP_PORT=8010 bash scripts/run_http_router.sh
 ```
@@ -28,6 +39,19 @@ local catalog path first.
 
 ## 2. Configure credentials
 
+The wizard creates `config/credentials.yaml` when it is missing and offers common
+Central API gateway choices:
+
+| Region / gateway | Base URL |
+|---|---|
+| US / common API gateway | `https://apigw-prod2.central.arubanetworks.com` |
+| EU Central | `https://apigw-eucentral3.central.arubanetworks.com` |
+| APAC | `https://apigw-apac.central.arubanetworks.com` |
+| Legacy/internal gateway | `https://internal.api.central.arubanetworks.com` |
+| Custom | Enter the tenant-specific URL from your Central portal/API docs |
+
+To create the template manually:
+
 ```bash
 cp config/credentials.yaml.example config/credentials.yaml
 ```
@@ -36,13 +60,13 @@ Fill in the preferred sections:
 
 ```yaml
 central_account:
-  base_url: https://internal.api.central.arubanetworks.com
+  base_url: https://apigw-prod2.central.arubanetworks.com
   client_id: YOUR_CENTRAL_CLIENT_ID
   client_secret: YOUR_CENTRAL_CLIENT_SECRET
   glp_workspace_id: YOUR_GLP_WORKSPACE_ID
 
 glp_account:
-  base_url: https://internal.api.central.arubanetworks.com
+  base_url: https://apigw-prod2.central.arubanetworks.com
   client_id: YOUR_GLP_CLIENT_ID
   client_secret: YOUR_GLP_CLIENT_SECRET
   glp_workspace_id: YOUR_GLP_WORKSPACE_ID
@@ -64,9 +88,10 @@ Environment variables override YAML values. Common overrides:
 cp .mcp.json.example .mcp.json
 ```
 
-Edit `.mcp.json` and replace `/path/to/centralmcp` with your local clone path.
+The wizard does this and replaces `/path/to/centralmcp` with your local clone
+path. If configuring manually, edit `.mcp.json` yourself.
 For VS Code, copy `.vscode/mcp.json.example` to `.vscode/mcp.json`.
-For Claude launch profiles, use `.claude/launch.json`; the first profile is the
+For included `.claude` launch profiles, use `.claude/launch.json`; the first profile is the
 same minimal `aruba-tool-router` setup and the remaining profiles are direct
 debug servers.
 For clients that connect to an already-running HTTP MCP server, copy
@@ -102,6 +127,8 @@ http://127.0.0.1:8010/mcp
 ```
 
 The HTTP example in `.mcp.http.json.example` points at that local endpoint.
+The helper sources local `.env` first, so optional product settings created by
+the wizard are available in HTTP mode.
 If the port is already in use, `scripts/run_http_router.sh` exits before
 starting another router and prints the listener details. Stop the foreground
 server with `Ctrl-C`. If you launched it in the background, find the listener
@@ -128,6 +155,12 @@ Include optional product starters:
 uv run python scripts/ingest_tools.py --products all
 ```
 
+Or let the wizard enable only the products you want:
+
+```bash
+python3 scripts/setup_wizard.py --products clearpass,mist
+```
+
 ## 5. Optional: build the docs/API RAG indexes
 
 The router tool catalog is quick. The full docs/API index is larger.
@@ -141,6 +174,7 @@ Built indexes live under `data/` and are git-ignored.
 ## 6. Validate
 
 ```bash
+python3 scripts/setup_wizard.py --yes --skip-catalog
 uv run python scripts/doctor.py
 uv run pytest tests/unit -q
 uv run python scripts/validate_release.py
@@ -161,6 +195,14 @@ Optional product backends are disabled by default.
 
 ```env
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
+```
+
+The wizard can prompt for the selected product URL/token settings and writes
+them to local git-ignored `.env` plus local stdio MCP configs. Use a subset when
+you only want ClearPass, Mist, or another specific starter:
+
+```bash
+python3 scripts/setup_wizard.py --products clearpass
 ```
 
 | Product | Required variables |

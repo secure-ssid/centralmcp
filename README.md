@@ -1,4 +1,4 @@
-# centralmcp — HPE Aruba Central MCP server
+# centralmcp — HPE Networking MCP toolkit
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -12,7 +12,7 @@ It is built around direct REST calls with `httpx`. `pycentral` is not a runtime 
 
 ```mermaid
 flowchart LR
-    client["MCP clients<br/>Claude, Cursor, VS Code, any MCP-capable model"]
+    client["MCP clients<br/>Cursor, VS Code, Claude, local agents<br/>or any MCP-capable model"]
     router["aruba-tool-router<br/>find_tool<br/>invoke_read_tool<br/>invoke_tool"]
     rag["Embedded RAG<br/>LanceDB docs<br/>SQLite OpenAPI lookup"]
     core["Core Aruba backends<br/>Central monitoring/config/NAC/ops<br/>GreenLake Platform"]
@@ -35,7 +35,7 @@ ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
 
 | You want to... | Use centralmcp to... |
 |---|---|
-| Connect Claude, Cursor, VS Code, or another MCP client to Aruba Central | Run the low-token `aruba-tool-router` over stdio or streamable HTTP |
+| Connect an MCP-capable AI client to Aruba Central | Run the low-token `aruba-tool-router` over stdio or streamable HTTP |
 | Ask questions about Aruba/HPE docs and APIs | Use embedded LanceDB + SQLite RAG/OpenAPI lookup without Docker |
 | Inspect Central health, devices, clients, alerts, events, or sites | Discover tools with `find_tool` and call read-only tools through `invoke_read_tool` |
 | Automate migrations or SSID workflows | Use the 8-stage migration pipeline and SSID helpers |
@@ -45,6 +45,7 @@ ArubaOS 8 MCP, EdgeConnect MCP, Python `httpx` network automation.
 
 | Need | Start here |
 |---|---|
+| Guided setup | [`scripts/setup_wizard.py`](scripts/setup_wizard.py) |
 | Try without API credentials | [Try it locally without credentials](#try-it-locally-without-credentials) |
 | Try it quickly | [Quick start](#quick-start) |
 | Check your local setup | [`scripts/doctor.py`](scripts/doctor.py) |
@@ -92,8 +93,7 @@ will need credentials later, but the local setup path is safe to test first.
 ```bash
 git clone https://github.com/secure-ssid/centralmcp.git
 cd centralmcp
-uv sync
-uv run python scripts/ingest_tools.py
+python3 scripts/setup_wizard.py --yes
 uv run python scripts/doctor.py
 MCP_PORT=8010 bash scripts/run_http_router.sh
 ```
@@ -109,20 +109,22 @@ http://127.0.0.1:8010/mcp
 ```bash
 git clone https://github.com/secure-ssid/centralmcp.git
 cd centralmcp
-uv sync
 
-cp config/credentials.yaml.example config/credentials.yaml
-cp .mcp.json.example .mcp.json
+python3 scripts/setup_wizard.py
 ```
 
-Edit:
+The wizard can run `uv sync`, write local MCP client configs, pick a Central API
+gateway region, fill credentials without echoing secrets, enable optional
+products, build the router catalog, and run the local doctor.
+
+Review:
 
 - `config/credentials.yaml` with your Central / GLP OAuth credentials.
-- `.mcp.json` and replace `/path/to/centralmcp` with your local clone path.
-- `.mcp.http.json.example` if your MCP client connects to an already-running
-  streamable HTTP server instead of launching stdio; copy it to the git-ignored
-  `.mcp.http.json` for local edits.
-- `.claude/launch.json` if you use Claude launch profiles; choose the minimal
+- `.env` if you enabled ClearPass, Mist, Apstra, AOS8, or EdgeConnect.
+- `.mcp.json` if you want to tune the generated stdio MCP client config.
+- `.mcp.http.json` if your MCP client connects to an already-running
+  streamable HTTP server instead of launching stdio.
+- `.claude/launch.json` if you use those launch profiles; choose the minimal
   `aruba-tool-router` profile for daily use.
 
 Build the lightweight router tool index:
@@ -171,6 +173,13 @@ Enable optional products only when needed:
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect
 ```
 
+The setup wizard can enable a subset for you, write the matching local `.env`,
+and inject those values into local stdio MCP configs:
+
+```bash
+python3 scripts/setup_wizard.py --products clearpass,mist
+```
+
 The optional product starter GET tools are read-only and page list responses with
 `limit` / `offset` so broad API calls do not flood the MCP context.
 
@@ -195,6 +204,8 @@ http://127.0.0.1:8010/mcp
 Use [`.mcp.http.json.example`](.mcp.http.json.example) as a generic HTTP client
 snippet. Plain `curl` is only useful for checking that the server is listening;
 real MCP clients use streaming headers such as `Accept: text/event-stream`.
+The helper sources a local `.env` first, so optional product settings created by
+the wizard are available to HTTP mode too.
 If the port is already in use, the helper exits before starting another router
 and prints the listener details plus the `kill <PID>` stop command.
 
@@ -220,7 +231,7 @@ Product starter backends also use product-specific URL/token variables. See [doc
 ## Project layout
 
 ```text
-.claude/                 Claude launch profiles and repo agent notes
+.claude/                 Optional launch profiles and repo agent notes
 .cursor/                 Cursor MCP profiles: router default and direct-server dev mode
 .vscode/                 VS Code MCP example config
 config/                  Credentials template; real credentials stay git-ignored

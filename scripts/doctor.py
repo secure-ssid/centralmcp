@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import socket
 import sys
@@ -64,6 +65,28 @@ def _load_json(path: Path) -> tuple[dict[str, object] | None, str | None]:
     if not isinstance(data, dict):
         return None, "top-level JSON value must be an object"
     return data, None
+
+
+def _load_local_env(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        try:
+            parsed = shlex.split(value, posix=True)
+        except ValueError:
+            continue
+        os.environ[key] = parsed[0] if len(parsed) == 1 else value.strip()
 
 
 def _server_map(data: dict[str, object]) -> dict[str, object] | None:
@@ -458,6 +481,7 @@ def main() -> int:
         help="exit nonzero on WARN as well as FAIL",
     )
     args = parser.parse_args()
+    _load_local_env(ROOT / ".env")
 
     checks = [
         *_dependency_checks(),

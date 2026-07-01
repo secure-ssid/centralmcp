@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -f ".env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env"
+  set +a
+fi
+
 export MCP_TRANSPORT="${MCP_TRANSPORT:-streamable-http}"
 export MCP_HOST="${MCP_HOST:-127.0.0.1}"
 export MCP_PORT="${MCP_PORT:-8010}"
@@ -52,6 +59,7 @@ Starting centralmcp HTTP router
   endpoint: http://${MCP_HOST}:${MCP_PORT}/mcp
   mode:     ${CENTRALMCP_ROUTER_MODE}
   toolsets: ${CENTRALMCP_TOOLSETS}
+  products: ${CENTRALMCP_PRODUCTS:-none}
 
 Foreground stop: Ctrl-C
 Background stop:

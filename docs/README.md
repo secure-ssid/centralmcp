@@ -6,7 +6,7 @@ Use this directory as the organized documentation hub for setup, architecture, o
 
 | Doc | Use it for |
 |---|---|
-| [getting-started.md](getting-started.md) | Install, configure credentials, connect an MCP client, and build indexes |
+| [getting-started.md](getting-started.md) | Wizard install, credentials, optional products, MCP client setup, and indexes |
 | [mcp-client-recipes.md](mcp-client-recipes.md) | Copy/paste stdio and streamable HTTP MCP client setup recipes |
 | [example-prompts.md](example-prompts.md) | Practical low-token prompt examples and router call patterns |
 | [tool-router.md](tool-router.md) | Low-token router modes, toolsets, optional products, and safe dispatch |
@@ -32,6 +32,7 @@ Use this directory as the organized documentation hub for setup, architecture, o
 | `mcp_servers/` | FastMCP servers, low-token router, prompts, middleware, optional product starters |
 | `pipeline/` | Migration pipeline, typed clients, credentials loading, state store, SSID helpers |
 | `ingestion/` | Docs/API ingestion into LanceDB and SQLite |
+| `scripts/setup_wizard.py` | Guided install, Central region, credentials, optional products, MCP configs, catalog, and doctor |
 | `scripts/run_http_router.sh` | Start the minimal router over streamable HTTP |
 | `scripts/doctor.py` | Check local setup without making API calls |
 | `scripts/` | Tool-catalog ingestion, release validation, local sync helpers |
@@ -44,8 +45,11 @@ Use this directory as the organized documentation hub for setup, architecture, o
 ## Common commands
 
 ```bash
-# Install dependencies
-uv sync
+# Guided local setup
+python3 scripts/setup_wizard.py
+
+# Guided setup with selected optional products
+python3 scripts/setup_wizard.py --products clearpass,mist
 
 # Build the router tool catalog
 uv run python scripts/ingest_tools.py
@@ -66,7 +70,10 @@ uv run pytest tests/unit -q
 uv run python scripts/validate_release.py
 ```
 
-The HTTP helper exits with listener details instead of starting a duplicate
-router when the selected port is already in use.
+The wizard can run `uv sync`, choose common Central API gateways, fill secrets
+with no echo, write local `.env` for selected optional products, and inject those
+settings into local stdio MCP configs. The HTTP helper sources `.env` first and
+exits with listener details instead of starting a duplicate router when the
+selected port is already in use.
 
 The release helper enforces the documented tool catalog floor and checks local LanceDB tool-index freshness when `data/tools.lance` exists. The unit suite also carries static regression guards for async-safe MCP tools, shared `httpx` client boundaries, project metadata (`centralmcp` package name with no direct `pycentral`/`requests` runtime dependencies), committed low-token MCP config examples, local-only config files, router product/toolset docs, bounded generic read-only GET tools, MCP list default bounds, RAG/search top_k bounds, public tool-count claims, tool-count docstrings, and tracked Markdown local links.

@@ -1,4 +1,4 @@
-# centralmcp — Aruba Central and GreenLake MCP automation
+# centralmcp — HPE Networking MCP automation
 
 HPE Aruba Central API tooling for network device migration, SSID config, switch provisioning, and GreenLake Platform management.
 
@@ -47,7 +47,7 @@ state/                 Pipeline state store (idempotent runs)
   mcp.dev.json         6 core Aruba servers directly — full introspection for debugging
 .mcp.json.example       Generic stdio MCP client example — router minimal mode
 .mcp.http.json.example  Generic streamable HTTP MCP client example
-.claude/launch.json    Claude launch profiles — minimal router (`CENTRALMCP_TOOLSETS=central,glp,rag`) plus direct debug servers
+.claude/launch.json    Optional launch profiles — minimal router (`CENTRALMCP_TOOLSETS=central,glp,rag`) plus direct debug servers
 .vscode/mcp.json.example  VS Code MCP example — router minimal mode
 ```
 

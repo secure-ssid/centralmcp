@@ -111,7 +111,7 @@ against the Central/MRT service logs:
 
 Event count and event listing are core monitoring primitives for any
 AI-assistant or SRE integration against New Central — we wrap Central's
-NBAPI in an MCP (Model Context Protocol) server that Claude agents use
+NBAPI in an MCP (Model Context Protocol) server that AI agents use
 for day-1 operations. Every other service prefix we've probed on this
 gateway (`network-monitoring`, `network-config`, `network-notifications`,
 `network-services`) works; the events endpoint is the one gap, and
