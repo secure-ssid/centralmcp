@@ -82,7 +82,13 @@ def redact_sensitive(value: Any) -> Any:
     if isinstance(value, dict):
         out: dict[Any, Any] = {}
         for key, item in value.items():
-            if _is_sensitive_key(key):
+            # bound_collection_response's own "_pagination" block (offset,
+            # limit, total, truncated, list_key) is helper-generated
+            # metadata, never user data — redacting its "list_key" field
+            # (it ends in "_key") would corrupt pagination info.
+            if key == "_pagination":
+                out[key] = item
+            elif _is_sensitive_key(key):
                 out[key] = _REDACTED
             else:
                 out[key] = redact_sensitive(item)
@@ -593,7 +599,14 @@ def device_type_for_troubleshoot(serial_number: str, device_type: str | None) ->
     """
     if device_type:
         upper = device_type.upper()
-        return _DTYPE_MAP.get(upper, upper.lower())
+        if upper in _DTYPE_MAP:
+            return _DTYPE_MAP[upper]
+        # "SWITCH" is the generic deviceType value inventory records use
+        # (see list_devices' device_type filter) — it isn't a valid URL
+        # segment on its own, so fall through to inventory-based CX/AOS-S
+        # disambiguation instead of passing it through as "switch".
+        if upper not in ("SWITCH", "SWITCHES"):
+            return upper.lower()
     device = get_mcp_client().get_device_by_serial(serial_number)
     if not device:
         return None

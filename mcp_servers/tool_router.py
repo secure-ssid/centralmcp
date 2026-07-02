@@ -280,6 +280,7 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
             vec = _embedder.embed_query(query)
             hits = _lance.search_tools(_lance.connect(), query, vec, top_k=top_k * 2)
         added = 0
+        kw_found = len(by_name)
         for h in hits:
             name = h.get("name", "")
             server = h.get("server")
@@ -294,7 +295,7 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
                 and (tool is None or not _is_read_only_tool(tool))
             ):
                 continue
-            if added >= sem_budget + max(0, kw_budget - len(by_name)):
+            if added >= sem_budget + max(0, kw_budget - kw_found):
                 break
             schema = json.loads(h.get("schema_json") or "{}")
             item = {
