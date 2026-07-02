@@ -400,9 +400,13 @@ async def invoke_tool(
 # minimal mode: expose only find_tool + invoke_read_tool + invoke_tool to minimize tool-list tokens
 if _ROUTER_MODE != "minimal" and "aruba-monitoring" in _BACKENDS:
     @mcp.tool(annotations=READ_ONLY)
-    async def list_scopes(ctx: Context) -> dict[str, Any]:
-        """List Central scopes (sites, groups, global) — ID + name."""
-        return await invoke_tool(ctx, "list_scopes")
+    async def list_scopes(
+        ctx: Context, limit: int = 100, offset: int = 0, full_list: bool = False
+    ) -> dict[str, Any]:
+        """List Central scopes (sites, groups, global) — ID + name (paginated)."""
+        return await invoke_tool(
+            ctx, "list_scopes", {"limit": limit, "offset": offset, "full_list": full_list}
+        )
 
 
     @mcp.tool(annotations=READ_ONLY)
@@ -413,22 +417,18 @@ if _ROUTER_MODE != "minimal" and "aruba-monitoring" in _BACKENDS:
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_sites(
-        ctx: Context, limit: int = 50, offset: int = 0, full_list: bool = False
+        ctx: Context, limit: int = 50, offset: int = 0
     ) -> dict[str, Any]:
         """List sites (paginated)."""
-        return await invoke_tool(
-            ctx, "list_sites", {"limit": limit, "offset": offset, "full_list": full_list}
-        )
+        return await invoke_tool(ctx, "list_sites", {"limit": limit, "offset": offset})
 
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_devices(
-        ctx: Context, limit: int = 50, offset: int = 0, full_list: bool = False
+        ctx: Context, limit: int = 50, offset: int = 0
     ) -> dict[str, Any]:
         """List devices (paginated)."""
-        return await invoke_tool(
-            ctx, "list_devices", {"limit": limit, "offset": offset, "full_list": full_list}
-        )
+        return await invoke_tool(ctx, "list_devices", {"limit": limit, "offset": offset})
 
 
     @mcp.tool(annotations=READ_ONLY)

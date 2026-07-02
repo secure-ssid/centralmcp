@@ -9,9 +9,9 @@ from mcp_servers import config
 
 def test_list_passpoint_profiles_bounds_and_filters(monkeypatch):
     client = MagicMock()
+    # The server honored limit=1/offset=1 and returned just the second page.
     client.get.return_value = {
         "profile": [
-            {"name": "sys_cnac_air_pass"},
             {"name": "guest-passpoint"},
         ]
     }
@@ -40,7 +40,22 @@ def test_list_passpoint_profiles_bounds_and_filters(monkeypatch):
         },
     )
     assert result["profile"] == [{"name": "guest-passpoint"}]
-    assert result["_pagination"]["total"] == 2
+    assert result["_pagination"]["offset"] == 1
+    assert result["_pagination"]["total"] == 1
+
+
+def test_list_passpoint_profiles_does_not_reapply_offset_to_server_page(monkeypatch):
+    client = MagicMock()
+    # 60 profiles total; the server honored limit=50/offset=50 and returned
+    # the 10 remaining. The tool must not slice those 10 again with offset=50.
+    client.get.return_value = {"profile": [{"name": f"p{i}"} for i in range(50, 60)]}
+    monkeypatch.setattr(config, "get_client", lambda: client)
+
+    result = config.list_passpoint_profiles(limit=50, offset=50)
+
+    assert len(result["profile"]) == 10
+    assert result["_pagination"]["offset"] == 50
+    assert result["_pagination"]["truncated"] is False
 
 
 def test_list_passpoint_profiles_full_list_preserves_payload(monkeypatch):
