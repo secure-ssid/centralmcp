@@ -1832,7 +1832,6 @@ def create_webhook(
             Required when auth_mechanism="OIDC" (sent as the `oidcDetails`
             object per the developer-docs schema).
     """
-    client = get_client()
     body: dict[str, Any] = {"name": name, "endpoint": endpoint_url, "authMechanism": auth_mechanism}
     if auth_mechanism == "OIDC":
         if not (oidc_client_id and oidc_client_secret and oidc_well_known_url):
@@ -1844,7 +1843,7 @@ def create_webhook(
         }
     elif api_key:
         body["apiKey"] = api_key
-    resp = client._request("POST", _WEBHOOKS_BASE, json={"input": body})
+    resp = get_client()._request("POST", _WEBHOOKS_BASE, json={"input": body})
     return resp_json(resp)
 
 

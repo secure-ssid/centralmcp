@@ -330,3 +330,34 @@ def test_cable_test_uses_async_troubleshooting_helper(monkeypatch):
             [],
         )
     ]
+
+
+def _fail_get_client():
+    raise AssertionError("get_client should not be called for rejected input")
+
+
+def test_poe_bounce_rejects_aps_before_client_construction(monkeypatch):
+    monkeypatch.setattr(ops, "get_client", _fail_get_client)
+    monkeypatch.setattr(ops, "device_type_for_troubleshoot", lambda serial, dtype: "aps")
+
+    result = asyncio.run(ops.poe_bounce(object(), "AP1", ["1"], device_type="AP"))
+
+    assert result == {"status": None, "errors": ["PoE bounce is not supported on Access Points."]}
+
+
+def test_port_bounce_rejects_aps_before_client_construction(monkeypatch):
+    monkeypatch.setattr(ops, "get_client", _fail_get_client)
+    monkeypatch.setattr(ops, "device_type_for_troubleshoot", lambda serial, dtype: "aps")
+
+    result = asyncio.run(ops.port_bounce(object(), "AP1", ["1"], device_type="AP"))
+
+    assert result == {"status": None, "errors": ["Port bounce is not supported on Access Points."]}
+
+
+def test_cable_test_rejects_gateways_before_client_construction(monkeypatch):
+    monkeypatch.setattr(ops, "get_client", _fail_get_client)
+    monkeypatch.setattr(ops, "device_type_for_troubleshoot", lambda serial, dtype: "gateways")
+
+    result = asyncio.run(ops.cable_test("GW1", ["GE 0/0/0"]))
+
+    assert result == {"status": None, "errors": ["Cable test is not supported on gateways."]}

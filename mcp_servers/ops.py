@@ -208,7 +208,6 @@ async def poe_bounce(
 
     ports format: CX "1/1/1", AOS-S "1", Gateway "GE 0/0/0". device_type auto-detected.
     """
-    client = get_client()
     errors: list[str] = []
     dtype = device_type_for_troubleshoot(serial_number, device_type)
     if dtype is None or dtype == "aps":
@@ -225,7 +224,7 @@ async def poe_bounce(
     if result.action != "accept" or not result.data.confirm:
         return {"status": "CANCELLED", "detail": "user declined confirmation"}
 
-    return await atroubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/poeBounce", {"ports": ports}, errors)
+    return await atroubleshoot_async(get_client(), f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/poeBounce", {"ports": ports}, errors)
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -239,7 +238,6 @@ async def port_bounce(
 
     ports format: CX "1/1/1", AOS-S "1", Gateway "GE 0/0/0". device_type auto-detected.
     """
-    client = get_client()
     errors: list[str] = []
     dtype = device_type_for_troubleshoot(serial_number, device_type)
     if dtype is None or dtype == "aps":
@@ -256,7 +254,7 @@ async def port_bounce(
     if result.action != "accept" or not result.data.confirm:
         return {"status": "CANCELLED", "detail": "user declined confirmation"}
 
-    return await atroubleshoot_async(client, f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/portBounce", {"ports": ports}, errors)
+    return await atroubleshoot_async(get_client(), f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/portBounce", {"ports": ports}, errors)
 
 
 @mcp.tool(annotations=DIAGNOSTIC)
@@ -266,7 +264,6 @@ async def cable_test(
     device_type: str | None = None,
 ) -> dict[str, Any]:
     """Run a cable/TDR test on CX or AOS-S switch ports (async, polls ~60s)."""
-    client = get_client()
     errors: list[str] = []
     dtype = device_type_for_troubleshoot(serial_number, device_type)
     if dtype == "gateways":
@@ -276,7 +273,7 @@ async def cable_test(
         errors.append("Cable test is not supported on Access Points.")
         return {"status": None, "errors": errors}
     return await atroubleshoot_async(
-        client,
+        get_client(),
         f"/network-troubleshooting/v1alpha1/{dtype}/{serial_number}/cableTest",
         {"ports": ports},
         errors,
@@ -292,7 +289,6 @@ async def reboot_device(
     device_type: str | None = None,
 ) -> dict[str, Any]:
     """Reboot an AP, CX switch, AOS-S switch, or gateway. device_type auto-detected if omitted."""
-    client = get_client()
     errors: list[str] = []
 
     if not device_type:
@@ -333,7 +329,7 @@ async def reboot_device(
         return {"status": "CANCELLED", "detail": "user declined confirmation"}
 
     try:
-        response = await client._arequest("POST", endpoint, json={})
+        response = await get_client()._arequest("POST", endpoint, json={})
         if response.status_code not in (200, 201, 202):
             errors.append(compact_http_error(response))
             return {"serial_number": serial_number, "device_type": device_type, "response": None, "errors": errors}
