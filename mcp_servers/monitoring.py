@@ -75,8 +75,14 @@ def list_sites(
     offset: int = 0,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """Return sites with IDs, names, and location fields (paginated)."""
-    sites = get_mcp_client().get_sites(limit=clamp_limit(limit), offset=max(0, offset))
-    return maybe_bound(sites, limit=limit, offset=offset)
+    off = max(0, offset)
+    sites = get_mcp_client().get_sites(limit=clamp_limit(limit), offset=off)
+    # get_sites already returned the paginated slice — pass offset=0 so
+    # maybe_bound doesn't re-slice it; report the true offset instead.
+    wrapped = maybe_bound(sites, limit=limit, offset=0)
+    if isinstance(wrapped, dict) and "_pagination" in wrapped:
+        wrapped["_pagination"]["offset"] = off
+    return wrapped
 
 
 @mcp.tool(annotations=READ_ONLY)

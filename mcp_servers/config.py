@@ -289,8 +289,12 @@ def set_firmware_compliance(
 
 
 @mcp.tool(annotations=READ_ONLY)
-def list_firmware_upgrades(serial_number: str | None = None) -> dict[str, Any]:
-    """List devices with firmware upgrade activity (in-progress or recent).
+def list_firmware_upgrades(
+    serial_number: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List devices with firmware upgrade activity (in-progress or recent, bounded by default).
 
     Sourced from GET /network-services/v1alpha1/firmware-details (the same endpoint
     get_firmware uses) — the legacy /firmware/v1/upgrade endpoint 404s on New Central.
@@ -321,7 +325,9 @@ def list_firmware_upgrades(serial_number: str | None = None) -> dict[str, Any]:
             for it in items
             if it.get("upgradeStatus") is not None
         ]
-        return {"items": upgrades, "errors": errors}
+        return bound_collection_response(
+            {"items": upgrades, "errors": errors}, limit=limit, offset=offset, list_key="items"
+        )
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "errors": errors}
@@ -516,7 +522,12 @@ def _config_list_response(
         payload = {list_key: []}
     if full_list:
         return payload
-    return bound_collection_response(payload, limit=limit, offset=offset, list_key=list_key)
+    # The server already applied the offset via query params; slice from 0 so
+    # the page isn't offset twice, but report the true offset to the caller.
+    bounded = bound_collection_response(payload, limit=limit, offset=0, list_key=list_key)
+    if isinstance(bounded, dict) and "_pagination" in bounded:
+        bounded["_pagination"]["offset"] = max(0, offset)
+    return bounded
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1736,8 +1747,15 @@ def list_config_assignments(
     scope_id: str | None = None,
     device_function: str | None = None,
     profile_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
 ) -> dict[str, Any]:
-    """List config assignments (library profiles bound to scopes). Optional filters: scope / device-function / profile-type."""
+    """List config assignments (library profiles bound to scopes, bounded by default).
+
+    Optional filters: scope / device-function / profile-type. Paginated
+    client-side via limit/offset; full_list=True returns everything.
+    """
     params: dict[str, Any] = {}
     if scope_id is not None:
         params["scope-id"] = scope_id
@@ -1747,7 +1765,10 @@ def list_config_assignments(
         params["profile-type"] = profile_type
     client = get_client()
     resp = client._request("GET", "/network-config/v1alpha1/config-assignments", params=params or None)
-    return resp_json(resp)
+    data = resp_json(resp)
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -1990,7 +2011,12 @@ def list_config_templates(limit: int = 100, offset: int = 0) -> dict[str, Any]:
                 continue
             data = resp.json()
             items = data if isinstance(data, list) else data.get("items", data.get("templates", []))
-            return bound_collection_response(items, limit=lim, offset=off)
+            # The endpoint already paged via limit/offset params; slice from 0
+            # so the page isn't offset twice, but report the true offset.
+            bounded = bound_collection_response(items, limit=lim, offset=0)
+            if isinstance(bounded, dict) and "_pagination" in bounded:
+                bounded["_pagination"]["offset"] = off
+            return bounded
         except Exception as exc:
             errors.append(f"{endpoint}: {exc}")
     return {"items": [], "errors": errors, "_note": "No template endpoint responded — may not be exposed in New Central yet"}
