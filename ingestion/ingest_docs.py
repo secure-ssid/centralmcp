@@ -90,6 +90,11 @@ def _schema_to_text(spec_name: str, schema_name: str, schema: dict) -> str | Non
 
     field_lines = []
     for field, fdef in props.items():
+        # JSON Schema (fully embedded by OpenAPI 3.1) permits boolean schemas
+        # (true/false) anywhere a schema is expected, including in
+        # properties — skip those rather than crashing the whole run.
+        if not isinstance(fdef, dict):
+            continue
         parts = [f"  - {field}"]
         if fdesc := fdef.get("description"):
             parts.append(f": {fdesc}")
@@ -193,15 +198,20 @@ def collect_points(source_dir: Path, doc_type: str) -> list[dict]:
         text = read_file(path)
         if not text or not text.strip():
             continue
+        # Hash a cwd-invariant relative path (matches collect_openapi_points)
+        # so redis-backend incremental dedup (_existing_ids) sees the same
+        # chunk ids across invocation styles (repo-root vs. `python -m`,
+        # relative vs. absolute) instead of re-uploading the whole corpus.
+        rel_path = str(path.resolve().relative_to(SOURCES_DIR.resolve()))
         chunks = chunk_text(text)
         for i, chunk in enumerate(chunks):
             records.append(
                 {
-                    "id": stable_id(path, i),
+                    "id": stable_id(Path(rel_path), i),
                     "text": chunk,
                     "source": source_dir.name,
                     "doc_type": doc_type,
-                    "file_path": str(path.relative_to(SOURCES_DIR)),
+                    "file_path": rel_path,
                     "chunk_index": i,
                 }
             )
@@ -244,9 +254,16 @@ WRITE_BATCH_LANCE = 512
 def upload_lancedb(records: list[dict], ingested_sources: list[str],
                    parallel: int | None = None) -> None:
     """Full rebuild of the LanceDB docs table: stream embeddings from fastembed
-    (one embed pass so parallel workers spawn once), add rows in batches, build
-    the FTS index once at the end, then assert every ingested source landed
-    >0 chunks (R2 — a silently-empty source poisoned the old index).
+    (one embed pass so parallel workers spawn once), add rows in batches into
+    a staging table, assert every ingested source landed >0 chunks (R2 — a
+    silently-empty source poisoned the old index), then atomically swap the
+    staging table into place and build its FTS index.
+
+    Building into a staging table (rather than overwriting the live "docs"
+    table on the first batch) means a crash partway through a large rebuild
+    — OOM, disk full, Ctrl-C — leaves the previous good index untouched and
+    still serving `ask_docs`/`search_docs`, instead of a table truncated to
+    whatever fraction of the corpus landed before the crash.
     """
     from pipeline.clients import lance_client
     from pipeline.clients.embed_client import EmbedClient
@@ -256,6 +273,7 @@ def upload_lancedb(records: list[dict], ingested_sources: list[str],
     vectors = embedder.iter_embed_documents(
         (r["text"] for r in records), parallel=parallel
     )
+    staging_name = f"{lance_client.DOCS_TABLE}__staging"
     table = None
     buf: list[dict] = []
     done = 0
@@ -263,7 +281,7 @@ def upload_lancedb(records: list[dict], ingested_sources: list[str],
         buf.append({**record, "vector": vec})
         if len(buf) >= WRITE_BATCH_LANCE:
             if table is None:
-                table = lance_client.create_docs_table(db, buf)
+                table = lance_client.create_docs_table(db, buf, table_name=staging_name)
             else:
                 table.add(buf)
             done += len(buf)
@@ -271,21 +289,24 @@ def upload_lancedb(records: list[dict], ingested_sources: list[str],
             print(f"    embedded+added {done}/{len(records)}", flush=True)
     if buf:
         if table is None:
-            table = lance_client.create_docs_table(db, buf)
+            table = lance_client.create_docs_table(db, buf, table_name=staging_name)
         else:
             table.add(buf)
         done += len(buf)
         print(f"    embedded+added {done}/{len(records)}", flush=True)
     if table is None:
         raise SystemExit("No records to ingest — check ingestion/sources/")
-    print("  building FTS index...", flush=True)
-    lance_client.build_fts_index(table)
 
-    counts = lance_client.source_counts(db)
+    counts = lance_client.source_counts(db, table_name=staging_name)
     print(f"  per-source counts: {counts}")
     empty = [s for s in ingested_sources if counts.get(s, 0) == 0]
     if empty:
         raise SystemExit(f"FAIL: sources with 0 indexed chunks: {empty}")
+
+    print("  swapping staged index into place...", flush=True)
+    live_table = lance_client.promote_staging_table(db, staging_name)
+    print("  building FTS index...", flush=True)
+    lance_client.build_fts_index(live_table)
 
 
 def main():
