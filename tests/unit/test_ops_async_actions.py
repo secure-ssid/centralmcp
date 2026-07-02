@@ -123,3 +123,16 @@ def test_disconnect_client_uses_async_request_after_auto_lookup(monkeypatch):
             {"json": {"userMacAddress": "aa:bb:cc:dd:ee:ff"}},
         )
     ]
+
+
+def test_reboot_device_rejects_unknown_type_before_client_construction(monkeypatch):
+    def fail_get_client():
+        raise AssertionError("get_client should not be called for rejected input")
+
+    monkeypatch.setattr(ops, "get_client", fail_get_client)
+
+    result = asyncio.run(ops.reboot_device(_AcceptedContext(), "X1", device_type="BOGUS"))
+
+    assert result["device_type"] == "BOGUS"
+    assert result["response"] is None
+    assert "Unknown device_type 'BOGUS'" in result["errors"][0]
