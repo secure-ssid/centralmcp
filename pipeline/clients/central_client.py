@@ -20,6 +20,22 @@ from pipeline.clients.token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
 
+
+def _post_error(response: httpx.Response) -> Exception:
+    """Build the error raised for a failed POST.
+
+    Keeps the informative message (status/reason/body) that get/put/patch/
+    delete's ``raise_for_status()`` doesn't produce, but also attaches
+    ``.response`` — mirroring httpx.HTTPStatusError — so callers doing
+    ``getattr(exc, "response", None).text`` (idempotency/duplicate checks
+    throughout the pipeline stages) see the real body instead of always
+    getting "".
+    """
+    exc = Exception(f"{response.status_code} {response.reason_phrase} — {response.text[:500]}")
+    exc.response = response
+    return exc
+
+
 _INITIAL_RETRY_DELAY = 60  # seconds — Central rate-limit window
 _MAX_RETRY_DELAY = 300
 # 5xx retry uses a much smaller floor — these are usually transient, not
@@ -262,9 +278,7 @@ class CentralClient:
         )
         response = self._request("POST", endpoint, json=data, params=params)
         if not response.is_success:
-            raise Exception(
-                f"{response.status_code} {response.reason_phrase} — {response.text[:500]}"
-            )
+            raise _post_error(response)
         return _parse_json(response)
 
     def post_async(
@@ -277,9 +291,7 @@ class CentralClient:
         logger.debug("POST(async) %s%s", self.base_url, endpoint)
         response = self._request("POST", endpoint, json=data, params=params)
         if not response.is_success:
-            raise Exception(
-                f"{response.status_code} {response.reason_phrase} — {response.text[:500]}"
-            )
+            raise _post_error(response)
         location = response.headers.get("Location", "")
         logger.info("POST async Location: %s", location)
         return location
