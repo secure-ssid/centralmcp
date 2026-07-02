@@ -477,7 +477,6 @@ async def test_aaa(
     AP: server_name required. CX: radius_server_ip required; auth_method chap/pap.
     """
     errors: list[str] = []
-    client = get_client()
 
     if device_type.upper() == "AP":
         if not server_name:
@@ -499,6 +498,7 @@ async def test_aaa(
             "password": password,
         }
 
+    client = get_client()
     return await atroubleshoot_async(client, endpoint, payload, errors)
 
 
