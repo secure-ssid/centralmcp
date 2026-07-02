@@ -18,6 +18,16 @@ ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_MIN_TOOLS = 204
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {value!r}") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {value!r}")
+    return parsed
+
+
 def _rag_indexes_available(root: Path = ROOT) -> bool:
     return (root / "data/docs.lance").is_dir() and (root / "data/specs.sqlite").is_file()
 
@@ -64,7 +74,7 @@ def _validate_tool_index_fresh(indexed: int, registered: int) -> None:
         )
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-tests", action="store_true", help="do not run unit tests")
     parser.add_argument("--skip-rag", action="store_true", help="do not run the RAG/API eval gate")
@@ -80,7 +90,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--min-tools",
-        type=int,
+        type=_positive_int,
         default=_DEFAULT_MIN_TOOLS,
         help=f"minimum acceptable tool catalog count (default: {_DEFAULT_MIN_TOOLS})",
     )
@@ -89,7 +99,11 @@ def main() -> int:
         action="store_true",
         help="fail if the local LanceDB tools index is missing",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
 
     if not args.skip_tests:
         _run([sys.executable, "-m", "pytest", "tests/unit", "-q"], "Unit tests")

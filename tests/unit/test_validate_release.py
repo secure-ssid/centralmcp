@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 
@@ -72,6 +73,44 @@ def test_public_docs_tool_counts_match_catalog():
 
     assert expected in README.read_text()
     assert expected in RAG_ARCHITECTURE.read_text()
+
+
+def test_positive_int_accepts_positive_values():
+    assert validate_release._positive_int("1") == 1
+    assert validate_release._positive_int(str(MIN_TOOLS)) == MIN_TOOLS
+
+
+def test_positive_int_rejects_non_positive_and_non_integer_values():
+    for raw in ("0", "-1", "1.5", "abc"):
+        try:
+            validate_release._positive_int(raw)
+        except argparse.ArgumentTypeError as exc:
+            assert "positive integer" in str(exc)
+        else:
+            raise AssertionError(f"expected ArgumentTypeError for {raw!r}")
+
+
+def test_cli_defaults_min_tools_to_release_floor():
+    args = validate_release._build_parser().parse_args([])
+
+    assert args.min_tools == MIN_TOOLS
+
+
+def test_cli_accepts_positive_min_tools():
+    args = validate_release._build_parser().parse_args(["--min-tools", "1"])
+
+    assert args.min_tools == 1
+
+
+def test_cli_rejects_non_positive_min_tools(capsys):
+    for raw in ("0", "-5"):
+        try:
+            validate_release._build_parser().parse_args(["--min-tools", raw])
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError(f"expected SystemExit for --min-tools {raw}")
+        assert "positive integer" in capsys.readouterr().err
 
 
 def test_validate_tool_count_accepts_count_at_floor():
