@@ -326,3 +326,54 @@ def test_glp_assign_subscription_fails_closed_when_writes_disabled(monkeypatch):
         "serial_number": "SERIAL1",
         "subscription_key": "SUBKEY",
     }
+
+
+def test_glp_add_devices_bulk_fails_closed_when_writes_disabled(monkeypatch):
+    monkeypatch.delenv("CENTRALMCP_GLP_V2BETA1_WRITES", raising=False)
+
+    def fail_client():
+        raise AssertionError("get_glp_client should not be called when writes are disabled")
+
+    monkeypatch.setattr(glp, "get_glp_client", fail_client)
+
+    devices = [{"serialNumber": "SN1", "macAddress": "aa:bb:cc:dd:ee:ff"}]
+    result = glp.glp_add_devices_bulk(devices)
+
+    assert result["status"] == "FORBIDDEN"
+    assert "CENTRALMCP_GLP_V2BETA1_WRITES=1" in result["error"]
+
+
+def test_glp_add_devices_bulk_polls_task_to_completion(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_GLP_V2BETA1_WRITES", "1")
+
+    class DummyGLP:
+        def add_devices(self, devices):
+            assert devices == [{"serialNumber": "SN1", "macAddress": "aa:bb:cc:dd:ee:ff"}]
+            return "task-123"
+
+        def poll_task(self, task_id):
+            assert task_id == "task-123"
+            return {"successfulDevicesSerial": ["SN1"], "failedDevicesSerial": []}
+
+    monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
+
+    result = glp.glp_add_devices_bulk([{"serialNumber": "SN1", "macAddress": "aa:bb:cc:dd:ee:ff"}])
+
+    assert result["task_id"] == "task-123"
+    assert result["task_result"]["successfulDevicesSerial"] == ["SN1"]
+    assert result["errors"] == []
+
+
+def test_glp_add_devices_bulk_reports_errors_without_raising(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_GLP_V2BETA1_WRITES", "1")
+
+    class DummyGLP:
+        def add_devices(self, devices):
+            raise RuntimeError("GLP API unavailable")
+
+    monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
+
+    result = glp.glp_add_devices_bulk([{"serialNumber": "SN1", "macAddress": "aa:bb:cc:dd:ee:ff"}])
+
+    assert result["task_id"] is None
+    assert "GLP API unavailable" in result["errors"][0]

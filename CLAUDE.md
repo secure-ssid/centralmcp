@@ -67,6 +67,7 @@ Use router `invoke_read_tool` for read-only dispatch. Keep router `invoke_tool` 
 | `find_*` | Search — returns None if not found |
 | `create_*` | Create a resource (idempotent where possible) |
 | `set_*` | Update a single attribute |
+| `update_*` | Update an existing resource (multi-field) |
 | `push_*` | Bulk create/upsert |
 | `delete_*` | Remove a resource |
 | `build_*` | Multi-step create + scope-map |
@@ -113,7 +114,7 @@ Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. 
 ## Adding new MCP tools
 
 1. Pick the right domain server: `monitoring.py`, `config.py`, `ops.py`, `nac.py`, `glp.py`, or `rag.py`. The `tool_router.py` auto-exposes tools from enabled backends; add router mapping only for a new backend module/toolset.
-2. Add `@mcp.tool(annotations=READ_ONLY|DIAGNOSTIC|DESTRUCTIVE|IDEMPOTENT_WRITE)` with verb_noun naming, no prefix. Import the annotation constant from `mcp_servers.shared`.
+2. Add `@mcp.tool(annotations=READ_ONLY|READ_ONLY_LOCAL|DIAGNOSTIC|DESTRUCTIVE|IDEMPOTENT_WRITE)` with verb_noun naming, no prefix. Import the annotation constant from `mcp_servers.shared`. Use `READ_ONLY_LOCAL` only for tools that query a local index (LanceDB/SQLite) and never call the live Central/GLP API.
 3. Use thin wrapper — delegate to `pipeline/clients/` or inline API call.
 4. Keep output bounded for MCP clients:
    - list tools should expose `limit` / `offset` when the backend supports paging.

@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central configuration and provisioning tools.
+"""MCP server — Aruba Central configuration and provisioning tools (64 tools).
 
 Covers: VLANs, SSIDs, overlay WLANs, port profiles, firmware compliance, device management,
 webhooks, device groups, gateway clusters, interface and static route config.
@@ -356,7 +356,6 @@ def trigger_device_upgrade(
     local-object equivalent of set_firmware_compliance). The scope-id and persona are
     resolved from device inventory; device_function is auto-detected if omitted.
     """
-    client = get_client()
     errors: list[str] = []
     mcp_client = get_mcp_client()
 
@@ -399,6 +398,7 @@ def trigger_device_upgrade(
                 "device_function": device_function, "scope_id": scope_id, "endpoint": endpoint,
                 "params": params, "payload": payload, "errors": []}
 
+    client = get_client()
     try:
         response = client._request("POST", endpoint, json=payload, params=params)
         if response.status_code == 412:
