@@ -95,6 +95,35 @@ def test_load_all_backends_exposes_optional_writes_when_read_write(monkeypatch):
     assert "clearpass_delete_guest" in router._tool_index
 
 
+def test_load_all_backends_filters_core_writes_when_global_readonly(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_READONLY", "true")
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "mcp_servers.config"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_tool_servers", {})
+    monkeypatch.setattr(router, "_tool_backend_names", {})
+
+    router._load_all_backends()
+
+    # A core (non-optional) backend's write tool must also be excluded —
+    # CENTRALMCP_READONLY is a server-wide kill switch, not product-scoped.
+    assert "create_vlan" not in router._tool_index
+    assert "list_named_vlans" in router._tool_index
+
+
+def test_load_all_backends_exposes_core_writes_when_global_readonly_off(monkeypatch):
+    monkeypatch.delenv("CENTRALMCP_READONLY", raising=False)
+    monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "mcp_servers.config"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_tool_servers", {})
+    monkeypatch.setattr(router, "_tool_backend_names", {})
+
+    router._load_all_backends()
+
+    assert "create_vlan" in router._tool_index
+
+
 def test_public_docs_list_router_products_and_toolsets():
     readme = (REPO_ROOT / "README.md").read_text()
     getting_started = (REPO_ROOT / "docs" / "getting-started.md").read_text()

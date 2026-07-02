@@ -251,6 +251,7 @@ and prints the listener details plus the `kill <PID>` stop command.
 | `CENTRALMCP_TOOLSETS` | Loaded backend profiles; examples use `central,glp,rag` | all core Aruba backends |
 | `CENTRALMCP_PRODUCTS` | Optional product backends | empty |
 | `CENTRALMCP_PRODUCT_ACCESS` | Optional product write-tool visibility: `read-write` or `read-only` | `read-only` |
+| `CENTRALMCP_READONLY` | Server-wide write/destructive-tool kill switch across all backends (core and optional) | off |
 | `CENTRALMCP_GLP_V2BETA1_WRITES` | Enable guarded GLP write tools | off |
 | `CENTRALMCP_NORMALIZE_MACS` | Normalize outbound MAC strings in router responses | off |
 | `GLP_TOKEN_URL` | Override GLP SSO token URL | HPE default |

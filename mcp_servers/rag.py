@@ -14,7 +14,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_servers.shared import READ_ONLY
+from mcp_servers.shared import READ_ONLY_LOCAL
 from pipeline.clients import specs_index
 
 mcp = FastMCP("aruba-rag")
@@ -127,7 +127,7 @@ def _search_redis(query: str, top_k: int, source_filter: str | None) -> list[dic
     return _shape(candidates, top_k)
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=READ_ONLY_LOCAL)
 def search_docs(
     query: str,
     top_k: int = 5,
@@ -159,7 +159,7 @@ def search_docs(
     return _search_lancedb(query, top_k, source_filter)
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=READ_ONLY_LOCAL)
 def lookup_api(query: str, top_k: int = 10) -> list[dict[str, Any]]:
     """Exact Aruba Central API lookup — endpoints, schemas, fields, enum values.
 
@@ -196,7 +196,7 @@ def _citation(hit: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@mcp.tool(annotations=READ_ONLY)
+@mcp.tool(annotations=READ_ONLY_LOCAL)
 def ask_docs(
     question: str,
     top_k: int = 3,

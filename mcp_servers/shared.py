@@ -28,6 +28,17 @@ READ_ONLY = ToolAnnotations(
     openWorldHint=True,
 )
 
+# For read-only tools that only query a local index (LanceDB/SQLite/Ollama —
+# never the live Central/GLP API): same safety profile as READ_ONLY, but
+# openWorldHint=False since the tool has no interaction with an unpredictable
+# external system.
+READ_ONLY_LOCAL = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+
 DIAGNOSTIC = ToolAnnotations(
     readOnlyHint=False,
     destructiveHint=False,
@@ -130,6 +141,29 @@ def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
             f"Tool '{tool_name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only "
             "or invalid. "
             "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows."
+        ),
+        "tool": tool_name,
+        "status": "blocked",
+    }
+
+
+_TRUTHY_FLAG_VALUES = {"1", "true", "yes", "on"}
+
+
+def global_readonly_enabled() -> bool:
+    """Server-wide write kill switch (CENTRALMCP_READONLY), independent of
+    the per-product CENTRALMCP_PRODUCT_ACCESS gate. Off (writes allowed) unless
+    explicitly enabled — for demo/dashboard deployments that must never reach
+    a write/destructive tool on any backend, core or optional."""
+    raw = os.getenv("CENTRALMCP_READONLY", "")
+    return raw.strip().lower() in _TRUTHY_FLAG_VALUES
+
+
+def global_write_blocked(tool_name: str) -> dict[str, str]:
+    return {
+        "error": (
+            f"Tool '{tool_name}' is disabled because CENTRALMCP_READONLY is set. "
+            "Unset CENTRALMCP_READONLY to allow write/destructive tools."
         ),
         "tool": tool_name,
         "status": "blocked",

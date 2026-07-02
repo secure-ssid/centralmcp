@@ -108,6 +108,19 @@ need guarded writes. Those write tools still default to `dry_run=True`; execute
 only after reviewing the preview with `dry_run=False` plus `confirm=True`.
 Unrecognized manual access-mode values fail closed as read-only.
 
+## Server-wide read-only mode
+
+```env
+CENTRALMCP_READONLY=true
+```
+
+Independent of `CENTRALMCP_PRODUCT_ACCESS`, which only gates optional product
+starters: `CENTRALMCP_READONLY=true` hides every non-read-only tool — core
+Aruba domain servers included — from `find_tool` and blocks direct dispatch
+through `invoke_tool`. Use this for demo or read-only-dashboard deployments
+where no write/destructive tool on any backend should be reachable, no matter
+which client connects. Off by default.
+
 ## Why `invoke_tool` is destructive
 
 The backend catalog contains both read-only tools and tools that can change state. Since `invoke_tool` can dispatch any enabled backend tool, it is conservatively annotated as destructive. Use `invoke_read_tool` for normal investigations.
