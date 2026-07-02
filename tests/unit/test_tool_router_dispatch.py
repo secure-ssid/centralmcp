@@ -165,6 +165,28 @@ class TestDispatch:
         assert out["status"] == "blocked"
         assert "read-only or invalid" in out["error"]
 
+    def test_global_readonly_blocks_write_tool_on_core_backend(self, wired_router, monkeypatch):
+        # CENTRALMCP_READONLY must block write tools on ANY backend, not just
+        # the optional-product ones CENTRALMCP_PRODUCT_ACCESS covers.
+        monkeypatch.setenv("CENTRALMCP_READONLY", "true")
+
+        out = _invoke("write_echo", {"value": 7})
+
+        assert out["status"] == "blocked"
+        assert "CENTRALMCP_READONLY" in out["error"]
+
+    def test_global_readonly_does_not_block_read_only_tool(self, wired_router, monkeypatch):
+        monkeypatch.setenv("CENTRALMCP_READONLY", "true")
+
+        out = _invoke_read("sync_echo", {"value": 7})
+
+        assert out == {"kind": "sync", "value": 7}
+
+    def test_global_readonly_off_by_default(self, wired_router):
+        out = _invoke("write_echo", {"value": 7})
+
+        assert out == {"kind": "write", "value": 7}
+
     def test_ctx_stripped_from_published_schema(self, wired_router):
         # FastMCP must hide ``ctx`` from the schema callers see, so invoke_tool
         # only ever forwards real arguments.

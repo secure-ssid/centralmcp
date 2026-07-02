@@ -399,6 +399,12 @@ async def uxi_list_service_test_group_assignments(
 
 if __name__ == "__main__":
     from mcp_servers._cache_hygiene import stable_list_tools
+    from mcp_servers._middleware import (
+        NullStripMiddleware,
+        RateLimitMiddleware,
+        install_middleware,
+    )
     stable_list_tools(mcp)
+    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
     from mcp_servers.shared import run_server
     run_server(mcp)

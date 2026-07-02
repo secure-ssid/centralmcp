@@ -45,6 +45,51 @@ def db(tmp_path):
     return db
 
 
+class TestPromoteStagingTable:
+    def test_swap_replaces_live_table_content(self, db):
+        """The live 'docs' table (built by the `db` fixture) must be fully
+        replaced by the staging table's rows, and the staging table dropped."""
+        staging_rows = [
+            {"id": "9", "text": "Staged replacement row", "source": "nac_docs",
+             "doc_type": "nac", "file_path": "staged.md", "chunk_index": 0, "vector": _vec(9)},
+        ]
+        lc.create_docs_table(db, staging_rows, table_name="docs__staging")
+
+        live = lc.promote_staging_table(db, "docs__staging")
+
+        assert live.count_rows() == 1
+        assert lc.docs_table(db).count_rows() == 1
+        assert lc.source_counts(db) == {"nac_docs": 1}
+        assert "docs__staging" not in db.list_tables().tables
+
+    def test_live_table_untouched_until_promotion(self, db):
+        """Building a staging table must not affect the live table's content
+        — the whole point is a crash before promote_staging_table() leaves
+        the previous good index intact."""
+        original_count = lc.doc_count(db)
+
+        lc.create_docs_table(db, [
+            {"id": "9", "text": "Staged row", "source": "nac_docs", "doc_type": "nac",
+             "file_path": "staged.md", "chunk_index": 0, "vector": _vec(9)},
+        ], table_name="docs__staging")
+
+        assert lc.doc_count(db) == original_count
+
+    def test_promoted_table_is_searchable_after_fts_rebuild(self, db):
+        staging_rows = [
+            {"id": "9", "text": "Passpoint identity profiles use 802.11u for public access",
+             "source": "vsg_docs", "doc_type": "vsg", "file_path": "staged.md",
+             "chunk_index": 0, "vector": _vec(3)},
+        ]
+        lc.create_docs_table(db, staging_rows, table_name="docs__staging")
+
+        live = lc.promote_staging_table(db, "docs__staging")
+        lc.build_fts_index(live)
+
+        hits = lc.hybrid_search(db, "Passpoint 802.11u", _vec(3), top_k=1)
+        assert hits[0]["file_path"] == "staged.md"
+
+
 class TestHybridSearch:
     def test_result_shape_matches_redis_contract(self, db):
         hits = lc.hybrid_search(db, "WPA3 SSID", _vec(99), top_k=2)

@@ -328,7 +328,12 @@ def _push_vlan_interface(
             central_client.put(f"/network-config/v1/vlan-interfaces/{vlan_id}", params=local_params, data=local_body)
 
     # Step 4: Scope-maps
-    _post_scope_map(central_client, global_scope_id, persona, f"layer2-vlan/{vlan_id}")
+    try:
+        _post_scope_map(central_client, global_scope_id, persona, f"layer2-vlan/{vlan_id}")
+    except Exception as exc:
+        response_text = getattr(getattr(exc, "response", None), "text", "") or ""
+        if "already exists" not in response_text.lower():
+            raise
     try:
         _post_scope_map(central_client, device_scope_id, persona, f"vlan-interfaces/{vlan_id}")
     except Exception as exc:
@@ -453,22 +458,35 @@ class ConfigureStage(Stage):
             from pipeline.vlan_loader import load_vlan_config_file
             try:
                 vlans = load_vlan_config_file(record.vlan_config_file)
-                if vlans:
+            except Exception as exc:
+                logger.warning("VLAN config load failed for %s: %s — skipping", record.serial_number, exc)
+                vlans = []
+            if vlans:
+                try:
                     central.post("/network-config/v1/layer2-vlan", data={"l2-vlan": vlans})
-                    for vlan in vlans:
+                    vlans_pushed = len(vlans)
+                except Exception as exc:
+                    logger.warning("VLAN push failed for %s: %s — continuing", record.serial_number, exc)
+                # Scope-map each VLAN independently — one duplicate/failure
+                # (e.g. on a resumed run) must not block the rest of the batch.
+                for vlan in vlans:
+                    try:
                         _post_scope_map(
                             central,
                             target_ctx.global_scope_id,
                             "ACCESS_SWITCH",
                             f"layer2-vlan/{vlan['vlan']}",
                         )
-                    vlans_pushed = len(vlans)
+                    except Exception as exc:
+                        logger.warning(
+                            "VLAN %s scope-map failed for %s: %s — continuing",
+                            vlan.get("vlan"), record.serial_number, exc,
+                        )
+                if vlans_pushed:
                     logger.info(
                         "Pushed %d VLANs for %s (scope-id=%s)",
                         vlans_pushed, record.serial_number, target_ctx.global_scope_id,
                     )
-            except Exception as exc:
-                logger.warning("VLAN push failed for %s: %s — continuing", record.serial_number, exc)
 
         # 7. Push VLAN interfaces (L3) from config file
         vlan_interfaces_pushed = 0
@@ -476,19 +494,29 @@ class ConfigureStage(Stage):
             from pipeline.vlan_interface_loader import load_vlan_interface_config_file
             try:
                 vlan_intfs = load_vlan_interface_config_file(record.vlan_interface_config_file)
-                for vi in vlan_intfs:
+            except Exception as exc:
+                logger.warning(
+                    "VLAN interface config load failed for %s: %s — skipping",
+                    record.serial_number, exc,
+                )
+                vlan_intfs = []
+            # Push each interface independently — one failure (e.g. a
+            # duplicate on a resumed run) must not block the rest of the batch.
+            for vi in vlan_intfs:
+                try:
                     _push_vlan_interface(
                         central, vi, device_scope_id, target_ctx.global_scope_id, persona_api
                     )
                     vlan_interfaces_pushed += 1
+                except Exception as exc:
+                    logger.warning(
+                        "VLAN interface push failed for %s vlan=%s: %s — continuing",
+                        record.serial_number, vi.get("vlan"), exc,
+                    )
+            if vlan_intfs:
                 logger.info(
-                    "Pushed %d VLAN interface(s) for %s",
-                    vlan_interfaces_pushed, record.serial_number,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "VLAN interface push failed for %s: %s — continuing",
-                    record.serial_number, exc,
+                    "Pushed %d/%d VLAN interface(s) for %s",
+                    vlan_interfaces_pushed, len(vlan_intfs), record.serial_number,
                 )
 
         return StageResult.success(

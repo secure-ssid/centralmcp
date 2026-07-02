@@ -2632,6 +2632,49 @@ def test_edgeconnect_list_appliances_compacts(monkeypatch):
     ]
 
 
+def test_edgeconnect_list_tunnels_does_not_send_limit_upstream(monkeypatch):
+    """Sending limit (without offset) upstream capped Orchestrator's response
+    to the same first N items every call, so bound_collection_response's
+    client-side re-slice for offset >= limit always returned empty with
+    truncated=False — silently hiding pages past the first."""
+    called = {}
+    all_tunnels = [{"id": str(i), "operStatus": "up"} for i in range(120)]
+
+    class _Resp:
+        status_code = 200
+        text = "[...]"
+
+        def json(self):
+            return all_tunnels
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
+    monkeypatch.setenv("EDGECONNECT_API_TOKEN", "secret")
+    monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
+
+    first_page = asyncio.run(edgeconnect.edgeconnect_list_tunnels(limit=50, offset=0))
+    second_page = asyncio.run(edgeconnect.edgeconnect_list_tunnels(limit=50, offset=50))
+
+    assert "limit" not in called["params"]
+    assert len(first_page["tunnels"]["items"]) == 50
+    assert len(second_page["tunnels"]["items"]) == 50
+    assert second_page["tunnels"]["items"][0]["id"] == "50"
+    assert second_page["tunnels"]["_pagination"]["truncated"] is True
+
+
 def test_edgeconnect_get_system_info_compacts(monkeypatch):
     called = {}
 
@@ -4068,11 +4111,13 @@ def test_edgeconnect_list_tunnels_filters_and_compacts(monkeypatch):
     )
 
     assert called["url"] == "https://orch.example.com/gms/rest/tunnels2/physical"
+    # limit is NOT sent upstream (Orchestrator has no matching offset param
+    # here) — bound_collection_response does the limit/offset slicing
+    # entirely client-side, matching edgeconnect_list_appliances.
     assert called["params"] == {
         "nePk": "1.NE",
         "state": "up|down",
         "matchingAlias": "branch",
-        "limit": 1,
     }
     assert out["tunnels"]["tunnels"] == [
         {

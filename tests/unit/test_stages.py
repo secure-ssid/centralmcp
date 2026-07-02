@@ -9,7 +9,7 @@ from pipeline.stages.s1_discover import DiscoverStage
 from pipeline.stages.s2_validate import ValidateStage
 from pipeline.stages.s3_offboard import OffboardStage
 from pipeline.stages.s4_transfer import TransferStage
-from pipeline.stages.s6_configure import ConfigureStage
+from pipeline.stages.s6_configure import ConfigureStage, _push_vlan_interface
 from pipeline.stages.s7_firmware import FirmwareStage
 from pipeline.stages.s8_verify import VerifyStage
 
@@ -235,6 +235,72 @@ def test_s6_vlan_interface_push(record_unmanaged, source_ctx, target_ctx, state,
     assert not any("vlan-interfaces/50" in c and "ipv4" in c for c in post_calls)
 
 
+def test_s6_vlan_push_scope_map_failure_does_not_block_others(
+    record_unmanaged, source_ctx, target_ctx, state, run_id, tmp_path
+):
+    """A scope-map failure on one VLAN must not block the rest of the batch,
+    and the batch VLAN-create success still counts toward vlans_pushed."""
+    vlan_cfg = tmp_path / "switch.cfg"
+    vlan_cfg.write_text("vlan 10\nvlan 20\n")
+    record_unmanaged.vlan_config_file = str(vlan_cfg)
+    record_unmanaged.scope_id = "12345"
+    _setup_s6_mocks(target_ctx)
+
+    def side_effect(endpoint, *args, **kwargs):
+        data = kwargs.get("data") or {}
+        if endpoint == "/network-config/v1/scope-maps":
+            resource = ((data.get("scope-map") or [{}])[0]).get("resource", "")
+            if resource == "layer2-vlan/10":
+                raise Exception("boom")
+        return {}
+
+    target_ctx.central_client.post.side_effect = side_effect
+
+    result = ConfigureStage()._execute(record_unmanaged, run_id, source_ctx, target_ctx, state, False)
+
+    assert result.status == StageStatus.SUCCESS
+    assert result.data["vlans_pushed"] == 2
+    scope_map_calls = [
+        c for c in target_ctx.central_client.post.call_args_list
+        if c.args and c.args[0] == "/network-config/v1/scope-maps"
+    ]
+    resources = [
+        ((c.kwargs.get("data") or {}).get("scope-map") or [{}])[0].get("resource")
+        for c in scope_map_calls
+    ]
+    assert "layer2-vlan/10" in resources
+    assert "layer2-vlan/20" in resources
+
+
+def test_push_vlan_interface_suppresses_already_exists_on_global_scope_map():
+    """The global layer2-vlan scope-map (previously unguarded) must silently
+    suppress 'already exists', matching its device-scope sibling below it."""
+    client = MagicMock()
+
+    def side_effect(endpoint, *args, **kwargs):
+        data = kwargs.get("data") or {}
+        if endpoint == "/network-config/v1/scope-maps":
+            resource = ((data.get("scope-map") or [{}])[0]).get("resource", "")
+            if resource == "layer2-vlan/5":
+                exc = Exception("boom")
+                resp = MagicMock()
+                resp.text = "scope map already exists"
+                exc.response = resp
+                raise exc
+        return {}
+
+    client.post.side_effect = side_effect
+
+    # Must not raise.
+    _push_vlan_interface(
+        client,
+        {"vlan": 5, "ip_address": None, "helper_address": None, "dhcp": True},
+        device_scope_id="12345",
+        global_scope_id="99999",
+        persona="ACCESS_SWITCH",
+    )
+
+
 def test_s6_vlan_interface_skipped_when_no_file(record_unmanaged, source_ctx, target_ctx, state, run_id):
     """No VLAN interface push if vlan_interface_config_file is None."""
     record_unmanaged.scope_id = "12345"
@@ -244,6 +310,41 @@ def test_s6_vlan_interface_skipped_when_no_file(record_unmanaged, source_ctx, ta
 
     assert result.status == StageStatus.SUCCESS
     assert result.data["vlan_interfaces_pushed"] == 0
+
+
+def test_s6_vlan_interface_push_continues_after_one_item_hard_fails(
+    record_unmanaged, source_ctx, target_ctx, state, run_id, tmp_path
+):
+    """A hard (non-'already exists') scope-map failure on one VLAN interface
+    must not block subsequent interfaces in the same batch."""
+    cfg = tmp_path / "intfs.cfg"
+    cfg.write_text("interface vlan 5\n    ip dhcp\ninterface vlan 50\n    ip dhcp\n")
+    record_unmanaged.vlan_interface_config_file = str(cfg)
+    record_unmanaged.scope_id = "12345"
+    _setup_s6_mocks(target_ctx)
+
+    def side_effect(endpoint, *args, **kwargs):
+        data = kwargs.get("data") or {}
+        if endpoint == "/network-config/v1/scope-maps":
+            resource = ((data.get("scope-map") or [{}])[0]).get("resource", "")
+            if resource == "layer2-vlan/5":
+                exc = Exception("boom")
+                resp = MagicMock()
+                resp.text = "internal error"
+                exc.response = resp
+                raise exc
+        return {}
+
+    target_ctx.central_client.post.side_effect = side_effect
+
+    result = ConfigureStage()._execute(record_unmanaged, run_id, source_ctx, target_ctx, state, False)
+
+    assert result.status == StageStatus.SUCCESS
+    # vlan 5's global scope-map hard-fails (re-raised inside
+    # _push_vlan_interface), but vlan 50 must still be attempted and counted.
+    assert result.data["vlan_interfaces_pushed"] == 1
+    post_calls = [str(c) for c in target_ctx.central_client.post.call_args_list]
+    assert any("vlan-interfaces/50" in c for c in post_calls)
 
 
 def test_s6_device_profiles_created(record_unmanaged, source_ctx, target_ctx, state, run_id):

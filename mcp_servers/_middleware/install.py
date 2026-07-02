@@ -117,6 +117,11 @@ def install_middleware(server: FastMCP, middlewares: list[Middleware]) -> None:
         except BaseException as exc:
             substitute = await _run_on_error(middlewares, name, args, exc)
             if substitute is not None:
+                # Route the substitute through after_call too, so an
+                # on_error result (e.g. UnknownToolSuggestMiddleware's
+                # hint dict) gets the same envelope treatment as any other
+                # failure/blocked result instead of a bespoke shape.
+                substitute = await _run_after(middlewares, name, args, substitute)
                 if convert_result:
                     tool = tm.get_tool(name)
                     if tool is not None:

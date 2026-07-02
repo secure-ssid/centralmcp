@@ -56,6 +56,24 @@ def build_fts_index(table) -> None:
     table.create_fts_index("text", use_tantivy=False, replace=True)
 
 
+def promote_staging_table(db, staging_table_name: str, table_name: str = DOCS_TABLE):
+    """Atomically replace ``table_name`` with the contents of a fully-built
+    staging table, then drop the staging table.
+
+    LanceDB OSS has no ``rename_table``, so the swap is one
+    ``create_table(..., mode="overwrite")`` call using the staging table's
+    data — Lance's versioned storage format commits this atomically, so a
+    crash mid-swap leaves the previous ``table_name`` version intact rather
+    than a partially-written table. Callers should only call this after the
+    staging table has been fully populated and validated (e.g. the R2
+    per-source empty check) — this function performs no validation itself.
+    """
+    staging = db.open_table(staging_table_name)
+    live = db.create_table(table_name, data=staging.to_arrow(), mode="overwrite")
+    db.drop_table(staging_table_name)
+    return live
+
+
 def hybrid_search(
     db,
     query_text: str,

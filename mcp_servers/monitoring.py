@@ -1861,17 +1861,18 @@ def detect_ssh_brute_force(
             "time": e.get("timeAt"),
         })
 
-    flagged = [
-        {
+    flagged = []
+    for ip, evts in ip_failures.items():
+        if len(evts) < min_failures:
+            continue
+        times = [e["time"] for e in evts if e["time"]]
+        flagged.append({
             "source_ip": ip,
             "failure_count": len(evts),
-            "first_seen": min(e["time"] for e in evts if e["time"]) if evts else None,
-            "last_seen": max(e["time"] for e in evts if e["time"]) if evts else None,
+            "first_seen": min(times) if times else None,
+            "last_seen": max(times) if times else None,
             "event_types": list({e["event_name"] for e in evts}),
-        }
-        for ip, evts in ip_failures.items()
-        if len(evts) >= min_failures
-    ]
+        })
     flagged.sort(key=lambda x: x["failure_count"], reverse=True)
 
     return {

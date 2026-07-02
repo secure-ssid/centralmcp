@@ -22,7 +22,14 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_servers.prompts import register_router_prompts
-from mcp_servers.shared import DESTRUCTIVE, READ_ONLY, optional_product_access_mode
+from mcp_servers.shared import (
+    DESTRUCTIVE,
+    READ_ONLY,
+    global_readonly_enabled,
+    global_write_blocked,
+    optional_product_access_mode,
+    optional_product_write_blocked,
+)
 
 _BACKEND = os.getenv("CENTRALMCP_RAG_BACKEND", "lancedb").strip().lower()
 _ROUTER_MODE = os.getenv("CENTRALMCP_ROUTER_MODE", "default").strip().lower()
@@ -117,6 +124,17 @@ def _optional_write_disabled(name: str, tool: Any | None = None, server: str | N
     )
 
 
+def _write_disabled(name: str, tool: Any | None = None, server: str | None = None) -> bool:
+    """True when a non-read-only tool is blocked by CENTRALMCP_READONLY (all
+    backends) or CENTRALMCP_PRODUCT_ACCESS=read-only (optional backends only)."""
+    tool = tool or _tool_index.get(name)
+    if tool is None or _is_read_only_tool(tool):
+        return False
+    if global_readonly_enabled():
+        return True
+    return _optional_write_disabled(name, tool, server)
+
+
 def _build_backends() -> dict[str, str]:
     """Build backend module map, including optional product backends.
 
@@ -163,9 +181,12 @@ def _load_all_backends() -> None:
     if _tool_index:
         return
     allow_optional_writes = _optional_writes_allowed()
+    readonly_mode = global_readonly_enabled()
     for server_name, module_path in _BACKENDS.items():
         mod = importlib.import_module(module_path)
         for name, tool in mod.mcp._tool_manager._tools.items():
+            if readonly_mode and not _is_read_only_tool(tool):
+                continue
             if (
                 server_name in _OPTIONAL_SERVER_NAMES
                 and not allow_optional_writes
@@ -200,7 +221,7 @@ def _keyword_hits(query: str, limit: int, include_schema: bool = False) -> list[
         return []
     scored: list[tuple[float, Any]] = []
     for name, tool in _tool_index.items():
-        if _optional_write_disabled(name, tool):
+        if _write_disabled(name, tool):
             continue
         name_tokens = set(name.lower().split("_")) - _STOPWORDS
         overlap = q_tokens & name_tokens
@@ -280,6 +301,7 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
             vec = _embedder.embed_query(query)
             hits = _lance.search_tools(_lance.connect(), query, vec, top_k=top_k * 2)
         added = 0
+        kw_found = len(by_name)
         for h in hits:
             name = h.get("name", "")
             server = h.get("server")
@@ -294,7 +316,7 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
                 and (tool is None or not _is_read_only_tool(tool))
             ):
                 continue
-            if added >= sem_budget + max(0, kw_budget - len(by_name)):
+            if added >= sem_budget + max(0, kw_budget - kw_found):
                 break
             schema = json.loads(h.get("schema_json") or "{}")
             item = {
@@ -330,16 +352,10 @@ async def _dispatch_tool(ctx: Context, name: str, arguments: dict[str, Any] | No
     backend = _tool_servers.get(name)
     if backend is None:
         return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
+    if global_readonly_enabled() and not _is_read_only_tool(_tool_index.get(name)):
+        return global_write_blocked(name)
     if _optional_write_disabled(name):
-        return {
-            "error": (
-                f"Tool '{name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only "
-                "or invalid. "
-                "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows."
-            ),
-            "tool": name,
-            "status": "blocked",
-        }
+        return optional_product_write_blocked(name)
     args = {k: v for k, v in (arguments or {}).items() if v is not None}
     try:
         return await backend._tool_manager.call_tool(name, args, context=ctx)

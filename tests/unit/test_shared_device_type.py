@@ -47,6 +47,17 @@ class TestExplicitDeviceType:
     def test_known_mappings_unchanged(self, value, expected):
         assert device_type_for_troubleshoot("SERIAL1", value) == expected
 
+    @pytest.mark.parametrize("value", ["SWITCH", "switch", "Switch", "SWITCHES"])
+    def test_explicit_switch_falls_through_to_inventory_classification(self, monkeypatch, value):
+        # Passing the generic inventory deviceType "SWITCH" explicitly must
+        # not produce the invalid URL segment "switch" — it should route
+        # through the same CX/AOS-S disambiguation as the auto-detect path.
+        _patch_inventory(
+            monkeypatch,
+            {"serialNumber": "SW1", "deviceType": "SWITCH", "firmwareVersion": "FL.10.16.1006"},
+        )
+        assert device_type_for_troubleshoot("SW1", value) == "cx"
+
 
 # ---------------------------------------------------------------------------
 # Auto-detect from inventory (deviceType == SWITCH)

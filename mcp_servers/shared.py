@@ -28,6 +28,17 @@ READ_ONLY = ToolAnnotations(
     openWorldHint=True,
 )
 
+# For read-only tools that only query a local index (LanceDB/SQLite/Ollama —
+# never the live Central/GLP API): same safety profile as READ_ONLY, but
+# openWorldHint=False since the tool has no interaction with an unpredictable
+# external system.
+READ_ONLY_LOCAL = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+
 DIAGNOSTIC = ToolAnnotations(
     readOnlyHint=False,
     destructiveHint=False,
@@ -82,7 +93,13 @@ def redact_sensitive(value: Any) -> Any:
     if isinstance(value, dict):
         out: dict[Any, Any] = {}
         for key, item in value.items():
-            if _is_sensitive_key(key):
+            # bound_collection_response's own "_pagination" block (offset,
+            # limit, total, truncated, list_key) is helper-generated
+            # metadata, never user data — redacting its "list_key" field
+            # (it ends in "_key") would corrupt pagination info.
+            if key == "_pagination":
+                out[key] = item
+            elif _is_sensitive_key(key):
                 out[key] = _REDACTED
             else:
                 out[key] = redact_sensitive(item)
@@ -124,6 +141,29 @@ def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
             f"Tool '{tool_name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only "
             "or invalid. "
             "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows."
+        ),
+        "tool": tool_name,
+        "status": "blocked",
+    }
+
+
+_TRUTHY_FLAG_VALUES = {"1", "true", "yes", "on"}
+
+
+def global_readonly_enabled() -> bool:
+    """Server-wide write kill switch (CENTRALMCP_READONLY), independent of
+    the per-product CENTRALMCP_PRODUCT_ACCESS gate. Off (writes allowed) unless
+    explicitly enabled — for demo/dashboard deployments that must never reach
+    a write/destructive tool on any backend, core or optional."""
+    raw = os.getenv("CENTRALMCP_READONLY", "")
+    return raw.strip().lower() in _TRUTHY_FLAG_VALUES
+
+
+def global_write_blocked(tool_name: str) -> dict[str, str]:
+    return {
+        "error": (
+            f"Tool '{tool_name}' is disabled because CENTRALMCP_READONLY is set. "
+            "Unset CENTRALMCP_READONLY to allow write/destructive tools."
         ),
         "tool": tool_name,
         "status": "blocked",
@@ -593,7 +633,14 @@ def device_type_for_troubleshoot(serial_number: str, device_type: str | None) ->
     """
     if device_type:
         upper = device_type.upper()
-        return _DTYPE_MAP.get(upper, upper.lower())
+        if upper in _DTYPE_MAP:
+            return _DTYPE_MAP[upper]
+        # "SWITCH" is the generic deviceType value inventory records use
+        # (see list_devices' device_type filter) — it isn't a valid URL
+        # segment on its own, so fall through to inventory-based CX/AOS-S
+        # disambiguation instead of passing it through as "switch".
+        if upper not in ("SWITCH", "SWITCHES"):
+            return upper.lower()
     device = get_mcp_client().get_device_by_serial(serial_number)
     if not device:
         return None

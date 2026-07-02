@@ -2113,7 +2113,13 @@ async def edgeconnect_list_tunnels(
     offset: int = 0,
 ) -> dict[str, Any]:
     """List EdgeConnect physical tunnels with compact health/status fields."""
-    params: dict[str, Any] = {"limit": limit}
+    # limit/offset are NOT sent upstream — Orchestrator has no offset param
+    # here, so sending limit alone would cap the fetch to the same first N
+    # items on every call regardless of offset, making bound_collection_response's
+    # client-side re-slice always return empty past the first page. Fetch the
+    # full filtered set and let edgeconnect_get's bound_collection_response
+    # do the slicing, matching edgeconnect_list_appliances.
+    params: dict[str, Any] = {}
     if ne_pk:
         params["nePk"] = ne_pk
     if tunnel_id:

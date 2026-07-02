@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central configuration and provisioning tools.
+"""MCP server — Aruba Central configuration and provisioning tools (64 tools).
 
 Covers: VLANs, SSIDs, overlay WLANs, port profiles, firmware compliance, device management,
 webhooks, device groups, gateway clusters, interface and static route config.
@@ -45,8 +45,16 @@ _DEVICE_GROUPS_BASE = "/network-config/v1/device-groups"
 
 
 def _exc_resp_text(exc: Exception) -> str:
-    """Extract response body text from an HTTP exception, or '' if unavailable."""
-    return getattr(getattr(exc, "response", None), "text", "") or ""
+    """Extract response body text from an HTTP exception, or its string form.
+
+    CentralClient.post/post_async raise a bare Exception whose message already
+    embeds the response body (no ``.response`` attribute), so fall back to
+    ``str(exc)`` when a ``.response`` isn't present.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        return getattr(resp, "text", "") or ""
+    return str(exc)
 
 
 # Name-spacing rules differ by target platform:
@@ -348,7 +356,6 @@ def trigger_device_upgrade(
     local-object equivalent of set_firmware_compliance). The scope-id and persona are
     resolved from device inventory; device_function is auto-detected if omitted.
     """
-    client = get_client()
     errors: list[str] = []
     mcp_client = get_mcp_client()
 
@@ -391,6 +398,7 @@ def trigger_device_upgrade(
                 "device_function": device_function, "scope_id": scope_id, "endpoint": endpoint,
                 "params": params, "payload": payload, "errors": []}
 
+    client = get_client()
     try:
         response = client._request("POST", endpoint, json=payload, params=params)
         if response.status_code == 412:
@@ -1427,17 +1435,27 @@ def assign_device_to_site(
     client = get_client()
     errors: list[str] = []
 
-    candidates = [
+    def _legacy_payload() -> dict[str, Any] | None:
+        try:
+            numeric_site_id = int(site_id)
+        except ValueError:
+            return None
+        return {
+            "site_id": numeric_site_id,
+            "device_id": [serial_number],
+            **({"device_type": device_type} if device_type else {}),
+        }
+
+    candidates: list[tuple[str, str, dict[str, Any] | None]] = [
         ("POST", f"/network-monitoring/v1/sites/{site_id}/devices", {"serials": [serial_number]}),
-        ("POST", "/central/v2/sites/associate",
-         {"site_id": int(site_id), "device_id": [serial_number],
-          **({"device_type": device_type} if device_type else {})}),
-        ("POST", "/monitoring/v1/site/assign",
-         {"site_id": int(site_id), "device_id": [serial_number],
-          **({"device_type": device_type} if device_type else {})}),
+        ("POST", "/central/v2/sites/associate", _legacy_payload()),
+        ("POST", "/monitoring/v1/site/assign", _legacy_payload()),
     ]
 
     for method, endpoint, payload in candidates:
+        if payload is None:
+            errors.append(f"skipped {endpoint}: site_id {site_id!r} is not numeric")
+            continue
         try:
             response = client._request(method, endpoint, json=payload)
             if response.status_code == 404:
