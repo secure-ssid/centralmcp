@@ -18,6 +18,10 @@ _BLOCKED_STATUS_HTTP = {
     "not_found": 404,
     "forbidden": 403,
     "error": 500,
+    # Terminal status from atroubleshoot_poll (shared.py) for a device
+    # operation Central itself reports as failed — no exception is raised,
+    # so this is the only signal that the operation didn't succeed.
+    "failed": 500,
 }
 
 

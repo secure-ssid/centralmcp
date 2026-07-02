@@ -345,6 +345,30 @@ class TestUnknownToolSuggest:
 
         assert "create_vlan" in str(result)
 
+    def test_on_error_substitute_is_enveloped_when_chained_with_response_envelope(self):
+        """UnknownToolSuggestMiddleware's on_error substitute must get the
+        same {ok, status, data, ...} envelope as any other failure result —
+        not a bespoke shape that skips ResponseEnvelopeMiddleware entirely."""
+
+        def list_devices() -> str:
+            return "ok"
+
+        srv = _make_server_with_tool(list_devices)
+        install_middleware(
+            srv,
+            [
+                UnknownToolSuggestMiddleware(lambda: srv._tool_manager._tools),
+                ResponseEnvelopeMiddleware(),
+            ],
+        )
+
+        result = _call(srv, "get_devices", {})
+
+        assert isinstance(result, dict)
+        assert result["ok"] is False
+        assert "Unknown tool: get_devices" in result["message"]
+        assert "find_tool" in result["data"]["hint"]
+
 
 class TestResponseEnvelope:
     def test_wraps_error_dict(self):
@@ -370,6 +394,18 @@ class TestResponseEnvelope:
         assert result["ok"] is False
         assert result["status"] == 409
         assert result["message"] == "user declined confirmation"
+
+    def test_wraps_failed_status(self):
+        # atroubleshoot_poll (shared.py) treats status="FAILED" as a
+        # legitimate terminal state and returns it without raising — this is
+        # the only signal a caller has that a device operation didn't succeed.
+        mw = ResponseEnvelopeMiddleware()
+
+        result = mw.after_call("reboot_device", {}, {"status": "FAILED", "errors": []})
+
+        assert result is not None
+        assert result["ok"] is False
+        assert result["status"] == 500
 
     def test_success_dict_passes_through(self):
         mw = ResponseEnvelopeMiddleware()
