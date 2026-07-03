@@ -202,7 +202,16 @@ def collect_points(source_dir: Path, doc_type: str) -> list[dict]:
         # so redis-backend incremental dedup (_existing_ids) sees the same
         # chunk ids across invocation styles (repo-root vs. `python -m`,
         # relative vs. absolute) instead of re-uploading the whole corpus.
-        rel_path = str(path.resolve().relative_to(SOURCES_DIR.resolve()))
+        # NOTE: this changed chunk ids once — redis-backend users with an
+        # index built before the change should FLUSH the docs index and
+        # re-ingest, or the old-id docs remain as duplicates.
+        try:
+            rel_path = str(path.resolve().relative_to(SOURCES_DIR.resolve()))
+        except ValueError:
+            # A symlink/mount that resolves outside the sources tree — skip
+            # the one file rather than aborting the whole run.
+            print(f"  SKIP {path.name}: resolves outside {SOURCES_DIR}")
+            continue
         chunks = chunk_text(text)
         for i, chunk in enumerate(chunks):
             records.append(

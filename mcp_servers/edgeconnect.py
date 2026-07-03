@@ -21,6 +21,7 @@ from mcp_servers.shared import (
     DESTRUCTIVE,
     READ_ONLY,
     bound_collection_response,
+    clamp_limit,
     optional_product_write_blocked,
     optional_product_writes_allowed,
     redact_sensitive,
@@ -2113,13 +2114,15 @@ async def edgeconnect_list_tunnels(
     offset: int = 0,
 ) -> dict[str, Any]:
     """List EdgeConnect physical tunnels with compact health/status fields."""
-    # limit/offset are NOT sent upstream — Orchestrator has no offset param
-    # here, so sending limit alone would cap the fetch to the same first N
-    # items on every call regardless of offset, making bound_collection_response's
-    # client-side re-slice always return empty past the first page. Fetch the
-    # full filtered set and let edgeconnect_get's bound_collection_response
-    # do the slicing, matching edgeconnect_list_appliances.
-    params: dict[str, Any] = {}
+    # Orchestrator has no offset param here, so the upstream fetch is capped
+    # to the full window the client-side slice needs (offset+limit) plus one
+    # sentinel row so bound_collection_response's truncated flag stays honest
+    # when more tunnels exist beyond the window. Fetching only `limit` (the
+    # old behavior) made every offset>0 page empty; fetching everything would
+    # pull thousands of tunnels for a limit=5 call.
+    safe_limit = clamp_limit(limit)
+    safe_offset = max(0, offset)
+    params: dict[str, Any] = {"limit": safe_offset + safe_limit + 1}
     if ne_pk:
         params["nePk"] = ne_pk
     if tunnel_id:

@@ -35,6 +35,35 @@ def test_detect_ssh_brute_force_handles_events_missing_time_at(monkeypatch):
     assert flagged[0]["last_seen"] is None
 
 
+def test_detect_ssh_brute_force_counts_ip_less_events_as_unattributed(monkeypatch):
+    """Events with no parseable IPv4 (IPv6/hostname-only descriptions) must
+    not be lumped into a single pseudo-attacker 'unknown' bucket."""
+    mcp_client = MagicMock()
+    mcp_client.get_events.return_value = [
+        _event("5210", "SSH login failed from 2001:db8::1"),
+        _event("5210", "SSH login failed from host-a.example"),
+        _event("5214", "SSH session denied from 2001:db8::2"),
+    ]
+    monkeypatch.setattr(monitoring, "get_mcp_client", lambda: mcp_client)
+
+    result = monitoring.detect_ssh_brute_force("SW1", min_failures=3)
+
+    assert result["flagged_sources"] == []
+    assert result["unattributed_failures"] == 3
+    assert result["total_ssh_failure_events"] == 3
+
+
+def test_detect_ssh_brute_force_clamps_zero_min_failures(monkeypatch):
+    """min_failures=0 must not flag every source that had a single failure."""
+    mcp_client = MagicMock()
+    mcp_client.get_events.return_value = []
+    monkeypatch.setattr(monitoring, "get_mcp_client", lambda: mcp_client)
+
+    result = monitoring.detect_ssh_brute_force("SW1", min_failures=0)
+
+    assert result["min_failures_threshold"] == 1
+
+
 def test_detect_ssh_brute_force_still_reports_times_when_present(monkeypatch):
     mcp_client = MagicMock()
     mcp_client.get_events.return_value = [

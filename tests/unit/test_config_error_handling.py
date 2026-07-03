@@ -7,24 +7,29 @@ from unittest.mock import MagicMock
 from mcp_servers import config
 
 
-def test_exc_resp_text_falls_back_to_str_when_no_response_attr():
-    # CentralClient.post/post_async raise a bare Exception with no .response
-    # attribute — the body text is baked into the message instead.
-    exc = Exception('400 Bad Request — {"message": "duplicate VLAN"}')
-
-    assert "duplicate" in config._exc_resp_text(exc).lower()
-
-
-def test_exc_resp_text_prefers_response_text_when_present():
-    exc = Exception("boom")
-    exc.response = MagicMock(text="already exists")
-
-    assert config._exc_resp_text(exc) == "already exists"
+def _post_exc(body: str) -> Exception:
+    """Model the exception CentralClient.post raises (see _post_error):
+    message embeds the body AND .response carries the real response."""
+    exc = Exception(f"400 Bad Request — {body}")
+    exc.response = MagicMock(text=body)
+    return exc
 
 
-def test_create_vlan_upserts_on_duplicate_from_bare_post_exception(monkeypatch):
+def test_exc_resp_text_reads_response_text():
+    assert "duplicate" in config._exc_resp_text(_post_exc('{"message": "duplicate VLAN"}')).lower()
+
+
+def test_exc_resp_text_returns_empty_for_non_http_exception():
+    # A non-HTTP failure whose message happens to contain an idempotency
+    # marker must NOT be mistaken for a duplicate/already-exists response.
+    exc = ValueError("could not serialize duplicate entry")
+
+    assert config._exc_resp_text(exc) == ""
+
+
+def test_create_vlan_upserts_on_duplicate_post_error(monkeypatch):
     client = MagicMock()
-    client.post.side_effect = Exception('400 Bad Request — {"message": "duplicate VLAN"}')
+    client.post.side_effect = _post_exc('{"message": "duplicate VLAN"}')
     monkeypatch.setattr(config, "get_client", lambda: client)
     monkeypatch.setattr(config, "_fetch_global_scope_id", lambda c: "GLOBAL")
     monkeypatch.setattr(config, "_post_scope_map", lambda *a, **k: None)
@@ -33,6 +38,20 @@ def test_create_vlan_upserts_on_duplicate_from_bare_post_exception(monkeypatch):
 
     client.put.assert_called_once()
     assert result["errors"] == []
+
+
+def test_create_vlan_surfaces_non_http_failure_even_if_message_says_duplicate(monkeypatch):
+    client = MagicMock()
+    client.post.side_effect = ValueError("could not serialize duplicate entry")
+    monkeypatch.setattr(config, "get_client", lambda: client)
+    monkeypatch.setattr(config, "_fetch_global_scope_id", lambda c: "GLOBAL")
+    monkeypatch.setattr(config, "_post_scope_map", lambda *a, **k: None)
+
+    result = config.create_vlan(vlan_id=100, vlan_name="test")
+
+    client.put.assert_not_called()
+    assert result["errors"]
+    assert "duplicate entry" in result["errors"][0]
 
 
 def test_assign_device_to_site_skips_non_numeric_legacy_candidates(monkeypatch):

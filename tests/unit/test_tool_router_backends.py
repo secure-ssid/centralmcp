@@ -124,6 +124,66 @@ def test_load_all_backends_exposes_core_writes_when_global_readonly_off(monkeypa
     assert "create_vlan" in router._tool_index
 
 
+def test_find_tool_semantic_hits_filtered_when_global_readonly(monkeypatch):
+    """Catalog (semantic) hits for tools excluded by CENTRALMCP_READONLY must
+    not surface — previously they leaked AND were mislabeled read_only=False/
+    destructive=False because their annotations couldn't be resolved from the
+    filtered index."""
+    monkeypatch.setenv("CENTRALMCP_READONLY", "true")
+    monkeypatch.setattr(router, "_BACKEND", "lancedb")
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "mcp_servers.config"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_tool_servers", {})
+    monkeypatch.setattr(router, "_tool_backend_names", {})
+    monkeypatch.setattr(router, "_readonly_excluded", set())
+    monkeypatch.setattr(router, "_keyword_hits", lambda query, limit, include_schema=False: [])
+    monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
+    monkeypatch.setattr(router._lance, "connect", lambda: object())
+    monkeypatch.setattr(
+        router._lance,
+        "search_tools",
+        lambda db, query, vec, top_k: [
+            {
+                "name": "create_vlan",
+                "server": "aruba-config",
+                "description": "Create an L2 VLAN",
+                "schema_json": "{}",
+                "score": 0.99,
+            },
+            {
+                "name": "list_named_vlans",
+                "server": "aruba-config",
+                "description": "List named VLANs",
+                "schema_json": "{}",
+                "score": 0.9,
+            },
+        ],
+    )
+
+    results = router.find_tool("create a vlan", top_k=5)
+
+    assert [item["name"] for item in results] == ["list_named_vlans"]
+
+
+def test_dispatch_reports_readonly_block_not_unknown_tool(monkeypatch):
+    """A write tool excluded from the index by CENTRALMCP_READONLY must get
+    the informative blocked message on dispatch, not 'Unknown tool'."""
+    import asyncio
+
+    monkeypatch.setenv("CENTRALMCP_READONLY", "true")
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "mcp_servers.config"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_tool_servers", {})
+    monkeypatch.setattr(router, "_tool_backend_names", {})
+    monkeypatch.setattr(router, "_readonly_excluded", set())
+
+    ctx = router.mcp.get_context()
+    out = asyncio.run(router.invoke_tool(ctx, "create_vlan", {"vlan_id": 10}))
+
+    assert out["status"] == "blocked"
+    assert "CENTRALMCP_READONLY" in out["error"]
+
+
 def test_public_docs_list_router_products_and_toolsets():
     readme = (REPO_ROOT / "README.md").read_text()
     getting_started = (REPO_ROOT / "docs" / "getting-started.md").read_text()

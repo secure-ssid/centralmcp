@@ -21,6 +21,7 @@ from mcp_servers.shared import (
     get_mcp_client,
     resp_json,
 )
+from pipeline.clients.central_client import error_body
 from pipeline.config import build_account_contexts
 from pipeline.create_ssid import (
     build_overlay_ssid as _build_overlay,
@@ -45,16 +46,15 @@ _DEVICE_GROUPS_BASE = "/network-config/v1/device-groups"
 
 
 def _exc_resp_text(exc: Exception) -> str:
-    """Extract response body text from an HTTP exception, or its string form.
+    """Extract response body text from an HTTP exception, or '' if unavailable.
 
-    CentralClient.post/post_async raise a bare Exception whose message already
-    embeds the response body (no ``.response`` attribute), so fall back to
-    ``str(exc)`` when a ``.response`` isn't present.
+    Delegates to central_client.error_body: CentralClient.post/post_async
+    attach ``.response`` to the exceptions they raise, and non-HTTP
+    exceptions deliberately yield '' so an unrelated error message that
+    happens to contain "duplicate"/"already exists" is never mistaken for
+    an idempotency marker.
     """
-    resp = getattr(exc, "response", None)
-    if resp is not None:
-        return getattr(resp, "text", "") or ""
-    return str(exc)
+    return error_body(exc)
 
 
 # Name-spacing rules differ by target platform:
@@ -1446,10 +1446,11 @@ def assign_device_to_site(
             **({"device_type": device_type} if device_type else {}),
         }
 
+    legacy_payload = _legacy_payload()
     candidates: list[tuple[str, str, dict[str, Any] | None]] = [
         ("POST", f"/network-monitoring/v1/sites/{site_id}/devices", {"serials": [serial_number]}),
-        ("POST", "/central/v2/sites/associate", _legacy_payload()),
-        ("POST", "/monitoring/v1/site/assign", _legacy_payload()),
+        ("POST", "/central/v2/sites/associate", legacy_payload),
+        ("POST", "/monitoring/v1/site/assign", legacy_payload),
     ]
 
     for method, endpoint, payload in candidates:

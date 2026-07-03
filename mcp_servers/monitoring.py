@@ -1834,12 +1834,15 @@ def detect_ssh_brute_force(
 
     Scans switch events for SSH login failures (eventId 5210) and SSH session
     denials (eventId 5214), groups by source IP, and flags any IP that hits
-    >= min_failures within the time window.
+    >= min_failures within the time window (min_failures clamped to >= 1).
 
-    Returns flagged IPs sorted by failure count descending.
+    Returns flagged IPs sorted by failure count descending. Events whose
+    description carries no parseable IPv4 source are counted separately as
+    unattributed_failures rather than lumped into a pseudo-source.
     """
     import re
 
+    min_failures = max(1, min_failures)
     events = get_mcp_client().get_events(serial_number, hours=hours, api_limit=1000)
 
     ssh_events = [
@@ -1850,11 +1853,17 @@ def detect_ssh_brute_force(
     _ip_re = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
 
     ip_failures: dict[str, list[dict[str, Any]]] = {}
+    unattributed = 0
     for e in ssh_events:
         desc = e.get("description", "")
         match = _ip_re.search(desc)
-        ip = match.group(1) if match else "unknown"
-        ip_failures.setdefault(ip, []).append({
+        if match is None:
+            # No parseable IPv4 source (IPv6/hostname-only description) —
+            # aggregating these into one pseudo-attacker would inflate a
+            # false positive from unrelated events.
+            unattributed += 1
+            continue
+        ip_failures.setdefault(match.group(1), []).append({
             "event_id": e.get("eventId"),
             "event_name": e.get("eventName"),
             "description": desc,
@@ -1880,6 +1889,7 @@ def detect_ssh_brute_force(
         "hours_analyzed": hours,
         "min_failures_threshold": min_failures,
         "total_ssh_failure_events": len(ssh_events),
+        "unattributed_failures": unattributed,
         "flagged_sources": flagged,
         "flagged_count": len(flagged),
     }

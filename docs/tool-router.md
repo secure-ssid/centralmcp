@@ -115,11 +115,13 @@ CENTRALMCP_READONLY=true
 ```
 
 Independent of `CENTRALMCP_PRODUCT_ACCESS`, which only gates optional product
-starters: `CENTRALMCP_READONLY=true` hides every non-read-only tool — core
-Aruba domain servers included — from `find_tool` and blocks direct dispatch
-through `invoke_tool`. Use this for demo or read-only-dashboard deployments
-where no write/destructive tool on any backend should be reachable, no matter
-which client connects. Off by default.
+starters: `CENTRALMCP_READONLY=true` hides every tool not annotated read-only
+— core Aruba domain servers included — from `find_tool` and blocks direct
+dispatch through `invoke_tool`. This is intentionally broader than
+write/destructive tools: DIAGNOSTIC tools (ping, traceroute, cable test,
+show commands) also touch live devices and are blocked too. Use this for demo
+or read-only-dashboard deployments where nothing but pure reads should be
+reachable, no matter which client connects. Off by default.
 
 ## Why `invoke_tool` is destructive
 

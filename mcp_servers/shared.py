@@ -93,12 +93,17 @@ def redact_sensitive(value: Any) -> Any:
     if isinstance(value, dict):
         out: dict[Any, Any] = {}
         for key, item in value.items():
-            # bound_collection_response's own "_pagination" block (offset,
-            # limit, total, truncated, list_key) is helper-generated
-            # metadata, never user data — redacting its "list_key" field
-            # (it ends in "_key") would corrupt pagination info.
-            if key == "_pagination":
-                out[key] = item
+            # bound_collection_response's "_pagination" block is helper-
+            # generated metadata whose "list_key" field would trip the
+            # "_key" sensitive-suffix rule. Exempt ONLY that one field and
+            # still redact the rest of the subtree, so a payload that
+            # happens to nest real secrets under a key named _pagination
+            # doesn't get a blanket pass.
+            if key == "_pagination" and isinstance(item, dict):
+                scrubbed = redact_sensitive(dict(item))
+                if "list_key" in item:
+                    scrubbed["list_key"] = item["list_key"]
+                out[key] = scrubbed
             elif _is_sensitive_key(key):
                 out[key] = _REDACTED
             else:
@@ -135,19 +140,29 @@ def optional_product_writes_allowed() -> bool:
     return optional_product_access_mode() == "read-write"
 
 
-def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
+def _write_blocked_response(tool_name: str, reason: str) -> dict[str, str]:
+    """The one blocked-write response shape every gate returns."""
     return {
-        "error": (
-            f"Tool '{tool_name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only "
-            "or invalid. "
-            "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows."
-        ),
+        "error": f"Tool '{tool_name}' is disabled because {reason}",
         "tool": tool_name,
         "status": "blocked",
     }
 
 
+def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
+    return _write_blocked_response(
+        tool_name,
+        "CENTRALMCP_PRODUCT_ACCESS=read-only or invalid. "
+        "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows.",
+    )
+
+
 _TRUTHY_FLAG_VALUES = {"1", "true", "yes", "on"}
+
+
+def env_flag(name: str) -> bool:
+    """Parse a boolean env flag ("1"/"true"/"yes"/"on", case/space-insensitive)."""
+    return os.getenv(name, "").strip().lower() in _TRUTHY_FLAG_VALUES
 
 
 def global_readonly_enabled() -> bool:
@@ -155,19 +170,15 @@ def global_readonly_enabled() -> bool:
     the per-product CENTRALMCP_PRODUCT_ACCESS gate. Off (writes allowed) unless
     explicitly enabled — for demo/dashboard deployments that must never reach
     a write/destructive tool on any backend, core or optional."""
-    raw = os.getenv("CENTRALMCP_READONLY", "")
-    return raw.strip().lower() in _TRUTHY_FLAG_VALUES
+    return env_flag("CENTRALMCP_READONLY")
 
 
 def global_write_blocked(tool_name: str) -> dict[str, str]:
-    return {
-        "error": (
-            f"Tool '{tool_name}' is disabled because CENTRALMCP_READONLY is set. "
-            "Unset CENTRALMCP_READONLY to allow write/destructive tools."
-        ),
-        "tool": tool_name,
-        "status": "blocked",
-    }
+    return _write_blocked_response(
+        tool_name,
+        "CENTRALMCP_READONLY is set. "
+        "Unset CENTRALMCP_READONLY to allow write/destructive tools.",
+    )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
@@ -465,7 +476,7 @@ _BOUND_LISTS_FLAG = "CENTRALMCP_BOUND_LISTS"
 
 
 def _bound_lists_enabled() -> bool:
-    return os.environ.get(_BOUND_LISTS_FLAG, "").lower() in ("1", "true", "yes")
+    return env_flag(_BOUND_LISTS_FLAG)
 
 
 def maybe_bound(

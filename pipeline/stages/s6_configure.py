@@ -9,11 +9,18 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from pipeline.clients.central_client import error_body
 from pipeline.models import AccountContext, DeviceRecord, StageResult
 from pipeline.state_store import StateStore
 from pipeline.stages.base import Stage
 
 logger = logging.getLogger(__name__)
+
+
+def _skip_exc(exc: Exception) -> bool:
+    """True when the failed write is an idempotency no-op (already applied)."""
+    body = error_body(exc).lower()
+    return "duplicate" in body or "already exists" in body
 
 
 ARUBA_DEVICE_PROFILES: list[dict] = [
@@ -143,10 +150,6 @@ def _ensure_device_profiles(central_client: Any, target_ctx: Any) -> None:
     _SWITCHES_SCOPE_ID = "79244358948933632"
     _PROFILE_NAMES = [p["name"] for p in ARUBA_DEVICE_PROFILES]
 
-    def _skip(response_text: str) -> bool:
-        t = response_text.lower()
-        return "duplicate" in t or "already exists" in t
-
     # Step 1: Port profiles (roles) — no policy needed for CX switch device identity roles
     _ROLE_BODIES: dict[str, dict] = {
         "arubaAP": {
@@ -162,8 +165,7 @@ def _ensure_device_profiles(central_client: Any, target_ctx: Any) -> None:
             central_client.post(f"/network-config/v1/roles/{name}", data=role_body)
             logger.debug("Created port profile (role) '%s'", name)
         except Exception as exc:
-            resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
-            if _skip(resp_text):
+            if _skip_exc(exc):
                 # Update existing role to ensure vlan-parameters/session-parameters are applied
                 try:
                     central_client.put(f"/network-config/v1/roles/{name}", data=role_body)
@@ -178,8 +180,7 @@ def _ensure_device_profiles(central_client: Any, target_ctx: Any) -> None:
             try:
                 _post_scope_map(central_client, scope_id, "ACCESS_SWITCH", f"roles/{name}")
             except Exception as exc:
-                resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
-                if not _skip(resp_text):
+                if not _skip_exc(exc):
                     logger.warning("Role '%s' scope-map (scope=%s) failed: %s — continuing", name, scope_id, exc)
 
     # Step 2: Port profiles (sw-port-profiles)
@@ -246,16 +247,14 @@ def _ensure_device_profiles(central_client: Any, target_ctx: Any) -> None:
             central_client.put(f"/network-config/v1/sw-port-profiles/{pp_name}", data=pp["body"])
             logger.debug("Created port profile '%s'", pp_name)
         except Exception as exc:
-            resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
-            if not _skip(resp_text):
+            if not _skip_exc(exc):
                 logger.warning("Port profile '%s' creation failed: %s — continuing", pp_name, exc)
 
         for scope_id in (_GLOBAL_SCOPE_ID, _SWITCHES_SCOPE_ID):
             try:
                 _post_scope_map(central_client, scope_id, "ACCESS_SWITCH", f"sw-port-profiles/{pp_name}")
             except Exception as exc:
-                resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
-                if not _skip(resp_text):
+                if not _skip_exc(exc):
                     logger.warning("Port profile '%s' scope-map (scope=%s) failed: %s — continuing", pp_name, scope_id, exc)
 
     # Step 3: Device profiles with LLDP match rules + scope-maps
@@ -265,16 +264,14 @@ def _ensure_device_profiles(central_client: Any, target_ctx: Any) -> None:
             central_client.post(f"/network-config/v1alpha1/device-profile/{name}", data=profile)
             logger.debug("Created device profile '%s'", name)
         except Exception as exc:
-            resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
-            if not _skip(resp_text):
+            if not _skip_exc(exc):
                 logger.warning("Device profile '%s' creation failed: %s — continuing", name, exc)
 
         for scope_id in (_GLOBAL_SCOPE_ID, _SWITCHES_SCOPE_ID):
             try:
                 _post_scope_map(central_client, scope_id, "ACCESS_SWITCH", f"device-profile/{name}")
             except Exception as exc:
-                resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
-                if not _skip(resp_text):
+                if not _skip_exc(exc):
                     logger.warning("Device profile '%s' scope-map (scope=%s) failed: %s — continuing", name, scope_id, exc)
 
     target_ctx.device_profiles_created = True
@@ -303,8 +300,7 @@ def _push_vlan_interface(
     try:
         central_client.post(f"/network-config/v1/layer2-vlan/{vlan_id}", data=l2_body)
     except Exception as exc:
-        response_text = getattr(getattr(exc, "response", None), "text", "") or ""
-        if "duplicate" not in response_text.lower():
+        if not _skip_exc(exc):
             central_client.put(f"/network-config/v1/layer2-vlan/{vlan_id}", data=l2_body)
 
     # Step 2: Create vlan-interface globally (no IP — just the L3 shell)
@@ -312,8 +308,7 @@ def _push_vlan_interface(
     try:
         central_client.post(f"/network-config/v1/vlan-interfaces/{vlan_id}", data=global_body)
     except Exception as exc:
-        response_text = getattr(getattr(exc, "response", None), "text", "") or ""
-        if "duplicate" not in response_text.lower():
+        if not _skip_exc(exc):
             central_client.put(f"/network-config/v1/vlan-interfaces/{vlan_id}", data=global_body)
 
     # Step 3: Override IP at device local scope
@@ -327,19 +322,16 @@ def _push_vlan_interface(
         except Exception:
             central_client.put(f"/network-config/v1/vlan-interfaces/{vlan_id}", params=local_params, data=local_body)
 
-    # Step 4: Scope-maps
-    try:
-        _post_scope_map(central_client, global_scope_id, persona, f"layer2-vlan/{vlan_id}")
-    except Exception as exc:
-        response_text = getattr(getattr(exc, "response", None), "text", "") or ""
-        if "already exists" not in response_text.lower():
-            raise
-    try:
-        _post_scope_map(central_client, device_scope_id, persona, f"vlan-interfaces/{vlan_id}")
-    except Exception as exc:
-        response_text = getattr(getattr(exc, "response", None), "text", "") or ""
-        if "already exists" not in response_text.lower():
-            raise
+    # Step 4: Scope-maps — duplicates on a resumed run are non-fatal.
+    for scope_id, resource in (
+        (global_scope_id, f"layer2-vlan/{vlan_id}"),
+        (device_scope_id, f"vlan-interfaces/{vlan_id}"),
+    ):
+        try:
+            _post_scope_map(central_client, scope_id, persona, resource)
+        except Exception as exc:
+            if not _skip_exc(exc):
+                raise
 
     logger.debug(
         "Pushed VLAN interface %d (%s) for scope-id=%s",
@@ -454,6 +446,7 @@ class ConfigureStage(Stage):
 
         # 6. Push VLANs from AOS 8 config file (ACCESS_SWITCH persona only)
         vlans_pushed = 0
+        vlan_scope_map_failures = 0
         if record.vlan_config_file and record.persona.to_api_value() == "ACCESS_SWITCH":
             from pipeline.vlan_loader import load_vlan_config_file
             try:
@@ -478,6 +471,7 @@ class ConfigureStage(Stage):
                             f"layer2-vlan/{vlan['vlan']}",
                         )
                     except Exception as exc:
+                        vlan_scope_map_failures += 1
                         logger.warning(
                             "VLAN %s scope-map failed for %s: %s — continuing",
                             vlan.get("vlan"), record.serial_number, exc,
@@ -490,6 +484,7 @@ class ConfigureStage(Stage):
 
         # 7. Push VLAN interfaces (L3) from config file
         vlan_interfaces_pushed = 0
+        vlan_interface_failures = 0
         if record.vlan_interface_config_file:
             from pipeline.vlan_interface_loader import load_vlan_interface_config_file
             try:
@@ -509,6 +504,7 @@ class ConfigureStage(Stage):
                     )
                     vlan_interfaces_pushed += 1
                 except Exception as exc:
+                    vlan_interface_failures += 1
                     logger.warning(
                         "VLAN interface push failed for %s vlan=%s: %s — continuing",
                         record.serial_number, vi.get("vlan"), exc,
@@ -525,5 +521,7 @@ class ConfigureStage(Stage):
             scope_id=device_scope_id,
             global_scope_id=target_ctx.global_scope_id,
             vlans_pushed=vlans_pushed,
+            vlan_scope_map_failures=vlan_scope_map_failures,
             vlan_interfaces_pushed=vlan_interfaces_pushed,
+            vlan_interface_failures=vlan_interface_failures,
         )

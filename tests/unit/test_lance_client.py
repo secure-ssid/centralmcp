@@ -90,6 +90,40 @@ class TestPromoteStagingTable:
         assert hits[0]["file_path"] == "staged.md"
 
 
+class TestFtsFallback:
+    def test_hybrid_search_falls_back_to_vector_only_without_fts_index(self, tmp_path):
+        """A table with no FTS index (rebuild crashed between the staging
+        swap and build_fts_index, or a query during the index build) must
+        degrade to vector-only search instead of erroring on every call."""
+        db = lc.connect(tmp_path)
+        lc.create_docs_table(db, [
+            {"id": "1", "text": "WPA3 SSID with SAE security", "source": "developer_docs",
+             "doc_type": "developer-docs", "file_path": "ssid.md", "chunk_index": 0, "vector": _vec(1)},
+            {"id": "2", "text": "L2 VLAN on the access switch", "source": "tech_docs",
+             "doc_type": "tech-docs", "file_path": "vlan.md", "chunk_index": 1, "vector": _vec(2)},
+        ])
+        # NO build_fts_index on purpose.
+
+        hits = lc.hybrid_search(db, "WPA3 SSID", _vec(1), top_k=2)
+
+        assert len(hits) == 2
+        assert {h["file_path"] for h in hits} == {"ssid.md", "vlan.md"}
+        assert all(h["score"] > 0 for h in hits)
+
+    def test_fallback_respects_source_filter(self, tmp_path):
+        db = lc.connect(tmp_path)
+        lc.create_docs_table(db, [
+            {"id": "1", "text": "WPA3 SSID", "source": "developer_docs",
+             "doc_type": "developer-docs", "file_path": "ssid.md", "chunk_index": 0, "vector": _vec(1)},
+            {"id": "2", "text": "L2 VLAN", "source": "tech_docs",
+             "doc_type": "tech-docs", "file_path": "vlan.md", "chunk_index": 1, "vector": _vec(2)},
+        ])
+
+        hits = lc.hybrid_search(db, "anything", _vec(1), top_k=5, source_filter="tech_docs")
+
+        assert [h["file_path"] for h in hits] == ["vlan.md"]
+
+
 class TestHybridSearch:
     def test_result_shape_matches_redis_contract(self, db):
         hits = lc.hybrid_search(db, "WPA3 SSID", _vec(99), top_k=2)

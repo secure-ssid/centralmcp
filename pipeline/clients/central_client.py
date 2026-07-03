@@ -36,6 +36,21 @@ def _post_error(response: httpx.Response) -> Exception:
     return exc
 
 
+def error_body(exc: Exception) -> str:
+    """Response body text from an HTTP-error exception, or "" if there is none.
+
+    Works for httpx.HTTPStatusError (raise_for_status) and the exceptions
+    raised by CentralClient.post/post_async (which attach ``.response`` via
+    ``_post_error``). Non-HTTP exceptions (connection errors, ValueErrors)
+    yield "" so callers matching idempotency markers like "duplicate" /
+    "already exists" never mistake an unrelated error message for one.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return ""
+    return getattr(resp, "text", "") or ""
+
+
 _INITIAL_RETRY_DELAY = 60  # seconds — Central rate-limit window
 _MAX_RETRY_DELAY = 300
 # 5xx retry uses a much smaller floor — these are usually transient, not

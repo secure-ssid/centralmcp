@@ -174,18 +174,24 @@ _BACKENDS = _build_backends()
 _tool_index: dict[str, Any] = {}  # name -> FastMCP Tool
 _tool_servers: dict[str, Any] = {}  # name -> owning FastMCP backend (for dispatch)
 _tool_backend_names: dict[str, str] = {}  # name -> owning server name
+# Names excluded from the index because CENTRALMCP_READONLY is set — kept so
+# find_tool's semantic branch can filter catalog hits for them and dispatch
+# can return the informative blocked message instead of "Unknown tool".
+_readonly_excluded: set[str] = set()
 
 
 def _load_all_backends() -> None:
     """Import every backend once and index tools by name."""
     if _tool_index:
         return
+    _readonly_excluded.clear()
     allow_optional_writes = _optional_writes_allowed()
     readonly_mode = global_readonly_enabled()
     for server_name, module_path in _BACKENDS.items():
         mod = importlib.import_module(module_path)
         for name, tool in mod.mcp._tool_manager._tools.items():
             if readonly_mode and not _is_read_only_tool(tool):
+                _readonly_excluded.add(name)
                 continue
             if (
                 server_name in _OPTIONAL_SERVER_NAMES
@@ -310,6 +316,13 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
             if name not in _tool_index:
                 _load_all_backends()
             tool = _tool_index.get(name)
+            # Catalog hits for tools excluded by CENTRALMCP_READONLY must not
+            # surface — and with the tool absent from the index, annotation
+            # flags could not be resolved and would mislabel it non-destructive.
+            if name in _readonly_excluded:
+                continue
+            if global_readonly_enabled() and (tool is None or not _is_read_only_tool(tool)):
+                continue
             if (
                 server in _OPTIONAL_SERVER_NAMES
                 and not _optional_writes_allowed()
@@ -351,6 +364,10 @@ async def _dispatch_tool(ctx: Context, name: str, arguments: dict[str, Any] | No
     _load_all_backends()
     backend = _tool_servers.get(name)
     if backend is None:
+        # The tool exists but was excluded at load time by CENTRALMCP_READONLY
+        # — say so instead of the misleading "Unknown tool".
+        if name in _readonly_excluded:
+            return global_write_blocked(name)
         return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
     if global_readonly_enabled() and not _is_read_only_tool(_tool_index.get(name)):
         return global_write_blocked(name)
@@ -533,7 +550,8 @@ if __name__ == "__main__":
         ),
         ResponseEnvelopeMiddleware(),
     ]
-    if os.getenv("CENTRALMCP_NORMALIZE_MACS", "").strip().lower() in {"1", "true", "yes"}:
+    from mcp_servers.shared import env_flag
+    if env_flag("CENTRALMCP_NORMALIZE_MACS"):
         middlewares.append(MacNormalizeMiddleware())
     stable_list_tools(mcp)
     install_middleware(mcp, middlewares)

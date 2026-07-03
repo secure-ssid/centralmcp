@@ -13,6 +13,7 @@ backends interchangeably: {text, source, doc_type, file_path, chunk_index, score
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -56,20 +57,38 @@ def build_fts_index(table) -> None:
     table.create_fts_index("text", use_tantivy=False, replace=True)
 
 
+_PROMOTE_WINDOW = 4096
+
+
 def promote_staging_table(db, staging_table_name: str, table_name: str = DOCS_TABLE):
     """Atomically replace ``table_name`` with the contents of a fully-built
     staging table, then drop the staging table.
 
     LanceDB OSS has no ``rename_table``, so the swap is one
-    ``create_table(..., mode="overwrite")`` call using the staging table's
-    data — Lance's versioned storage format commits this atomically, so a
-    crash mid-swap leaves the previous ``table_name`` version intact rather
-    than a partially-written table. Callers should only call this after the
-    staging table has been fully populated and validated (e.g. the R2
-    per-source empty check) — this function performs no validation itself.
+    ``create_table(..., mode="overwrite")`` call — Lance's versioned storage
+    format commits it atomically, so a crash mid-swap leaves the previous
+    ``table_name`` version intact rather than a partially-written table. The
+    staging data is streamed in windows through a RecordBatchReader rather
+    than materialized with ``to_arrow()``, so peak memory stays at one window
+    (~4k rows) instead of the whole corpus. Callers should only call this
+    after the staging table has been fully populated and validated (e.g. the
+    R2 per-source empty check) — this function performs no validation itself.
     """
+    import pyarrow as pa
+
     staging = db.open_table(staging_table_name)
-    live = db.create_table(table_name, data=staging.to_arrow(), mode="overwrite")
+
+    def _windows():
+        offset = 0
+        while True:
+            chunk = staging.search().limit(_PROMOTE_WINDOW).offset(offset).to_arrow()
+            if chunk.num_rows == 0:
+                return
+            yield from chunk.to_batches()
+            offset += _PROMOTE_WINDOW
+
+    reader = pa.RecordBatchReader.from_batches(staging.schema, _windows())
+    live = db.create_table(table_name, data=reader, mode="overwrite")
     db.drop_table(staging_table_name)
     return live
 
@@ -95,6 +114,8 @@ def hybrid_search(
             "index from the GitHub Release."
         )
     top_k = _clamp_top_k(top_k)
+    if source_filter and not _SOURCE_RE.match(source_filter):
+        raise ValueError(f"invalid source filter: {source_filter!r}")
     # limit() truncates EACH leg (vector, FTS) before RRF fusion — fetch deep
     # so fusion sees real overlap, then slice to top_k after.
     q = (
@@ -104,18 +125,42 @@ def hybrid_search(
         .limit(max(top_k * 3, 15))
     )
     if source_filter:
-        if not _SOURCE_RE.match(source_filter):
-            raise ValueError(f"invalid source filter: {source_filter!r}")
         q = q.where(f"source = '{source_filter}'", prefilter=True)
+    try:
+        rows = q.to_list()
+        score_key = "_relevance_score"
+    except Exception as exc:
+        if "full text search" not in str(exc).lower() and "inverted" not in str(exc).lower():
+            raise
+        # The FTS index is missing — e.g. a rebuild crashed between the
+        # staging-table swap and build_fts_index, or a query landed during
+        # the post-swap index build. Degrade to vector-only search so
+        # ask_docs/search_docs keep working instead of erroring on every
+        # call until the next successful rebuild.
+        logging.getLogger(__name__).warning(
+            "FTS index missing on %s — falling back to vector-only search. "
+            "Rebuild with `uv run python ingestion/ingest_docs.py`.",
+            table_name,
+        )
+        vq = table.search(query_vector).limit(max(top_k * 3, 15))
+        if source_filter:
+            vq = vq.where(f"source = '{source_filter}'", prefilter=True)
+        rows = vq.to_list()
+        score_key = None
     hits = []
-    for r in q.to_list()[:top_k]:
+    for r in rows[:top_k]:
+        if score_key is not None:
+            score = float(r.get(score_key, 0.0))
+        else:
+            # Vector-only: convert L2 distance to a higher-is-better score.
+            score = 1.0 / (1.0 + float(r.get("_distance", 0.0)))
         hits.append({
             "text": r.get("text", ""),
             "source": r.get("source", ""),
             "doc_type": r.get("doc_type", ""),
             "file_path": r.get("file_path", ""),
             "chunk_index": int(r.get("chunk_index", 0) or 0),
-            "score": round(float(r.get("_relevance_score", 0.0)), 4),
+            "score": round(score, 4),
         })
     return hits
 

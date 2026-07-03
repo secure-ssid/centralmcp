@@ -2632,20 +2632,13 @@ def test_edgeconnect_list_appliances_compacts(monkeypatch):
     ]
 
 
-def test_edgeconnect_list_tunnels_does_not_send_limit_upstream(monkeypatch):
-    """Sending limit (without offset) upstream capped Orchestrator's response
-    to the same first N items every call, so bound_collection_response's
-    client-side re-slice for offset >= limit always returned empty with
-    truncated=False — silently hiding pages past the first."""
+def test_edgeconnect_list_tunnels_pages_correctly_with_bounded_upstream_fetch(monkeypatch):
+    """The upstream fetch is capped to offset+limit+1 (Orchestrator has no
+    offset param): page 2 must return real data (the old limit-only cap made
+    every offset>=limit page empty with truncated=False), while a limit=5
+    call must not pull the entire tunnel inventory over the wire."""
     called = {}
     all_tunnels = [{"id": str(i), "operStatus": "up"} for i in range(120)]
-
-    class _Resp:
-        status_code = 200
-        text = "[...]"
-
-        def json(self):
-            return all_tunnels
 
     class _FakeAsyncClient:
         def __init__(self, timeout=None):
@@ -2659,6 +2652,15 @@ def test_edgeconnect_list_tunnels_does_not_send_limit_upstream(monkeypatch):
 
         async def get(self, url, headers=None, params=None):
             called["params"] = params or {}
+            window = all_tunnels[: called["params"].get("limit", len(all_tunnels))]
+
+            class _Resp:
+                status_code = 200
+                text = "[...]"
+
+                def json(self):
+                    return window
+
             return _Resp()
 
     monkeypatch.setenv("EDGECONNECT_BASE_URL", "https://orch.example.com")
@@ -2666,10 +2668,12 @@ def test_edgeconnect_list_tunnels_does_not_send_limit_upstream(monkeypatch):
     monkeypatch.setattr(edgeconnect.httpx, "AsyncClient", _FakeAsyncClient)
 
     first_page = asyncio.run(edgeconnect.edgeconnect_list_tunnels(limit=50, offset=0))
-    second_page = asyncio.run(edgeconnect.edgeconnect_list_tunnels(limit=50, offset=50))
-
-    assert "limit" not in called["params"]
+    assert called["params"]["limit"] == 51
     assert len(first_page["tunnels"]["items"]) == 50
+    assert first_page["tunnels"]["_pagination"]["truncated"] is True
+
+    second_page = asyncio.run(edgeconnect.edgeconnect_list_tunnels(limit=50, offset=50))
+    assert called["params"]["limit"] == 101
     assert len(second_page["tunnels"]["items"]) == 50
     assert second_page["tunnels"]["items"][0]["id"] == "50"
     assert second_page["tunnels"]["_pagination"]["truncated"] is True
@@ -4111,13 +4115,13 @@ def test_edgeconnect_list_tunnels_filters_and_compacts(monkeypatch):
     )
 
     assert called["url"] == "https://orch.example.com/gms/rest/tunnels2/physical"
-    # limit is NOT sent upstream (Orchestrator has no matching offset param
-    # here) — bound_collection_response does the limit/offset slicing
-    # entirely client-side, matching edgeconnect_list_appliances.
+    # Upstream fetch capped to offset+limit+1 (0+1+1): bounded transfer, and
+    # the +1 sentinel keeps the client-side truncated flag honest.
     assert called["params"] == {
         "nePk": "1.NE",
         "state": "up|down",
         "matchingAlias": "branch",
+        "limit": 2,
     }
     assert out["tunnels"]["tunnels"] == [
         {
