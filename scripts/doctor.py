@@ -65,7 +65,12 @@ def _path_check(path: Path, name: str, *, missing_detail: str) -> Check:
 def _has_placeholders(path: Path) -> bool:
     if not path.exists():
         return False
-    text = path.read_text(errors="replace")
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        # Unreadable (permissions) — the caller's own existence/parse checks
+        # report that; a diagnostic must not crash on it.
+        return False
     return any(marker in text for marker in PLACEHOLDER_MARKERS)
 
 
@@ -86,7 +91,11 @@ def _load_json(path: Path) -> tuple[dict[str, object] | None, str | None]:
 def _load_local_env(path: Path) -> None:
     if not path.exists():
         return
-    for raw_line in path.read_text().splitlines():
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return
+    for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -177,7 +186,12 @@ def _stdio_config_checks(path: Path) -> list[Check]:
         )
     )
 
-    text = path.read_text()
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        # Unreadable file — the _load_json FAIL check above already reported
+        # it; don't crash the whole doctor run on the placeholder scan.
+        text = ""
     checks.append(
         Check(
             "WARN" if "/path/to/centralmcp" in text else "OK",

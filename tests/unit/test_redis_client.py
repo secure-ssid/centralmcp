@@ -77,3 +77,20 @@ def test_search_tools_negative_top_k_clamped_to_one():
     query = client.ft.return_value.search.call_args.args[0]
     assert "KNN 1" in query._query_string
     assert query._num == 1
+
+
+def test_vector_search_rejects_malformed_source_filter():
+    """Regression: source_filter was interpolated into the RediSearch query
+    string unvalidated — a value with }| altered query semantics."""
+    from unittest.mock import MagicMock
+
+    import pytest as _pytest
+
+    from pipeline.clients.redis_client import vector_search
+
+    client = MagicMock()
+
+    with _pytest.raises(ValueError, match="invalid source filter"):
+        vector_search(client, [0.0] * 4, source_filter="nac_docs} | @text:(evil")
+
+    client.ft.assert_not_called()

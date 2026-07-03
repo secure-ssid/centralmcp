@@ -77,3 +77,35 @@ def test_get_alerts_sends_bounded_limit_and_offset():
             "offset": 25,
         },
     )
+
+
+def test_get_site_by_name_searches_past_the_default_page_limit():
+    # Regression: get_site_by_name used the paged get_sites() default (50),
+    # so site #51+ was reported as nonexistent — breaking migration
+    # validation and post-create lookup on tenants with >50 sites.
+    central = MagicMock()
+    central.get.return_value = {
+        "items": [{"scopeName": f"Site-{i}", "id": f"s{i}"} for i in range(60)]
+    }
+
+    found = MCPClient(central).get_site_by_name("Site-59")
+
+    assert found == {"scopeName": "Site-59", "id": "s59"}
+
+
+def test_get_device_by_serial_finds_device_beyond_old_thousand_item_cap():
+    central = MagicMock()
+
+    def fake_get(endpoint, params=None):
+        offset = params["offset"]
+        limit = params["limit"]
+        devices = [
+            {"serialNumber": f"SN{i}"} for i in range(offset, min(offset + limit, 1500))
+        ]
+        return {"devices": devices}
+
+    central.get.side_effect = fake_get
+
+    found = MCPClient(central).get_device_by_serial("SN1400")
+
+    assert found == {"serialNumber": "SN1400"}

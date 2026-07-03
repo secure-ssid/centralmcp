@@ -5,6 +5,7 @@ LanceDB + SQLite + fastembed.
 """
 
 import os
+import re
 
 import numpy as np
 import redis
@@ -15,6 +16,8 @@ from redis.commands.search.query import Query
 DEFAULT_REDIS_URL = "redis://localhost:6379"
 REDIS_URL = os.getenv("REDIS_URL", DEFAULT_REDIS_URL)
 DOCS_INDEX = "network_docs"
+# Mirrors lance_client._SOURCE_RE — source names are snake_case folder names.
+_SOURCE_RE = re.compile(r"^[a-z0-9_]+$")
 EMBEDDING_DIMS = 768  # nomic-embed-text
 MAX_SEARCH_TOP_K = 200
 
@@ -113,6 +116,10 @@ def vector_search(
 
     filter_str = "*"
     if source_filter:
+        # Same guard lance_client applies: the value is interpolated into
+        # the RediSearch query string, where }|( etc. change query semantics.
+        if not _SOURCE_RE.match(source_filter):
+            raise ValueError(f"invalid source filter: {source_filter!r}")
         filter_str = f"@source:{{{source_filter}}}"
 
     q = (

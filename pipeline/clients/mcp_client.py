@@ -18,7 +18,10 @@ from pipeline.clients.central_client import CentralClient
 logger = logging.getLogger(__name__)
 _DEFAULT_LIST_LIMIT = 50
 _MAX_LIST_LIMIT = 200
-_MAX_SEARCH_PAGES = 10
+# Client-side search sweeps (get_device_by_serial / find_client) stop after
+# this many 100-item pages. The loop breaks early on a short page, so a
+# higher cap costs nothing on small fleets — it only bounds the worst case.
+_MAX_SEARCH_PAGES = 50
 
 
 def _bounded_limit(limit: int) -> int:
@@ -80,6 +83,17 @@ class MCPClient:
                 if len(items) < limit:
                     break
                 offset += limit
+            else:
+                # Page cap exhausted without a short page — "None" here means
+                # "gave up", not "confirmed absent". Say so, loudly.
+                logger.warning(
+                    "MCPClient.get_device_by_serial(%s): searched %d devices without "
+                    "finding the serial or exhausting the inventory — result is "
+                    "inconclusive, not 'not found'. Raise _MAX_SEARCH_PAGES for "
+                    "larger fleets.",
+                    serial_number,
+                    _MAX_SEARCH_PAGES * limit,
+                )
             return None
         except Exception as exc:
             logger.warning("MCPClient.get_device_by_serial(%s) failed: %s", serial_number, exc)
@@ -109,20 +123,23 @@ class MCPClient:
     # Sites
     # ------------------------------------------------------------------
 
-    def get_sites(self, limit: int = _DEFAULT_LIST_LIMIT, offset: int = 0) -> list[dict[str, Any]]:
-        """Return a bounded page of sites with their IDs."""
+    def _all_sites(self) -> list[dict[str, Any]]:
+        """Return the full, unsliced site list (the API has no paging)."""
         try:
-            # The sites config API does not support limit/offset query params
             result = self._client.get("/network-config/v1/sites")
             sites = result.get("items", result.get("sites", []))
-            if not isinstance(sites, list):
-                return []
-            off = max(0, offset)
-            lim = _bounded_limit(limit)
-            return sites[off : off + lim]
+            return sites if isinstance(sites, list) else []
         except Exception as exc:
             logger.warning("MCPClient.get_sites failed: %s", exc)
             return []
+
+    def get_sites(self, limit: int = _DEFAULT_LIST_LIMIT, offset: int = 0) -> list[dict[str, Any]]:
+        """Return a bounded page of sites with their IDs."""
+        # The sites config API does not support limit/offset query params;
+        # slice client-side.
+        off = max(0, offset)
+        lim = _bounded_limit(limit)
+        return self._all_sites()[off : off + lim]
 
     def get_device_scope_id(self, serial_number: str) -> Optional[str]:
         """Return the New Central config-layer scope-id for a device by serial.
@@ -145,8 +162,10 @@ class MCPClient:
         """Return a site record by name, or None if not found.
 
         New Central sites use 'scopeName' as the human-readable name field.
+        Searches the FULL site list — a paged default here made every site
+        past #50 invisible to migration validation and site creation.
         """
-        sites = self.get_sites()
+        sites = self._all_sites()
         for site in sites:
             site_name = site.get("scopeName") or site.get("siteName") or site.get("name", "")
             if site_name.lower() == name.lower():
@@ -292,6 +311,14 @@ class MCPClient:
                 if len(items) < limit:
                     break
                 offset += limit
+            else:
+                logger.warning(
+                    "MCPClient.find_client(%s): searched %d clients without finding "
+                    "a match or exhausting the list — result is inconclusive, not "
+                    "'not found'.",
+                    mac_or_ip,
+                    _MAX_SEARCH_PAGES * limit,
+                )
             return None
         except Exception as exc:
             logger.warning("MCPClient.find_client(%s) failed: %s", mac_or_ip, exc)

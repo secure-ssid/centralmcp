@@ -72,17 +72,24 @@ class GLPClient:
     # ------------------------------------------------------------------
 
     def get_device(self, serial_number: str) -> Optional[dict[str, Any]]:
-        """Look up a device in GLP by serial number. Returns None if not found."""
+        """Look up a device in GLP by serial number.
+
+        Returns None only when GLP confirms no match (the API returns 200 +
+        empty items, never 404, for a filter miss). Transient failures
+        (auth, 5xx, network) re-raise so callers report the real error
+        instead of misdiagnosing "device not found".
+        """
         try:
             result = self._client.get(
                 "/devices/v1/devices",
                 params={"filter": f"serialNumber eq '{serial_number}'"},
             )
-            items = result.get("items", result.get("devices", []))
-            return items[0] if items else None
         except Exception as exc:
-            logger.warning("GLP get_device failed for %s: %s", serial_number, exc)
-            return None
+            msg = _compact_exception_message(exc)
+            logger.warning("GLP get_device failed for %s: %s", serial_number, msg)
+            raise RuntimeError(f"GLP device lookup failed for {serial_number}: {msg}") from exc
+        items = result.get("items", result.get("devices", []))
+        return items[0] if items else None
 
     def add_device(self, serial_number: str, mac_address: Optional[str] = None) -> str:
         """Add a single device to the GLP workspace. Returns async-operation ID."""
@@ -290,6 +297,14 @@ class GLPClient:
             return subscription
         except (ValueError, AttributeError, TypeError):
             pass
+        # Same defense resolve_device_id applies to serials: reject anything
+        # that could break out of the quoted OData filter string (keys are
+        # ASCII alphanumeric in practice).
+        if not self._is_safe_serial(subscription):
+            raise ValueError(
+                f"Invalid subscription key {subscription!r}: expected a GLP "
+                "subscription UUID or an alphanumeric subscription key."
+            )
         result = self._client.get(
             "/subscriptions/v1/subscriptions",
             params={"filter": f"key eq '{subscription}'"},

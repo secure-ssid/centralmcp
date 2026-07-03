@@ -131,9 +131,17 @@ class TokenManager:
 
     def _save_token_to_cache(self) -> None:
         try:
-            # Write with 0600 perms so tokens aren't world-readable.
+            # Write to a per-process temp file (0600 so tokens aren't
+            # world-readable), then atomically os.replace() into place: the
+            # cache file is shared across processes (MCP servers + pipeline
+            # runs use the same cache key), so an in-place truncate-and-write
+            # let a concurrent reader see torn JSON — and two concurrent
+            # writers could leave corrupt bytes as the final state.
+            tmp_file = self.cache_file.with_name(
+                f"{self.cache_file.name}.{os.getpid()}.tmp"
+            )
             fd = os.open(
-                self.cache_file,
+                tmp_file,
                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
                 0o600,
             )
@@ -148,6 +156,7 @@ class TokenManager:
                     f,
                     indent=2,
                 )
+            os.replace(tmp_file, self.cache_file)
         except Exception as exc:
             logger.warning("Failed to save token cache: %s", exc)
 

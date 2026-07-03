@@ -294,3 +294,32 @@ def test_with_products_catalog_uses_all_products_without_tokens(monkeypatch):
         "CENTRALMCP_PRODUCTS": products,
         "CENTRALMCP_PRODUCT_ACCESS": "read-only",
     }
+
+
+def test_write_env_file_creates_owner_only_file(tmp_path):
+    """Regression: secret-bearing files were written world-readable under the
+    default umask; they must be 0600 like the token cache."""
+    target = tmp_path / ".env"
+
+    step = setup_wizard._write_env_file(
+        target,
+        {"CENTRALMCP_PRODUCTS": "uxi", "UXI_CLIENT_SECRET": "s3cret"},
+        force=True,
+    )
+
+    assert step.status == "OK"
+    assert (target.stat().st_mode & 0o777) == 0o600
+
+
+def test_write_env_file_tightens_perms_on_existing_file(tmp_path):
+    target = tmp_path / ".env"
+    target.write_text("CENTRALMCP_PRODUCTS=mist\n")
+    target.chmod(0o644)
+
+    setup_wizard._write_env_file(
+        target,
+        {"CENTRALMCP_PRODUCTS": "uxi", "UXI_CLIENT_SECRET": "s3cret"},
+        force=False,
+    )
+
+    assert (target.stat().st_mode & 0o777) == 0o600

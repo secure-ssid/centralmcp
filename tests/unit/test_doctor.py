@@ -56,3 +56,31 @@ def test_doctor_source_manifest_matches_ingest_sources():
 
     assert checks["RAG source manifest"].status == "OK"
     assert "sources match ingestion SOURCE_META" in checks["RAG source manifest"].detail
+
+
+def test_stdio_config_checks_survive_non_utf8_config(tmp_path):
+    """Regression: a non-UTF8 .mcp.json crashed the whole doctor run with
+    UnicodeDecodeError instead of reporting a FAIL check."""
+    from scripts import doctor
+
+    bad = tmp_path / ".mcp.json"
+    bad.write_bytes(b"\xff\xfe\x00broken")
+
+    checks = doctor._stdio_config_checks(bad)
+
+    assert any(c.status == "FAIL" for c in checks)
+
+
+def test_has_placeholders_survives_unreadable_file(tmp_path, monkeypatch):
+    from scripts import doctor
+    from pathlib import Path
+
+    target = tmp_path / "credentials.yaml"
+    target.write_text("ok")
+
+    def deny_read(self, *args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "read_text", deny_read)
+
+    assert doctor._has_placeholders(target) is False

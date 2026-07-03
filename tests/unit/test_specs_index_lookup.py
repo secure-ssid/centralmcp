@@ -231,3 +231,35 @@ class TestLookup:
         sqlite3.connect(empty).close()  # creates a 0-byte file
         with pytest.raises(FileNotFoundError, match="--build"):
             specs_index.lookup("firmware compliance", db_path=empty)
+
+
+class TestBuildAtomicity:
+    def test_interrupted_build_leaves_previous_index_intact(self, db, tmp_path):
+        """Regression: build() used to unlink the live DB before building in
+        place — an interrupted build left a valid-but-empty DB that lookup()
+        silently served [] from. It now builds into a .tmp sibling and
+        os.replace()s only after the full build commits."""
+        before = specs_index.lookup("firmware", top_k=5, db_path=db)
+
+        class _Boom(Exception):
+            pass
+
+        original_connect = specs_index.connect
+
+        def exploding_connect(path):
+            raise _Boom("simulated crash at build start")
+
+        specs_index.connect = exploding_connect
+        try:
+            with pytest.raises(_Boom):
+                specs_index.build(specs_dir=tmp_path / "specs", db_path=db)
+        finally:
+            specs_index.connect = original_connect
+
+        after = specs_index.lookup("firmware", top_k=5, db_path=db)
+        assert after == before
+
+    def test_successful_build_leaves_no_tmp_file(self, db, tmp_path):
+        specs_index.build(specs_dir=tmp_path / "specs", db_path=db)
+
+        assert not db.with_name(db.name + ".tmp").exists()

@@ -71,3 +71,29 @@ def test_token_manager_force_refresh_still_refreshes(tmp_path, monkeypatch):
 
     assert manager.get_access_token() == "token-1"
     assert manager.get_access_token(force_refresh=True) == "token-2"
+
+
+def test_token_cache_written_atomically_no_tmp_left_behind(tmp_path, monkeypatch):
+    """Regression: the cache file was truncated-and-written in place while
+    being shared across processes — a concurrent reader could see torn JSON.
+    It is now written to a .tmp sibling and os.replace()d into place."""
+    monkeypatch.setenv("TOKEN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "pipeline.clients.token_manager.httpx.post",
+        lambda url, data=None, headers=None, timeout=None: _TokenResponse("tok"),
+    )
+
+    manager = TokenManager(
+        client_id="client-id",
+        client_secret="secret",
+        token_url="https://sso.example.com/token",
+        cache_key="atomic",
+    )
+    manager.get_access_token()
+
+    import json as _json
+
+    cached = _json.loads(manager.cache_file.read_text())
+    assert cached["access_token"] == "tok"
+    leftovers = [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == []
