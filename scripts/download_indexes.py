@@ -102,9 +102,21 @@ def _swap_into_place(staging_data: Path, data_dir: Path) -> None:
         live = data_dir / entry.name
         old = data_dir / f"{entry.name}.old-tmp"
         _remove(old)
+        moved_aside = False
         if live.exists() or live.is_symlink():
+            # Same-directory rename — always same-filesystem as live.
             os.rename(live, old)
-        os.rename(entry, live)
+            moved_aside = True
+        try:
+            # shutil.move copies when staging and data/ are on different
+            # filesystems (os.rename would raise EXDEV — and an exception
+            # here used to cascade into deleting BOTH the new copy, via the
+            # staging cleanup, and the .old-tmp backup on the next run).
+            shutil.move(str(entry), str(live))
+        except BaseException:
+            if moved_aside and not (live.exists() or live.is_symlink()):
+                os.rename(old, live)
+            raise
         _remove(old)
 
 

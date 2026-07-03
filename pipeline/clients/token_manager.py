@@ -140,23 +140,28 @@ class TokenManager:
             tmp_file = self.cache_file.with_name(
                 f"{self.cache_file.name}.{os.getpid()}.tmp"
             )
-            fd = os.open(
-                tmp_file,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-                0o600,
-            )
-            with os.fdopen(fd, "w") as f:
-                json.dump(
-                    {
-                        "access_token": self.access_token,
-                        "expires_at": self.token_expires_at,
-                        "cached_at": time.time(),
-                        "cache_fingerprint": self.cache_fingerprint,
-                    },
-                    f,
-                    indent=2,
+            try:
+                fd = os.open(
+                    tmp_file,
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                    0o600,
                 )
-            os.replace(tmp_file, self.cache_file)
+                with os.fdopen(fd, "w") as f:
+                    json.dump(
+                        {
+                            "access_token": self.access_token,
+                            "expires_at": self.token_expires_at,
+                            "cached_at": time.time(),
+                            "cache_fingerprint": self.cache_fingerprint,
+                        },
+                        f,
+                        indent=2,
+                    )
+                os.replace(tmp_file, self.cache_file)
+            finally:
+                # A failed write must not leave a token-bearing tmp orphan.
+                if tmp_file.exists():
+                    tmp_file.unlink()
         except Exception as exc:
             logger.warning("Failed to save token cache: %s", exc)
 

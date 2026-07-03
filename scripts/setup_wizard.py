@@ -109,11 +109,11 @@ def _write_secret_file(target: Path, text: str) -> None:
     API tokens) than the token cache, which already enforces 0600.
     """
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # O_CREAT's mode only applies to newly-created files — tighten a
+    # pre-existing (possibly 0644) file BEFORE the secret bytes land in it.
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(text)
-    # O_CREAT's mode only applies to newly-created files — tighten
-    # pre-existing ones too.
-    os.chmod(target, 0o600)
 
 
 def _ask(prompt: str, default: bool, *, assume_yes: bool) -> bool:

@@ -94,3 +94,24 @@ def test_vector_search_rejects_malformed_source_filter():
         vector_search(client, [0.0] * 4, source_filter="nac_docs} | @text:(evil")
 
     client.ft.assert_not_called()
+
+
+def test_search_redis_returns_error_envelope_for_bad_source_filter(monkeypatch):
+    """Regression: the new source-filter ValueError escaped search_docs/
+    ask_docs uncaught under the redis backend — the lancedb path returns
+    an [{"error": ...}] envelope for the same input."""
+    from unittest.mock import MagicMock
+
+    from mcp_servers import rag
+
+    monkeypatch.setattr(rag, "_redis", MagicMock(), raising=False)
+    monkeypatch.setattr(rag, "_ollama", MagicMock(embed_query=lambda q: [0.0]), raising=False)
+
+    def raising_vector_search(*args, **kwargs):
+        raise ValueError("invalid source filter: 'Tech-Docs'")
+
+    monkeypatch.setattr(rag, "vector_search", raising_vector_search, raising=False)
+
+    hits = rag._search_redis("query", 5, "Tech-Docs")
+
+    assert hits == [{"error": "invalid source filter: 'Tech-Docs'"}]

@@ -84,3 +84,21 @@ def test_has_placeholders_survives_unreadable_file(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", deny_read)
 
     assert doctor._has_placeholders(target) is False
+
+
+def test_load_local_env_survives_utf16_env_file(tmp_path, monkeypatch):
+    """Regression: a UTF-16 .env (e.g. a PowerShell redirect) decoded with
+    embedded NULs that crashed os.environ assignment with
+    'ValueError: embedded null byte'."""
+    from scripts import doctor
+
+    env_file = tmp_path / ".env"
+    # The BOM garbles the first line's key with replacement chars; later
+    # lines must still parse. The contract under test is "never crash".
+    env_file.write_bytes("# comment\nDOCTOR_UTF16_TEST=value\n".encode("utf-16"))
+    monkeypatch.delenv("DOCTOR_UTF16_TEST", raising=False)
+
+    doctor._load_local_env(env_file)  # must not raise
+
+    import os as _os
+    assert _os.environ.pop("DOCTOR_UTF16_TEST", None) == "value"

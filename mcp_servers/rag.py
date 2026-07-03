@@ -115,9 +115,14 @@ def _search_redis(query: str, top_k: int, source_filter: str | None) -> list[dic
 
     query_vector = _ollama.embed_query(query)
     # Fetch more candidates so re-ranking has room to promote higher-priority sources
-    candidates = vector_search(
-        _redis, query_vector, top_k=top_k * 3, source_filter=source_filter
-    )
+    try:
+        candidates = vector_search(
+            _redis, query_vector, top_k=top_k * 3, source_filter=source_filter
+        )
+    except ValueError as exc:
+        # Invalid source filter — return the same error envelope the lancedb
+        # path produces, instead of raising out of the tool.
+        return [{"error": str(exc)}]
 
     # Re-rank: boosted_score = raw_score + source_boost. Applies even under filters —
     # a filter narrows the candidate set, boosting still orders within it.

@@ -95,6 +95,9 @@ def _load_local_env(path: Path) -> None:
         text = path.read_text(errors="replace")
     except OSError:
         return
+    # A UTF-16 .env (e.g. a PowerShell redirect) decodes with embedded NULs
+    # that survive line parsing and crash os.environ assignment.
+    text = text.replace("\x00", "")
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):

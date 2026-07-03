@@ -141,3 +141,29 @@ def test_extract_swaps_artifacts_and_removes_stale_files(tmp_path, monkeypatch):
     assert not stale.exists()
     assert not (output_dir / ".index-download-staging").exists()
     assert not (output_dir / "data" / "docs.lance.old-tmp").exists()
+
+
+def test_swap_rolls_back_live_artifact_when_move_fails(tmp_path, monkeypatch):
+    """Regression: a cross-filesystem move failure (EXDEV) used to leave the
+    live artifact renamed aside — and the caller's staging cleanup then
+    deleted the new copy, so a retry destroyed the last local copy too. The
+    swap must restore the live artifact before propagating."""
+    staging_data = tmp_path / "staging" / "data"
+    (staging_data / "docs.lance").mkdir(parents=True)
+    (staging_data / "docs.lance" / "new.manifest").write_text("new")
+
+    data_dir = tmp_path / "data"
+    live = data_dir / "docs.lance"
+    live.mkdir(parents=True)
+    (live / "live.manifest").write_text("live")
+
+    def exploding_move(src, dst):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(download_indexes.shutil, "move", exploding_move)
+
+    with pytest.raises(OSError):
+        download_indexes._swap_into_place(staging_data, data_dir)
+
+    assert (live / "live.manifest").read_text() == "live"
+    assert not (data_dir / "docs.lance.old-tmp").exists()
