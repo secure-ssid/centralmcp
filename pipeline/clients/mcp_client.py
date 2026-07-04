@@ -48,6 +48,10 @@ def _rfc3339_utc_ms(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
+def _odata_string(value: str) -> str:
+    return value.replace("'", "''")
+
+
 class MCPClient:
     """Thin read-only wrapper around New Central monitoring APIs.
 
@@ -65,9 +69,27 @@ class MCPClient:
     def get_device_by_serial(self, serial_number: str) -> Optional[dict[str, Any]]:
         """Return the device inventory record for a given serial, or None.
 
-        Note: the device-inventory API does not filter server-side by serialNumber,
-        so we fetch all devices and filter client-side.
+        Tries a server-side ``serialNumber eq '...'`` filter first (supported
+        by the device-inventory API), then falls back to paginated scan.
         """
+        serial_escaped = _odata_string(serial_number)
+        try:
+            result = self._client.get(
+                "/network-monitoring/v1alpha1/device-inventory",
+                params={"filter": f"serialNumber eq '{serial_escaped}'", "limit": 1},
+            )
+            items = result.get("devices", result.get("items", []))
+            for item in items:
+                if item.get("serialNumber", "").lower() == serial_number.lower():
+                    return item
+        except Exception as exc:
+            logger.debug(
+                "MCPClient.get_device_by_serial(%s): server-side filter failed (%s), "
+                "falling back to paginated scan",
+                serial_number,
+                exc,
+            )
+
         try:
             limit = 100
             offset = 0

@@ -20,6 +20,26 @@ from pipeline.clients.token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
 
+
+def _post_error(response: httpx.Response) -> Exception:
+    """Build the error raised for a failed POST.
+
+    Attaches ``.response`` — mirroring httpx.HTTPStatusError — so callers
+    doing ``getattr(exc, "response", None).text`` see the real body.
+    """
+    exc = Exception(f"{response.status_code} {response.reason_phrase} — {response.text[:500]}")
+    exc.response = response  # type: ignore[attr-defined]
+    return exc
+
+
+def error_body(exc: Exception) -> str:
+    """Response body text from an HTTP-error exception, or "" if there is none."""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return ""
+    return getattr(resp, "text", "") or ""
+
+
 _INITIAL_RETRY_DELAY = 60  # seconds — Central rate-limit window
 _MAX_RETRY_DELAY = 300
 # 5xx retry uses a much smaller floor — these are usually transient, not
@@ -112,6 +132,18 @@ class CentralClient:
             self._ensure_valid_token()
             response = self.session.request(method, url, **kwargs)
 
+            if response.status_code == 401 and attempt < max_retries:
+                logger.warning(
+                    "Unauthorized (401) on %s %s — forcing token refresh (attempt %d/%d)",
+                    method,
+                    url,
+                    attempt + 1,
+                    max_retries,
+                )
+                self.token_manager.get_access_token(force_refresh=True)
+                self._refresh_auth_header()
+                continue
+
             if response.status_code == 429 and attempt < max_retries:
                 # Prefer the server's hint if present.
                 hint = _parse_retry_after(response.headers.get("Retry-After", ""))
@@ -182,6 +214,17 @@ class CentralClient:
                     headers.update(extra_headers)
 
                 response = await session.request(method, url, headers=headers, **kwargs)
+
+                if response.status_code == 401 and attempt < max_retries:
+                    logger.warning(
+                        "Unauthorized (401) on %s %s — forcing token refresh (attempt %d/%d)",
+                        method,
+                        url,
+                        attempt + 1,
+                        max_retries,
+                    )
+                    await asyncio.to_thread(self.token_manager.get_access_token, True)
+                    continue
 
                 if response.status_code == 429 and attempt < max_retries:
                     hint = _parse_retry_after(response.headers.get("Retry-After", ""))
@@ -262,9 +305,7 @@ class CentralClient:
         )
         response = self._request("POST", endpoint, json=data, params=params)
         if not response.is_success:
-            raise Exception(
-                f"{response.status_code} {response.reason_phrase} — {response.text[:500]}"
-            )
+            raise _post_error(response)
         return _parse_json(response)
 
     def post_async(
@@ -277,9 +318,7 @@ class CentralClient:
         logger.debug("POST(async) %s%s", self.base_url, endpoint)
         response = self._request("POST", endpoint, json=data, params=params)
         if not response.is_success:
-            raise Exception(
-                f"{response.status_code} {response.reason_phrase} — {response.text[:500]}"
-            )
+            raise _post_error(response)
         location = response.headers.get("Location", "")
         logger.info("POST async Location: %s", location)
         return location

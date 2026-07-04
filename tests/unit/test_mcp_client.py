@@ -12,7 +12,7 @@ def test_get_device_scope_id_uses_device_inventory():
     assert MCPClient(central).get_device_scope_id("CN123") == "scope-1"
     central.get.assert_called_once_with(
         "/network-monitoring/v1alpha1/device-inventory",
-        params={"limit": 100, "offset": 0},
+        params={"filter": "serialNumber eq 'CN123'", "limit": 1},
     )
 
 
@@ -37,6 +37,37 @@ def test_get_device_scope_id_returns_none_on_client_error():
     central.get.side_effect = RuntimeError("boom")
 
     assert MCPClient(central).get_device_scope_id("CN123") is None
+
+
+def test_get_device_by_serial_uses_server_side_filter_first():
+    central = MagicMock()
+    central.get.return_value = {
+        "devices": [{"serialNumber": "CN999", "deviceType": "SWITCH"}]
+    }
+
+    device = MCPClient(central).get_device_by_serial("CN999")
+
+    assert device == {"serialNumber": "CN999", "deviceType": "SWITCH"}
+    central.get.assert_called_once_with(
+        "/network-monitoring/v1alpha1/device-inventory",
+        params={"filter": "serialNumber eq 'CN999'", "limit": 1},
+    )
+
+
+def test_get_device_by_serial_escapes_odata_quotes_in_serial():
+    central = MagicMock()
+    central.get.return_value = {"devices": []}
+    # Force fallback scan on second call
+    central.get.side_effect = [
+        {"devices": []},
+        {"devices": []},
+    ]
+
+    assert MCPClient(central).get_device_by_serial("CN'123") is None
+    assert central.get.call_args_list[0] == (
+        ("/network-monitoring/v1alpha1/device-inventory",),
+        {"params": {"filter": "serialNumber eq 'CN''123'", "limit": 1}},
+    )
 
 
 def test_get_site_by_name_searches_full_site_list():

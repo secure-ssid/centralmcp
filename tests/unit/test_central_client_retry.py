@@ -153,10 +153,28 @@ class TestRetryBehavior:
     def test_4xx_non_429_not_retried(self, monkeypatch):
         """A 400/403/404 comes back immediately — don't retry client errors."""
         monkeypatch.setattr(time, "sleep", lambda s: None)
-        for code in (400, 401, 403, 404):
+        for code in (400, 403, 404):
             client = _make_client([_make_response(code)])
             resp = client._request("GET", "/x")
             assert resp.status_code == code
+
+    def test_401_forces_token_refresh_and_retries(self, monkeypatch):
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+        tm = MagicMock()
+        tm.get_access_token.return_value = "fake-token"
+        client = CentralClient(base_url="https://test.example.com", token_manager=tm)
+        client.session = MagicMock()
+        client.session.headers = {}
+        client.session.request.side_effect = [
+            _make_response(401),
+            _make_response(200),
+        ]
+
+        resp = client._request("GET", "/x")
+
+        assert resp.status_code == 200
+        tm.get_access_token.assert_any_call(force_refresh=True)
+        assert client.session.request.call_count == 2
 
     def test_max_retries_cap_enforced(self, monkeypatch):
         """After max_retries, return the last response even if still transient."""
