@@ -108,7 +108,16 @@ Firmware upgrades via `set_firmware_compliance` — the `/firmware/v1/upgrade` e
 
 ## Credentials
 
-Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var. Two account contexts: `source` (old system) and `target` (New Central). Most MCP tools use `target`.
+Loaded from `config/credentials.yaml`. Override path with `CREDS_PATH` env var.
+
+Preferred key names (see `config/credentials.yaml.example`):
+
+| YAML key | Context | Used by |
+|----------|---------|---------|
+| `central_account` (alias: `source_account`) | `source_ctx` | `get_client()` — **all Central MCP tools** (monitoring, config, ops, NAC) |
+| `glp_account` (alias: `target_account`) | `target_ctx` | `get_glp_client()` — GLP MCP tools |
+
+Legacy `source_account` / `target_account` names are still accepted for the cross-account migration pipeline. If both legacy and modern keys are present, legacy wins.
 
 ## Adding new MCP tools
 

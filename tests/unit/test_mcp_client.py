@@ -3,21 +3,31 @@ from unittest.mock import MagicMock
 from pipeline.clients.mcp_client import MCPClient
 
 
-def test_get_device_scope_id_uses_central_client_get():
+def test_get_device_scope_id_uses_device_inventory():
     central = MagicMock()
-    central.get.return_value = {"items": [{"scopeId": "scope-1"}]}
+    central.get.return_value = {
+        "devices": [{"serialNumber": "CN123", "scopeId": "scope-1"}]
+    }
 
     assert MCPClient(central).get_device_scope_id("CN123") == "scope-1"
     central.get.assert_called_once_with(
-        "/network-config/v1alpha1/devices",
-        params={"filter": "scopeName eq 'CN123'"},
+        "/network-monitoring/v1alpha1/device-inventory",
+        params={"limit": 100, "offset": 0},
     )
-    assert not central.session.get.called
+
+
+def test_get_device_scope_id_accepts_scopeID_casing():
+    central = MagicMock()
+    central.get.return_value = {
+        "devices": [{"serialNumber": "CN123", "scopeID": "scope-2"}]
+    }
+
+    assert MCPClient(central).get_device_scope_id("CN123") == "scope-2"
 
 
 def test_get_device_scope_id_returns_none_for_empty_result():
     central = MagicMock()
-    central.get.return_value = {"items": []}
+    central.get.return_value = {"devices": []}
 
     assert MCPClient(central).get_device_scope_id("CN123") is None
 
@@ -27,6 +37,18 @@ def test_get_device_scope_id_returns_none_on_client_error():
     central.get.side_effect = RuntimeError("boom")
 
     assert MCPClient(central).get_device_scope_id("CN123") is None
+
+
+def test_get_site_by_name_searches_full_site_list():
+    central = MagicMock()
+    central.get.return_value = {
+        "items": [{"scopeName": f"site-{idx}", "id": f"id-{idx}"} for idx in range(60)]
+    }
+
+    site = MCPClient(central).get_site_by_name("site-55")
+
+    assert site == {"scopeName": "site-55", "id": "id-55"}
+    central.get.assert_called_once_with("/network-config/v1/sites")
 
 
 def test_get_sites_applies_client_side_limit_and_offset():
