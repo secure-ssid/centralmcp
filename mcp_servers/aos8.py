@@ -2007,6 +2007,9 @@ def _aos8_migration_target(
     cluster_scope_id: str | None,
     gateway_name: str | None,
     gateway_scope_id: str | None,
+    external_object_references: dict[str, dict[str, str]] | None = None,
+    ap_group_target_map: dict[str, str] | None = None,
+    ap_group_device_serials: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     return {
         "type": target_type,
@@ -2018,6 +2021,16 @@ def _aos8_migration_target(
         "cluster_scope_id": cluster_scope_id,
         "gateway_name": gateway_name,
         "gateway_scope_id": gateway_scope_id,
+        # Explicit, non-secret operator context for the narrow set of
+        # conditional/verified mappings that need it (WPA3-Enterprise's
+        # already-existing auth-server reference; AP-group -> Classic group
+        # mapping and device serials for the manual/unsupported AP-group
+        # family). Bounded and validated by
+        # `pipeline.aos8_migration_orchestrator._target_context` before ever
+        # reaching a `TargetContext`; never a channel for secrets.
+        "external_object_references": external_object_references or {},
+        "ap_group_target_map": ap_group_target_map or {},
+        "ap_group_device_serials": ap_group_device_serials or {},
     }
 
 
@@ -2062,6 +2075,35 @@ def _aos8_migration_scope_resolver(context: Any) -> tuple[str, str]:
     )
 
 
+def _aos8_migration_classic_target_resolver(context: Any) -> tuple[str, str]:
+    """Resolve a Classic Central target directly from the caller-supplied
+    `scope_name` -- the literal Classic full_wlan
+    `{group_name_or_guid_or_serial_number}` path segment -- and never through
+    the New Central `/scopes` lookup used by `_aos8_migration_scope_resolver`.
+
+    This is deliberately a *separate* resolver function, not a branch inside
+    the New Central one: Classic Central has no `/scopes` concept at all, so
+    there is nothing to look up. Reusing the New Central resolver for Classic
+    targets was the actual root cause of the numeric-scope-name ambiguity --
+    a caller could pass a New Central `scope_id` value into a Classic target
+    and it would silently resolve via `list_scopes()`. This resolver instead
+    treats whatever the caller declared as `scope_name` as the authoritative
+    Classic identifier, with no New Central API call involved, so a bare
+    `scope_id` (no `scope_name`) is rejected outright rather than guessed at,
+    and a purely numeric `scope_name` (a legitimate Classic group name an
+    operator explicitly chose) is accepted as-is.
+    """
+    scope_name = str(context.scope_name).strip() if context.scope_name else ""
+    if not scope_name:
+        raise ValueError(
+            "Classic Central target requires an explicit scope_name naming "
+            "the Classic group, GUID, or device serial number -- it is never "
+            "resolved through the New Central scope_id/scopes lookup."
+        )
+    scope_id = str(context.scope_id).strip() if context.scope_id else scope_name
+    return scope_id, scope_name
+
+
 def _aos8_migration_persona_validator(context: Any) -> str:
     allowed = {
         "CAMPUS_AP",
@@ -2079,7 +2121,25 @@ def _aos8_migration_persona_validator(context: Any) -> str:
 
 def _aos8_migration_read_invoker(operation: Any) -> Any:
     if operation.invocation == "endpoint":
-        return get_client().get(str(operation.endpoint))
+        from pipeline.aos8_target_adapters import ReadStatusError
+
+        try:
+            return get_client().get(str(operation.endpoint))
+        except httpx.HTTPStatusError as exc:
+            # `CentralClient.get()` calls `response.raise_for_status()`, so it
+            # raises on *every* non-2xx response -- including the normal,
+            # expected 404 for "this item does not exist yet, safe to
+            # create". Re-raise as a status-carrying `ReadStatusError` so the
+            # adapter can distinguish that from an unavailable endpoint/
+            # account, an auth failure, or any other error instead of
+            # treating every read failure identically.
+            status_code = (
+                exc.response.status_code if exc.response is not None else None
+            )
+            raise ReadStatusError(
+                f"GET {operation.endpoint} failed with HTTP {status_code}: {exc}",
+                status_code=status_code,
+            ) from exc
     from mcp_servers import config as config_tools
     from mcp_servers import nac as nac_tools
 
@@ -2127,7 +2187,20 @@ def _aos8_migration_write_invoker(
             ),
             json=arguments.get("data", operation.payload),
         )
-        return bounded_response_payload(response)
+        # `CentralClient._request()` deliberately does not call
+        # `raise_for_status()` for write verbs (callers may need to inspect
+        # 4xx/5xx bodies), so the status code must be threaded through
+        # explicitly here -- a write invoker returning without raising is
+        # not proof of success, and
+        # `BaseCentralTargetAdapter._invoke_actions` relies on a
+        # `status_code` field (when present) to catch a non-2xx/rejected
+        # write instead of trusting the response body alone.
+        payload = bounded_response_payload(response)
+        if isinstance(payload, dict):
+            payload = {**payload, "status_code": response.status_code}
+        else:
+            payload = {"status_code": response.status_code, "body": payload}
+        return payload
 
     from mcp_servers import config as config_tools
     from mcp_servers import nac as nac_tools
@@ -2165,14 +2238,21 @@ def _aos8_migration_orchestrator() -> Any:
     )
 
     def adapter_factory(context: Any) -> Any:
-        adapter_class = (
-            NewCentralAdapter
-            if context.target_type is TargetType.NEW_CENTRAL
-            else ClassicCentralAdapter
+        is_classic = context.target_type is TargetType.CLASSIC_CENTRAL
+        adapter_class = ClassicCentralAdapter if is_classic else NewCentralAdapter
+        # Classic Central targets are resolved through a dedicated resolver
+        # that never calls the New Central `/scopes` API -- see
+        # `_aos8_migration_classic_target_resolver`'s docstring for why
+        # sharing `_aos8_migration_scope_resolver` across both target types
+        # was unsafe.
+        resolver = (
+            _aos8_migration_classic_target_resolver
+            if is_classic
+            else _aos8_migration_scope_resolver
         )
         return adapter_class(
             context,
-            scope_resolver=_aos8_migration_scope_resolver,
+            scope_resolver=resolver,
             persona_validator=_aos8_migration_persona_validator,
             read_invoker=_aos8_migration_read_invoker,
             write_invoker=_aos8_migration_write_invoker,
@@ -2204,10 +2284,21 @@ def aos8_preview_migration_run(
     gateway_name: str | None = None,
     gateway_scope_id: str | None = None,
     selected_candidates: list[str] | None = None,
+    external_object_references: dict[str, dict[str, str]] | None = None,
+    ap_group_target_map: dict[str, str] | None = None,
+    ap_group_device_serials: dict[str, list[str]] | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Preview a bounded, dependency-ordered migration run without persisting it."""
+    """Preview a bounded, dependency-ordered migration run without persisting it.
+
+    `external_object_references`, `ap_group_target_map`, and
+    `ap_group_device_serials` are explicit, non-secret operator context
+    (an already-existing Classic auth-server name for a conditional
+    WPA3-Enterprise WLAN; an AOS8 AP-group -> Classic group mapping and
+    device serials for the manual/unsupported AP-group family). They are
+    bounded and validated before use and are never a channel for secrets.
+    """
     try:
         selected = _aos8_migration_candidates(
             target_type,
@@ -2224,6 +2315,9 @@ def aos8_preview_migration_run(
             cluster_scope_id=cluster_scope_id,
             gateway_name=gateway_name,
             gateway_scope_id=gateway_scope_id,
+            external_object_references=external_object_references,
+            ap_group_target_map=ap_group_target_map,
+            ap_group_device_serials=ap_group_device_serials,
         )
         return _aos8_migration_orchestrator().preview(
             selected,
@@ -2250,11 +2344,22 @@ def aos8_create_migration_run(
     gateway_name: str | None = None,
     gateway_scope_id: str | None = None,
     selected_candidates: list[str] | None = None,
+    external_object_references: dict[str, dict[str, str]] | None = None,
+    ap_group_target_map: dict[str, str] | None = None,
+    ap_group_device_serials: dict[str, list[str]] | None = None,
     run_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Create an atomic resumable run from a plan/candidate set; secrets are never stored."""
+    """Create an atomic resumable run from a plan/candidate set; secrets are never stored.
+
+    See `aos8_preview_migration_run` for `external_object_references`/
+    `ap_group_target_map`/`ap_group_device_serials` semantics. They are
+    persisted as part of this run's target (bounded/validated, never
+    secrets) so a later `aos8_apply_migration_run` call reaches the same
+    conditional mappings (e.g. WPA3-Enterprise) without having to be
+    re-supplied.
+    """
     try:
         selected = _aos8_migration_candidates(
             target_type,
@@ -2271,6 +2376,9 @@ def aos8_create_migration_run(
             cluster_scope_id=cluster_scope_id,
             gateway_name=gateway_name,
             gateway_scope_id=gateway_scope_id,
+            external_object_references=external_object_references,
+            ap_group_target_map=ap_group_target_map,
+            ap_group_device_serials=ap_group_device_serials,
         )
         return _aos8_migration_orchestrator().create_run(
             selected,

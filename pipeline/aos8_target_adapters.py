@@ -35,6 +35,30 @@ class WriteGateError(PermissionError):
     """Execution was attempted without all required write gates."""
 
 
+class ReadStatusError(RuntimeError):
+    """Raised by a ``read_invoker`` to carry an HTTP-like status code
+    alongside a failed preflight or read-back read.
+
+    Production read invokers (e.g. `CentralClient.get()`, which calls
+    `response.raise_for_status()`) raise on *any* non-2xx response --
+    including a normal, expected 404 for "this item does not exist yet,
+    safe to create". Without a status-aware signal, that safe-to-create
+    case is indistinguishable from an account/endpoint-unavailable error,
+    an auth failure, or a genuine server error, and a caller could either
+    (a) wrongly treat every read failure as a hard block, or (b) wrongly
+    treat every read failure as "absent, proceed to create". Both are
+    unsafe. A read_invoker that wants status-aware preflight/read-back
+    handling should raise this (or a subclass) with ``status_code`` set;
+    adapters that don't recognize a given status code fall back to the
+    fail-closed default ("blocked") via
+    `BaseCentralTargetAdapter._classify_read_status_error`.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 @dataclass(frozen=True)
 class TargetContext:
     target_type: TargetType
@@ -115,6 +139,14 @@ class CandidateAction:
     # trust a successful write response alone (see the Classic group-create
     # read-back footgun cited in the contract matrix, §3 item 8).
     read_back_operation: Operation | None = None
+    # Field name -> expected value pairs that the mandatory post-write
+    # read-back response must actually contain (searched recursively, since
+    # the exact response envelope shape is not always identical to the
+    # request body shape). Never invented for its own sake: only populated
+    # when a mapping actually knows which fields the target API is supposed
+    # to echo back. Empty means "identifier match alone is the read-back
+    # bar" -- still stronger than trusting a bare write-success response.
+    read_back_expectations: Mapping[str, Any] = field(default_factory=dict)
     # Metadata-only rollback (e.g. Classic full_wlan DELETE) describing how to
     # undo this candidate's write. Never auto-invoked by `_invoke_actions`; an
     # orchestrator must call it explicitly after confirming a rollback is
@@ -257,6 +289,73 @@ def _contains_identifier(value: Any, identifier: str) -> bool:
             return True
         return any(_contains_identifier(item, identifier) for item in value.values())
     return False
+
+
+def _field_value_matches(
+    value: Any, field_name: str, expected: Any, *, _depth: int = 0
+) -> bool:
+    """Recursively (bounded depth) search a read-back response for a key
+    literally named `field_name` whose value string-matches `expected`.
+
+    The exact envelope of a Classic `full_wlan` GET response is not
+    guaranteed to mirror the create/update request body 1:1 (e.g. it may be
+    flat where the request was `{"wlan": {...}}`), so this deliberately does
+    not assume a fixed shape -- it only assumes the target API echoes the
+    same field *names* it accepted, which is the ordinary expectation for a
+    symmetric REST resource.
+    """
+    if _depth > 4:
+        return False
+    if isinstance(value, Mapping):
+        if field_name in value and str(value[field_name]) == str(expected):
+            return True
+        return any(
+            _field_value_matches(item, field_name, expected, _depth=_depth + 1)
+            for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(
+            _field_value_matches(item, field_name, expected, _depth=_depth + 1)
+            for item in value
+        )
+    return False
+
+
+def _read_back_mismatches(existing: Any, expectations: Mapping[str, Any]) -> list[str]:
+    """Return one message per expected read-back field that was not found
+    with a matching value anywhere in the (bounded-depth) response."""
+    return [
+        f"{field_name}={expected!r} was not confirmed in the post-write read-back response"
+        for field_name, expected in expectations.items()
+        if not _field_value_matches(existing, field_name, expected)
+    ]
+
+
+def _write_result_rejection_reason(value: Any) -> str | None:
+    """Return a human-readable rejection reason if a write-invoker result
+    itself signals a non-2xx/rejected outcome, even though the invoker did
+    not raise. A write invoker returning normally is not sufficient proof a
+    write succeeded (contract matrix footgun: Classic Central group/device
+    writes are known to report success without applying) -- but *some*
+    invokers do carry an explicit status/ok/error signal in their return
+    value, and when present it must never be silently ignored.
+
+    Invokers that carry no such signal (e.g. a tool call whose return value
+    has no `status_code`/`ok`/`error` convention) are left alone here; the
+    mandatory read-back (`read_back_operation`) is the actual authority for
+    those, not this best-effort check.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    status_code = value.get("status_code")
+    if isinstance(status_code, int) and not 200 <= status_code < 300:
+        return f"write response status_code={status_code} indicates the write was rejected"
+    if value.get("ok") is False:
+        return "write response reported ok=False"
+    error = value.get("error")
+    if isinstance(error, str) and error.strip():
+        return f"write response reported an error: {error.strip()}"
+    return None
 
 
 def _topological_candidates(
@@ -408,6 +507,23 @@ class BaseCentralTargetAdapter:
             elif action.read_operation is not None:
                 try:
                     existing = self.read_invoker(action.read_operation)
+                except ReadStatusError as exc:
+                    classification = self._classify_read_status_error(exc)
+                    if classification is None:
+                        action.status = "blocked"
+                        action.blockers.append(
+                            f"preflight read failed (status={exc.status_code}): {exc}"
+                        )
+                    else:
+                        kind, message = classification
+                        if kind == "absent":
+                            action.conflict = "absent"
+                        elif kind == "unsupported":
+                            action.compatibility_errors.append(message or str(exc))
+                            action.status = "unsupported"
+                        else:
+                            action.status = "blocked"
+                            action.blockers.append(message or f"preflight read failed: {exc}")
                 except Exception as exc:
                     action.status = "blocked"
                     action.blockers.append(f"preflight read failed: {exc}")
@@ -437,6 +553,15 @@ class BaseCentralTargetAdapter:
                 "gateway_name": self.context.gateway_name,
                 "gateway_scope_id": self.context.gateway_scope_id,
                 "conflict_policy": self.context.conflict_policy.value,
+                "external_object_references": {
+                    key: dict(value)
+                    for key, value in self.context.external_object_references.items()
+                },
+                "ap_group_target_map": dict(self.context.ap_group_target_map),
+                "ap_group_device_serials": {
+                    key: list(value)
+                    for key, value in self.context.ap_group_device_serials.items()
+                },
             },
             "dry_run": True,
             "write_gate_requirements": {
@@ -456,6 +581,30 @@ class BaseCentralTargetAdapter:
         is a normal, safe-to-create `absent` result). Returning a non-empty
         string marks the candidate `unsupported` with that message instead of
         treating it as `absent`."""
+        return None
+
+    def _classify_read_status_error(
+        self, exc: ReadStatusError
+    ) -> tuple[str, str] | None:
+        """Classify a status-carrying preflight read failure.
+
+        Return ``(kind, message)`` where ``kind`` is one of:
+
+        - ``"absent"``: this specific item does not exist yet; safe to
+          proceed to create (message is ignored).
+        - ``"unsupported"``: the endpoint/account itself is unavailable
+          (auth, entitlement, etc.); reported with ``message``.
+        - ``"blocked"``: a transient/ambiguous failure; reported with
+          ``message``.
+
+        Return ``None`` to fall back to the default fail-closed behavior
+        (``"blocked"`` with the raw exception text) -- the base
+        implementation always returns ``None`` because it does not know any
+        specific target API's status-code semantics. Only an adapter with a
+        verified contract for what a given status code means (e.g. Classic
+        `full_wlan`'s 404-means-absent semantics) should return anything
+        else.
+        """
         return None
 
     def _apply_conflict_policy(self, action: CandidateAction) -> None:
@@ -626,10 +775,48 @@ class BaseCentralTargetAdapter:
                 invoked = operation.with_dry_run(dry_run)
                 try:
                     value = self.write_invoker(invoked, confirmation=confirmation)
-                    operation_results.append({"operation": invoked.preview_dict(), "result": value})
                 except Exception as exc:
                     errors.append(f"{operation.name}: {exc}")
                     break
+                rejection = _write_result_rejection_reason(value)
+                if rejection:
+                    errors.append(f"{operation.name}: {rejection}")
+                    break
+                operation_results.append({"operation": invoked.preview_dict(), "result": value})
+            # A write invoker returning without raising and without an
+            # explicit rejection signal is still not proof the change
+            # actually applied (contract matrix footgun: Classic group/
+            # device writes are known to report success without applying).
+            # Wherever a mandatory `read_back_operation` exists, a real
+            # (non-dry-run) write is only ever reported "applied" after that
+            # bounded read confirms both the identifier and every declared
+            # `read_back_expectations` field.
+            if not errors and not dry_run and action.read_back_operation is not None:
+                try:
+                    confirmed = self.read_invoker(action.read_back_operation)
+                except Exception as exc:
+                    errors.append(f"read_back verification failed: {exc}")
+                else:
+                    match_identifier = (
+                        action.read_back_operation.match_identifier
+                        or str(action.candidate.get("identifier"))
+                    )
+                    if not _contains_identifier(confirmed, match_identifier):
+                        errors.append(
+                            "read_back verification failed: identifier "
+                            f"{match_identifier!r} was not confirmed in the "
+                            "post-write read-back response (a write response "
+                            "alone is not proof the change applied)"
+                        )
+                    else:
+                        mismatches = _read_back_mismatches(
+                            confirmed, action.read_back_expectations
+                        )
+                        if mismatches:
+                            errors.append(
+                                "read_back verification failed: "
+                                + "; ".join(mismatches)
+                            )
             status = "failed" if errors else ("dry-run" if dry_run else "applied")
             if not errors:
                 successful.add(action.key)
@@ -1105,16 +1292,24 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
         self._validate_classic_target_context()
 
     def _validate_classic_target_context(self) -> None:
-        """Fail closed unless `scope_name` is an explicit Classic group name,
-        GUID, or device serial number — the literal `full_wlan`
+        """Fail closed unless `scope_name` is a non-empty explicit Classic
+        group name, GUID, or device serial number — the literal `full_wlan`
         `{group_name_or_guid_or_serial_number}` path segment
-        (developer.arubanetworks.com/central/reference/apifull_wlancreate_wlan) —
-        never a raw New Central `scope_id`. New Central scope IDs are coerced
-        to `int` throughout `mcp_servers/config.py` (e.g. `"scope-id":
-        int(scope_id)`); a purely numeric Classic target is accepted nowhere
-        in the audited official samples (group names, GUIDs, and Aruba device
-        serial numbers are never bare digit strings), so it is rejected here
-        as a likely wrong-target mistake rather than silently accepted.
+        (developer.arubanetworks.com/central/reference/apifull_wlancreate_wlan).
+
+        This deliberately does *not* reject purely numeric values: a Classic
+        group name is an operator-chosen string with no format constraint,
+        and a numeric-looking name (e.g. a site number used as a group name)
+        is a legitimate value the operator may have explicitly declared. The
+        real hazard this adapter must guard against is a *New Central*
+        `scope_id` being silently fed into the Classic path -- and that is
+        prevented structurally, not by pattern-matching the string: the
+        Classic-specific target resolver wired up at the MCP/orchestrator
+        boundary (`mcp_servers.aos8._aos8_migration_classic_target_resolver`)
+        never performs the New Central `/scopes` lookup and requires the
+        caller to explicitly supply `scope_name` as the literal Classic
+        target string. There is therefore nothing left for this adapter to
+        (unreliably) guess from formatting alone.
         """
         scope_name = str(self.context.scope_name or "").strip()
         if not scope_name:
@@ -1125,16 +1320,32 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
                 "(developer.arubanetworks.com/central/reference/"
                 "apifull_wlancreate_wlan)."
             )
-        if scope_name.isdigit():
-            raise ContextValidationError(
-                f"ClassicCentralAdapter target {scope_name!r} looks like a raw "
-                "New Central scope_id (a purely numeric value); the Classic "
-                "full_wlan {group_name_or_guid_or_serial_number} path segment "
-                "must be an explicit Classic group name, GUID, or device "
-                "serial number, never a New Central scope_id. Resolve the "
-                "correct Classic group/GUID/serial before constructing this "
-                "TargetContext."
+
+    def _classify_read_status_error(
+        self, exc: ReadStatusError
+    ) -> tuple[str, str] | None:
+        """Classic `full_wlan` GET status-code semantics (bounded single-item
+        path): a 404 on the `{group}/{wlan_name}` path means this specific
+        WLAN does not exist yet in an otherwise-valid group -- safe to
+        proceed to create. A 401/403 means the credentials/entitlement for
+        the full_wlan API itself are the problem, not the item -- reported as
+        `unsupported` with actionable guidance rather than silently blocked.
+        Any other status (400/5xx/etc.) is deliberately left unclassified
+        (falls back to the base "blocked" behavior): without a live-verified
+        contract for what those specific codes mean against this endpoint,
+        assuming either "absent" or "unavailable" would be a guess.
+        """
+        if exc.status_code == 404:
+            return "absent", ""
+        if exc.status_code in (401, 403):
+            return (
+                "unsupported",
+                "Classic full_wlan preflight read returned HTTP "
+                f"{exc.status_code} for {self.context.scope_name!r}: {exc}. "
+                "Confirm API credentials and full_wlan entitlement for this "
+                "account/group before retrying (contract matrix §5)."
             )
+        return None
 
     def _read_unavailable_reason(self, existing: Any) -> str | None:
         """Detect a preflight read that succeeded (no exception) but signals
@@ -1539,6 +1750,11 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
             update_operations=[update],
             read_operation=read_item,
             read_back_operation=read_back,
+            read_back_expectations={
+                "essid": name,
+                "opmode": "opensystem",
+                "vlan": str(vlan),
+            },
             rollback_operations=[delete],
             inline_dependencies=self._inline_vlan_dependencies(candidate),
         )
@@ -1593,6 +1809,11 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
             update_operations=[update],
             read_operation=read_item,
             read_back_operation=read_back,
+            read_back_expectations={
+                "essid": name,
+                "opmode": "wpa3-sae-aes",
+                "vlan": str(vlan),
+            },
             rollback_operations=[delete],
             inline_dependencies=self._inline_vlan_dependencies(candidate),
         )
@@ -1651,6 +1872,12 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
             update_operations=[update],
             read_operation=read_item,
             read_back_operation=read_back,
+            read_back_expectations={
+                "essid": name,
+                "opmode": "wpa3-aes-ccm-128",
+                "vlan": str(vlan),
+                "auth_server1": auth_server1.strip(),
+            },
             rollback_operations=[delete],
             inline_dependencies=self._inline_vlan_dependencies(candidate),
             dry_run_only=True,

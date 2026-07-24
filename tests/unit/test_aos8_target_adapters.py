@@ -57,9 +57,15 @@ def security(mode: str, **overrides) -> dict:
 
 
 class FakeBackend:
-    def __init__(self, reads=None, failures=None):
+    def __init__(self, reads=None, failures=None, write_results=None):
         self.reads = reads or {}
         self.failures = failures or {}
+        # Optional override of the *returned* write result (as opposed to
+        # `failures`, which makes the write invoker raise). Used to simulate
+        # a write invoker that returns without raising but whose result
+        # itself signals rejection (status_code/ok/error), or a "successful"
+        # write whose subsequent read-back does not actually confirm it.
+        self.write_results = write_results or {}
         self.read_calls = []
         self.write_calls = []
 
@@ -75,6 +81,8 @@ class FakeBackend:
         failure = self.failures.get(operation.name)
         if failure:
             raise failure
+        if operation.name in self.write_results:
+            return self.write_results[operation.name]
         return {"ok": True, "name": operation.name}
 
 
@@ -475,7 +483,18 @@ def test_classic_open_wlan_update_uses_full_body_put_on_conflict():
 
 
 def test_classic_wlan_embeds_vlan_dependency_while_vlan_candidate_stays_unapplied():
-    backend = FakeBackend()
+    backend = FakeBackend(
+        reads={
+            "central_api_read_back": {
+                "wlan": {
+                    "name": "Guest",
+                    "essid": "Guest",
+                    "opmode": "opensystem",
+                    "vlan": "20",
+                }
+            }
+        }
+    )
     adapter = classic_adapter(backend)
     vlan = candidate("vlan", "20")
     wlan = candidate(
@@ -566,15 +585,45 @@ def test_preflight_errors_are_reported_without_writes():
 # --------------------------------------------------------------------------
 
 
-def test_classic_context_rejects_numeric_scope_name_as_likely_new_central_scope_id():
-    with pytest.raises(ContextValidationError, match="scope_id"):
-        classic_adapter(FakeBackend(), scope_name="12345")
-
-
-def test_classic_context_accepts_group_name_guid_or_serial():
-    for scope_name in ("Branch Group", "550e8400-e29b-41d4-a716-446655440000", "CN12345678"):
+def test_classic_context_accepts_numeric_group_name_guid_or_serial():
+    # Regression: a purely numeric Classic group name (e.g. a site number
+    # used as the group name) is a legitimate, explicitly-declared operator
+    # value and must be accepted -- spelling/format heuristics are not a
+    # substitute for a dedicated Classic-only target resolver (which never
+    # performs a New Central `/scopes` lookup; see
+    # mcp_servers.aos8._aos8_migration_classic_target_resolver).
+    for scope_name in (
+        "Branch Group",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "CN12345678",
+        "12345",
+    ):
         adapter = classic_adapter(FakeBackend(), scope_name=scope_name)
         assert adapter.context.scope_name == scope_name
+
+
+def test_classic_context_rejects_whitespace_only_scope_name():
+    # The base adapter's own non-empty check only catches a falsy (empty)
+    # string; a resolver returning a whitespace-only value would slip past
+    # it, so ClassicCentralAdapter's own `.strip()`-based check is what
+    # actually catches this case.
+    def whitespace_resolver(context):
+        return "classic-id", "   "
+
+    with pytest.raises(ContextValidationError, match="explicit Classic group"):
+        ClassicCentralAdapter(
+            TargetContext(
+                target_type=TargetType.CLASSIC_CENTRAL,
+                scope_id="classic-id",
+                scope_name="ignored-by-fake-resolver",
+                persona="CAMPUS_AP",
+            ),
+            scope_resolver=whitespace_resolver,
+            persona_validator=validate_persona,
+            read_invoker=FakeBackend().read,
+            write_invoker=FakeBackend().write,
+            writes_enabled=lambda target: True,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -963,3 +1012,166 @@ def test_classic_manual_family_guidance_is_specific_per_family():
     assert aaa_message != role_message
     assert "AAA profiles" in aaa_message
     assert "roles" in role_message
+
+
+# --------------------------------------------------------------------------
+# Finding #2 regression: a write invoker returning without raising is never
+# sufficient proof a write applied. Non-2xx/rejected write results must be
+# caught, and every candidate with a `read_back_operation` must have that
+# read-back confirm the identifier and any declared `read_back_expectations`
+# before being reported "applied".
+# --------------------------------------------------------------------------
+
+
+def _open_wlan_candidate(name="Guest", vlan=20):
+    return candidate(
+        "wlan",
+        name,
+        payload={
+            "name": name,
+            "essid": name,
+            "vlan": vlan,
+            "aaa_profile": None,
+            "security": security("open"),
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "open",
+            "virtual_ap.forward_mode": "bridge",
+        },
+    )
+
+
+def test_write_result_status_code_rejection_prevents_false_success():
+    # The write invoker returns *without raising*, but the payload carries an
+    # explicit non-2xx status_code -- this must never be reported "applied".
+    backend = FakeBackend(
+        write_results={"central_api_request": {"status_code": 500, "ok": False}}
+    )
+    adapter = classic_adapter(backend)
+    result = adapter.execute([_open_wlan_candidate()], dry_run=False, confirmation=True)
+    outcome = result["results"][0]
+    assert outcome["status"] == "failed"
+    assert any("status_code=500" in error for error in outcome["errors"])
+    # Read-back must never even be attempted once the write itself was
+    # rejected.
+    assert not any(
+        call.name == "central_api_read_back" for call in backend.read_calls
+    )
+
+
+def test_write_result_ok_false_rejection_prevents_false_success():
+    backend = FakeBackend(write_results={"central_api_request": {"ok": False}})
+    adapter = classic_adapter(backend)
+    result = adapter.execute([_open_wlan_candidate()], dry_run=False, confirmation=True)
+    outcome = result["results"][0]
+    assert outcome["status"] == "failed"
+    assert any("ok=False" in error for error in outcome["errors"])
+
+
+def test_write_result_error_field_rejection_prevents_false_success():
+    backend = FakeBackend(
+        write_results={"central_api_request": {"error": "group is out of sync"}}
+    )
+    adapter = classic_adapter(backend)
+    result = adapter.execute([_open_wlan_candidate()], dry_run=False, confirmation=True)
+    outcome = result["results"][0]
+    assert outcome["status"] == "failed"
+    assert any("group is out of sync" in error for error in outcome["errors"])
+
+
+def test_missing_read_back_confirmation_prevents_false_success():
+    # The write invoker "succeeds" (no rejection signal), but the mandatory
+    # post-write read-back does not confirm the identifier -- this is the
+    # documented Classic group/device write footgun (contract matrix §3
+    # item 8): a successful write response is not sufficient proof the
+    # group actually applied the change.
+    backend = FakeBackend(reads={"central_api_read_back": {"error": "not found"}})
+    adapter = classic_adapter(backend)
+    result = adapter.execute([_open_wlan_candidate()], dry_run=False, confirmation=True)
+    outcome = result["results"][0]
+    assert outcome["status"] == "failed"
+    assert any("read_back verification failed" in error for error in outcome["errors"])
+    assert any("was not confirmed" in error for error in outcome["errors"])
+
+
+def test_read_back_field_mismatch_prevents_false_success():
+    # Identifier matches, but a declared read_back_expectations field (e.g.
+    # opmode) does not -- must still fail, not be reported "applied".
+    backend = FakeBackend(
+        reads={
+            "central_api_read_back": {
+                "wlan": {
+                    "name": "Guest",
+                    "essid": "Guest",
+                    "opmode": "wpa2-psk-aes",  # wrong: expected opensystem
+                    "vlan": "20",
+                }
+            }
+        }
+    )
+    adapter = classic_adapter(backend)
+    result = adapter.execute([_open_wlan_candidate()], dry_run=False, confirmation=True)
+    outcome = result["results"][0]
+    assert outcome["status"] == "failed"
+    assert any(
+        "opmode='opensystem'" in error and "not confirmed" in error
+        for error in outcome["errors"]
+    )
+
+
+def test_read_back_confirmation_required_field_and_identifier_match_marks_applied():
+    backend = FakeBackend(
+        reads={
+            "central_api_read_back": {
+                "wlan": {
+                    "name": "Guest",
+                    "essid": "Guest",
+                    "opmode": "opensystem",
+                    "vlan": "20",
+                }
+            }
+        }
+    )
+    adapter = classic_adapter(backend)
+    result = adapter.execute([_open_wlan_candidate()], dry_run=False, confirmation=True)
+    outcome = result["results"][0]
+    assert outcome["status"] == "applied"
+    assert any(call.name == "central_api_read_back" for call in backend.read_calls)
+
+
+def test_dry_run_never_requires_read_back_confirmation():
+    # Dry-run writes must not attempt (or require) a mandatory read-back --
+    # there is nothing on the wire to confirm.
+    backend = FakeBackend()
+    adapter = classic_adapter(backend)
+    result = adapter.dry_run([_open_wlan_candidate()])
+    outcome = result["results"][0]
+    assert outcome["status"] == "dry-run"
+    assert not any(
+        call.name == "central_api_read_back" for call in backend.read_calls
+    )
+
+
+# --------------------------------------------------------------------------
+# Finding #5 regression: operator-context fields are surfaced in the
+# preview target dict so a later orchestrator layer can persist and reload
+# them, and WPA3-Enterprise's conditional dry-run is reachable when the
+# operator supplies an explicit auth-server reference this way.
+# --------------------------------------------------------------------------
+
+
+def test_preview_target_exposes_operator_context_fields():
+    backend = FakeBackend()
+    adapter = classic_adapter(
+        backend,
+        external_object_references={"wlan:Corp": {"auth_server1": "InternalServer"}},
+        ap_group_target_map={"ap-group-hq": "HQ-Group"},
+        ap_group_device_serials={"ap-group-hq": ["CN1234", "CN5678"]},
+    )
+    preview = adapter.preview([_open_wlan_candidate()])
+    target = preview["target"]
+    assert target["external_object_references"] == {
+        "wlan:Corp": {"auth_server1": "InternalServer"}
+    }
+    assert target["ap_group_target_map"] == {"ap-group-hq": "HQ-Group"}
+    assert target["ap_group_device_serials"] == {"ap-group-hq": ["CN1234", "CN5678"]}

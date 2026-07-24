@@ -26,6 +26,17 @@ MAX_CANDIDATES = 500
 MAX_STATE_BYTES = 8 * 1024 * 1024
 MAX_RESULT_ITEMS = 50
 MAX_HISTORY_ITEMS = 10
+# Bounds for the explicit, non-secret operator-context maps
+# (`external_object_references`, `ap_group_target_map`,
+# `ap_group_device_serials`) accepted at the MCP/orchestrator boundary --
+# these are operator-declared reference data (an already-existing Classic
+# auth-server name; an AP-group -> Classic-group mapping; device serials),
+# never secrets, but still caller-controlled input that must be bounded
+# before it is ever persisted into a `TargetContext`/run state.
+MAX_OPERATOR_CONTEXT_ENTRIES = 100
+MAX_OPERATOR_CONTEXT_STRING_LENGTH = 256
+MAX_AP_GROUP_SERIALS_PER_GROUP = 64
+MAX_SERIAL_STRING_LENGTH = 64
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SENSITIVE_KEY_RE = re.compile(
     r"(?:^|[_-])(?:credential|key|passphrase|password|psk|"
@@ -270,6 +281,134 @@ def _placeholder_secret_inputs(
     }
 
 
+def _bounded_operator_string(
+    value: Any,
+    field_name: str,
+    *,
+    max_length: int = MAX_OPERATOR_CONTEXT_STRING_LENGTH,
+) -> str:
+    if not isinstance(value, str):
+        raise MigrationRunError(f"{field_name} must be a string.")
+    text = value.strip()
+    if not text:
+        raise MigrationRunError(f"{field_name} must be a non-empty string.")
+    if len(value) > max_length:
+        raise MigrationRunError(f"{field_name} exceeds {max_length} characters.")
+    return value
+
+
+def _validate_external_object_references(
+    value: Any,
+) -> dict[str, dict[str, str]]:
+    """Bound and validate the explicit, non-secret object-reference map
+    (e.g. an already-existing Classic auth-server name for a conditional
+    WPA3-Enterprise WLAN). Backward compatible with persisted 0.4 target
+    dictionaries, which never had this key: absent/empty input returns {}.
+    """
+    if not value:
+        return {}
+    if not isinstance(value, Mapping):
+        raise MigrationRunError("external_object_references must be an object.")
+    if len(value) > MAX_OPERATOR_CONTEXT_ENTRIES:
+        raise MigrationRunError(
+            "external_object_references may not exceed "
+            f"{MAX_OPERATOR_CONTEXT_ENTRIES} candidate keys."
+        )
+    bounded: dict[str, dict[str, str]] = {}
+    for candidate_key, refs in value.items():
+        key_str = _bounded_operator_string(
+            candidate_key, "external_object_references key"
+        )
+        if not isinstance(refs, Mapping):
+            raise MigrationRunError(
+                f"external_object_references[{key_str!r}] must be an object "
+                "of reference name -> value."
+            )
+        if len(refs) > MAX_OPERATOR_CONTEXT_ENTRIES:
+            raise MigrationRunError(
+                f"external_object_references[{key_str!r}] may not exceed "
+                f"{MAX_OPERATOR_CONTEXT_ENTRIES} entries."
+            )
+        bounded_refs: dict[str, str] = {}
+        for ref_name, ref_value in refs.items():
+            ref_name_str = _bounded_operator_string(
+                ref_name, "external_object_references reference name"
+            )
+            if _is_sensitive_key(ref_name_str):
+                raise MigrationRunError(
+                    f"external_object_references[{key_str!r}][{ref_name_str!r}] "
+                    "looks like a secret field name; secrets must never be "
+                    "supplied as object references (use target_secrets on "
+                    "aos8_apply_migration_run instead)."
+                )
+            bounded_refs[ref_name_str] = _bounded_operator_string(
+                ref_value,
+                f"external_object_references[{key_str!r}][{ref_name_str!r}]",
+            )
+        bounded[key_str] = bounded_refs
+    return bounded
+
+
+def _validate_ap_group_target_map(value: Any) -> dict[str, str]:
+    """Bound and validate the explicit, operator-provided AOS8 ap_group name
+    -> Classic Central group name mapping. Backward compatible with
+    persisted 0.4 target dictionaries: absent/empty input returns {}.
+    """
+    if not value:
+        return {}
+    if not isinstance(value, Mapping):
+        raise MigrationRunError("ap_group_target_map must be an object.")
+    if len(value) > MAX_OPERATOR_CONTEXT_ENTRIES:
+        raise MigrationRunError(
+            f"ap_group_target_map may not exceed {MAX_OPERATOR_CONTEXT_ENTRIES} entries."
+        )
+    bounded: dict[str, str] = {}
+    for ap_group, classic_group in value.items():
+        ap_group_str = _bounded_operator_string(ap_group, "ap_group_target_map key")
+        bounded[ap_group_str] = _bounded_operator_string(
+            classic_group, f"ap_group_target_map[{ap_group_str!r}]"
+        )
+    return bounded
+
+
+def _validate_ap_group_device_serials(value: Any) -> dict[str, tuple[str, ...]]:
+    """Bound and validate the explicit, operator-provided AOS8 ap_group name
+    -> device serial numbers mapping. Backward compatible with persisted 0.4
+    target dictionaries: absent/empty input returns {}.
+    """
+    if not value:
+        return {}
+    if not isinstance(value, Mapping):
+        raise MigrationRunError("ap_group_device_serials must be an object.")
+    if len(value) > MAX_OPERATOR_CONTEXT_ENTRIES:
+        raise MigrationRunError(
+            "ap_group_device_serials may not exceed "
+            f"{MAX_OPERATOR_CONTEXT_ENTRIES} entries."
+        )
+    bounded: dict[str, tuple[str, ...]] = {}
+    for ap_group, serials in value.items():
+        ap_group_str = _bounded_operator_string(ap_group, "ap_group_device_serials key")
+        if not isinstance(serials, (list, tuple)):
+            raise MigrationRunError(
+                f"ap_group_device_serials[{ap_group_str!r}] must be a list "
+                "of serial number strings."
+            )
+        if len(serials) > MAX_AP_GROUP_SERIALS_PER_GROUP:
+            raise MigrationRunError(
+                f"ap_group_device_serials[{ap_group_str!r}] may not exceed "
+                f"{MAX_AP_GROUP_SERIALS_PER_GROUP} serial numbers."
+            )
+        bounded[ap_group_str] = tuple(
+            _bounded_operator_string(
+                serial,
+                f"ap_group_device_serials[{ap_group_str!r}] entry",
+                max_length=MAX_SERIAL_STRING_LENGTH,
+            )
+            for serial in serials
+        )
+    return bounded
+
+
 def _target_context(
     target: Mapping[str, Any],
     *,
@@ -289,6 +428,15 @@ def _target_context(
                 str(target.get("conflict_policy", ConflictPolicy.FAIL.value))
             ),
             secret_inputs=secret_inputs or {},
+            external_object_references=_validate_external_object_references(
+                target.get("external_object_references")
+            ),
+            ap_group_target_map=_validate_ap_group_target_map(
+                target.get("ap_group_target_map")
+            ),
+            ap_group_device_serials=_validate_ap_group_device_serials(
+                target.get("ap_group_device_serials")
+            ),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise MigrationRunError(f"Invalid persisted target context: {exc}") from exc
