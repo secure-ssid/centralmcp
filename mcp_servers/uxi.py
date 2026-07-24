@@ -1,4 +1,4 @@
-"""MCP server - optional HPE Aruba UXI backend (25 curated + 25 generated OpenAPI tools).
+"""MCP server - optional HPE Aruba UXI backend (24 curated + 25 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=uxi
@@ -41,6 +41,7 @@ from mcp_servers.shared import (
     DESTRUCTIVE,
     IDEMPOTENT_WRITE,
     READ_ONLY,
+    WRITE,
     bound_collection_response,
     bounded_response_payload,
     clamp_limit,
@@ -76,15 +77,6 @@ _LIST_PATHS = {
     "/service-tests",
     "/wired-networks",
     "/wireless-networks",
-}
-_WRITABLE_COLLECTIONS = {
-    "/groups",
-    "/sensors",
-    "/agents",
-    "/agent-group-assignments",
-    "/sensor-group-assignments",
-    "/network-group-assignments",
-    "/service-test-group-assignments",
 }
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _EXECUTE_HINT = "Review the request, then call again with dry_run=False and confirm=True."
@@ -137,16 +129,31 @@ def _safe_uxi_path(path: str) -> str:
     raise ValueError(f"path must be one of: {allowed}, or /sensors/{{id}}/status")
 
 
-def _safe_uxi_write_path(path: str) -> str:
-    """Validate a write path: a writable collection, or `{collection}/{id}`."""
+def _safe_uxi_write_path(method: str, path: str) -> str:
+    """Validate an exact method/path combination from the current UXI spec."""
     safe_path = safe_api_path(path, ("/",))
-    if safe_path in _WRITABLE_COLLECTIONS:
+    assignment_collections = {
+        "/agent-group-assignments",
+        "/network-group-assignments",
+        "/sensor-group-assignments",
+        "/service-test-group-assignments",
+    }
+    if method == "POST" and safe_path in {"/groups", *assignment_collections}:
         return quote(safe_path, safe="/")
     parts = safe_path.strip("/").split("/")
-    if len(parts) == 2 and f"/{parts[0]}" in _WRITABLE_COLLECTIONS:
-        return f"/{parts[0]}/{_path_segment(parts[1])}"
-    allowed = ", ".join(sorted(_WRITABLE_COLLECTIONS))
-    raise ValueError(f"path must be one of: {allowed}, or one of those collections plus /{{id}}")
+    collection = f"/{parts[0]}" if len(parts) == 2 else ""
+    if method == "PATCH" and collection in {"/agents", "/groups", "/sensors"}:
+        return f"{collection}/{_path_segment(parts[1])}"
+    if method == "DELETE" and collection in {
+        "/agents",
+        "/groups",
+        *assignment_collections,
+    }:
+        return f"{collection}/{_path_segment(parts[1])}"
+    raise ValueError(
+        "path must be one of the method/path combinations documented by the "
+        f"UXI v1alpha1 specification; {method} {safe_path} is not"
+    )
 
 
 def _pick(record: Any, fields: tuple[str, ...]) -> Any:
@@ -267,7 +274,7 @@ async def _uxi_write_request(
         return {"error": "UXI not configured. Set UXI_CLIENT_ID and UXI_CLIENT_SECRET."}
     try:
         base_url = validate_product_base_url(base_url, product="UXI")
-        safe_path = _safe_uxi_write_path(path)
+        safe_path = _safe_uxi_write_path(method, path)
     except ValueError as exc:
         return {"error": str(exc)}
 
@@ -295,17 +302,23 @@ async def _uxi_write_request(
     try:
         token = await _uxi_access_token(client_id, client_secret, token_url)
         await _uxi_throttle()
+        request_headers = {
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json",
+        }
+        if method == "PATCH":
+            request_headers["Content-Type"] = "application/merge-patch+json"
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.request(
                 method,
                 url,
-                headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+                headers=request_headers,
                 params=params or {},
                 json=body,
             )
         return {
             "status_code": resp.status_code,
-            "data": redact_sensitive(response_payload(resp)),
+            "data": redact_sensitive(bounded_response_payload(resp)),
             "url": url,
         }
     except httpx.HTTPError as exc:
@@ -344,7 +357,6 @@ def uxi_status() -> dict[str, Any]:
             "uxi_update_group",
             "uxi_delete_group",
             "uxi_update_sensor",
-            "uxi_delete_sensor",
             "uxi_update_agent",
             "uxi_delete_agent",
             "uxi_assign_sensor_to_group",
@@ -555,9 +567,8 @@ async def uxi_write(
 ) -> dict[str, Any]:
     """Perform a guarded write request against a writable UXI v1alpha1 path.
 
-    Allows `POST`, `PUT`, `PATCH`, and `DELETE` against a writable collection
-    (`/groups`, `/sensors`, `/agents`, or any of the `*-group-assignments`
-    collections) or one of their `{id}` sub-resources. Defaults to
+    Allows only method/path combinations present in the current UXI v1alpha1
+    specification. Defaults to
     `dry_run=True`; execution requires `dry_run=False` and `confirm=True`,
     and is throttled to the documented 5 req/s UXI API ceiling.
     """
@@ -572,7 +583,7 @@ async def uxi_write(
     )
 
 
-@mcp.tool(annotations=IDEMPOTENT_WRITE)
+@mcp.tool(annotations=WRITE)
 async def uxi_create_group(
     name: str,
     parent: str | None = None,
@@ -582,7 +593,7 @@ async def uxi_create_group(
     """Create a UXI group; requires `CENTRALMCP_PRODUCT_ACCESS=read-write`."""
     body: dict[str, Any] = {"name": name}
     if parent is not None:
-        body["parent"] = parent
+        body["parentId"] = parent
     return await _uxi_write_request(
         "POST", "/groups", body=body, dry_run=dry_run, confirm=confirm, tool_name="uxi_create_group"
     )
@@ -592,11 +603,10 @@ async def uxi_create_group(
 async def uxi_update_group(
     group_id: str,
     name: str | None = None,
-    parent: str | None = None,
     dry_run: bool = True,
     confirm: bool = False,
 ) -> dict[str, Any]:
-    """Update a UXI group's name/parent by ID; requires read-write access."""
+    """Update a UXI group's name by ID; requires read-write access."""
     try:
         path = f"/groups/{_path_segment(group_id)}"
     except ValueError as exc:
@@ -604,10 +614,8 @@ async def uxi_update_group(
     body: dict[str, Any] = {}
     if name is not None:
         body["name"] = name
-    if parent is not None:
-        body["parent"] = parent
     if not body:
-        return {"error": "Provide at least one of name or parent to update."}
+        return {"error": "Provide name to update."}
     return await _uxi_write_request(
         "PATCH", path, body=body, dry_run=dry_run, confirm=confirm, tool_name="uxi_update_group"
     )
@@ -648,20 +656,18 @@ async def uxi_update_sensor(
     )
 
 
-@mcp.tool(annotations=DESTRUCTIVE)
 async def uxi_delete_sensor(
     sensor_id: str,
     dry_run: bool = True,
     confirm: bool = False,
 ) -> dict[str, Any]:
-    """Delete/decommission a UXI sensor by ID; requires read-write access."""
-    try:
-        path = f"/sensors/{_path_segment(sensor_id)}"
-    except ValueError as exc:
-        return {"error": str(exc)}
-    return await _uxi_write_request(
-        "DELETE", path, dry_run=dry_run, confirm=confirm, tool_name="uxi_delete_sensor"
-    )
+    """Return an explicit error because the current UXI API has no sensor DELETE."""
+    return {
+        "error": (
+            "The current UXI v6.7 API does not expose DELETE /sensors/{id}; "
+            "update the sensor state with uxi_update_sensor instead."
+        )
+    }
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -710,7 +716,7 @@ async def uxi_assign_sensor_to_group(
     return await _uxi_write_request(
         "POST",
         "/sensor-group-assignments",
-        body={"sensor": sensor_id, "group": group_id},
+        body={"sensorId": sensor_id, "groupId": group_id},
         dry_run=dry_run,
         confirm=confirm,
         tool_name="uxi_assign_sensor_to_group",
@@ -728,7 +734,7 @@ async def uxi_assign_agent_to_group(
     return await _uxi_write_request(
         "POST",
         "/agent-group-assignments",
-        body={"agent": agent_id, "group": group_id},
+        body={"agentId": agent_id, "groupId": group_id},
         dry_run=dry_run,
         confirm=confirm,
         tool_name="uxi_assign_agent_to_group",
@@ -746,7 +752,7 @@ async def uxi_assign_network_to_group(
     return await _uxi_write_request(
         "POST",
         "/network-group-assignments",
-        body={"network": network_id, "group": group_id},
+        body={"networkId": network_id, "groupId": group_id},
         dry_run=dry_run,
         confirm=confirm,
         tool_name="uxi_assign_network_to_group",
@@ -764,7 +770,7 @@ async def uxi_assign_service_test_to_group(
     return await _uxi_write_request(
         "POST",
         "/service-test-group-assignments",
-        body={"serviceTest": service_test_id, "group": group_id},
+        body={"serviceTestId": service_test_id, "groupId": group_id},
         dry_run=dry_run,
         confirm=confirm,
         tool_name="uxi_assign_service_test_to_group",
@@ -824,9 +830,9 @@ async def _uxi_generated_read(
         await _uxi_throttle()
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.request(method, url, headers=req_headers, params=clean_params)
-        payload = bound_collection_response(
+        payload = redact_sensitive(bound_collection_response(
             bounded_response_payload(resp), limit=clamp_limit(None), offset=0
-        )
+        ))
         return {"status_code": resp.status_code, "data": payload, "url": url}
     except httpx.HTTPError:
         return {"error": "connection or protocol error", "url": url}

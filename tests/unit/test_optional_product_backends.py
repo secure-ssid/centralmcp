@@ -76,6 +76,7 @@ def test_uxi_status_unconfigured(monkeypatch):
         "uxi_list_network_group_assignments",
         "uxi_list_service_test_group_assignments",
     }.issubset(out["tools"])
+    assert "uxi_delete_sensor" not in out["tools"]
 
 
 def test_uxi_get_rejects_absolute_url(monkeypatch):
@@ -736,7 +737,7 @@ def test_apstra_list_connectivity_templates_quotes_blueprint_id_and_compacts(mon
     out = asyncio.run(apstra.apstra_list_connectivity_templates("bp 1", limit=1))
 
     assert called["url"] == (
-        "https://apstra.example.com/api/blueprints/bp%201/connectivity-templates"
+        "https://apstra.example.com/api/blueprints/bp%201/endpoint-policies"
     )
     assert out["blueprint_id"] == "bp 1"
     assert out["connectivity_templates"]["policies"] == [
@@ -4794,7 +4795,8 @@ def test_optional_product_write_executes_with_default_bearer_auth(
         assert called["headers"]["AuthToken"] == "secret"
         assert "Authorization" not in called["headers"]
     else:
-        assert called["headers"]["Authorization"] == "Bearer secret"
+        assert called["headers"]["X-Auth-Token"] == "secret"
+        assert "Authorization" not in called["headers"]
     assert called["json"] == {"name": "lab"}
 
 

@@ -66,6 +66,9 @@ _BACKENDS_BASE = {
     "aruba-glp": "mcp_servers.glp",
     "aruba-rag": "mcp_servers.rag",
 }
+_GENERATED_BACKENDS = {
+    "aruba-central-generated": "mcp_servers.central_generated",
+}
 _OPTIONAL_BACKENDS = {
     "clearpass": ("clearpass-core", "mcp_servers.clearpass"),
     "mist": ("mist-core", "mcp_servers.mist"),
@@ -84,6 +87,7 @@ _TOOLSET_BACKENDS = {
     "glp": {"aruba-glp"},
     "rag": {"aruba-rag"},
     "central": {"aruba-config", "aruba-monitoring", "aruba-nac", "aruba-ops"},
+    "central-generated": {"aruba-central-generated"},
     "clearpass": {"clearpass-core"},
     "mist": {"mist-core"},
     "apstra": {"apstra-core"},
@@ -141,7 +145,7 @@ def _build_backends() -> dict[str, str]:
         server_name: module_path
         for server_name, module_path in _OPTIONAL_BACKENDS.values()
     }
-    all_backends = {**_BACKENDS_BASE, **optional_by_server}
+    all_backends = {**_BACKENDS_BASE, **_GENERATED_BACKENDS, **optional_by_server}
 
     if not toolsets:
         out = dict(_BACKENDS_BASE)

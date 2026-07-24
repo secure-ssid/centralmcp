@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "platform": "aos8",
   "source": {
     "file": "aos8-cjpas1kkx7bible.json",
@@ -130,6 +130,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -188,8 +194,17 @@
           "wired_reauth_on_vlan_change",
           "wwroam",
           "xml_api_client"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_aaa_test_server",
@@ -224,8 +239,20 @@
           "passwd",
           "username",
           "verbose"
+        ],
+        "required_properties": [
+          "authtype",
+          "name",
+          "passwd",
+          "username"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_abort_cluster_upgrade",
@@ -256,8 +283,18 @@
         "properties": [
           "profile",
           "sched"
+        ],
+        "required_properties": [
+          "profile",
+          "sched"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_acl_eth",
@@ -321,6 +358,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -352,8 +395,17 @@
         "properties": [
           "accname",
           "acl_eth__policy"
+        ],
+        "required_properties": [
+          "accname"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_acl_route",
@@ -417,6 +469,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -450,8 +508,17 @@
           "acl_route_v4",
           "acl_route_v6",
           "acl_route_v6_opt"
+        ],
+        "required_properties": [
+          "accname"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_acl_sess",
@@ -515,6 +582,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -547,8 +620,17 @@
           "accname",
           "acl_sess__v4policy",
           "acl_sess__v6policy"
+        ],
+        "required_properties": [
+          "accname"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ag_cppm_profile",
@@ -612,6 +694,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -648,8 +736,17 @@
           "airgroup_server_dead_time",
           "name",
           "query_interval_time"
+        ],
+        "required_properties": [
+          "name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_agprofile_network_profile",
@@ -713,6 +810,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -747,8 +850,17 @@
           "max_ip_per_device",
           "max_tokens_per_device",
           "network-profile-name"
+        ],
+        "required_properties": [
+          "network-profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_air_group_profile",
@@ -812,6 +924,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -846,7 +964,13 @@
           "rfc3576_udp_port",
           "server_dead_time"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_airgroup_config_profile",
@@ -910,6 +1034,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -941,7 +1071,13 @@
         "properties": [
           "ag_config_profile"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_airgroup_domain_profile",
@@ -1005,6 +1141,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -1038,8 +1180,17 @@
           "airgroup_domain_ip",
           "airgroup_domain_profile_clone",
           "name"
+        ],
+        "required_properties": [
+          "name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_airgroup_ipv6_profile",
@@ -1103,6 +1254,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -1134,8 +1291,17 @@
         "properties": [
           "airgroup_ipv6_profile_clone",
           "name"
+        ],
+        "required_properties": [
+          "name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_airgroup_profile",
@@ -1199,6 +1365,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -1239,8 +1411,17 @@
           "airgroup_service",
           "enforce_registration",
           "profile-name"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_airgroup_service_profile",
@@ -1304,6 +1485,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -1337,8 +1524,17 @@
           "airgroup_service_id",
           "airgroup_service_profile_clone",
           "service-name"
+        ],
+        "required_properties": [
+          "service-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ap_a_radio_prof",
@@ -1402,6 +1598,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -1477,8 +1679,17 @@
           "spur_immunity",
           "transmit",
           "tx_power"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ap_g_radio_prof",
@@ -1542,6 +1753,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -1616,8 +1833,17 @@
           "transmit",
           "turboqam_rates_enable",
           "tx_power"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ap_group",
@@ -1681,6 +1907,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -1743,8 +1975,17 @@
           "rf_opt_prof",
           "virtual_ap",
           "zigbee_service_prof"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ap_prov",
@@ -1808,6 +2049,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -1917,7 +2164,13 @@
           "usb_user",
           "wifi_uplink"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ap_provisioning_rule",
@@ -1981,6 +2234,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -2021,8 +2280,17 @@
           "profile-name",
           "radio_0_5ghz_ant_gain",
           "radio_1_5ghz_ant_gain"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ap_provisioning_rules",
@@ -2086,6 +2354,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -2117,7 +2391,13 @@
         "properties": [
           "prov_rule_prio"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_ap_reprovision",
@@ -2152,8 +2432,22 @@
           "ip6-addr",
           "serial-num",
           "wired-mac"
+        ],
+        "required_properties": [
+          "all",
+          "ap-name",
+          "ip-addr",
+          "ip6-addr",
+          "serial-num",
+          "wired-mac"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ap_snd_a_radio_prof",
@@ -2217,6 +2511,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -2292,8 +2592,17 @@
           "spur_immunity",
           "transmit",
           "tx_power"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ap_sys_prof",
@@ -2357,6 +2666,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -2478,8 +2793,17 @@
           "tri_radio_mode_legacy",
           "wids_aggr_optimization",
           "wpa_bk_passphrase"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_clear_provisioning_ap_list",
@@ -2507,7 +2831,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Clear list of APs to be provisioned"
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_clear_provisioning_params",
@@ -2535,7 +2865,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Clear boot environment variables(Note: No effect unless preceded by read_bootinfo or copy_provisioning_params)"
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_clear_snmp_faults",
@@ -2566,8 +2902,18 @@
         "properties": [
           "all",
           "faultnum"
+        ],
+        "required_properties": [
+          "all",
+          "faultnum"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_cluster_membership_profile",
@@ -2631,6 +2977,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -2661,8 +3013,17 @@
         "description": "Add cluster group membership for the controller.",
         "properties": [
           "profile"
+        ],
+        "required_properties": [
+          "profile"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_cluster_prof",
@@ -2726,6 +3087,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -2770,8 +3137,17 @@
           "sby_cl_rebal_tot_load_perc",
           "unbalance_threshold",
           "vrrp_info"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_configuration_device_filename",
@@ -2804,8 +3180,20 @@
           "dev-model",
           "filename",
           "mac-address"
+        ],
+        "required_properties": [
+          "config-path",
+          "dev-model",
+          "filename",
+          "mac-address"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_configuration_device_move",
@@ -2837,8 +3225,18 @@
           "dest-path",
           "mac-address",
           "mac-address-2"
+        ],
+        "required_properties": [
+          "dest-path",
+          "mac-address"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_configuration_node",
@@ -2868,8 +3266,17 @@
         "description": "Configures a node in the configuration hierarchy. Node name and location are specified by the node-path, which can be an absolute path from the root node or relative path from the current node",
         "properties": [
           "node-path"
+        ],
+        "required_properties": [
+          "node-path"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_configuration_node_clone",
@@ -2900,8 +3307,18 @@
         "properties": [
           "node-path",
           "source-path"
+        ],
+        "required_properties": [
+          "node-path",
+          "source-path"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_configuration_node_move",
@@ -2932,8 +3349,18 @@
         "properties": [
           "dest-path",
           "node-path"
+        ],
+        "required_properties": [
+          "dest-path",
+          "node-path"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_configuration_node_rename",
@@ -2964,8 +3391,18 @@
         "properties": [
           "new-path",
           "old-path"
+        ],
+        "required_properties": [
+          "new-path",
+          "old-path"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_configuration_purge_pending",
@@ -2996,7 +3433,13 @@
         "properties": [
           "node-path"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_flash_awss3",
@@ -3027,8 +3470,18 @@
         "properties": [
           "caseid",
           "srcfilename"
+        ],
+        "required_properties": [
+          "caseid",
+          "srcfilename"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_flash_flash",
@@ -3059,8 +3512,18 @@
         "properties": [
           "destfilename",
           "srcfilename"
+        ],
+        "required_properties": [
+          "destfilename",
+          "srcfilename"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_flash_ftp",
@@ -3095,8 +3558,20 @@
           "remote-dir",
           "srcfilename",
           "user"
+        ],
+        "required_properties": [
+          "ftphost",
+          "passwd",
+          "srcfilename",
+          "user"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_flash_scp",
@@ -3130,8 +3605,21 @@
           "scphost",
           "srcfilename",
           "username"
+        ],
+        "required_properties": [
+          "destfilename",
+          "passwd",
+          "scphost",
+          "srcfilename",
+          "username"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_flash_system",
@@ -3162,8 +3650,17 @@
         "properties": [
           "partition_num",
           "srcfilename"
+        ],
+        "required_properties": [
+          "srcfilename"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_flash_tftp",
@@ -3195,8 +3692,19 @@
           "destfilename",
           "srcfilename",
           "tftphost"
+        ],
+        "required_properties": [
+          "destfilename",
+          "srcfilename",
+          "tftphost"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_flash_usb_partition",
@@ -3228,8 +3736,19 @@
           "destfilename",
           "part",
           "srcfilename"
+        ],
+        "required_properties": [
+          "destfilename",
+          "part",
+          "srcfilename"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_ftp_flash",
@@ -3263,8 +3782,21 @@
           "ftphost",
           "passwd",
           "user"
+        ],
+        "required_properties": [
+          "destfilename",
+          "filename",
+          "ftphost",
+          "passwd",
+          "user"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_ftp_system",
@@ -3298,8 +3830,20 @@
           "partition_num",
           "passwd",
           "user"
+        ],
+        "required_properties": [
+          "filename",
+          "ftphost",
+          "passwd",
+          "user"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_nowait",
@@ -3339,8 +3883,26 @@
           "scphost",
           "username",
           "username-scp"
+        ],
+        "required_properties": [
+          "filename",
+          "filename-scp",
+          "filename-tftp",
+          "ftphost",
+          "host-tftp",
+          "password",
+          "password-scp",
+          "scphost",
+          "username",
+          "username-scp"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_provisioning_params",
@@ -3371,8 +3933,18 @@
         "properties": [
           "ap-name",
           "ip-addr"
+        ],
+        "required_properties": [
+          "ap-name",
+          "ip-addr"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_running_flash",
@@ -3402,8 +3974,17 @@
         "description": "Copies the active or running configuration to flash file system",
         "properties": [
           "filename"
+        ],
+        "required_properties": [
+          "filename"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_running_ftp_passwd",
@@ -3437,8 +4018,20 @@
           "passwd",
           "remote-dir",
           "user"
+        ],
+        "required_properties": [
+          "filename",
+          "ftphost",
+          "passwd",
+          "user"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_running_tftp",
@@ -3469,8 +4062,18 @@
         "properties": [
           "filename",
           "tftphost"
+        ],
+        "required_properties": [
+          "filename",
+          "tftphost"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_scp_flash",
@@ -3504,8 +4107,21 @@
           "passwd",
           "scphost",
           "username"
+        ],
+        "required_properties": [
+          "destfilename",
+          "filename",
+          "passwd",
+          "scphost",
+          "username"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_scp_system",
@@ -3539,8 +4155,20 @@
           "passwd",
           "scphost",
           "username"
+        ],
+        "required_properties": [
+          "filename",
+          "passwd",
+          "scphost",
+          "username"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_system_partition",
@@ -3571,8 +4199,18 @@
         "properties": [
           "dst_partition_num",
           "src_partition_num"
+        ],
+        "required_properties": [
+          "dst_partition_num",
+          "src_partition_num"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_tftp_flash",
@@ -3604,8 +4242,19 @@
           "destfilename",
           "filename",
           "tftphost"
+        ],
+        "required_properties": [
+          "destfilename",
+          "filename",
+          "tftphost"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_tftp_system",
@@ -3637,8 +4286,18 @@
           "filename",
           "partition_num",
           "tftphost"
+        ],
+        "required_properties": [
+          "filename",
+          "tftphost"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_usb_flash",
@@ -3669,8 +4328,18 @@
         "properties": [
           "flashfilename",
           "usbfilename"
+        ],
+        "required_properties": [
+          "flashfilename",
+          "usbfilename"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_usb_partition_flash",
@@ -3702,8 +4371,19 @@
           "flashfilename",
           "part",
           "usbfilename"
+        ],
+        "required_properties": [
+          "flashfilename",
+          "part",
+          "usbfilename"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_usb_partition_system",
@@ -3735,8 +4415,18 @@
           "part",
           "partition_num",
           "usbfilename"
+        ],
+        "required_properties": [
+          "part",
+          "usbfilename"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_usb_system",
@@ -3767,8 +4457,17 @@
         "properties": [
           "partition_num",
           "usbfilename"
+        ],
+        "required_properties": [
+          "usbfilename"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_usb_tftp",
@@ -3801,8 +4500,20 @@
           "part",
           "tftphost",
           "usbfilename"
+        ],
+        "required_properties": [
+          "destfilename",
+          "part",
+          "tftphost",
+          "usbfilename"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_usbpart_host",
@@ -3837,8 +4548,22 @@
           "scphost",
           "usbfilename",
           "username"
+        ],
+        "required_properties": [
+          "destfilename",
+          "part",
+          "passwd",
+          "scphost",
+          "usbfilename",
+          "username"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_copy_usbpart_to_ftp",
@@ -3874,8 +4599,21 @@
           "remote-dir",
           "usbfilename",
           "user"
+        ],
+        "required_properties": [
+          "ftphost",
+          "part",
+          "passwd",
+          "usbfilename",
+          "user"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_cp_auth_profile",
@@ -3939,6 +4677,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -4000,8 +4744,17 @@
           "url_hash_key",
           "user_idle_timeout_cp",
           "user_vlan_in_redir_url"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_cpsec_prof",
@@ -4065,6 +4818,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -4101,7 +4860,13 @@
           "cpsec_enable",
           "cpsec_timer"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ctrl_ip",
@@ -4165,6 +4930,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -4196,8 +4967,18 @@
         "properties": [
           "id",
           "loopback"
+        ],
+        "required_properties": [
+          "id",
+          "loopback"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_dot1x_auth_profile",
@@ -4261,6 +5042,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -4343,8 +5130,17 @@
           "wpagkey_delay",
           "wpakey_period_ms",
           "xSec_mtu"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_group_membership",
@@ -4408,6 +5204,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -4438,8 +5240,17 @@
         "description": "Add HA group membership for the controller.",
         "properties": [
           "group-membership"
+        ],
+        "required_properties": [
+          "group-membership"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_initiate_cluster_upgrade",
@@ -4472,8 +5283,18 @@
           "partition_id",
           "profile",
           "version_string"
+        ],
+        "required_properties": [
+          "profile",
+          "version_string"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_initiate_cluster_upgrade_fs_ftp",
@@ -4510,8 +5331,22 @@
           "profile",
           "uname",
           "version_string"
+        ],
+        "required_properties": [
+          "imagehost",
+          "imagepath",
+          "passwd",
+          "profile",
+          "uname",
+          "version_string"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_initiate_cluster_upgrade_fs_scp",
@@ -4548,8 +5383,22 @@
           "profile",
           "uname",
           "version_string"
+        ],
+        "required_properties": [
+          "imagehost",
+          "imagepath",
+          "passwd",
+          "profile",
+          "uname",
+          "version_string"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_initiate_cluster_upgrade_tftp",
@@ -4584,8 +5433,20 @@
           "partition_id",
           "profile",
           "version_string"
+        ],
+        "required_properties": [
+          "imagehost",
+          "imagepath",
+          "profile",
+          "version_string"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_int_gig",
@@ -4649,6 +5510,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -4737,8 +5604,17 @@
           "int_sfp_alt_detect",
           "slot/module/port",
           "transmit_rate"
+        ],
+        "required_properties": [
+          "slot/module/port"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_int_mgmt",
@@ -4802,6 +5678,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -4836,7 +5718,13 @@
           "int_mgmt_ipv6",
           "int_mgmt_shut"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_int_tun",
@@ -4900,6 +5788,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -4966,8 +5860,17 @@
           "int_tun_ip_ospf_prior",
           "int_tun_ip_ospf_retransmit_int",
           "int_tun_ip_ospf_transmit_delay"
+        ],
+        "required_properties": [
+          "id"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_int_vlan",
@@ -5031,6 +5934,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -5118,8 +6027,17 @@
           "int_vlan_suppress_arp",
           "ip_nat_outside",
           "vlan_int_pc_access_group_in"
+        ],
+        "required_properties": [
+          "id"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ip_domain_name",
@@ -5183,6 +6101,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -5213,8 +6137,17 @@
         "description": "Set the Domain Name for this Controller.",
         "properties": [
           "name"
+        ],
+        "required_properties": [
+          "name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ip_domain_redirect",
@@ -5278,6 +6211,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -5306,7 +6245,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Enable IP DNS Redirect feature. This feature redirects queries with certain pre-configured domain names to dedicated DNS servers. Both the domain names and DNS servers have to be configured by user."
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ip_domain_redirect_name",
@@ -5370,6 +6315,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -5401,8 +6352,18 @@
         "properties": [
           "address",
           "name"
+        ],
+        "required_properties": [
+          "address",
+          "name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ip_name_server",
@@ -5466,6 +6427,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -5496,8 +6463,17 @@
         "description": "Configure an IPv4 static DNS server for the controller. Maximum limit is 3.",
         "properties": [
           "address"
+        ],
+        "required_properties": [
+          "address"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ip_route",
@@ -5561,6 +6537,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -5595,8 +6577,20 @@
           "destmask",
           "nexthop",
           "zero"
+        ],
+        "required_properties": [
+          "destip",
+          "destmask",
+          "nexthop",
+          "zero"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ipsec_local_custom_cert",
@@ -5660,6 +6654,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -5696,8 +6696,21 @@
           "sc",
           "self-signed-field-cert",
           "suite-b"
+        ],
+        "required_properties": [
+          "ca",
+          "factory-ca-cert",
+          "local-mac-address",
+          "sc",
+          "self-signed-field-cert"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ipsec_local_factory_cert",
@@ -5761,6 +6774,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -5791,8 +6810,17 @@
         "description": "Configure Security for Master-Local using IKEv2 (built-in certificates) for the IPSec",
         "properties": [
           "local-mac-address"
+        ],
+        "required_properties": [
+          "local-mac-address"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ipsec_local_peer_mac",
@@ -5856,6 +6884,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -5887,8 +6921,18 @@
         "properties": [
           "local-mac-addr",
           "localkey"
+        ],
+        "required_properties": [
+          "local-mac-addr",
+          "localkey"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ipsec_localip",
@@ -5952,6 +6996,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -5983,8 +7033,18 @@
         "properties": [
           "local-switch-ip",
           "localkey"
+        ],
+        "required_properties": [
+          "local-switch-ip",
+          "localkey"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ipsec_localipv6",
@@ -6048,6 +7108,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -6080,8 +7146,18 @@
           "local-switch-ipv6",
           "localipv4_val",
           "localkey"
+        ],
+        "required_properties": [
+          "local-switch-ipv6",
+          "localkey"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ipv6_enable",
@@ -6145,6 +7221,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -6173,7 +7255,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Enable IPv6 packet processing globally."
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ipv6_name_server",
@@ -6237,6 +7325,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -6267,8 +7361,17 @@
         "description": "Configure an IPv6 static DNS server for the controller. Maximum limit is 3.",
         "properties": [
           "address6"
+        ],
+        "required_properties": [
+          "address6"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ipv6_route",
@@ -6332,6 +7435,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -6368,8 +7477,21 @@
           "nexthop1",
           "vlanid",
           "zero"
+        ],
+        "required_properties": [
+          "destip",
+          "nexthop",
+          "nexthop1",
+          "vlanid",
+          "zero"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_krb_auth_profile",
@@ -6433,6 +7555,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -6467,8 +7595,17 @@
           "krb_server_group",
           "krb_timeout",
           "profile-name"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ldap_server",
@@ -6532,6 +7669,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -6576,8 +7719,17 @@
           "ldap_server_name",
           "ldap_timeout",
           "max_connection"
+        ],
+        "required_properties": [
+          "ldap_server_name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_loc_spec_ovr_prof",
@@ -6641,6 +7793,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -6672,7 +7830,13 @@
         "properties": [
           "loc_spec_ovr_entry"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_mac_auth_profile",
@@ -6736,6 +7900,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -6773,8 +7943,17 @@
           "mba_fmt",
           "mba_maxf",
           "profile-name"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_netdst",
@@ -6838,6 +8017,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -6874,8 +8059,17 @@
           "netdst__name",
           "netdst__network",
           "netdst__range"
+        ],
+        "required_properties": [
+          "dstname"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_netdst6",
@@ -6939,6 +8133,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -6975,8 +8175,17 @@
           "netdst6__name",
           "netdst6__network",
           "netdst6__range"
+        ],
+        "required_properties": [
+          "dstname"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ntlm_auth_profile",
@@ -7040,6 +8249,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -7075,8 +8290,17 @@
           "ntlm_server_group",
           "ntlm_timeout",
           "profile-name"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ntp",
@@ -7140,6 +8364,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -7168,7 +8398,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Configure the NTP enable/disable knob for the controller."
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ntp_authenticate",
@@ -7232,6 +8468,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -7260,7 +8502,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Enable NTP authentication knob for the controller."
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ntp_authentication_key",
@@ -7324,6 +8572,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -7356,8 +8610,19 @@
           "keyid",
           "keyvalue",
           "ntp_auth"
+        ],
+        "required_properties": [
+          "keyid",
+          "keyvalue",
+          "ntp_auth"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ntp_server_disable",
@@ -7421,6 +8686,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -7449,7 +8720,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Configure the NTP server mode disable knob for the controller."
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ntp_server_info",
@@ -7513,6 +8790,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -7547,8 +8830,19 @@
           "ip",
           "ip6",
           "keyid"
+        ],
+        "required_properties": [
+          "fqdn",
+          "ip",
+          "ip6"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ntp_source",
@@ -7612,6 +8906,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -7643,8 +8943,18 @@
         "properties": [
           "loopback",
           "vlanid"
+        ],
+        "required_properties": [
+          "loopback",
+          "vlanid"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ntp_time_serve",
@@ -7708,6 +9018,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -7738,8 +9054,17 @@
         "description": "Configure a NTP time serve VLAN range for the controller.",
         "properties": [
           "WORD"
+        ],
+        "required_properties": [
+          "WORD"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ntp_trusted_key",
@@ -7803,6 +9128,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -7833,8 +9164,17 @@
         "description": "Configure a NTP trusted key for the controller.",
         "properties": [
           "keyid"
+        ],
+        "required_properties": [
+          "keyid"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_prov_ap_copy_provision_params",
@@ -7865,8 +9205,18 @@
         "properties": [
           "ap-name",
           "ip-addr"
+        ],
+        "required_properties": [
+          "ap-name",
+          "ip-addr"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_prov_ap_read_bootinfo",
@@ -7899,8 +9249,20 @@
           "ip-addr",
           "ip6-addr",
           "wired-mac"
+        ],
+        "required_properties": [
+          "ap-name",
+          "ip-addr",
+          "ip6-addr",
+          "wired-mac"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_prov_ap_reprovision",
@@ -7935,8 +9297,22 @@
           "ip6-addr",
           "serial-num",
           "wired-mac"
+        ],
+        "required_properties": [
+          "all",
+          "ap-name",
+          "ip-addr",
+          "ip6-addr",
+          "serial-num",
+          "wired-mac"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_prov_ap_reset_bootinfo",
@@ -7968,8 +9344,19 @@
           "ap-name",
           "ip-addr",
           "wired-mac"
+        ],
+        "required_properties": [
+          "ap-name",
+          "ip-addr",
+          "wired-mac"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_rad_nas_ip",
@@ -8033,6 +9420,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -8064,8 +9457,18 @@
         "properties": [
           "nasip",
           "nasvlan"
+        ],
+        "required_properties": [
+          "nasip",
+          "nasvlan"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_rad_nas_ip_v6",
@@ -8129,6 +9532,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -8161,8 +9570,19 @@
           "nasip6",
           "nasipv6addr",
           "nasvlan"
+        ],
+        "required_properties": [
+          "nasip6",
+          "nasipv6addr",
+          "nasvlan"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_rad_server",
@@ -8226,6 +9646,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -8283,8 +9709,17 @@
           "radsec_port",
           "radsec_server_cert",
           "use_md5"
+        ],
+        "required_properties": [
+          "rad_server_name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_radius_attr",
@@ -8348,6 +9783,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -8382,8 +9823,21 @@
           "value",
           "vid",
           "vname"
+        ],
+        "required_properties": [
+          "attr_type",
+          "name",
+          "value",
+          "vid",
+          "vname"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_read_bootinfo",
@@ -8416,8 +9870,20 @@
           "ip-addr",
           "ip6-addr",
           "wired-mac"
+        ],
+        "required_properties": [
+          "ap-name",
+          "ip-addr",
+          "ip6-addr",
+          "wired-mac"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_reload_device",
@@ -8448,8 +9914,17 @@
         "properties": [
           "device-mac",
           "reset"
+        ],
+        "required_properties": [
+          "device-mac"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_reset_bootinfo",
@@ -8481,8 +9956,19 @@
           "ap-name",
           "ip-addr",
           "wired-mac"
+        ],
+        "required_properties": [
+          "ap-name",
+          "ip-addr",
+          "wired-mac"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_role",
@@ -8546,6 +10032,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -8602,8 +10094,17 @@
           "role__wispr",
           "role_disable_ipclassify",
           "role_enable_youtubeedu"
+        ],
+        "required_properties": [
+          "rname"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_sched_cluster_upgrade",
@@ -8643,8 +10144,25 @@
           "ss",
           "version_string",
           "year"
+        ],
+        "required_properties": [
+          "day",
+          "hh",
+          "mm",
+          "month",
+          "profile",
+          "sched",
+          "ss",
+          "version_string",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_server_group_prof",
@@ -8708,6 +10226,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -8743,8 +10267,17 @@
           "load_balance",
           "server_group_prof_clone",
           "sg_name"
+        ],
+        "required_properties": [
+          "sg_name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser",
@@ -8808,6 +10341,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -8836,7 +10375,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Enables the user to modify SNMP parameters."
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_community",
@@ -8900,6 +10445,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -8930,8 +10481,17 @@
         "description": "Configure a read-only community string for SNMP server .",
         "properties": [
           "name"
+        ],
+        "required_properties": [
+          "name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_enable_trap",
@@ -8995,6 +10555,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9023,7 +10589,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Enable SNMP Traps."
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_engine_id",
@@ -9087,6 +10659,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9117,8 +10695,17 @@
         "description": "Configure a hexadecimal Engine ID for SNMP server.",
         "properties": [
           "engineid"
+        ],
+        "required_properties": [
+          "engineid"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_host_snmpv1",
@@ -9182,6 +10769,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9214,8 +10807,19 @@
           "ipAddress",
           "name",
           "portnumber"
+        ],
+        "required_properties": [
+          "ipAddress",
+          "name",
+          "portnumber"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_host_snmpv2c",
@@ -9279,6 +10883,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9314,8 +10924,19 @@
           "name",
           "portnumber",
           "secs"
+        ],
+        "required_properties": [
+          "ipAddress",
+          "name",
+          "portnumber"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_host_snmpv3",
@@ -9379,6 +11000,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9415,8 +11042,19 @@
           "name",
           "portnumber",
           "secs"
+        ],
+        "required_properties": [
+          "ipAddress",
+          "name",
+          "portnumber"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_inform_queue_length",
@@ -9480,6 +11118,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9510,8 +11154,17 @@
         "description": "Configure a inform queue length between 100 to 350 for an SNMP server.",
         "properties": [
           "size"
+        ],
+        "required_properties": [
+          "size"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_source_controller_ip",
@@ -9575,6 +11228,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9603,7 +11262,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Creates the controller's IP address as the source IP address of the SNMP server."
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_stats",
@@ -9667,6 +11332,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9695,7 +11366,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Enable file based SNMP stats collection."
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_trap_enable",
@@ -9759,6 +11436,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9789,8 +11472,17 @@
         "description": "Enables a specific trap from the SNMP trap-list.",
         "properties": [
           "name"
+        ],
+        "required_properties": [
+          "name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_trap_src",
@@ -9854,6 +11546,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9884,8 +11582,17 @@
         "description": "Configure a IPv4/IPv6 adress for a snmp-server trap source.",
         "properties": [
           "ipaddr"
+        ],
+        "required_properties": [
+          "ipaddr"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_snmp_ser_user",
@@ -9949,6 +11656,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -9984,8 +11697,21 @@
           "privpass",
           "snmp_auth_protocol",
           "snmp_privacy_protocol"
+        ],
+        "required_properties": [
+          "authpass",
+          "name",
+          "privpass",
+          "snmp_auth_protocol",
+          "snmp_privacy_protocol"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_ssid_prof",
@@ -10049,6 +11775,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -10141,8 +11873,17 @@
           "wpa3_transition",
           "wpa_hexkey",
           "wpa_passphrase"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_stateful_dot1x_auth_profile",
@@ -10206,6 +11947,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -10240,7 +11987,13 @@
           "statefuldot1x_default_role",
           "timeout"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_tacacs_server",
@@ -10304,6 +12057,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -10343,8 +12102,17 @@
           "tacacs_server_name",
           "tacacs_tcpport",
           "tacacs_timeout"
+        ],
+        "required_properties": [
+          "tacacs_server_name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_cancel_schedule",
@@ -10382,8 +12150,25 @@
           "node-path",
           "sec",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "hour",
+          "mac-addr",
+          "min",
+          "month",
+          "node-path",
+          "sec",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy",
@@ -10429,8 +12214,31 @@
           "partition_num",
           "sec",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "sec",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy_ftp",
@@ -10480,8 +12288,35 @@
           "sec",
           "username",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "image-path",
+          "imagehost",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "passwd",
+          "sec",
+          "username",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy_ftp_from_clu",
@@ -10531,8 +12366,35 @@
           "sec",
           "username",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "image-path",
+          "imagehost",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "passwd",
+          "sec",
+          "username",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy_ftp_reboot",
@@ -10582,8 +12444,35 @@
           "sec",
           "username",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "image-path",
+          "imagehost",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "passwd",
+          "sec",
+          "username",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy_reboot",
@@ -10629,8 +12518,31 @@
           "partition_num",
           "sec",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "sec",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy_scp",
@@ -10680,8 +12592,35 @@
           "sec",
           "username",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "image-path",
+          "imagehost",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "passwd",
+          "sec",
+          "username",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy_scp_from_clu",
@@ -10731,8 +12670,35 @@
           "sec",
           "username",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "image-path",
+          "imagehost",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "passwd",
+          "sec",
+          "username",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy_scp_reboot",
@@ -10782,8 +12748,35 @@
           "sec",
           "username",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "image-path",
+          "imagehost",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "passwd",
+          "sec",
+          "username",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy_tftp",
@@ -10831,8 +12824,33 @@
           "partition_num",
           "sec",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "image-path",
+          "imagehost",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "sec",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy_tftp_from_clu",
@@ -10880,8 +12898,33 @@
           "partition_num",
           "sec",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "image-path",
+          "imagehost",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "sec",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_copy_tftp_reboot",
@@ -10929,8 +12972,33 @@
           "partition_num",
           "sec",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "force-my-version",
+          "hour",
+          "image-path",
+          "imagehost",
+          "img-file",
+          "img-file-forced",
+          "img-version",
+          "img-version-forced",
+          "mac-addr",
+          "min",
+          "month",
+          "my-version",
+          "node-path",
+          "sec",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_reboot",
@@ -10968,8 +13036,25 @@
           "node-path",
           "sec",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "hour",
+          "mac-addr",
+          "min",
+          "month",
+          "node-path",
+          "sec",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_lcs_reboot_from_clu",
@@ -11007,8 +13092,25 @@
           "node-path",
           "sec",
           "year"
+        ],
+        "required_properties": [
+          "all",
+          "day",
+          "hour",
+          "mac-addr",
+          "min",
+          "month",
+          "node-path",
+          "sec",
+          "year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_upgrade_reschedule",
@@ -11052,8 +13154,31 @@
           "to-month",
           "to-sec",
           "to-year"
+        ],
+        "required_properties": [
+          "all",
+          "from-day",
+          "from-hour",
+          "from-min",
+          "from-month",
+          "from-sec",
+          "from-year",
+          "mac-addr",
+          "node-path",
+          "to-day",
+          "to-hour",
+          "to-min",
+          "to-month",
+          "to-sec",
+          "to-year"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_virtual_ap",
@@ -11117,6 +13242,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -11183,8 +13314,17 @@
           "vlan_mobility",
           "voip_proxy_arp",
           "wan_operation"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_vlan_id",
@@ -11248,6 +13388,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -11281,8 +13427,17 @@
           "option-82",
           "vlan_id__aaa",
           "vlan_id__descr"
+        ],
+        "required_properties": [
+          "id"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_vlan_name_id",
@@ -11346,6 +13501,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -11377,8 +13538,18 @@
         "properties": [
           "name",
           "vlan-ids"
+        ],
+        "required_properties": [
+          "name",
+          "vlan-ids"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_vlan_range",
@@ -11442,6 +13613,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -11474,8 +13651,17 @@
           "WORD",
           "profile-name",
           "public-access"
+        ],
+        "required_properties": [
+          "WORD"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_vlan_range_rem",
@@ -11506,8 +13692,17 @@
         "properties": [
           "WORD",
           "wired-aaa-profile"
+        ],
+        "required_properties": [
+          "WORD"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_vrrp",
@@ -11571,6 +13766,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -11614,8 +13815,17 @@
           "vrrp_track_uptime",
           "vrrp_track_vlan",
           "vrrp_vlan"
+        ],
+        "required_properties": [
+          "id"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_vrrp6",
@@ -11679,6 +13889,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -11721,8 +13937,17 @@
           "vrrp6_track_uptime",
           "vrrp6_track_vlan",
           "vrrp6_vlan"
+        ],
+        "required_properties": [
+          "id"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_wdb_cpsec_add_mac",
@@ -11755,8 +13980,17 @@
           "ap_name",
           "description",
           "name"
+        ],
+        "required_properties": [
+          "name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_wdb_cpsec_del_mac",
@@ -11786,8 +14020,17 @@
         "description": "Delete a CPSEC Whitelist DB entry",
         "properties": [
           "name"
+        ],
+        "required_properties": [
+          "name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_wdb_cpsec_modify_mac",
@@ -11827,8 +14070,17 @@
           "name",
           "revoke-text",
           "state"
+        ],
+        "required_properties": [
+          "name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_wdb_cpsec_revoke_mac",
@@ -11859,8 +14111,18 @@
         "properties": [
           "name",
           "revoke-text"
+        ],
+        "required_properties": [
+          "name",
+          "revoke-text"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_wdb_rap_add",
@@ -11896,8 +14158,18 @@
           "full_name",
           "remote_ip",
           "remote_ipv6"
+        ],
+        "required_properties": [
+          "address",
+          "ap_group"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_wdb_rap_del",
@@ -11927,8 +14199,17 @@
         "description": "Delete a RAP Whitelist DB entry",
         "properties": [
           "address"
+        ],
+        "required_properties": [
+          "address"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_wdb_rap_modify",
@@ -11966,8 +14247,17 @@
           "modeact",
           "remote_ip",
           "remote_ipv6"
+        ],
+        "required_properties": [
+          "address"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_wdb_rap_revoke",
@@ -11998,8 +14288,17 @@
         "properties": [
           "address",
           "comment"
+        ],
+        "required_properties": [
+          "address"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_whitelist",
@@ -12063,6 +14362,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -12104,7 +14409,13 @@
           "url",
           "username"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_whitelist_rule",
@@ -12168,6 +14479,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -12199,8 +14516,18 @@
         "properties": [
           "eipaddr",
           "sipaddr"
+        ],
+        "required_properties": [
+          "eipaddr",
+          "sipaddr"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_wired_auth_profile",
@@ -12264,6 +14591,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -12296,7 +14629,13 @@
           "wired_aaa_profile",
           "wired_blacklist_time"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_get_object_wispr_auth_profile",
@@ -12360,6 +14699,12 @@
           "type": "string",
           "description": "JSON filter expression specifying the items to return"
         }
+      ],
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
       ]
     },
     {
@@ -12404,8 +14749,17 @@
           "wispr_name_location",
           "wispr_name_op_name",
           "wispr_server_group"
+        ],
+        "required_properties": [
+          "profile-name"
         ]
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     },
     {
       "name": "aos8_post_object_write_memory",
@@ -12433,7 +14787,13 @@
         "content_type": "application/json",
         "schema_type": "object",
         "description": "Saves configuration changes which are retained after a reboot"
-      }
+      },
+      "response_codes": [
+        "200",
+        "401",
+        "403",
+        "415"
+      ]
     }
   ],
   "provenance": {

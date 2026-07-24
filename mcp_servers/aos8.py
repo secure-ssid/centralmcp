@@ -27,6 +27,7 @@ this: only `GET`/`POST` are accepted.
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import quote
 
@@ -577,13 +578,13 @@ async def _aos8_session_login(base_url: str) -> dict[str, Any]:
     if not username or not password:
         return {"error": "AOS8 session login requires AOS8_USERNAME and AOS8_PASSWORD."}
 
-    login_params: dict[str, Any] = {"username": username, "password": password}
+    login_form: dict[str, Any] = {"username": username, "password": password}
     if session_env["client_ip"]:
-        login_params["client_ip"] = session_env["client_ip"]
+        login_form["client_ip"] = session_env["client_ip"]
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(f"{base_url}/v1/api/login", params=login_params)
+            resp = await client.post(f"{base_url}/v1/api/login", data=login_form)
     except httpx.HTTPError as exc:
         return {"error": f"AOS8 login request failed: {exc}"}
 
@@ -600,9 +601,21 @@ async def _aos8_session_login(base_url: str) -> dict[str, Any]:
 
     ttl = _aos8_session_ttl_seconds(session_env)
     now = time.time()
+    csrf_token = global_result.get("X-CSRF-Token") or resp.headers.get("X-CSRF-Token")
+    session_cookie = None
+    cookies = getattr(resp, "cookies", None)
+    if cookies is not None:
+        session_value = cookies.get("SESSION")
+        if session_value:
+            session_cookie = f"SESSION={session_value}"
+    if not session_cookie:
+        set_cookie = resp.headers.get("set-cookie", "")
+        if set_cookie:
+            session_cookie = set_cookie.split(";", 1)[0]
     _SESSION_CACHE[base_url] = {
         "uidaruba": uidaruba,
-        "csrf_token": resp.headers.get("X-CSRF-Token"),
+        "csrf_token": csrf_token,
+        "session_cookie": session_cookie,
         "logged_in_at": now,
         "expires_at": now + ttl,
     }
@@ -673,8 +686,10 @@ async def _aos8_send(
             return login_error
         entry = _SESSION_CACHE[base_url]
         req_params["UIDARUBA"] = entry["uidaruba"]
-        if method != "GET" and entry.get("csrf_token"):
+        if entry.get("csrf_token"):
             headers["X-CSRF-Token"] = entry["csrf_token"]
+        if entry.get("session_cookie"):
+            headers["Cookie"] = entry["session_cookie"]
     else:
         _, token = _aos8_config()
         headers["Authorization"] = "Bearer " + (token or "")
@@ -694,8 +709,10 @@ async def _aos8_send(
             return login_error
         entry = _SESSION_CACHE[base_url]
         req_params["UIDARUBA"] = entry["uidaruba"]
-        if method != "GET" and entry.get("csrf_token"):
+        if entry.get("csrf_token"):
             headers["X-CSRF-Token"] = entry["csrf_token"]
+        if entry.get("session_cookie"):
+            headers["Cookie"] = entry["session_cookie"]
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await _aos8_dispatch(
@@ -715,6 +732,27 @@ def _strip_aos8_envelope(data: Any) -> Any:
     if len(out) == 1 and isinstance(payload, (dict, list)):
         return payload
     return out
+
+
+def _aos8_application_error(resp: Any, url: str) -> dict[str, Any] | None:
+    payload = response_payload(resp)
+    if not isinstance(payload, dict):
+        return None
+    global_result = payload.get("_global_result")
+    if not isinstance(global_result, dict):
+        return None
+    status = global_result.get("status")
+    if status in (None, 0, "0", "Success", "success"):
+        return None
+    return {
+        "error": (
+            f"AOS8 API returned application status {status}: "
+            f"{global_result.get('status_str') or global_result.get('message') or 'request failed'}"
+        ),
+        "status_code": resp.status_code,
+        "data": redact_sensitive(bounded_response_payload(resp)),
+        "url": url,
+    }
 
 
 def _bounded_show_count(value: int, *, default: int = 100, maximum: int = 200) -> int:
@@ -967,13 +1005,21 @@ async def aos8_logout() -> dict[str, Any]:
     base_url = base_url.rstrip("/")
     entry = _SESSION_CACHE.get(base_url)
     if entry:
+        headers = {"Accept": "application/json"}
+        if entry.get("csrf_token"):
+            headers["X-CSRF-Token"] = entry["csrf_token"]
+        if entry.get("session_cookie"):
+            headers["Cookie"] = entry["session_cookie"]
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 await client.post(
-                    f"{base_url}/v1/api/logout", params={"UIDARUBA": entry["uidaruba"]}
+                    f"{base_url}/v1/api/logout",
+                    headers=headers,
+                    params={"UIDARUBA": entry["uidaruba"]},
                 )
-        except httpx.HTTPError:
-            pass  # Best-effort: still clear the local cache below.
+        except httpx.HTTPError as exc:
+            result = _aos8_logout_session(base_url)
+            return {**result, "warning": f"AOS8 logout request failed: {exc}"}
     return _aos8_logout_session(base_url)
 
 
@@ -1649,27 +1695,93 @@ def _aos8_read_failed(out: dict[str, Any]) -> str | None:
     return None
 
 
+async def _aos8_collect_all(
+    label: str,
+    fetch_page: Callable[[int, int], Awaitable[dict[str, Any]]],
+    *,
+    page_size: int,
+    max_items: int,
+) -> tuple[list[Any], list[str]]:
+    """Collect locally paged AOS8 results without truncating migration exports."""
+    items: list[Any] = []
+    warnings: list[str] = []
+    offset = 0
+    while len(items) < max_items:
+        out = await fetch_page(min(page_size, max_items - len(items)), offset)
+        failure = _aos8_read_failed(out)
+        if failure:
+            warnings.append(f"{label}: {failure}")
+            break
+        page = _extract_primary_list(out.get(label))
+        items.extend(page)
+        if len(page) < min(page_size, max_items - offset):
+            break
+        offset += len(page)
+        if not page:
+            break
+    if len(items) >= max_items:
+        warnings.append(f"{label}: export reached max_items={max_items}")
+    return items[:max_items], warnings
+
+
+async def _aos8_collect_object(
+    object_name: str,
+    config_path: str,
+    *,
+    page_size: int,
+    max_items: int,
+) -> tuple[list[Any], list[str]]:
+    async def fetch(limit: int, offset: int) -> dict[str, Any]:
+        out = await aos8_get(
+            f"/v1/configuration/object/{object_name}",
+            {"config_path": config_path},
+            limit=limit,
+            offset=offset,
+        )
+        if "data" in out:
+            out[object_name] = _compact_aos8_data(
+                out.pop("data"), limit=limit, offset=offset
+            )
+        return out
+
+    return await _aos8_collect_all(
+        object_name,
+        fetch,
+        page_size=page_size,
+        max_items=max_items,
+    )
+
+
 @mcp.tool(annotations=READ_ONLY)
 async def aos8_export_wlans(
     config_path: str = "/md",
     limit: int = 200,
-    offset: int = 0,
+    max_items: int = 5000,
 ) -> dict[str, Any]:
     """Export AOS8 WLANs as merged SSID-profile + virtual-AP records for migration planning."""
-    ssid_out = await aos8_list_ssid_profiles(config_path=config_path, limit=limit, offset=offset)
-    vap_out = await aos8_list_virtual_aps(config_path=config_path, limit=limit, offset=offset)
-    warnings: list[str] = []
-    ssid_failure = _aos8_read_failed(ssid_out)
-    if ssid_failure:
-        warnings.append(f"ssid_profiles: {ssid_failure}")
-    vap_failure = _aos8_read_failed(vap_out)
-    if vap_failure:
-        warnings.append(f"virtual_aps: {vap_failure}")
+    page_size = min(clamp_limit(limit, default=200), 200)
+    ssid_profiles, ssid_warnings = await _aos8_collect_all(
+        "ssid_profiles",
+        lambda size, offset: aos8_list_ssid_profiles(
+            config_path=config_path, limit=size, offset=offset
+        ),
+        page_size=page_size,
+        max_items=max(1, min(max_items, 20000)),
+    )
+    virtual_aps, vap_warnings = await _aos8_collect_all(
+        "virtual_aps",
+        lambda size, offset: aos8_list_virtual_aps(
+            config_path=config_path, limit=size, offset=offset
+        ),
+        page_size=page_size,
+        max_items=max(1, min(max_items, 20000)),
+    )
     result: dict[str, Any] = {
         "config_path": config_path,
-        "ssid_profiles": _extract_primary_list(ssid_out.get("ssid_profiles")),
-        "virtual_aps": _extract_primary_list(vap_out.get("virtual_aps")),
+        "ssid_profiles": ssid_profiles,
+        "virtual_aps": virtual_aps,
     }
+    warnings = [*ssid_warnings, *vap_warnings]
     if warnings:
         result["warnings"] = warnings
     return result
@@ -1679,7 +1791,7 @@ async def aos8_export_wlans(
 async def aos8_export_all(
     config_path: str = "/md",
     limit: int = 200,
-    offset: int = 0,
+    max_items_per_type: int = 5000,
 ) -> dict[str, Any]:
     """Export the AOS8 objects used for Classic/New Central migration planning.
 
@@ -1692,31 +1804,79 @@ async def aos8_export_all(
     """
     warnings: list[str] = []
 
-    wlans = await aos8_export_wlans(config_path=config_path, limit=limit, offset=offset)
+    page_size = min(clamp_limit(limit, default=200), 200)
+    max_items = max(1, min(max_items_per_type, 20000))
+    wlans = await aos8_export_wlans(
+        config_path=config_path,
+        limit=page_size,
+        max_items=max_items,
+    )
     warnings.extend(wlans.pop("warnings", []))
 
-    async def _collect(label: str, out: dict[str, Any]) -> list[Any]:
-        failure = _aos8_read_failed(out)
-        if failure:
-            warnings.append(f"{label}: {failure}")
-            return []
-        return _extract_primary_list(out.get(label))
+    async def collect(
+        label: str,
+        fetch: Callable[[int, int], Awaitable[dict[str, Any]]],
+    ) -> list[Any]:
+        items, item_warnings = await _aos8_collect_all(
+            label,
+            fetch,
+            page_size=page_size,
+            max_items=max_items,
+        )
+        warnings.extend(item_warnings)
+        return items
 
-    roles = await _collect(
-        "user_roles", await aos8_list_user_roles(config_path=config_path, limit=limit, offset=offset)
+    roles = await collect(
+        "user_roles",
+        lambda size, offset: aos8_list_user_roles(
+            config_path=config_path, limit=size, offset=offset
+        ),
     )
-    vlans = await _collect(
-        "vlans", await aos8_get_vlans(config_path=config_path, limit=limit, offset=offset)
+    vlans = await collect(
+        "vlans",
+        lambda size, offset: aos8_get_vlans(
+            config_path=config_path, limit=size, offset=offset
+        ),
     )
-    ap_groups = await _collect(
-        "ap_groups", await aos8_list_ap_groups(config_path=config_path, limit=limit, offset=offset)
+    ap_groups = await collect(
+        "ap_groups",
+        lambda size, offset: aos8_list_ap_groups(
+            config_path=config_path, limit=size, offset=offset
+        ),
     )
-    controllers = await _collect(
-        "controllers", await aos8_list_controllers(limit=limit, offset=offset)
+    controllers = await collect(
+        "controllers",
+        lambda size, offset: aos8_list_controllers(limit=size, offset=offset),
     )
-    policies = await _collect(
-        "policies", await aos8_get_policies(config_path=config_path, limit=limit, offset=offset)
+    policies = await collect(
+        "policies",
+        lambda size, offset: aos8_get_policies(
+            config_path=config_path, limit=size, offset=offset
+        ),
     )
+    object_names = {
+        "aaa_profiles": "aaa_prof",
+        "dot1x_auth_profiles": "dot1x_auth_profile",
+        "mac_auth_profiles": "mac_auth_profile",
+        "server_groups": "server_group_prof",
+        "radius_servers": "rad_server",
+        "ldap_servers": "ldap_server",
+        "tacacs_servers": "tacacs_server",
+        "ipv4_routes": "ip_route",
+        "ipv6_routes": "ipv6_route",
+        "vrrp": "vrrp",
+        "vrrp6": "vrrp6",
+    }
+    extended: dict[str, list[Any]] = {}
+    for label, object_name in object_names.items():
+        items, item_warnings = await _aos8_collect_object(
+            object_name,
+            config_path,
+            page_size=page_size,
+            max_items=max_items,
+        )
+        extended[label] = items
+        warnings.extend(f"{label}: {warning}" for warning in item_warnings)
 
     return {
         "config_path": config_path,
@@ -1729,6 +1889,22 @@ async def aos8_export_all(
         "ap_groups": ap_groups,
         "controllers": controllers,
         "policies": policies,
+        "aaa": {
+            key: extended[key]
+            for key in (
+                "aaa_profiles",
+                "dot1x_auth_profiles",
+                "mac_auth_profiles",
+                "server_groups",
+                "radius_servers",
+                "ldap_servers",
+                "tacacs_servers",
+            )
+        },
+        "routing": {
+            key: extended[key]
+            for key in ("ipv4_routes", "ipv6_routes", "vrrp", "vrrp6")
+        },
         "warnings": warnings,
     }
 
@@ -1956,11 +2132,14 @@ async def _aos8_generated_read(
     clean_params = {k: v for k, v in query.items() if v is not None}
     result = await _aos8_send(method, base_url, full_path, clean_params, None)
     if isinstance(result, dict):
-        return {**result, "url": url}
+        return {**redact_sensitive(result), "url": url}
     resp = result
-    payload = bound_collection_response(
+    application_error = _aos8_application_error(resp, url)
+    if application_error is not None:
+        return application_error
+    payload = redact_sensitive(bound_collection_response(
         bounded_response_payload(resp), limit=clamp_limit(None), offset=0
-    )
+    ))
     return {"status_code": resp.status_code, "data": payload, "url": url}
 
 
@@ -2008,6 +2187,9 @@ async def _aos8_generated_write(
     if isinstance(result, dict):
         return {**result, "url": url}
     resp = result
+    application_error = _aos8_application_error(resp, url)
+    if application_error is not None:
+        return application_error
     return {
         "status_code": resp.status_code,
         "data": redact_sensitive(bounded_response_payload(resp)),

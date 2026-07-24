@@ -49,6 +49,9 @@ class ParamIR:
     enum: list[Any] | None = None
     default: Any = None
     item_type: str | None = None  # element type when schema_type == "array"
+    schema_format: str | None = None
+    style: str | None = None
+    explode: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -65,6 +68,12 @@ class ParamIR:
             out["default"] = self.default
         if self.item_type is not None:
             out["item_type"] = self.item_type
+        if self.schema_format:
+            out["format"] = self.schema_format
+        if self.style:
+            out["style"] = self.style
+        if self.explode is not None:
+            out["explode"] = self.explode
         return out
 
 
@@ -78,6 +87,8 @@ class RequestBodyIR:
     description: str = ""
     item_type: str | None = None
     properties: list[str] = field(default_factory=list)
+    required_properties: list[str] = field(default_factory=list)
+    property_formats: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -91,6 +102,10 @@ class RequestBodyIR:
             out["item_type"] = self.item_type
         if self.properties:
             out["properties"] = self.properties
+        if self.required_properties:
+            out["required_properties"] = self.required_properties
+        if self.property_formats:
+            out["property_formats"] = self.property_formats
         return out
 
 
@@ -106,6 +121,10 @@ class OperationIR:
     parameters: list[ParamIR]
     request_body: RequestBodyIR | None
     tags: list[str] = field(default_factory=list)
+    deprecated: bool = False
+    security: list[dict[str, list[str]]] = field(default_factory=list)
+    response_codes: list[str] = field(default_factory=list)
+    sunset: str | None = None
 
     @property
     def key(self) -> str:
@@ -224,7 +243,8 @@ class SpecParser:
         param = self._deref(raw)
         if not isinstance(param, dict) or "name" not in param or "in" not in param:
             raise OpenApiError(f"invalid parameter object: {raw!r}")
-        st, item_type, enum, default, _ = self.schema_type(param.get("schema", {}))
+        schema = self._deref(param.get("schema", {}))
+        st, item_type, enum, default, _ = self.schema_type(schema)
         required = bool(param.get("required", param.get("in") == "path"))
         return ParamIR(
             name=str(param["name"]),
@@ -235,6 +255,11 @@ class SpecParser:
             enum=enum,
             default=default,
             item_type=item_type,
+            schema_format=(
+                str(schema.get("format")) if isinstance(schema, dict) and schema.get("format") else None
+            ),
+            style=str(param["style"]) if param.get("style") else None,
+            explode=param.get("explode") if isinstance(param.get("explode"), bool) else None,
         )
 
     def _parse_request_body(self, raw: Any) -> RequestBodyIR | None:
@@ -249,7 +274,18 @@ class SpecParser:
         if content_type not in content:
             content_type = sorted(content.keys())[0]
         media = content.get(content_type) or {}
-        st, item_type, _, _, props = self.schema_type(media.get("schema", {}))
+        schema = self._deref(media.get("schema", {}))
+        st, item_type, _, _, props = self.schema_type(schema)
+        required_properties: list[str] = []
+        property_formats: dict[str, str] = {}
+        if isinstance(schema, dict):
+            required_properties = sorted(
+                str(name) for name in schema.get("required", []) if isinstance(name, str)
+            )
+            for name, raw_property in (schema.get("properties") or {}).items():
+                prop = self._deref(raw_property)
+                if isinstance(prop, dict) and prop.get("format"):
+                    property_formats[str(name)] = str(prop["format"])
         return RequestBodyIR(
             required=bool(body.get("required", False)),
             content_type=content_type,
@@ -257,6 +293,8 @@ class SpecParser:
             description=str(body.get("description", "")).strip(),
             item_type=item_type,
             properties=props,
+            required_properties=required_properties,
+            property_formats=dict(sorted(property_formats.items())),
         )
 
     # -- operation walk ------------------------------------------------
@@ -290,6 +328,24 @@ class SpecParser:
                         parameters=params,
                         request_body=request_body,
                         tags=[str(t) for t in op.get("tags", []) if isinstance(t, str)],
+                        deprecated=bool(op.get("deprecated", False)),
+                        security=[
+                            {
+                                str(name): [str(scope) for scope in scopes]
+                                for name, scopes in requirement.items()
+                                if isinstance(scopes, list)
+                            }
+                            for requirement in op.get("security", self.spec.get("security", []))
+                            if isinstance(requirement, dict)
+                        ],
+                        response_codes=sorted(
+                            str(code) for code in (op.get("responses") or {}).keys()
+                        ),
+                        sunset=(
+                            str(op.get("x-sunset") or op.get("x-sunset-date"))
+                            if op.get("x-sunset") or op.get("x-sunset-date")
+                            else None
+                        ),
                     )
                 )
         return ops

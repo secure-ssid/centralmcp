@@ -10,10 +10,9 @@ Provenance / licensing
   operation manifest is written under
   ``mcp_servers/openapi_gen/manifests/<platform>.json`` — the raw proprietary
   OpenAPI documents are never committed.
-* Apstra has no authoritative distributable full OpenAPI spec, so its manifest
-  is the current maximum *reviewed* operation set derived from the MIT-licensed
-  upstream Apstra backend (``mcp_servers/apstra.py`` curated tools). This is
-  explicitly NOT full OpenAPI coverage.
+* Apstra has no distributable full OpenAPI spec, so its manifest is a reviewed
+  operation set derived from the pinned official Juniper ``aos-sdk-api``
+  package. This is explicitly NOT full OpenAPI coverage.
 
 Usage::
 

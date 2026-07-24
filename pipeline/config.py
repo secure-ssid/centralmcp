@@ -70,10 +70,7 @@ def load_credentials(creds_path: str = "config/credentials.yaml") -> dict[str, A
             "glp_workspace_id": _get("target_account", "glp_workspace_id", "TARGET_GLP_WORKSPACE"),
         },
         "glp": {
-            "token_url": os.getenv(
-                "GLP_TOKEN_URL",
-                glp_section.get("token_url", "https://sso.common.cloud.hpe.com/as/token.oauth2"),
-            ),
+            "token_url": os.getenv("GLP_TOKEN_URL", glp_section.get("token_url", "")),
             "base_url": os.getenv(
                 "GLP_BASE_URL",
                 glp_section.get("base_url", "https://global.api.greenlake.hpe.com"),
@@ -89,6 +86,15 @@ def build_account_contexts(creds_path: str = "config/credentials.yaml") -> tuple
         (source_context, target_context)
     """
     creds = load_credentials(creds_path)
+    glp_base_url = creds["glp"]["base_url"].rstrip("/")
+
+    def _glp_token_url(workspace_id: str) -> str:
+        configured = creds["glp"]["token_url"].strip()
+        if configured:
+            return configured
+        if not workspace_id:
+            return ""
+        return f"{glp_base_url}/authorization/v2/oauth2/{workspace_id}/token"
 
     source = AccountContext(
         label="source",
@@ -96,8 +102,8 @@ def build_account_contexts(creds_path: str = "config/credentials.yaml") -> tuple
         client_id=creds["source"]["client_id"],
         client_secret=creds["source"]["client_secret"],
         glp_workspace_id=creds["source"]["glp_workspace_id"],
-        glp_token_url=creds["glp"]["token_url"],
-        glp_base_url=creds["glp"]["base_url"],
+        glp_token_url=_glp_token_url(creds["source"]["glp_workspace_id"]),
+        glp_base_url=glp_base_url,
     )
 
     target = AccountContext(
@@ -106,8 +112,8 @@ def build_account_contexts(creds_path: str = "config/credentials.yaml") -> tuple
         client_id=creds["target"]["client_id"],
         client_secret=creds["target"]["client_secret"],
         glp_workspace_id=creds["target"]["glp_workspace_id"],
-        glp_token_url=creds["glp"]["token_url"],
-        glp_base_url=creds["glp"]["base_url"],
+        glp_token_url=_glp_token_url(creds["target"]["glp_workspace_id"]),
+        glp_base_url=glp_base_url,
     )
 
     return source, target

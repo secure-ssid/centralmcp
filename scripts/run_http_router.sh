@@ -52,6 +52,8 @@ allowed_keys = {
     "UXI_CLIENT_SECRET",
     "UXI_BASE_URL",
     "UXI_TOKEN_URL",
+    "AXIS_BASE_URL",
+    "AXIS_API_TOKEN",
 }
 for raw_line in open(sys.argv[1]):
     line = raw_line.strip()

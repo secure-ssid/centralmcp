@@ -133,16 +133,16 @@ invoke_read_tool("aos8_migration_plan", {"config_path": "/md", "limit": 200})
 The plan covers WLANs, roles, VLANs, AP groups, controllers, and policies and
 preserves export or malformed-section warnings.
 
-## Inspect GLP device groups
+## Group GLP devices by model
 
 ```text
-List GreenLake Platform device groups using the v2beta1 API and keep the output
-to the first 25 groups.
+Group GreenLake Platform devices by model using the v2beta1 API and keep the
+output to the first 25 values.
 ```
 
 ```text
-find_tool("GLP v2beta1 device groups")
-invoke_read_tool("list_glp_device_groups", {"limit": 25, "offset": 0})
+find_tool("GLP group devices by model")
+invoke_read_tool("group_glp_devices", {"group_by": "model", "limit": 25, "offset": 0})
 ```
 
 ## Optional products

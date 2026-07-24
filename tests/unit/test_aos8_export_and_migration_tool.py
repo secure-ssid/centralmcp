@@ -106,6 +106,25 @@ def test_aos8_export_wlans_collects_warnings_on_partial_failure(monkeypatch):
     assert any("virtual_aps" in w for w in out["warnings"])
 
 
+def test_aos8_export_page_collector_exhausts_local_pages():
+    records = [{"id": value} for value in range(5)]
+
+    async def fetch(limit: int, offset: int):
+        return {"items": {"items": records[offset : offset + limit]}}
+
+    items, warnings = asyncio.run(
+        aos8._aos8_collect_all(
+            "items",
+            fetch,
+            page_size=2,
+            max_items=10,
+        )
+    )
+
+    assert items == records
+    assert warnings == []
+
+
 def test_aos8_export_all_fans_out_and_shapes_result(monkeypatch):
     fake_cls = _fake_client_for_paths(
         {
@@ -126,6 +145,17 @@ def test_aos8_export_all_fans_out_and_shapes_result(monkeypatch):
                 "Switches": [{"Name": "mc1", "IP Address": "10.0.0.1"}]
             },
             "/v1/configuration/object/acl_sess": {"acl_sess": [{"name": "corp-acl"}]},
+            "/v1/configuration/object/aaa_prof": {"aaa_prof": []},
+            "/v1/configuration/object/dot1x_auth_profile": {"dot1x_auth_profile": []},
+            "/v1/configuration/object/mac_auth_profile": {"mac_auth_profile": []},
+            "/v1/configuration/object/server_group_prof": {"server_group_prof": []},
+            "/v1/configuration/object/rad_server": {"rad_server": []},
+            "/v1/configuration/object/ldap_server": {"ldap_server": []},
+            "/v1/configuration/object/tacacs_server": {"tacacs_server": []},
+            "/v1/configuration/object/ip_route": {"ip_route": []},
+            "/v1/configuration/object/ipv6_route": {"ipv6_route": []},
+            "/v1/configuration/object/vrrp": {"vrrp": []},
+            "/v1/configuration/object/vrrp6": {"vrrp6": []},
         }
     )
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")

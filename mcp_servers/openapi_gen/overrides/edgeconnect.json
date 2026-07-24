@@ -3,12 +3,17 @@
     "repository": "https://github.com/nowireless4u/hpe-networking-mcp",
     "commit": "c73e14f6d06fa8e47797553adacff20c91fe2184",
     "source_sha256": "8f7d90cbd7777e3fac0dc2458249174068f4c373b400d1224f3c3dcc77e34c46",
-    "review": "Side-effecting GETs were identified from operation summaries; body-bearing POST query/validation/test/export operations are registered as diagnostic rather than configuration writes."
+    "review": "Reviewed side-effecting GETs are write-gated; body-bearing POST query/validation/test/export operations are registered as diagnostic rather than configuration writes."
   },
   "capabilities": {
     "GET /authentication/logout": "write",
+    "GET /appliance/cpustat/historical/cancelfetch": "write",
+    "GET /gmsSMTP/verifyAddress": "write",
     "GET /idle/clear": "write",
-    "GET /idle/increment": "write"
+    "GET /idle/increment": "write",
+    "GET /ids/updateSignatureFromPortal": "write",
+    "GET /spPortal/connectivity/appliance": "diagnostic",
+    "GET /thirdPartyServices/sse/image/refresh": "write"
   },
   "diagnostics": [
     "POST /alarm/appliance",

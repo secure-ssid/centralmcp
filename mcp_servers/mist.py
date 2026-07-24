@@ -4,8 +4,10 @@ Enabled via tool router env:
   CENTRALMCP_PRODUCTS=mist
 
 Auth/env:
-  MIST_HOST       e.g. https://api.mist.com
-  MIST_API_TOKEN  Mist API token
+  MIST_HOST            e.g. https://api.mist.com
+  MIST_API_TOKEN       Mist API token
+  MIST_SESSION_COOKIE  optional browser-session Cookie header value
+  MIST_CSRF_TOKEN      optional session CSRF token
 
 Covers the generic passthrough/WLAN/alarm tools plus typed, bounded workflow
 tools for: NAC/Access Assurance (nactags/nacportals/usermacs, plus NAC IDP
@@ -13,8 +15,9 @@ realm mappings read from org settings), Marvis AI (client telemetry, client
 experience insights, device event search, org Marvis settings), org
 inventory and device claims, Wired Assurance switch/port stats, and WAN
 Assurance gateway (SRX/SSR) stats. Endpoints and field names verified
-directly against the mistsys/mist_openapi spec (mist.openapi.yaml) at
-commit f374cffdd5a275c7954645a306fcab7f1227e7a3 (tag 2606.1.1, 2026-07-10).
+directly against the mistsys/mist_openapi spec (mist.openapi.yaml) at commit
+f374cffdd5a275c7954645a306fcab7f1227e7a3 (OpenAPI version 2606.1.1,
+2026-07-10).
 See individual tool docstrings for the underlying `/api/v1/*` endpoints and
 any remaining live-instance verification caveats.
 """
@@ -29,6 +32,7 @@ from urllib.parse import quote
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from mcp_servers.openapi_gen.http_exec import build_multipart_files
 from mcp_servers.shared import (
     DESTRUCTIVE,
     IDEMPOTENT_WRITE,
@@ -1273,6 +1277,19 @@ async def mist_set_marvis_settings(
 # ---------------------------------------------------------------------------
 
 _MIST_ALLOWED_PREFIXES = ("/api/v1/",)
+_MIST_DIAGNOSTIC_TOOL_NAMES: set[str] = set()
+_MIST_PUBLIC_PATH_PATTERNS = (
+    re.compile(r"^/api/v1/invite/verify/[^/]+$"),
+    re.compile(r"^/api/v1/recover$"),
+    re.compile(r"^/api/v1/recover/verify/[^/]+$"),
+    re.compile(r"^/api/v1/register$"),
+    re.compile(r"^/api/v1/register/recaptcha$"),
+    re.compile(r"^/api/v1/register/verify/[^/]+$"),
+)
+
+
+def _mist_is_public_path(path: str) -> bool:
+    return any(pattern.fullmatch(path) for pattern in _MIST_PUBLIC_PATH_PATTERNS)
 
 
 def _mist_prepare(path: str) -> tuple[str | None, str | None, str | None]:
@@ -1282,9 +1299,18 @@ def _mist_prepare(path: str) -> tuple[str | None, str | None, str | None]:
     segments, so we validate the prefix/host here without re-quoting (which would
     double-encode the escaped segments).
     """
+    import os
+
     host, token = _mist_config()
-    if not host or not token:
-        return None, None, "Mist not configured. Set MIST_HOST and MIST_API_TOKEN."
+    session_cookie = os.getenv("MIST_SESSION_COOKIE", "").strip()
+    if not host:
+        return None, None, "Mist not configured. Set MIST_HOST."
+    if not token and not session_cookie and not _mist_is_public_path(path):
+        return (
+            None,
+            None,
+            "Mist not configured. Set MIST_API_TOKEN or MIST_SESSION_COOKIE.",
+        )
     if not path.startswith(_MIST_ALLOWED_PREFIXES):
         return None, None, "Generated path must begin with /api/v1/."
     try:
@@ -1294,8 +1320,15 @@ def _mist_prepare(path: str) -> tuple[str | None, str | None, str | None]:
     return host, token, None
 
 
-def _mist_auth_headers(token: str, extra: dict[str, str] | None = None) -> dict[str, str]:
+def _mist_auth_headers(
+    token: str | None,
+    extra: dict[str, str] | None = None,
+    *,
+    include_session: bool = True,
+) -> dict[str, str]:
     """Build request headers, injecting the trusted auth header last."""
+    import os
+
     headers: dict[str, str] = {"Accept": "application/json"}
     if extra:
         # Non-auth header params from the model; auth params are filtered by the
@@ -1304,7 +1337,15 @@ def _mist_auth_headers(token: str, extra: dict[str, str] | None = None) -> dict[
             if key.strip().lower() in {"authorization", "cookie"}:
                 continue
             headers[key] = value
-    headers["Authorization"] = "Token " + token
+    if token:
+        headers["Authorization"] = "Token " + token
+    elif include_session:
+        session_cookie = os.getenv("MIST_SESSION_COOKIE", "").strip()
+        csrf_token = os.getenv("MIST_CSRF_TOKEN", "").strip()
+        if session_cookie:
+            headers["Cookie"] = session_cookie
+        if csrf_token:
+            headers["X-CSRFToken"] = csrf_token
     return headers
 
 
@@ -1319,14 +1360,18 @@ async def _mist_generated_read(
     if error:
         return {"error": error}
     url = f"{host}{path}"
-    req_headers = _mist_auth_headers(token, headers)
+    req_headers = _mist_auth_headers(
+        token, headers, include_session=not _mist_is_public_path(path)
+    )
     clean_params = {k: v for k, v in query.items() if v is not None}
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.request(method, url, headers=req_headers, params=clean_params)
-        payload = bound_collection_response(
-            bounded_response_payload(resp), limit=clamp_limit(None), offset=0
-        )
+        requested_limit = query.get("limit")
+        output_limit = clamp_limit(requested_limit if isinstance(requested_limit, int) else None)
+        payload = redact_sensitive(bound_collection_response(
+            bounded_response_payload(resp), limit=output_limit, offset=0
+        ))
         return {"status_code": resp.status_code, "data": payload, "url": url}
     except httpx.HTTPError as exc:
         return {"error": str(exc), "url": url}
@@ -1344,7 +1389,7 @@ async def _mist_generated_write(
     confirm: bool,
 ) -> dict[str, Any]:
     """Write executor for generated Mist tools (gate + dry-run/confirm)."""
-    if not optional_product_writes_allowed():
+    if name not in _MIST_DIAGNOSTIC_TOOL_NAMES and not optional_product_writes_allowed():
         return optional_product_write_blocked(name)
     host, token, error = _mist_prepare(path)
     if error:
@@ -1367,22 +1412,17 @@ async def _mist_generated_write(
             "dry_run": True,
             **preview,
         }
-    req_headers = _mist_auth_headers(token, headers)
+    req_headers = _mist_auth_headers(
+        token, headers, include_session=not _mist_is_public_path(path)
+    )
     kwargs: dict[str, Any] = {"headers": req_headers, "params": clean_params}
     if body is not None:
         if content_type == "application/json":
             kwargs["json"] = body
         elif content_type == "multipart/form-data":
-            if not isinstance(body, dict):
-                return {"error": "multipart/form-data body must be an object of form fields"}
-            files: dict[str, tuple[Any, ...]] = {}
-            for key, value in body.items():
-                if isinstance(value, bytes):
-                    files[str(key)] = (str(key), value, "application/octet-stream")
-                elif isinstance(value, (dict, list)):
-                    files[str(key)] = (None, json.dumps(value), "application/json")
-                else:
-                    files[str(key)] = (None, "" if value is None else str(value))
+            files, body_error = build_multipart_files(body)
+            if body_error is not None:
+                return body_error
             kwargs["files"] = files
         elif content_type == "application/x-www-form-urlencoded":
             if not isinstance(body, dict):
@@ -1405,14 +1445,25 @@ async def _mist_generated_write(
 
 def _register_generated_mist_tools() -> list[str]:
     """Register generated Mist tools at import time, failing on manifest errors."""
+    from mcp_servers.openapi_gen.manifest import load_manifest
     from mcp_servers.openapi_gen.runtime import register_generated_tools
 
-    return register_generated_tools(
+    manifest = load_manifest("mist")
+    registered = register_generated_tools(
         mcp,
         "mist",
         read_executor=_mist_generated_read,
         write_executor=_mist_generated_write,
+        manifest=manifest,
     )
+    if not registered:
+        return []
+    for operation, registered_name in zip(
+        manifest.get("operations", []), registered, strict=True
+    ):
+        if operation.get("capability") == "diagnostic":
+            _MIST_DIAGNOSTIC_TOOL_NAMES.add(registered_name)
+    return registered
 
 
 GENERATED_MIST_TOOLS = _register_generated_mist_tools()

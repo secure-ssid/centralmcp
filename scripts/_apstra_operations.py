@@ -1,12 +1,9 @@
 """Apstra derived operation set for the generated-tools manifest.
 
-No authoritative distributable full Apstra OpenAPI document exists, so this
-module hand-authors the current maximum *reviewed* operation set from the
-MIT-licensed upstream Apstra backend (``mcp_servers/apstra.py`` curated tools)
-as a minimal in-memory OpenAPI document, then runs it through the shared
-manifest builder. The two ``Auth``-tagged login endpoints are documented for
-provenance but are filtered out at tool-registration time (session auth is
-never a model-visible argument).
+No distributable full Apstra OpenAPI document exists. This module records
+method/path mappings verified against the pinned official Juniper
+``aos-sdk-api`` package, then runs them through the shared manifest builder.
+Auth endpoints are provenance-only and never become model-visible tools.
 """
 
 from __future__ import annotations
@@ -30,11 +27,18 @@ _BP = {
     "description": "Apstra blueprint ID.",
 }
 _CT = {
-    "name": "ct_id",
+    "name": "policy_id",
     "in": "path",
     "required": True,
     "schema": {"type": "string"},
     "description": "Connectivity template ID.",
+}
+_TASK = {
+    "name": "task_id",
+    "in": "path",
+    "required": True,
+    "schema": {"type": "string"},
+    "description": "Apstra blueprint task ID.",
 }
 
 
@@ -48,7 +52,22 @@ def _json_body() -> dict:
 
 def apstra_spec() -> dict:
     paths = {
-        "/api/blueprints": {"get": _op("listBlueprints", "List Apstra blueprints (ID/name/status).")},
+        "/api/blueprints": {
+            "get": _op("listBlueprints", "List Apstra blueprints (ID/name/status)."),
+            "post": {
+                **_op("createBlueprint", "Create an Apstra blueprint.", ["Blueprints"]),
+                "requestBody": _json_body(),
+            },
+        },
+        "/api/blueprints/{blueprint_id}": {
+            "parameters": [_BP],
+            "get": _op("getBlueprint", "Get one Apstra blueprint.", ["Blueprints"]),
+            "patch": {
+                **_op("updateBlueprint", "Update one Apstra blueprint.", ["Blueprints"]),
+                "requestBody": _json_body(),
+            },
+            "delete": _op("deleteBlueprint", "Delete one Apstra blueprint.", ["Blueprints"]),
+        },
         "/api/design/templates": {"get": _op("listDesignTemplates", "List Apstra design templates.")},
         "/api/blueprints/{blueprint_id}/anomalies": {
             "parameters": [_BP],
@@ -70,26 +89,127 @@ def apstra_spec() -> dict:
             "parameters": [_BP],
             "get": _op("listRemoteGateways", "List remote gateways in one blueprint."),
         },
-        "/api/blueprints/{blueprint_id}/connectivity-templates": {
+        "/api/blueprints/{blueprint_id}/deploy": {
             "parameters": [_BP],
-            "get": _op("listConnectivityTemplates", "List connectivity templates in one blueprint."),
+            "get": _op("getBlueprintDeployStatus", "Get blueprint deployment status.", ["Blueprints"]),
             "put": {
-                **_op("createConnectivityTemplate", "Create or update a connectivity template.", ["Connectivity"]),
+                **_op("deployBlueprint", "Deploy a blueprint.", ["Blueprints"]),
                 "requestBody": _json_body(),
             },
         },
-        "/api/blueprints/{blueprint_id}/connectivity-templates/{ct_id}": {
+        "/api/blueprints/{blueprint_id}/configuration": {
+            "parameters": [_BP],
+            "get": _op("getBlueprintConfigurationStatus", "Get blueprint configuration deployment status."),
+        },
+        "/api/blueprints/{blueprint_id}/preview-config-summary": {
+            "parameters": [_BP],
+            "get": _op("previewBlueprintConfiguration", "Preview and summarize generated device configurations."),
+        },
+        "/api/blueprints/{blueprint_id}/diff": {
+            "parameters": [_BP],
+            "get": _op("getBlueprintDiff", "Get the staged-versus-deployed blueprint diff."),
+        },
+        "/api/blueprints/{blueprint_id}/diff-status": {
+            "parameters": [_BP],
+            "get": _op("getBlueprintDiffStatus", "Get staged-vs-committed diff status for one blueprint."),
+        },
+        "/api/blueprints/{blueprint_id}/lock-status": {
+            "parameters": [_BP],
+            "get": _op("getBlueprintLockStatus", "Get blueprint lock status."),
+        },
+        "/api/blueprints/{blueprint_id}/lock-blueprint": {
+            "parameters": [_BP],
+            "put": _op("lockBlueprint", "Lock a blueprint.", ["Blueprints"]),
+        },
+        "/api/blueprints/{blueprint_id}/unlock-blueprint": {
+            "parameters": [_BP],
+            "put": _op("unlockBlueprint", "Unlock a blueprint.", ["Blueprints"]),
+        },
+        "/api/blueprints/{blueprint_id}/revert": {
+            "parameters": [_BP],
+            "post": _op("revertBlueprint", "Revert a blueprint to its latest backup.", ["Blueprints"]),
+        },
+        "/api/blueprints/{blueprint_id}/rollback": {
+            "parameters": [_BP],
+            "post": {
+                **_op("rollbackBlueprint", "Rollback a blueprint to a selected revision.", ["Blueprints"]),
+                "requestBody": _json_body(),
+            },
+        },
+        "/api/blueprints/{blueprint_id}/revisions": {
+            "parameters": [_BP],
+            "get": _op("listBlueprintRevisions", "List blueprint revisions.", ["Blueprints"]),
+        },
+        "/api/blueprints/{blueprint_id}/tasks": {
+            "parameters": [_BP],
+            "get": _op("listBlueprintTasks", "List asynchronous blueprint tasks.", ["Tasks"]),
+        },
+        "/api/blueprints/{blueprint_id}/tasks/{task_id}": {
+            "parameters": [_BP, _TASK],
+            "get": _op("getBlueprintTask", "Get asynchronous blueprint task details.", ["Tasks"]),
+        },
+        "/api/blueprints/{blueprint_id}/acknowledge-tasks": {
+            "parameters": [_BP],
+            "post": {
+                **_op("acknowledgeBlueprintTasks", "Acknowledge blueprint tasks.", ["Tasks"]),
+                "requestBody": _json_body(),
+            },
+        },
+        "/api/blueprints/{blueprint_id}/policy-types": {
+            "parameters": [_BP],
+            "get": _op("listConnectivityTemplateTypes", "List connectivity-template types.", ["Connectivity"]),
+        },
+        "/api/blueprints/{blueprint_id}/endpoint-policies": {
+            "parameters": [_BP],
+            "get": _op("listConnectivityTemplates", "List connectivity templates in one blueprint.", ["Connectivity"]),
+            "post": {
+                **_op("createConnectivityTemplate", "Create a connectivity template.", ["Connectivity"]),
+                "requestBody": _json_body(),
+            },
+        },
+        "/api/blueprints/{blueprint_id}/endpoint-policies/{policy_id}": {
             "parameters": [_BP, _CT],
             "get": _op("getConnectivityTemplate", "Get one connectivity template by ID.", ["Connectivity"]),
+            "patch": {
+                **_op("updateConnectivityTemplate", "Update a connectivity template.", ["Connectivity"]),
+                "requestBody": _json_body(),
+            },
             "delete": _op("deleteConnectivityTemplate", "Delete one connectivity template by ID.", ["Connectivity"]),
+        },
+        "/api/blueprints/{blueprint_id}/endpoint-policies/{policy_id}/application-points": {
+            "parameters": [_BP, _CT],
+            "get": _op(
+                "getConnectivityTemplateApplicationPoints",
+                "Get valid application points for one connectivity template.",
+                ["Connectivity"],
+            ),
+            "patch": {
+                **_op(
+                    "setConnectivityTemplateApplicationPoints",
+                    "Update one connectivity template's application points.",
+                    ["Connectivity"],
+                ),
+                "requestBody": _json_body(),
+            },
         },
         "/api/blueprints/{blueprint_id}/obj-policy-export": {
             "parameters": [_BP],
             "get": _op(
                 "exportObjPolicy",
-                "Legacy connectivity-template catalog export (obj-policy-export).",
+                "Export all connectivity-template definitions.",
                 ["Connectivity"],
             ),
+        },
+        "/api/blueprints/{blueprint_id}/obj-policy-export/{policy_id}": {
+            "parameters": [_BP, _CT],
+            "get": _op("exportConnectivityTemplate", "Export one connectivity-template definition.", ["Connectivity"]),
+        },
+        "/api/blueprints/{blueprint_id}/obj-policy-import": {
+            "parameters": [_BP],
+            "put": {
+                **_op("importConnectivityTemplates", "Import connectivity-template definitions.", ["Connectivity"]),
+                "requestBody": _json_body(),
+            },
         },
         "/api/blueprints/{blueprint_id}/obj-policy-application-points": {
             "parameters": [_BP],
@@ -99,7 +219,7 @@ def apstra_spec() -> dict:
                 ["Connectivity"],
             ),
         },
-        "/api/blueprints/{blueprint_id}/obj-policy-application-points/batch-apply": {
+        "/api/blueprints/{blueprint_id}/obj-policy-batch-apply": {
             "parameters": [_BP],
             "patch": {
                 **_op(
@@ -110,9 +230,38 @@ def apstra_spec() -> dict:
                 "requestBody": _json_body(),
             },
         },
-        "/api/blueprints/{blueprint_id}/diff-status": {
+        "/api/blueprints/{blueprint_id}/obj-policy-batch-delete": {
             "parameters": [_BP],
-            "get": _op("getBlueprintDiffStatus", "Get staged-vs-committed diff status for one blueprint."),
+            "post": {
+                **_op("deleteConnectivityTemplates", "Delete a batch of top-level connectivity templates.", ["Connectivity"]),
+                "requestBody": _json_body(),
+            },
+        },
+        "/api/blueprints/{blueprint_id}/obj-policy-search": {
+            "parameters": [_BP],
+            "post": {
+                **_op("searchConnectivityTemplates", "Search connectivity templates.", ["Connectivity"]),
+                "requestBody": _json_body(),
+            },
+        },
+        "/api/blueprints/{blueprint_id}/obj-policy-locations-schema": {
+            "parameters": [_BP],
+            "get": _op("getConnectivityLocationsSchema", "Get application-point location node types.", ["Connectivity"]),
+        },
+        "/api/blueprints/{blueprint_id}/experience/web/endpoint-policies": {
+            "parameters": [_BP],
+            "get": _op("getConnectivityTemplateStatus", "Get UI-oriented connectivity-template status.", ["Connectivity"]),
+        },
+        "/api/blueprints/{blueprint_id}/experience/web/obj-policies-by-application-points": {
+            "parameters": [_BP],
+            "post": {
+                **_op(
+                    "listConnectivityTemplatesByApplicationPoints",
+                    "List connectivity templates for supplied application points.",
+                    ["Connectivity"],
+                ),
+                "requestBody": _json_body(),
+            },
         },
         "/api/blueprints/{blueprint_id}/protocol-sessions": {
             "parameters": [_BP],
@@ -125,12 +274,15 @@ def apstra_spec() -> dict:
         # Auth/login endpoints - documented for provenance; tagged Auth and
         # skipped at registration so the AuthToken session layer stays the sole
         # credential path.
-        "/api/user/login": {
-            "post": {**_op("apstraLogin", "Session login (returns AuthToken).", ["Auth"]), "requestBody": _json_body()}
-        },
         "/api/aaa/login": {
             "post": {
-                **_op("apstraLoginLegacy", "Legacy session login (returns AuthToken).", ["Auth"]),
+                **_op("apstraLogin", "Current session login (returns AuthToken).", ["Auth"]),
+                "requestBody": _json_body(),
+            }
+        },
+        "/api/user/login": {
+            "post": {
+                **_op("apstraLoginLegacy", "Older-release session login (returns AuthToken).", ["Auth"]),
                 "requestBody": _json_body(),
             }
         },
@@ -139,8 +291,8 @@ def apstra_spec() -> dict:
         "openapi": "3.1.0",
         "info": {
             "title": "HPE Juniper Apstra (derived operation set)",
-            "version": "reviewed-2026-07",
-            "license": {"name": "MIT (derived from upstream Apstra MCP backend operation metadata)"},
+            "version": "aos-sdk-api-6.1.2.post1",
+            "license": {"name": "Apache-2.0 OR MIT (official Juniper SDK source mapping)"},
         },
         "servers": [{"url": "/"}],
         "paths": paths,
@@ -159,15 +311,16 @@ def build_apstra_manifest() -> dict:
     )
     man["provenance"] = {
         "acquired_from": (
-            "Reviewed operation metadata from the MIT-licensed upstream Apstra MCP backend "
-            "(mcp_servers/apstra.py curated tools)."
+            "Pinned official Juniper aos-sdk-api 6.1.2.post1 endpoint mappings."
         ),
         "note": (
-            "No authoritative distributable full Apstra OpenAPI spec is available; this is the "
-            "current maximum reviewed operation set (NOT full OpenAPI coverage)."
+            "No distributable full Apstra OpenAPI spec is available; this reviewed SDK-derived "
+            "operation set is reproducible but is not full API coverage."
         ),
+        "source_url": "https://pypi.org/project/aos-sdk-api/6.1.2.post1/",
+        "source_sha256": "f7774cda687655ebb7196314be8383b22a0a02890a567567b7aea0b5b3b274e3",
         "reviewed_operation_count": len(man["operations"]),
-        "auth_endpoints_not_registered": ["POST /api/user/login", "POST /api/aaa/login"],
+        "auth_endpoints_not_registered": ["POST /api/aaa/login", "POST /api/user/login"],
         "auth_model": "AuthToken header session (see mcp_servers/apstra.py _get_apstra_token).",
     }
     return man

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "platform": "uxi",
   "source": {
     "file": "uxi-2j1jmli8l514.json",
@@ -48,6 +48,23 @@
           "description": "The maximum number of items returned in the response.",
           "default": 50
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -70,8 +87,30 @@
         "properties": [
           "agentId",
           "groupId"
+        ],
+        "required_properties": [
+          "agentId",
+          "groupId"
         ]
-      }
+      },
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "409",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
+      ]
     },
     {
       "name": "uxi_agent_group_assignment_delete",
@@ -93,6 +132,24 @@
           "type": "string",
           "description": "The unique identifier of the assignment"
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "204",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -130,6 +187,23 @@
           "description": "The maximum number of items returned in the response.",
           "default": 50
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -152,6 +226,24 @@
           "type": "string",
           "description": "The unique identifier of the agent"
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "204",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -184,7 +276,25 @@
           "notes",
           "pcapMode"
         ]
-      }
+      },
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
+      ]
     },
     {
       "name": "uxi_groups_get",
@@ -221,6 +331,23 @@
           "description": "The maximum number of items returned in the response.",
           "default": 50
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -243,8 +370,29 @@
         "properties": [
           "name",
           "parentId"
+        ],
+        "required_properties": [
+          "name"
         ]
-      }
+      },
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "409",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
+      ]
     },
     {
       "name": "uxi_group_delete",
@@ -266,6 +414,24 @@
           "type": "string",
           "description": "The unique identifier of the group."
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "204",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -296,7 +462,25 @@
         "properties": [
           "name"
         ]
-      }
+      },
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
+      ]
     },
     {
       "name": "uxi_network_group_assignments_get",
@@ -333,6 +517,23 @@
           "description": "The maximum number of items returned in the response.",
           "default": 50
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -355,8 +556,30 @@
         "properties": [
           "groupId",
           "networkId"
+        ],
+        "required_properties": [
+          "groupId",
+          "networkId"
         ]
-      }
+      },
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "409",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
+      ]
     },
     {
       "name": "uxi_network_group_assignment_delete",
@@ -378,6 +601,24 @@
           "type": "string",
           "description": "The unique identifier of the network group assignment"
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "204",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -415,6 +656,23 @@
           "description": "The maximum number of items returned in the response.",
           "default": 50
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -437,8 +695,30 @@
         "properties": [
           "groupId",
           "sensorId"
+        ],
+        "required_properties": [
+          "groupId",
+          "sensorId"
         ]
-      }
+      },
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "409",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
+      ]
     },
     {
       "name": "uxi_sensor_group_assignment_delete",
@@ -460,6 +740,24 @@
           "type": "string",
           "description": "The unique identifier of the sensor group assignment"
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "204",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -497,6 +795,23 @@
           "description": "The maximum number of items returned in the response.",
           "default": 50
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -530,7 +845,25 @@
           "notes",
           "pcapMode"
         ]
-      }
+      },
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
+      ]
     },
     {
       "name": "uxi_get_sensor_status",
@@ -550,8 +883,15 @@
           "in": "path",
           "required": true,
           "type": "string",
-          "description": "The unique identifier of the sensor"
+          "description": "The unique identifier of the sensor",
+          "format": "uuid"
         }
+      ],
+      "response_codes": [
+        "200",
+        "403",
+        "404",
+        "500"
       ]
     },
     {
@@ -589,6 +929,23 @@
           "description": "The maximum number of items returned in the response.",
           "default": 50
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -611,8 +968,30 @@
         "properties": [
           "groupId",
           "serviceTestId"
+        ],
+        "required_properties": [
+          "groupId",
+          "serviceTestId"
         ]
-      }
+      },
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "409",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
+      ]
     },
     {
       "name": "uxi_service_test_group_assignment_delete",
@@ -634,6 +1013,24 @@
           "type": "string",
           "description": "The unique identifier of the service test group assignment"
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "204",
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -671,6 +1068,23 @@
           "description": "The maximum number of items returned in the response.",
           "default": 50
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -708,6 +1122,23 @@
           "description": "The maximum number of items returned in the response.",
           "default": 50
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     },
     {
@@ -745,6 +1176,23 @@
           "description": "The maximum number of items returned in the response.",
           "default": 50
         }
+      ],
+      "security": [
+        {
+          "HTTPBearer": []
+        }
+      ],
+      "response_codes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "405",
+        "415",
+        "422",
+        "429",
+        "500",
+        "5XX"
       ]
     }
   ],

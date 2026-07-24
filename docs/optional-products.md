@@ -15,19 +15,21 @@ python3 scripts/setup_wizard.py --with-products
 
 ## Product matrix
 
-| Product | Read-only / read-write tools | Enables | Required settings | Safety surface |
+| Product | Read-only annotated / total | Enables | Required settings | Safety surface |
 |---|---:|---|---|---|
-| ClearPass | 9 / 15 | endpoint/auth/NAD/guest workflows plus bounded Insight alerts and OnGuard agent/posture operations | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | Read/write; writes dry-run by default |
-| Juniper Mist | 19 / 26 | wireless workflows plus NAC, Marvis clients/settings/events, org inventory/claims, Wired Assurance, and WAN Assurance | `MIST_HOST`, `MIST_API_TOKEN` | Read/write; writes dry-run by default |
-| Apstra | 15 / 20 | session-authenticated blueprint, connectivity-template, application-point, anomaly, topology, and protocol workflows | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional pre-issued `APSTRA_API_TOKEN` | Read/write; writes dry-run by default |
-| ArubaOS 8 | 34 / 43 | UIDARUBA/X-CSRF session auth, operational/config exports, typed writes, and deterministic Classic/New Central migration plans | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` | Read/write; writes dry-run by default |
-| EdgeConnect | 32 / 49 | API/Swagger compatibility diagnostics plus explicitly gated legacy workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, `EDGECONNECT_ALLOW_LEGACY_API`, and endpoint-specific `EDGECONNECT_AI_SESSION_AUTHORIZATION` | Legacy operational reads/writes fail closed by default; writes also dry-run by default |
-| HPE Aruba UXI | 13 / 25 | sensor/agent/group/network/service-test inventories plus guarded CRUD and assignment workflows | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Read/write; writes dry-run by default and outbound calls respect 5 requests/second |
-| Axis Atmos Cloud | 12 / 25 | reviewed application, connector, tunnel, location, policy, status, and commit workflows | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Read/write; writes dry-run by default |
-| **Optional subtotal** | **122 / 178** | Six opt-in product backends | Product-specific | Hidden and blocked unless enabled |
+| ClearPass | 272 / 829 | CPPM 6.12.7 APIs plus verified Insight endpoint and OnGuard activity workflows | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | `/oauth` is excluded; writes dry-run by default |
+| Juniper Mist | 543 / 1,076 | Official 1,050-operation OpenAPI plus NAC, Marvis, inventory, Wired and WAN Assurance | `MIST_HOST`, `MIST_API_TOKEN`; optional session cookie/CSRF | Writes dry-run by default; diagnostics are distinct from config writes |
+| Apstra | 46 / 68 | Official 6.1 SDK-derived blueprints, tasks, endpoint policies, object policies, topology, and protocols | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional `APSTRA_API_TOKEN` | Current `/api/aaa/login` with older `/api/user/login` fallback |
+| ArubaOS 8 | 125 / 301 | UIDARUBA/X-CSRF/SESSION auth, 258 generated config operations, exhaustive exports, and migration plans | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` | Writes dry-run by default and require write-memory to persist |
+| EdgeConnect | 684 / 1,265 | 1,216 generated operations, multipart uploads, Swagger diagnostics, and curated SD-WAN workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` and session overrides | Source artifact is reproducible but must be checked against live Orchestrator Swagger |
+| HPE Aruba UXI | 24 / 49 | Current 25-operation API plus OAuth, sensor/agent/group/network/test inventories and documented writes | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Generic writes accept only documented method/path pairs; 5 requests/second |
+| Axis Atmos Cloud | 12 / 25 | Reviewed application, connector, tunnel, location, policy, status, and commit workflows | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Writes dry-run by default |
+| **Optional subtotal** | **1,706 / 3,613** | Seven opt-in product backends | Product-specific | Hidden and blocked unless enabled |
 
-Combined with the 270 core Aruba/GLP/RAG tools, these modes produce the
-392-tool all-product read-only catalog or the 448-tool read-write catalog.
+Combined with the Central/GLP/RAG surfaces, the backend catalog contains 2,786
+read-only-annotated tools and 6,133 registered tools. Diagnostic tools are
+available in optional read-only mode but are not included in the read-only
+annotation count.
 
 The generic GET tools reject absolute URLs and stay bounded to the configured
 product host. List-like responses are paged with `limit` and `offset` when
@@ -49,17 +51,18 @@ For ArubaOS 8 typed configuration-object writes, the manage tools return
 `aos8_write_memory` for those hierarchy nodes only after reviewing the pending
 changes and confirming the staged config should be persisted.
 
-Use `aos8_export_all` and `aos8_migration_plan` before migration work. The plan
-normalizes WLANs, roles, VLANs, AP groups, controllers, and policies into
+Use `aos8_export_all` and `aos8_migration_plan` before migration work. Export
+now exhausts local pages and includes WLANs, roles, VLANs, AP groups,
+controllers, policies, AAA profiles/servers, IPv4/IPv6 routes, and VRRP. The plan
+normalizes the supported migration objects into
 separate Classic Central and New Central candidates, reports lossy mappings,
 produces deterministic diffs, and returns read-only post-migration checks.
 
-EdgeConnect 9.3 changed endpoint definitions incompatibly. Run
+EdgeConnect API generations differ materially. Run
 `edgeconnect_doctor` against the target Orchestrator before using operational
-tools. The bundled operational endpoint map predates 9.3 and is disabled
-unless `EDGECONNECT_ALLOW_LEGACY_API=1` is deliberately set for a validated
-older/lab instance. A production 9.3+ remap requires that Orchestrator's
-instance-hosted Swagger specification.
+tools. The pinned artifact is named for 9.7 but declares API version 7.2.0
+internally, so production compatibility must be confirmed against that
+Orchestrator's instance-hosted Swagger specification.
 
 Generated EdgeConnect multipart upload tools accept file fields as
 `{"filename": "...", "content_base64": "...", "content_type": "..."}` and

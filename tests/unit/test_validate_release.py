@@ -54,18 +54,28 @@ def test_release_tool_catalog_count_uses_read_write_catalog(monkeypatch):
     assert os.environ["CENTRALMCP_PRODUCT_ACCESS"] == "read-only"
 
 
+def test_release_all_catalog_includes_generated_glp_and_restores_env(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_GLP_GENERATED_TOOLS", "0")
+
+    release_count = validate_release._tool_catalog_count("all")
+
+    assert release_count > len(ingest_tools._collect("all"))
+    assert os.environ["CENTRALMCP_GLP_GENERATED_TOOLS"] == "0"
+
+
 def test_public_docs_tool_counts_match_catalog():
-    core_count = validate_release._tool_catalog_count(None)
+    core_count = len(ingest_tools._collect())
     previous_access = os.environ.get("CENTRALMCP_PRODUCT_ACCESS")
     os.environ["CENTRALMCP_PRODUCT_ACCESS"] = "read-only"
     try:
         read_only_count = len(ingest_tools._collect("all"))
+        os.environ["CENTRALMCP_PRODUCT_ACCESS"] = "read-write"
+        read_write_count = len(ingest_tools._collect("all"))
     finally:
         if previous_access is None:
             os.environ.pop("CENTRALMCP_PRODUCT_ACCESS", None)
         else:
             os.environ["CENTRALMCP_PRODUCT_ACCESS"] = previous_access
-    read_write_count = validate_release._tool_catalog_count("all")
     expected = (
         f"{core_count} core tools / {read_only_count} read-only optional starters / "
         f"{read_write_count} read-write optional starters"

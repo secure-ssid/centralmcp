@@ -69,7 +69,7 @@ uv run python scripts/ingest_tools.py
 # Include optional product starters in the tool catalog
 uv run python scripts/ingest_tools.py --products all
 
-# Include every guarded optional write tool (448 total)
+# Include every guarded optional write tool (6,133 backend tools)
 CENTRALMCP_PRODUCT_ACCESS=read-write uv run python scripts/ingest_tools.py --products all
 
 # Start the model-agnostic HTTP MCP router
@@ -82,7 +82,7 @@ uv run python scripts/doctor.py
 uv run pytest tests/unit -q
 
 # Run the full local release gate
-uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 448
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6133
 ```
 
 The wizard can run `uv sync`, choose common Central API gateways, fill secrets

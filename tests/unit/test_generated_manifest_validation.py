@@ -5,11 +5,12 @@ import json
 import pytest
 
 from scripts.check_generated_tool_manifests import validate_all, validate_manifest
+from mcp_servers.openapi_gen.manifest import SCHEMA_VERSION
 
 
 def _manifest() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "platform": "demo",
         "source": {"operation_count": 1},
         "operations": [

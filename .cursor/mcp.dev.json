@@ -53,6 +53,15 @@
       "env": {
         "PYTHONPATH": "${workspaceFolder}"
       }
+    },
+    "aruba-central-generated": {
+      "command": "${workspaceFolder}/.venv/bin/python3",
+      "args": ["${workspaceFolder}/mcp_servers/central_generated.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "CREDS_PATH": "${workspaceFolder}/config/credentials.yaml"
+      }
     }
   }
 }

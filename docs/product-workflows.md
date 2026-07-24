@@ -12,12 +12,12 @@ from generic GET exploration into named MCP workflows.
 
 | Surface | Tool count |
 |---|---:|
-| Core Central configuration, monitoring, NAC, and operations | 226 |
-| GreenLake Platform | 41 |
+| Central generated + curated configuration, monitoring, NAC, and operations | 1,573 |
+| GreenLake Platform | 944 |
 | RAG/OpenAPI | 3 |
-| Optional products, read-only | 122 |
-| Optional products, guarded writes included | 178 |
-| **Complete read-write catalog** | **448** |
+| Optional products, read-only annotated | 1,706 |
+| Optional products, guarded writes included | 3,613 |
+| **Complete backend catalog** | **6,133** |
 
 ## Promotion rule
 
@@ -38,7 +38,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Reporting status | `list_glp_reporting_statuses` / `get_glp_reporting_status` | Bounded reporting status lookup from `/reporting/v1/statuses` |
 | Service catalog | `list_glp_service_offers` / `get_glp_service_offer` / `list_glp_service_provisions` / `get_glp_service_provision` | Cursor-bounded service catalog read workflows, including optional workspace header for service provisions |
 | Service managers | `list_glp_service_managers` / `get_glp_service_manager` / `list_glp_service_manager_provisions` / `get_glp_service_manager_provision` / `list_glp_per_region_service_managers` / `get_glp_service_managers_for_region` | Official service-manager and per-region service-manager views |
-| v2beta1 devices and groups | `list_glp_devices_v2` / `get_glp_device_v2` / `list_glp_device_groups` / `get_glp_device_group` | Current device inventory and group workflows |
+| v2beta1 devices and grouping | `list_glp_devices_v2` / `get_glp_device_v2` / `group_glp_devices` | Current device inventory plus documented grouping by make, model, source, category, device type, and other supported attributes; GLP does not expose a device-group resource by ID |
 | Audit Logs v2beta1 | `list_glp_audit_logs_v2` / `get_glp_audit_log_v2` / `get_glp_audit_log_v2_detail` | Bounded audit event search and detail |
 | Workspace contact and subscriptions | `update_glp_workspace_contact` / `glp_add_subscriptions` | Feature-gated writes with dry-run and confirmation |
 
@@ -50,8 +50,8 @@ Promote a generic GET pattern to a typed tool when it is:
 | List recent auth failures | `clearpass_list_auth_failures` | Bound by `limit` / `offset`; include username, MAC, NAD, reason |
 | Show NAD status | `clearpass_get_network_device` | Useful for RADIUS/TACACS troubleshooting |
 | Find guest by email/name | `clearpass_find_guest` | Read-only lookup only |
-| Insight alerts | `clearpass_list_insight_alerts` | Bounded Insight alert retrieval |
-| OnGuard agents and posture | `clearpass_list_onguard_agents` / `clearpass_get_onguard_posture` | Endpoint posture and agent health |
+| Insight endpoint data | `clearpass_get_insight_endpoint` | Documented `/api/insight/endpoint/mac/{mac}` lookup |
+| OnGuard activity | `clearpass_list_onguard_activity` / `clearpass_get_onguard_activity_by_mac` | Documented activity inventory and per-MAC lookup |
 
 ## Mist implemented starters
 
@@ -75,7 +75,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Delete endpoint | `clearpass_delete_endpoint` | Destructive endpoint delete by MAC |
 | Enable/disable guest | `clearpass_set_guest_enabled` | Patch guest enabled state by username or ID |
 | Delete guest | `clearpass_delete_guest` | Destructive guest delete by username or ID |
-| Trigger posture revalidation | `clearpass_trigger_onguard_revalidation` | Guarded version-dependent OnGuard action; validate against the target CPPM release |
+| Generated Agentless OnGuard writes | Discover `clearpass_agentless_on_guard_*` tools | Current 6.12.7 specification-derived settings and subnet-mapping operations |
 
 ## Mist implemented lab writes
 
@@ -99,15 +99,16 @@ Promote a generic GET pattern to a typed tool when it is:
 | Blueprint routing zones | `apstra_list_routing_zones` | Compact security-zone/VRF view from `/api/blueprints/{id}/security-zones` |
 | Blueprint virtual networks | `apstra_list_virtual_networks` | Compact VN/subnet/binding view from `/api/blueprints/{id}/virtual-networks` |
 | Blueprint remote gateways | `apstra_list_remote_gateways` | Compact remote EVPN gateway view from `/api/blueprints/{id}/remote_gateways` |
-| Blueprint connectivity templates | `apstra_list_connectivity_templates` | Compact assignable policy view from `/api/blueprints/{id}/obj-policy-export` |
+| Blueprint connectivity templates | `apstra_list_connectivity_templates` | Compact policy summary from `/api/blueprints/{id}/endpoint-policies` |
 | Blueprint application endpoints | `apstra_list_application_endpoints` | Compact CT attachment-point view from `/api/blueprints/{id}/obj-policy-application-points` |
 | Blueprint diff status | `apstra_get_diff_status` | Compact staging-vs-active status from `/api/blueprints/{id}/diff-status` |
 | Blueprint protocol sessions | `apstra_list_protocol_sessions` | Compact protocol/BGP session status from `/api/blueprints/{id}/protocol-sessions` |
 | Blueprint system info | `apstra_get_system_info` | Compact systems/devices from `/api/blueprints/{id}/experience/web/system-info` |
 | Generic lab write | `apstra_write` | Guarded POST/PUT/PATCH/DELETE to `/api/*`; dry-run default |
-| Session authentication | `apstra_login` | Uses `/api/user/login`, falling back to `/api/aaa/login` only on 404/405 |
-| Connectivity-template lifecycle | `apstra_get_connectivity_template` / `apstra_create_connectivity_template` / `apstra_delete_connectivity_template` | Uses current connectivity-template paths with labelled legacy read fallback |
-| Application-point assignment | `apstra_set_application_point_assignment` | Guarded connectivity attachment workflow |
+| Session authentication | `apstra_login` | Uses current `/api/aaa/login`, falling back to older `/api/user/login` only on 404/405 |
+| Connectivity-template lifecycle | `apstra_get_connectivity_template` / `apstra_create_connectivity_template` / `apstra_delete_connectivity_template` | Current `endpoint-policies` and `obj-policy-import` paths from official SDK 6.1.2 |
+| Application-point assignment | `apstra_set_application_point_assignment` | Guarded `/obj-policy-batch-apply` workflow |
+| Async task monitoring | `apstra_get_task` / `apstra_wait_for_task` | Poll blueprint tasks through `/tasks/{task_id}` to succeeded, failed, or timeout |
 
 ## ArubaOS 8 implemented starters
 
@@ -140,7 +141,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | SSID profile summary | `aos8_list_ssid_profiles` | Configuration-object read scoped by `config_path` |
 | Virtual AP profiles | `aos8_list_virtual_aps` | Configuration-object read scoped by `config_path` |
 | User roles | `aos8_list_user_roles` | Configuration-object read scoped by `config_path` |
-| Generic lab write | `aos8_write` | Guarded POST/PUT/PATCH/DELETE to `/v1/*`; dry-run default |
+| Generic lab write | `aos8_write` | Guarded GET/POST to `/v1/*`; AOS8 config mutations use POST plus `_action` |
 | SSID profile lab write | `aos8_manage_ssid_profile` | Create/update/delete `ssid_prof` objects; dry-run default; returns write-memory hint |
 | Virtual AP lab write | `aos8_manage_virtual_ap` | Create/update/delete `virtual_ap` objects; dry-run default; returns write-memory hint |
 | AP group lab write | `aos8_manage_ap_group` | Create/update/delete `ap_group` objects; dry-run default; returns write-memory hint |
@@ -148,7 +149,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | VLAN lab write | `aos8_manage_vlan` | Create/update/delete `vlan_id` objects; dry-run default; returns write-memory hint |
 | Persist staged AOS8 config | `aos8_write_memory` | POST write-memory for an affected `config_path`; dry-run default |
 | Session lifecycle | `aos8_login` / `aos8_logout` | Preferred UIDARUBA/X-CSRF session flow; legacy token remains a compatibility fallback |
-| Migration export | `aos8_get_vlans` / `aos8_get_policies` / `aos8_export_wlans` / `aos8_export_all` | Normalized source inventory for migration planning |
+| Migration export | `aos8_get_vlans` / `aos8_get_policies` / `aos8_export_wlans` / `aos8_export_all` | Exhaustive local paging plus WLAN, role, VLAN, AP group, controller, policy, AAA server/profile, route, and VRRP inventory |
 | Classic/New Central migration plan | `aos8_migration_plan` | Candidate schemas, warnings, deterministic diffs, and verification steps without target writes |
 
 ## EdgeConnect implemented starters
@@ -202,18 +203,18 @@ Promote a generic GET pattern to a typed tool when it is:
 
 | Workflow | Tool | Notes |
 |---|---|---|
-| Generic guarded write | `uxi_write` | POST/PUT/PATCH/DELETE under the UXI API root |
+| Generic guarded write | `uxi_write` | Only method/path combinations documented by the current UXI v1alpha1 specification |
 | Group lifecycle | `uxi_create_group` / `uxi_update_group` / `uxi_delete_group` | Dry-run and confirmation gated |
-| Sensor and agent lifecycle | `uxi_update_sensor` / `uxi_delete_sensor` / `uxi_update_agent` / `uxi_delete_agent` | Guarded resource changes |
+| Sensor and agent lifecycle | `uxi_update_sensor` / `uxi_update_agent` / `uxi_delete_agent` | Guarded documented resource changes; the current API has no sensor DELETE |
 | Assignments | `uxi_assign_sensor_to_group` / `uxi_assign_agent_to_group` / `uxi_assign_network_to_group` / `uxi_assign_service_test_to_group` | Explicit group-assignment workflows |
 
 ## Remaining optional typed candidates
 
-EdgeConnect 9.3+ endpoint-by-endpoint promotion remains dependent on the target
-Orchestrator's live `gmsApiInfo.json` / `vxoaApiInfo.json`. ClearPass OnGuard
-write paths and Apstra application-point batch schemas should also be
-live-verified before production use. Continue promoting tools only after the
-vendor source or target instance confirms the request shape.
+EdgeConnect production use remains dependent on the target Orchestrator's live
+`gmsApiInfo.json` / `vxoaApiInfo.json`. Apstra's 48-operation generated set is
+SDK-derived rather than a full appliance OpenAPI export. Continue promoting
+curated tools only after the vendor source or target instance confirms the
+request shape.
 
 ## Design constraints
 

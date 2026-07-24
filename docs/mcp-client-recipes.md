@@ -8,8 +8,8 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 ```
 
 This exposes only `find_tool`, `invoke_read_tool`, and `invoke_tool` in minimal mode while still letting the router reach the backend catalog on demand.
-The catalog can contain 270 core tools, 392 tools with every optional product
-read-only, or 448 tools with guarded optional writes.
+The complete index can contain 6,133 backend tools, while minimal mode keeps
+only three discovery/dispatch tools in client context.
 
 ## Pick a connection style
 

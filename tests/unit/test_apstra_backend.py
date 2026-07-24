@@ -91,12 +91,12 @@ def test_apstra_status_static_token_mode(monkeypatch):
     assert out["auth_mode"] == "static_token"
 
 
-def test_apstra_login_uses_user_login_first_and_caches(monkeypatch):
+def test_apstra_login_uses_aaa_login_first_and_caches(monkeypatch):
     _configure_session(monkeypatch)
 
     def responder(method, url, json_body, headers, params):
         assert method == "POST"
-        assert url == "https://apstra.example.com/api/user/login"
+        assert url == "https://apstra.example.com/api/aaa/login"
         assert json_body == {"username": "admin", "password": "admin-pass"}
         return _FakeResp(201, {"token": "abc123"})
 
@@ -104,7 +104,7 @@ def test_apstra_login_uses_user_login_first_and_caches(monkeypatch):
 
     out = asyncio.run(apstra.apstra_login())
     assert out["authenticated"] is True
-    assert out["login_endpoint"] == "/api/user/login"
+    assert out["login_endpoint"] == "/api/aaa/login"
     assert out["legacy_login_fallback"] is False
     assert len(client.calls) == 1
 
@@ -114,24 +114,24 @@ def test_apstra_login_uses_user_login_first_and_caches(monkeypatch):
     assert len(client.calls) == 1
 
 
-def test_apstra_login_falls_back_to_legacy_aaa_login_on_404(monkeypatch):
+def test_apstra_login_falls_back_to_older_user_login_on_404(monkeypatch):
     _configure_session(monkeypatch)
 
     def responder(method, url, json_body, headers, params):
-        if url.endswith("/api/user/login"):
+        if url.endswith("/api/aaa/login"):
             return _FakeResp(404, {"detail": "not found"})
-        assert url.endswith("/api/aaa/login")
+        assert url.endswith("/api/user/login")
         return _FakeResp(200, "legacy-token")
 
     client = _install_fake_client(monkeypatch, responder)
 
     out = asyncio.run(apstra.apstra_login())
     assert out["authenticated"] is True
-    assert out["login_endpoint"] == "/api/aaa/login"
+    assert out["login_endpoint"] == "/api/user/login"
     assert out["legacy_login_fallback"] is True
     assert [call[1] for call in client.calls] == [
-        "https://apstra.example.com/api/user/login",
         "https://apstra.example.com/api/aaa/login",
+        "https://apstra.example.com/api/user/login",
     ]
 
 
@@ -139,7 +139,7 @@ def test_apstra_get_sends_authtoken_header_not_bearer(monkeypatch):
     _configure_session(monkeypatch)
 
     def responder(method, url, json_body, headers, params):
-        if method == "POST" and url.endswith("/api/user/login"):
+        if method == "POST" and url.endswith("/api/aaa/login"):
             return _FakeResp(201, {"token": "tok-1"})
         assert method == "GET"
         assert headers["AuthToken"] == "tok-1"
@@ -151,7 +151,7 @@ def test_apstra_get_sends_authtoken_header_not_bearer(monkeypatch):
     out = asyncio.run(apstra.apstra_get("/api/blueprints"))
     assert out["status_code"] == 200
     assert out["auth"]["mode"] == "session"
-    assert out["auth"]["login_endpoint"] == "/api/user/login"
+    assert out["auth"]["login_endpoint"] == "/api/aaa/login"
 
 
 def test_apstra_get_retries_once_after_401_with_fresh_login(monkeypatch):
@@ -159,7 +159,7 @@ def test_apstra_get_retries_once_after_401_with_fresh_login(monkeypatch):
     state = {"logins": 0, "requests": 0}
 
     def responder(method, url, json_body, headers, params):
-        if method == "POST" and url.endswith("/api/user/login"):
+        if method == "POST" and url.endswith("/api/aaa/login"):
             state["logins"] += 1
             return _FakeResp(201, {"token": f"tok-{state['logins']}"})
         state["requests"] += 1
@@ -201,7 +201,7 @@ def test_apstra_write_executes_with_authtoken_on_confirm(monkeypatch):
     monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
 
     def responder(method, url, json_body, headers, params):
-        if method == "POST" and url.endswith("/api/user/login"):
+        if method == "POST" and url.endswith("/api/aaa/login"):
             return _FakeResp(201, {"token": "tok-1"})
         assert method == "PATCH"
         assert headers["AuthToken"] == "tok-1"
@@ -222,39 +222,19 @@ def test_apstra_write_executes_with_authtoken_on_confirm(monkeypatch):
     assert out["data"] == {"ok": True}
 
 
-def test_apstra_list_connectivity_templates_uses_current_endpoint(monkeypatch):
+def test_apstra_list_connectivity_templates_uses_endpoint_policies(monkeypatch):
     _configure_session(monkeypatch)
 
     def responder(method, url, json_body, headers, params):
-        if method == "POST" and url.endswith("/api/user/login"):
+        if method == "POST" and url.endswith("/api/aaa/login"):
             return _FakeResp(201, {"token": "tok-1"})
-        assert url.endswith("/api/blueprints/bp1/connectivity-templates")
+        assert url.endswith("/api/blueprints/bp1/endpoint-policies")
         return _FakeResp(200, [{"id": "ct1", "label": "Server-Link"}])
 
     _install_fake_client(monkeypatch, responder)
 
     out = asyncio.run(apstra.apstra_list_connectivity_templates("bp1"))
-    assert out["legacy_path_used"] is False
     assert out["connectivity_templates"]["items"] == [{"id": "ct1", "label": "Server-Link"}]
-
-
-def test_apstra_list_connectivity_templates_falls_back_on_404(monkeypatch):
-    _configure_session(monkeypatch)
-
-    def responder(method, url, json_body, headers, params):
-        if method == "POST" and url.endswith("/api/user/login"):
-            return _FakeResp(201, {"token": "tok-1"})
-        if url.endswith("/connectivity-templates"):
-            return _FakeResp(404, {"error": "not found"})
-        assert url.endswith("/obj-policy-export")
-        return _FakeResp(200, [{"id": "ct-legacy"}])
-
-    _install_fake_client(monkeypatch, responder)
-
-    out = asyncio.run(apstra.apstra_list_connectivity_templates("bp1"))
-    assert out["legacy_path_used"] is True
-    assert out["primary_path_status"] == 404
-    assert out["connectivity_templates"]["items"] == [{"id": "ct-legacy"}]
 
 
 def test_apstra_create_connectivity_template_preview(monkeypatch):
@@ -267,7 +247,7 @@ def test_apstra_create_connectivity_template_preview(monkeypatch):
     )
     assert out["dry_run"] is True
     assert out["method"] == "PUT"
-    assert out["path"] == "/api/blueprints/bp1/connectivity-templates"
+    assert out["path"] == "/api/blueprints/bp1/obj-policy-import"
     assert client.calls == []
 
 
@@ -283,7 +263,35 @@ def test_apstra_set_application_point_assignment_preview(monkeypatch):
     )
     assert out["dry_run"] is True
     assert out["method"] == "PATCH"
-    assert out["path"] == "/api/blueprints/bp1/obj-policy-application-points/batch-apply"
+    assert out["path"] == "/api/blueprints/bp1/obj-policy-batch-apply"
     assert out["json"] == {
         "application_points": [{"id": "ap1", "policies": [{"policy": "ct1", "used": True}]}]
     }
+
+
+def test_apstra_wait_for_task_reaches_terminal_state(monkeypatch):
+    _configure_session(monkeypatch)
+    state = {"task_reads": 0}
+
+    def responder(method, url, json_body, headers, params):
+        if method == "POST" and url.endswith("/api/aaa/login"):
+            return _FakeResp(200, {"token": "tok-1"})
+        assert url.endswith("/api/blueprints/bp1/tasks/task1")
+        state["task_reads"] += 1
+        status = "in_progress" if state["task_reads"] == 1 else "succeeded"
+        return _FakeResp(200, {"status": status})
+
+    async def no_sleep(_seconds):
+        return None
+
+    _install_fake_client(monkeypatch, responder)
+    monkeypatch.setattr(apstra.asyncio, "sleep", no_sleep)
+
+    out = asyncio.run(
+        apstra.apstra_wait_for_task(
+            "bp1", "task1", timeout_seconds=10, poll_interval_seconds=0.5
+        )
+    )
+
+    assert out["task"]["status"] == "succeeded"
+    assert state["task_reads"] == 2

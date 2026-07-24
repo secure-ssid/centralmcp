@@ -44,8 +44,8 @@ Optional products are disabled until explicitly enabled:
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 ```
 
-The current catalog contains 270 core tools, 392 tools with every optional
-product in read-only mode, and 448 tools with guarded optional writes. Minimal
+The current catalog contains 5,703 generated operations and 6,133 backend tools
+when every platform and guarded write is indexed. Minimal
 router mode exposes only the compact discovery/dispatch surface to the client.
 
 ![centralmcp platform and tool coverage](../assets/platform-coverage.svg)

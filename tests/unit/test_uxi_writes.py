@@ -96,7 +96,7 @@ def test_uxi_create_group_dry_run_previews(monkeypatch):
     assert out["dry_run"] is True
     assert out["method"] == "POST"
     assert out["path"] == "/groups"
-    assert out["json"] == {"name": "Lab Sites", "parent": "root"}
+    assert out["json"] == {"name": "Lab Sites", "parentId": "root"}
     assert "execute_hint" in out
 
 
@@ -129,7 +129,7 @@ def test_uxi_update_group_requires_at_least_one_field(monkeypatch):
 
     out = asyncio.run(uxi.uxi_update_group("g1"))
 
-    assert out == {"error": "Provide at least one of name or parent to update."}
+    assert out == {"error": "Provide name to update."}
 
 
 def test_uxi_update_group_previews_patch_by_id(monkeypatch):
@@ -182,8 +182,7 @@ def test_uxi_delete_sensor_previews(monkeypatch):
 
     out = asyncio.run(uxi.uxi_delete_sensor("s1"))
 
-    assert out["method"] == "DELETE"
-    assert out["path"] == "/sensors/s1"
+    assert "does not expose DELETE" in out["error"]
 
 
 def test_uxi_update_agent_previews_patch_by_id(monkeypatch):
@@ -211,7 +210,7 @@ def test_uxi_assign_sensor_to_group_previews_post_body(monkeypatch):
 
     assert out["method"] == "POST"
     assert out["path"] == "/sensor-group-assignments"
-    assert out["json"] == {"sensor": "s1", "group": "g1"}
+    assert out["json"] == {"sensorId": "s1", "groupId": "g1"}
 
 
 def test_uxi_assign_agent_to_group_previews_post_body(monkeypatch):
@@ -220,7 +219,7 @@ def test_uxi_assign_agent_to_group_previews_post_body(monkeypatch):
     out = asyncio.run(uxi.uxi_assign_agent_to_group("a1", "g1"))
 
     assert out["path"] == "/agent-group-assignments"
-    assert out["json"] == {"agent": "a1", "group": "g1"}
+    assert out["json"] == {"agentId": "a1", "groupId": "g1"}
 
 
 def test_uxi_assign_network_to_group_previews_post_body(monkeypatch):
@@ -229,7 +228,7 @@ def test_uxi_assign_network_to_group_previews_post_body(monkeypatch):
     out = asyncio.run(uxi.uxi_assign_network_to_group("n1", "g1"))
 
     assert out["path"] == "/network-group-assignments"
-    assert out["json"] == {"network": "n1", "group": "g1"}
+    assert out["json"] == {"networkId": "n1", "groupId": "g1"}
 
 
 def test_uxi_assign_service_test_to_group_previews_post_body(monkeypatch):
@@ -238,7 +237,7 @@ def test_uxi_assign_service_test_to_group_previews_post_body(monkeypatch):
     out = asyncio.run(uxi.uxi_assign_service_test_to_group("st1", "g1"))
 
     assert out["path"] == "/service-test-group-assignments"
-    assert out["json"] == {"serviceTest": "st1", "group": "g1"}
+    assert out["json"] == {"serviceTestId": "st1", "groupId": "g1"}
 
 
 def test_uxi_write_preview_redacts_sensitive_body_values(monkeypatch):

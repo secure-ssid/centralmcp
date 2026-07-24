@@ -62,27 +62,28 @@ If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and inclu
 
 ## Catalog size
 
-| Profile | Tools indexed |
+| Profile | Client-visible / indexed tools |
 |---|---:|
-| Core Aruba/GLP/RAG | 270 |
-| All products with read-only optional access | 392 |
-| All products with guarded optional writes | 448 |
+| Minimal router | 3 client-visible tools |
+| Default router | 12 client-visible tools |
+| Complete backend index | 6,133 tools |
+| Direct-all router | 6,136 client-visible tools |
 
-The complete read/write catalog contains 75 configuration, 77 monitoring, 34
-NAC, 40 operations, 41 GLP, 3 RAG, 15 ClearPass, 26 Mist, 20 Apstra, 43 AOS8,
-49 EdgeConnect, and 25 UXI tools. Minimal mode does not expose that full schema
-surface to the MCP client; it searches the catalog on demand.
+The complete catalog spans nine platform surfaces plus RAG. Its nine generated
+manifests contain 5,703 reproducible operations. Minimal mode does not expose
+that schema surface to the MCP client; it searches the catalog on demand.
 
 ## Toolsets
 
 | Toolset | Enables |
 |---|---|
 | `central` | Config, monitoring, NAC, ops |
+| `central-generated` | Complete generated Central API surface |
 | `config` | Central configuration tools |
 | `monitoring` | Health, alerts, events, clients, devices |
 | `nac` | MAC registration, MPSK, visitors, auth policy tools |
 | `ops` | Troubleshooting and operational tools |
-| `glp` | GreenLake Platform v1/v2beta1 devices and groups, subscriptions, users, audit logs, workspaces, reporting, service catalog, API-family discovery, and guarded writes |
+| `glp` | GreenLake Platform devices and documented attribute grouping, subscriptions, users, Audit Logs v2beta1, workspaces, reporting, service catalog, and guarded writes |
 | `rag` | `ask_docs`, `search_docs`, `lookup_api` |
 | `clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect`, `uxi`, `axis` | Optional product backends |
 | `all` | All core and optional backends |

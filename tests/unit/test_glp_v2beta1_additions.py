@@ -1,4 +1,4 @@
-"""Unit tests for the v2beta1 GLP reads (devices/device-groups/audit-log),
+"""Unit tests for the v2beta1 GLP reads (devices/grouping/audit-log),
 workspace-contact PATCH, and subscription bulk-add additions.
 
 No live calls. Writes stay gated behind CENTRALMCP_GLP_V2BETA1_WRITES.
@@ -67,23 +67,25 @@ class TestDevicesV2Beta1:
         assert glp_client.get_device_v2beta1("d1") is None
 
 
-class TestDeviceGroupsV2Beta1:
-    def test_list_device_groups_hits_correct_endpoint(self, clean_env):
+class TestDeviceGroupingV2Beta1:
+    def test_group_devices_hits_correct_endpoint(self, clean_env):
         glp_client, inner = _make_glp_client()
-        inner.get.return_value = {"items": [{"id": "g1"}]}
+        inner.get.return_value = {"items": [{"model": "AP-635", "count": 4}]}
 
-        items = glp_client.list_device_groups_v2beta1(limit=20)
+        items = glp_client.group_devices_v2beta1(group_by="model", limit=20)
 
-        assert items == [{"id": "g1"}]
+        assert items == [{"model": "AP-635", "count": 4}]
         inner.get.assert_called_once_with(
-            "/devices/v2beta1/device-groups", params={"limit": 20, "offset": 0}
+            "/devices/v2beta1/devices/group",
+            params={"group-by": "model", "limit": 20, "offset": 0},
         )
 
-    def test_get_device_group_returns_none_on_error(self, clean_env):
+    def test_group_devices_raises_on_error(self, clean_env):
         glp_client, inner = _make_glp_client()
         inner.get.side_effect = RuntimeError("boom")
 
-        assert glp_client.get_device_group_v2beta1("g1") is None
+        with pytest.raises(RuntimeError, match="GLP group_devices_v2beta1 failed"):
+            glp_client.group_devices_v2beta1(group_by="model")
 
 
 class TestAuditLogsV2Beta1:
@@ -106,7 +108,7 @@ class TestAuditLogsV2Beta1:
         result = glp_client.get_audit_log_v2beta1_detail("a1")
 
         assert result == {"id": "a1", "detail": "..."}
-        inner.get.assert_called_once_with("/audit-log/v2beta1/logs/a1/detail")
+        inner.get.assert_called_once_with("/audit-log/v2beta1/logs/a1/details")
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ SERVERS = [
     ("aruba-rag", "mcp_servers.rag"),
 ]
 OPTIONAL_SERVERS = {
+    "central-generated": ("aruba-central-generated", "mcp_servers.central_generated"),
     "clearpass": ("clearpass-core", "mcp_servers.clearpass"),
     "mist": ("mist-core", "mcp_servers.mist"),
     "apstra": ("apstra-core", "mcp_servers.apstra"),
@@ -186,7 +187,8 @@ def main() -> int:
         default=None,
         help=(
             "Optional product catalog entries to include, comma-separated "
-            "(clearpass,mist,apstra,aos8,edgeconnect,uxi,axis,all). Defaults to CENTRALMCP_PRODUCTS."
+            "(central-generated,clearpass,mist,apstra,aos8,edgeconnect,uxi,axis,all). "
+            "Defaults to CENTRALMCP_PRODUCTS."
         ),
     )
     args = ap.parse_args()

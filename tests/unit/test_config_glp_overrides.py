@@ -37,6 +37,39 @@ glp:
     assert target.glp_base_url == "https://env-glp.example.com"
 
 
+def test_build_account_contexts_derives_workspace_token_urls(tmp_path, monkeypatch):
+    creds = tmp_path / "credentials.yaml"
+    creds.write_text(
+        """
+central_account:
+  base_url: https://central.example.com
+  client_id: central-id
+  client_secret: central-secret
+  glp_workspace_id: source-workspace
+glp_account:
+  base_url: https://target-central.example.com
+  client_id: glp-id
+  client_secret: glp-secret
+  glp_workspace_id: target-workspace
+glp:
+  token_url: ""
+  base_url: https://global.api.greenlake.hpe.com
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("GLP_TOKEN_URL", raising=False)
+    monkeypatch.delenv("GLP_BASE_URL", raising=False)
+
+    source, target = build_account_contexts(str(creds))
+
+    assert source.glp_token_url.endswith(
+        "/authorization/v2/oauth2/source-workspace/token"
+    )
+    assert target.glp_token_url.endswith(
+        "/authorization/v2/oauth2/target-workspace/token"
+    )
+
+
 def test_pipeline_client_builder_uses_separate_glp_overrides(monkeypatch):
     token_managers = []
     glp_clients = []

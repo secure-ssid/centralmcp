@@ -50,6 +50,15 @@ records are deliberately excluded from the prose embedding table. A scheduled
 GitHub Actions job checks Aruba registry hashes and whether the Mist source file
 has advanced.
 
+Generated tool manifests extend this provenance model beyond the exact RAG
+index. The current catalog records 5,703 operations across Aruba Central, GLP,
+Mist, ClearPass, AOS8, EdgeConnect, UXI, Apstra, and Axis. Central/GLP preserve
+per-source digests, Mist and EdgeConnect have deterministic pinned generators,
+and Apstra records the official `aos-sdk-api==6.1.2.post1` wheel URL and
+SHA-256. Manifest schema v2 preserves deprecation, sunset, security,
+parameter-serialization, response-code, format, and required-body metadata
+when supplied by the source specification.
+
 ### Why this and not Redis (reconciling the audit)
 The audit recommended **Redis Stack** — correctly, *for its scope*: "two backends are running and the git history is mid-flip; converge on one with the least code change." Redis is already wired in the working tree and holds both the docs and tool indexes.
 
@@ -165,9 +174,10 @@ final scores:
 released documentation sources. The 5,419 OpenAPI vector records from the
 previous build were intentionally removed because structured API lookup is
 authoritative. The rebuilt SQLite index contains 239 specs, 3,465 endpoints,
-10,297 schemas, and 57,131 fields. The router index contains 270 core tools / 916 read-only optional starters / 1498 read-write optional starters.
-Minimal mode keeps this catalog behind the three-tool discovery/dispatch
-surface. 18/20 eval questions hit at rank 1.
+10,297 schemas, and 57,131 fields. The rebuilt router index contains 6,133 backend tools. Minimal mode keeps this
+catalog behind the three-tool discovery/dispatch surface; direct-all mode
+exposes 6,136 tools including the router itself. 18/20 eval questions hit at
+rank 1. Standard catalog profiles contain 269 core tools / 2423 read-only optional starters / 5229 read-write optional starters; the complete index also enables generated GLP.
 
 Tracked RAG refresh targets live in `ingestion/source_manifest.json`. The
 current manifest covers 9 rebuild sources: the evaluated default source set plus

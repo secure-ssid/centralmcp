@@ -482,37 +482,28 @@ class GLPClient:
             logger.warning("GLP get_device_v2beta1 failed for %s: %s", device_id, exc)
             return None
 
-    def list_device_groups_v2beta1(
+    def group_devices_v2beta1(
         self,
+        group_by: str,
         limit: int = 100,
         offset: int = 0,
         filter: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List device groups via the v2beta1 Devices service.
-
-        Endpoint path inferred from the sibling /devices/v2beta1/devices
-        collection convention — not independently re-verified against the
-        v2beta1 spec text. Raises on failure so callers see a 404 as a
-        clear "not available" signal rather than a silently empty list.
-        """
+        """Group devices by a documented v2beta1 device attribute."""
         try:
-            params: dict[str, Any] = {"limit": limit, "offset": offset}
+            params: dict[str, Any] = {
+                "group-by": group_by,
+                "limit": limit,
+                "offset": offset,
+            }
             if filter:
                 params["filter"] = filter
-            result = self._client.get("/devices/v2beta1/device-groups", params=params)
-            return result.get("items", result.get("deviceGroups", []))
+            result = self._client.get("/devices/v2beta1/devices/group", params=params)
+            return result.get("items", result.get("groups", []))
         except Exception as exc:
             msg = _compact_exception_message(exc)
-            logger.warning("GLP list_device_groups_v2beta1 failed: %s", msg)
-            raise RuntimeError(f"GLP list_device_groups_v2beta1 failed: {msg}") from exc
-
-    def get_device_group_v2beta1(self, group_id: str) -> Optional[dict[str, Any]]:
-        """Fetch a single device group via the v2beta1 Devices service by ID."""
-        try:
-            return self._client.get(f"/devices/v2beta1/device-groups/{group_id}")
-        except Exception as exc:
-            logger.warning("GLP get_device_group_v2beta1 failed for %s: %s", group_id, exc)
-            return None
+            logger.warning("GLP group_devices_v2beta1 failed: %s", msg)
+            raise RuntimeError(f"GLP group_devices_v2beta1 failed: {msg}") from exc
 
     def list_audit_logs_v2beta1(
         self,
@@ -543,7 +534,7 @@ class GLPClient:
     def get_audit_log_v2beta1_detail(self, audit_log_id: str) -> Optional[dict[str, Any]]:
         """Fetch full detail for a v2beta1 audit-log entry (entries with details enabled)."""
         try:
-            return self._client.get(f"/audit-log/v2beta1/logs/{audit_log_id}/detail")
+            return self._client.get(f"/audit-log/v2beta1/logs/{audit_log_id}/details")
         except Exception as exc:
             logger.warning(
                 "GLP get_audit_log_v2beta1_detail failed for %s: %s", audit_log_id, exc

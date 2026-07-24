@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 
 import pytest
 from mcp.server.fastmcp import FastMCP
@@ -19,6 +21,7 @@ from mcp_servers.openapi_gen.manifest import (
 )
 from mcp_servers.openapi_gen.naming import DuplicateNameError, NameAllocator, base_name, snake
 from mcp_servers.openapi_gen.runtime import register_generated_tools
+from mcp_servers.shared import bound_collection_response, bounded_response_payload
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -215,6 +218,53 @@ def test_sha256_bytes_stable():
     assert sha256_bytes(b"abc") == sha256_bytes(b"abc")
 
 
+def test_large_json_response_is_bounded_before_return():
+    payload = {"value": "x" * 200_000}
+
+    class Response:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        content = json.dumps(payload).encode()
+
+        def json(self):
+            return payload
+
+    out = bounded_response_payload(Response())
+
+    assert out["truncated"] is True
+    assert out["content_type"] == "application/json"
+    assert len(out["text"]) < 200_000
+
+
+def test_large_json_collection_is_parsed_and_paged_before_byte_bounding():
+    payload = [{"id": index, "value": "x" * 1_000} for index in range(5_000)]
+
+    class Response:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        content = json.dumps(payload).encode()
+
+        def json(self):
+            return payload
+
+    out = bounded_response_payload(Response())
+    rebound = bound_collection_response(out, limit=10, offset=0)
+
+    assert len(out["items"]) == 50
+    assert out["_pagination"]["total"] == 5_000
+    assert out["_response_bounds"]["truncated"] is True
+    assert len(rebound["items"]) == 10
+    assert rebound["_pagination"]["total"] == 5_000
+
+
+def test_disabled_generated_mist_tools_return_empty_without_manifest_zip_error(monkeypatch):
+    from mcp_servers.openapi_gen import runtime
+
+    monkeypatch.setattr(runtime, "register_generated_tools", lambda *args, **kwargs: [])
+
+    assert mist._register_generated_mist_tools() == []
+
+
 def test_merged_manifest_is_deterministic_and_deduplicates_operations():
     second = {
         "openapi": "3.0.3",
@@ -223,7 +273,15 @@ def test_merged_manifest_is_deterministic_and_deduplicates_operations():
             "/api/v1/orgs/{org_id}/widgets": {
                 "get": {
                     "operationId": "duplicateListWidgets",
-                    "parameters": [{"$ref": "#/components/parameters/org_id"}],
+                    "parameters": [
+                        {"$ref": "#/components/parameters/org_id"},
+                        {
+                            "name": "scope-id",
+                            "in": "query",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                    ],
                 }
             },
             "/api/v1/health": {"get": {"operationId": "getHealth"}},
@@ -238,6 +296,15 @@ def test_merged_manifest_is_deterministic_and_deduplicates_operations():
     assert merged["source"]["operation_count"] == 4
     assert merged["source"]["duplicate_operation_count"] == 1
     assert merged["duplicate_operations"][0]["kept_source"] == "a.json"
+    duplicate = next(
+        op
+        for op in merged["operations"]
+        if op["key"] == "GET /api/v1/orgs/{org_id}/widgets"
+    )
+    assert any(
+        parameter["name"] == "scope-id" and parameter["required"]
+        for parameter in duplicate["parameters"]
+    )
     assert dumps(merged) == dumps(build_merged_manifest(list(reversed(docs)), platform="demo"))
 
 
@@ -383,6 +450,44 @@ def test_mist_generated_read_dispatch_bounds_and_injects_auth(monkeypatch):
     assert "_pagination" in out["data"]
 
 
+def test_mist_generated_read_honors_requested_output_limit(monkeypatch):
+    monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
+    monkeypatch.setenv("MIST_API_TOKEN", "secret")
+    cap: dict = {}
+    _fake_httpx(monkeypatch, cap, payload=list(range(150)))
+    fn = mist.mcp._tool_manager._tools[
+        "mist_list_installer_list_of_recently_claimed_devices"
+    ].fn
+
+    out = asyncio.run(fn(org_id="o1", limit=120))
+
+    assert len(out["data"]["items"]) == 120
+    assert out["data"]["_pagination"]["limit"] == 120
+
+
+def test_mist_public_and_session_auth_modes(monkeypatch):
+    monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
+    monkeypatch.delenv("MIST_API_TOKEN", raising=False)
+    monkeypatch.delenv("MIST_SESSION_COOKIE", raising=False)
+    cap: dict = {}
+    _fake_httpx(monkeypatch, cap)
+
+    public = mist.mcp._tool_manager._tools["mist_get_admin_registration_info"].fn
+    out = asyncio.run(public())
+    assert out["status_code"] == 200
+    assert "Authorization" not in cap["headers"]
+    assert "Cookie" not in cap["headers"]
+
+    monkeypatch.setenv("MIST_SESSION_COOKIE", "csrftoken=cookie-token; sessionid=session")
+    monkeypatch.setenv("MIST_CSRF_TOKEN", "csrf-token")
+    protected = mist.mcp._tool_manager._tools["mist_list_ap_channels"].fn
+    out = asyncio.run(protected(country_code="US"))
+    assert out["status_code"] == 200
+    assert cap["headers"]["Cookie"].startswith("csrftoken=")
+    assert cap["headers"]["X-CSRFToken"] == "csrf-token"
+    assert "Authorization" not in cap["headers"]
+
+
 def test_mist_generated_write_blocked_by_default(monkeypatch):
     monkeypatch.delenv("CENTRALMCP_MIST_WRITES", raising=False)
     monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
@@ -413,6 +518,24 @@ def test_side_effecting_mist_get_uses_write_gate(monkeypatch):
     assert out["status"] == "blocked"
 
 
+def test_mist_diagnostic_post_executes_without_write_gate(monkeypatch):
+    monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
+    monkeypatch.setenv("MIST_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+    cap: dict = {}
+    _fake_httpx(monkeypatch, cap)
+    tool = mist.mcp._tool_manager._tools["mist_ping_from_device"]
+
+    assert "dry_run" not in tool.parameters["properties"]
+    assert tool.annotations.title == "Diagnostic"
+    out = asyncio.run(
+        tool.fn(site_id="s1", device_id="d1", body={"host": "192.0.2.1"})
+    )
+
+    assert out["status_code"] == 200
+    assert cap["method"] == "POST"
+
+
 def test_generated_post_is_not_marked_idempotent():
     tool = mist.mcp._tool_manager._tools["mist_claim_installer_devices"]
     assert tool.annotations.readOnlyHint is False
@@ -439,6 +562,22 @@ def test_mist_generated_multipart_uses_httpx_files(monkeypatch):
     assert files["file"] == (None, "map-data")
     assert files["json"] == (None, '{"site_name": "lab"}', "application/json")
     assert "Content-Type" not in cap["headers"]
+
+    asyncio.run(
+        fn(
+            org_id="o1",
+            body={
+                "file": {
+                    "filename": "map.png",
+                    "content_base64": base64.b64encode(b"image").decode(),
+                    "content_type": "image/png",
+                }
+            },
+            dry_run=False,
+            confirm=True,
+        )
+    )
+    assert cap["kw"]["files"]["file"] == ("map.png", b"image", "image/png")
 
 
 def test_mist_generated_binary_download_is_bounded(monkeypatch):
@@ -492,3 +631,131 @@ def test_committed_mist_manifest_matches_fresh_build():
     fresh = manifest_mod.dumps(cli.build("mist", spec_path))
     committed = manifest_mod.manifest_path("mist").read_text()
     assert fresh == committed, "committed Mist manifest is stale; re-run generate_openapi_tools.py"
+
+
+def test_manifest_preserves_openapi_lifecycle_and_schema_metadata():
+    from mcp_servers.openapi_gen.manifest import build_manifest
+
+    spec = {
+        "openapi": "3.1.0",
+        "info": {"title": "demo", "version": "1"},
+        "security": [{"oauth": ["read"]}],
+        "paths": {
+            "/items": {
+                "post": {
+                    "operationId": "createItem",
+                    "deprecated": True,
+                    "x-sunset-date": "2027-01-01",
+                    "parameters": [
+                        {
+                            "name": "fields",
+                            "in": "query",
+                            "style": "form",
+                            "explode": False,
+                            "schema": {
+                                "type": "array",
+                                "items": {"type": "string", "format": "hostname"},
+                            },
+                        }
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["name"],
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "created": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                        },
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"201": {"description": "created"}},
+                }
+            }
+        },
+    }
+
+    operation = build_manifest(
+        spec,
+        platform="demo",
+        source_file="demo.json",
+        source_sha256="0" * 64,
+    )["operations"][0]
+
+    assert operation["deprecated"] is True
+    assert operation["sunset"] == "2027-01-01"
+    assert operation["security"] == [{"oauth": ["read"]}]
+    assert operation["response_codes"] == ["201"]
+    assert operation["parameters"][0]["style"] == "form"
+    assert operation["parameters"][0]["explode"] is False
+    assert operation["request_body"]["required_properties"] == ["name"]
+    assert operation["request_body"]["property_formats"] == {
+        "created": "date-time"
+    }
+
+
+def test_generated_write_retry_does_not_replay_post(monkeypatch):
+    import asyncio
+
+    import mcp_servers.openapi_gen.http_exec as http_exec
+
+    calls: list[str] = []
+
+    class Response:
+        status_code = 503
+        headers = {}
+        content = b"{}"
+        text = "{}"
+
+        def json(self):
+            return {"error": "unavailable"}
+
+    class Client:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            calls.append(method)
+            return Response()
+
+    async def resolve(path, headers):
+        return "https://api.example.com", headers
+
+    monkeypatch.setattr(http_exec.httpx, "AsyncClient", Client)
+    execute = http_exec.make_write_executor(
+        resolve=resolve,
+        allowed_prefixes=lambda: ("/api/",),
+        writes_allowed=lambda: True,
+        blocked_response=lambda name: {"status": "blocked"},
+        execute_hint="confirm",
+    )
+
+    result = asyncio.run(
+        execute(
+            "create_item",
+            "POST",
+            "/api/items",
+            {},
+            {},
+            {"name": "one"},
+            "application/json",
+            False,
+            True,
+        )
+    )
+
+    assert result["status_code"] == 503
+    assert calls == ["POST"]

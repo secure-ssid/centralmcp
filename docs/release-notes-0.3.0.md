@@ -12,13 +12,11 @@ sources.
 
 | Catalog | Tools | Intended use |
 |---|---:|---|
-| Core Aruba and GLP | 270 | Central configuration, monitoring, NAC, operations, GLP, and RAG |
-| All products, read-only | 392 | Safe discovery and diagnostics across every enabled backend |
-| All products, read-write | 448 | Guarded lab writes with dry-run and confirmation controls |
+| Generated operation manifests | 5,703 | Reproducible platform API coverage |
+| Complete backend index | 6,133 | Discovery/dispatch across every enabled backend |
+| Direct-all router | 6,136 | Full schema introspection plus three router tools |
 
-The read/write catalog includes 75 configuration, 77 monitoring, 34 NAC, 40
-operations, 41 GLP, 3 RAG, 15 ClearPass, 26 Mist, 20 Apstra, 43 AOS8, 49
-EdgeConnect, and 25 UXI tools.
+Minimal mode remains the recommended three-tool client surface.
 
 ## Major additions
 
@@ -26,18 +24,18 @@ EdgeConnect, and 25 UXI tools.
   status guidance, BGP, OSPF, VRF, high availability, telemetry, application experience, configuration health,
   topology, notification rules, device notes, onboarding, AP tunnels, named
   MPSK, visitors, and expanded gateway/AP diagnostics.
-- **GreenLake Platform:** v2beta1 devices and device groups, Audit Logs
+- **GreenLake Platform:** current devices and documented attribute grouping, Audit Logs
   v2beta1, subscriptions, workspaces, reporting, and guarded API-family writes.
-- **ArubaOS 8:** UIDARUBA/X-CSRF sessions, reliable exports, normalized WLAN,
+- **ArubaOS 8:** UIDARUBA/X-CSRF/SESSION authentication, exhaustive exports, normalized WLAN,
   role, VLAN, AP-group, controller, and policy parsing, plus deterministic
   Classic Central and New Central migration candidates, warnings, diffs, and
   verification plans.
-- **Mist, Apstra, ClearPass, and UXI:** Mist NAC/Marvis/Wired/WAN, Apstra
-  AuthToken sessions and connectivity templates, ClearPass Insight/OnGuard,
+- **Mist, Apstra, ClearPass, UXI, and Axis:** Mist NAC/Marvis/Wired/WAN, Apstra
+  official-SDK AuthToken sessions and object policies, ClearPass Insight/OnGuard activity,
   and UXI guarded lifecycle and assignment workflows.
-- **EdgeConnect:** live Swagger/API diagnostics and a fail-closed gate for the
-  incompatible pre-9.3 endpoint map. Production 9.3+ remapping still requires
-  the target Orchestrator's current instance-hosted Swagger document.
+- **EdgeConnect:** 1,216 generated operations plus live Swagger/API diagnostics.
+  The pinned artifact declares API 7.2.0 internally, so production use still
+  requires comparison with the target Orchestrator's Swagger document.
 
 ## Framework and transport safety
 
@@ -70,7 +68,7 @@ drift.
 
 1. Run `uv sync`.
 2. Rebuild the router catalog. Use the safe read-only default, or set
-   `CENTRALMCP_PRODUCT_ACCESS=read-write` to index all 448 guarded tools.
+   `CENTRALMCP_PRODUCT_ACCESS=read-write` to index all 6,133 backend tools.
 3. Download the latest prebuilt indexes or refresh and rebuild local sources.
 4. Run `uv run python scripts/doctor.py`.
 5. Review [optional product safety](optional-products.md) before enabling

@@ -38,6 +38,31 @@ def _run(command: list[str], label: str) -> None:
 
 
 def _tool_catalog_count(products: str | None) -> int:
+    if products and products.strip().lower() == "all":
+        env = os.environ.copy()
+        env["CENTRALMCP_PRODUCT_ACCESS"] = "read-write"
+        env["CENTRALMCP_GLP_GENERATED_TOOLS"] = "1"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from scripts import ingest_tools; "
+                    "print(f'__CENTRALMCP_TOOL_COUNT__={len(ingest_tools._collect(\"all\"))}')"
+                ),
+            ],
+            cwd=ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        marker = "__CENTRALMCP_TOOL_COUNT__="
+        for line in reversed(completed.stdout.splitlines()):
+            if line.startswith(marker):
+                return int(line.removeprefix(marker))
+        raise RuntimeError("Isolated tool catalog count did not return a count marker")
+
     sys.path.insert(0, str(ROOT))
     from scripts import ingest_tools
 

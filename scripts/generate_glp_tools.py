@@ -101,6 +101,7 @@ def fetch_specs(spec_dir: Path) -> None:
 
 def build_glp_manifest(spec_dir: Path) -> dict[str, Any]:
     documents: list[tuple[str, str, dict[str, Any]]] = []
+    servers_by_file: dict[str, list[str]] = {}
     excluded: list[dict[str, str]] = []
     for file in sorted(VENDOR_SPECS):
         path = spec_dir / file
@@ -116,6 +117,11 @@ def build_glp_manifest(spec_dir: Path) -> dict[str, Any]:
         except OpenApiError as exc:
             excluded.append({"file": file, "sha256": digest, "reason": str(exc)})
             continue
+        servers_by_file[file] = [
+            str(server["url"]).rstrip("/")
+            for server in spec.get("servers", [])
+            if isinstance(server, dict) and server.get("url")
+        ]
         documents.append((file, digest, spec))
 
     manifest = manifest_mod.build_merged_manifest(
@@ -123,6 +129,19 @@ def build_glp_manifest(spec_dir: Path) -> dict[str, Any]:
         platform=PLATFORM,
         overrides=manifest_mod.load_overrides(PLATFORM),
     )
+    for operation in manifest["operations"]:
+        operation["server_urls"] = servers_by_file.get(operation["source_file"], [])
+        if operation["name"] == "glp_create_location_csv":
+            operation["request_body"] = {
+                "required": True,
+                "content_type": "multipart/form-data",
+                "schema_type": "object",
+                "description": (
+                    "CSV upload. Pass body.file as an object containing filename, "
+                    "content_base64, and optional content_type."
+                ),
+                "properties": ["file"],
+            }
 
     provenance = {
         "upstream_repo": UPSTREAM_REPO,

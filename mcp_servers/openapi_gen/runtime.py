@@ -265,6 +265,10 @@ def _docstring(op: dict[str, Any], capability: str) -> str:
     if op.get("description") and op["description"] != op.get("summary"):
         lines.append("")
         lines.append(op["description"][:400])
+    if op.get("deprecated"):
+        lines.extend(["", "Warning: this operation is marked deprecated by its source specification."])
+    if op.get("sunset"):
+        lines.extend(["", f"Sunset: {op['sunset']}."])
     if capability != "read":
         lines.append("")
         lines.append(
@@ -279,7 +283,8 @@ def _short_description(op: dict[str, Any]) -> str:
     text = " ".join(str(text).split())
     if len(text) > _MAX_DESC:
         text = text[: _MAX_DESC - 1].rstrip() + "\u2026"
-    return f"[{op['method']}] {text}"
+    lifecycle = " [DEPRECATED]" if op.get("deprecated") else ""
+    return f"[{op['method']}]{lifecycle} {text}"
 
 
 def _make_read_tool(op: dict[str, Any], read_executor: ReadExecutor) -> Callable[..., Any]:
@@ -356,13 +361,14 @@ def _make_diagnostic_tool(
             path = _substitute_path(template, _path_values(specs, kwargs))
         except ValueError as exc:
             return {"error": str(exc)}
+        body = kwargs.get("body")
         return await write_executor(
             name,
             method,
             path,
             _build_query(specs, kwargs),
             _build_headers(specs, kwargs),
-            kwargs.get("body"),
+            body,
             content_type,
             False,
             True,

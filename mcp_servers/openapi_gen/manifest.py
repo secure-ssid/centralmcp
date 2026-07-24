@@ -23,7 +23,7 @@ from mcp_servers.openapi_gen.classify import classify
 from mcp_servers.openapi_gen.ir import SpecParser
 from mcp_servers.openapi_gen.naming import NameAllocator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _PKG_DIR = Path(__file__).resolve().parent
 MANIFEST_DIR = _PKG_DIR / "manifests"
 OVERRIDE_DIR = _PKG_DIR / "overrides"
@@ -49,6 +49,87 @@ def load_overrides(platform: str) -> dict[str, str]:
     doc = json.loads(path.read_text())
     overrides = doc.get("capabilities", doc) if isinstance(doc, dict) else {}
     return {str(k): str(v) for k, v in overrides.items()}
+
+
+def _merge_duplicate_record(existing: dict[str, Any], op: Any) -> None:
+    """Merge parameters and request metadata from a duplicate method/path."""
+    parameters = existing.setdefault("parameters", [])
+    by_key = {(item.get("in"), item.get("name")): item for item in parameters}
+    for parameter in (item.to_dict() for item in op.parameters):
+        key = (parameter.get("in"), parameter.get("name"))
+        current = by_key.get(key)
+        if current is None:
+            parameters.append(parameter)
+            by_key[key] = parameter
+            continue
+        if parameter.get("required"):
+            current["required"] = True
+        if not current.get("description") and parameter.get("description"):
+            current["description"] = parameter["description"]
+        if not current.get("enum") and parameter.get("enum"):
+            current["enum"] = parameter["enum"]
+        for metadata_key in ("format", "style", "explode"):
+            if metadata_key not in current and metadata_key in parameter:
+                current[metadata_key] = parameter[metadata_key]
+
+    if op.request_body is not None:
+        incoming = op.request_body.to_dict()
+        current_body = existing.get("request_body")
+        if current_body is None:
+            existing["request_body"] = incoming
+        else:
+            current_body["required"] = bool(
+                current_body.get("required") or incoming.get("required")
+            )
+            current_properties = list(current_body.get("properties") or [])
+            for name in incoming.get("properties") or []:
+                if name not in current_properties:
+                    current_properties.append(name)
+            if current_properties:
+                current_body["properties"] = current_properties
+            required_properties = list(current_body.get("required_properties") or [])
+            for name in incoming.get("required_properties") or []:
+                if name not in required_properties:
+                    required_properties.append(name)
+            if required_properties:
+                current_body["required_properties"] = required_properties
+            property_formats = dict(current_body.get("property_formats") or {})
+            property_formats.update(incoming.get("property_formats") or {})
+            if property_formats:
+                current_body["property_formats"] = dict(sorted(property_formats.items()))
+
+    if op.tags:
+        tags = list(existing.get("tags") or [])
+        for tag in op.tags:
+            if tag not in tags:
+                tags.append(tag)
+        existing["tags"] = tags
+    if not existing.get("summary") and op.summary:
+        existing["summary"] = op.summary
+    if not existing.get("description") and op.description:
+        existing["description"] = op.description
+    if op.deprecated:
+        existing["deprecated"] = True
+    if op.sunset and not existing.get("sunset"):
+        existing["sunset"] = op.sunset
+    if op.security and not existing.get("security"):
+        existing["security"] = op.security
+    response_codes = sorted(
+        set(existing.get("response_codes") or []) | set(op.response_codes)
+    )
+    if response_codes:
+        existing["response_codes"] = response_codes
+
+
+def _add_operation_metadata(record: dict[str, Any], op: Any) -> None:
+    if op.deprecated:
+        record["deprecated"] = True
+    if op.sunset:
+        record["sunset"] = op.sunset
+    if op.security:
+        record["security"] = op.security
+    if op.response_codes:
+        record["response_codes"] = op.response_codes
 
 
 def build_manifest(
@@ -90,6 +171,7 @@ def build_manifest(
         record["parameters"] = [p.to_dict() for p in op.parameters]
         if op.request_body is not None:
             record["request_body"] = op.request_body.to_dict()
+        _add_operation_metadata(record, op)
         records.append(record)
 
     stray = sorted(set(overrides) - used_override_keys)
@@ -129,6 +211,7 @@ def build_merged_manifest(
     overrides = overrides or {}
     allocator = NameAllocator()
     records: list[dict[str, Any]] = []
+    records_by_key: dict[str, dict[str, Any]] = {}
     used_override_keys: set[str] = set()
     seen_operations: dict[str, str] = {}
     duplicates: list[dict[str, str]] = []
@@ -150,6 +233,7 @@ def build_merged_manifest(
         )
         for op in operations:
             if op.key in seen_operations:
+                _merge_duplicate_record(records_by_key[op.key], op)
                 duplicates.append(
                     {
                         "key": op.key,
@@ -182,7 +266,9 @@ def build_merged_manifest(
             record["parameters"] = [p.to_dict() for p in op.parameters]
             if op.request_body is not None:
                 record["request_body"] = op.request_body.to_dict()
+            _add_operation_metadata(record, op)
             records.append(record)
+            records_by_key[op.key] = record
 
     digest_input = "\n".join(f"{source['file']}:{source['sha256']}" for source in sources)
     return {

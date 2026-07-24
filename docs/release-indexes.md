@@ -12,8 +12,8 @@ larger, so public releases can include a prebuilt archive.
 | Exact endpoints | 3,465 |
 | Schemas | 10,297 |
 | Fields | 57,131 |
-| Read-only tool catalog | 392 |
-| Read-write tool catalog | 448 |
+| Generated operation manifests | 5,703 |
+| Complete backend tool catalog | 6,133 |
 
 OpenAPI documents are parsed only into SQLite exact lookup. They are not
 embedded into LanceDB, which keeps prose retrieval smaller and avoids lossy

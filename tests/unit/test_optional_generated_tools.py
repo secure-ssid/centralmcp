@@ -91,15 +91,16 @@ def test_manifest_counts_are_deterministic():
     assert manifest_operation_count("clearpass") == 816
     assert manifest_operation_count("uxi") == 25
     assert manifest_operation_count("aos8") == 258
-    assert manifest_operation_count("apstra") == 19
+    assert manifest_operation_count("apstra") == 48
 
 
 def test_generated_tools_registered_on_each_backend():
-    assert len(clearpass.GENERATED_CLEARPASS_TOOLS) == 816
+    assert len(clearpass.GENERATED_CLEARPASS_TOOLS) == 815
     assert len(uxi.GENERATED_UXI_TOOLS) == 25
     assert len(aos8.GENERATED_AOS8_TOOLS) == 258
-    # Apstra: 19 reviewed operations, the 2 Auth login endpoints are not tools.
-    assert len(apstra.GENERATED_APSTRA_TOOLS) == 17
+    # Apstra: 48 reviewed operations, the 2 Auth login endpoints are not tools.
+    assert len(apstra.GENERATED_APSTRA_TOOLS) == 46
+    assert "clearpass_token_endpoint_post" not in clearpass.mcp._tool_manager._tools
 
     assert "clearpass_certificate_chain_by_cert_id_chain_get" in clearpass.mcp._tool_manager._tools
     assert "uxi_get_sensor_status" in uxi.mcp._tool_manager._tools
@@ -114,6 +115,11 @@ def test_apstra_login_endpoints_not_registered():
     names = apstra.mcp._tool_manager._tools
     assert not any("login" in n.lower() for n in apstra.GENERATED_APSTRA_TOOLS)
     assert not any("aaa_login" in n.lower() for n in names)
+
+
+def test_clearpass_disconnect_all_is_destructive():
+    tool = _tool(clearpass, "clearpass_session_action_disconnect_post")
+    assert tool.annotations.destructiveHint is True
 
 
 # ---------------------------------------------------------------------------
@@ -141,12 +147,18 @@ def test_clearpass_read_injects_bearer_and_hides_auth(monkeypatch):
     monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
     monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
     cap: dict = {}
-    _fake_httpx(monkeypatch, clearpass, cap, payload={"items": [1, 2, 3]})
+    _fake_httpx(
+        monkeypatch,
+        clearpass,
+        cap,
+        payload={"items": [1, 2, 3], "radius_secret": "sensitive-value"},
+    )
     fn = _tool(clearpass, "clearpass_certificate_chain_by_cert_id_chain_get").fn
     out = asyncio.run(fn(cert_id="42"))
     assert cap["url"] == "https://cp.example.com/api/certificate/42/chain"
     assert cap["headers"]["Authorization"] == "Bearer secret"
     assert out["status_code"] == 200
+    assert out["data"]["radius_secret"] != "sensitive-value"
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +253,7 @@ def test_uxi_generated_write_dry_run_then_confirm(monkeypatch):
     monkeypatch.setattr(uxi, "_uxi_throttle", lambda: asyncio.sleep(0))
     fn = _tool(uxi, "uxi_agent_group_assignment_post").fn
     # dry_run default True -> preview, no HTTP call.
-    preview = asyncio.run(fn(body={"agent": "a1", "group": "g1"}))
+    preview = asyncio.run(fn(body={"agentId": "a1", "groupId": "g1"}))
     assert preview["dry_run"] is True
     assert preview["method"] == "POST"
     # dry_run False without confirm -> refused.
@@ -250,7 +262,9 @@ def test_uxi_generated_write_dry_run_then_confirm(monkeypatch):
     # Execute with confirm.
     cap: dict = {}
     _fake_httpx(monkeypatch, uxi, cap, payload={"id": "x"})
-    done = asyncio.run(fn(body={"agent": "a1", "group": "g1"}, dry_run=False, confirm=True))
+    done = asyncio.run(
+        fn(body={"agentId": "a1", "groupId": "g1"}, dry_run=False, confirm=True)
+    )
     assert cap["method"] == "POST"
     assert done["status_code"] == 200
 
@@ -275,7 +289,7 @@ def test_apstra_generated_write_dry_run_and_gate(monkeypatch):
     monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
     monkeypatch.setenv("APSTRA_API_TOKEN", "statictok")
     name, tool = _find_tool(
-        apstra, "apstra_create_connectivity_template", apstra.GENERATED_APSTRA_TOOLS
+        apstra, "apstra_import_connectivity_templates", apstra.GENERATED_APSTRA_TOOLS
     )
     # PUT -> idempotent-write, still gated + dry-run.
     assert "dry_run" in _props(tool)

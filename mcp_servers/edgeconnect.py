@@ -19,8 +19,6 @@ do not pass through the legacy compatibility gate.
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import inspect
 import json
@@ -31,6 +29,7 @@ from urllib.parse import quote
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from mcp_servers.openapi_gen.http_exec import build_multipart_files
 from mcp_servers.shared import (
     DESTRUCTIVE,
     DIAGNOSTIC,
@@ -2515,7 +2514,6 @@ async def edgeconnect_write(
 
 _EDGECONNECT_SOURCE_PARAM = {"source": "menu_rest_apis_id"}
 _EDGECONNECT_MAX_RESPONSE_BYTES = 131_072
-_EDGECONNECT_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 _EDGECONNECT_AUTH_HEADER_NAME = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
 _EDGECONNECT_GENERATED_AUTH_HEADERS = {
     "authorization",
@@ -2625,44 +2623,9 @@ async def _edgeconnect_generated_request(
                 return {"error": "form-urlencoded body must be an object of form fields"}
             kwargs["data"] = body
         elif normalized_content_type == "multipart/form-data":
-            if not isinstance(body, dict):
-                return {"error": "multipart/form-data body must be an object of form fields"}
-            files: dict[str, tuple[Any, ...]] = {}
-            for key, value in body.items():
-                if isinstance(value, bytes):
-                    files[str(key)] = (str(key), value, "application/octet-stream")
-                elif isinstance(value, dict) and "content_base64" in value:
-                    filename = str(value.get("filename") or key)
-                    if (
-                        not filename
-                        or filename in {".", ".."}
-                        or "/" in filename
-                        or "\\" in filename
-                    ):
-                        return {"error": f"invalid multipart filename for field {key!r}"}
-                    try:
-                        content = base64.b64decode(
-                            str(value["content_base64"]), validate=True
-                        )
-                    except (binascii.Error, ValueError):
-                        return {
-                            "error": f"multipart field {key!r} has invalid base64 content"
-                        }
-                    if len(content) > _EDGECONNECT_MAX_UPLOAD_BYTES:
-                        return {
-                            "error": (
-                                f"multipart field {key!r} exceeds the "
-                                f"{_EDGECONNECT_MAX_UPLOAD_BYTES}-byte upload limit"
-                            )
-                        }
-                    content_type_value = str(
-                        value.get("content_type") or "application/octet-stream"
-                    )
-                    files[str(key)] = (filename, content, content_type_value)
-                elif isinstance(value, (dict, list)):
-                    files[str(key)] = (None, json.dumps(value), "application/json")
-                else:
-                    files[str(key)] = (None, "" if value is None else str(value))
+            files, body_error = build_multipart_files(body)
+            if body_error is not None:
+                return body_error
             kwargs["files"] = files
         else:
             kwargs["content"] = body if isinstance(body, (bytes, str)) else str(body)

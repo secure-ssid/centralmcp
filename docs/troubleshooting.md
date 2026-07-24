@@ -112,8 +112,8 @@ If `find_tool` cannot locate expected optional product tools, confirm
 `CENTRALMCP_PRODUCTS` and the catalog were built with the same selected
 products.
 
-The all-product read-only catalog contains 392 tools. If release validation
-expects all 448 guarded tools, rebuild with:
+The complete read-write backend catalog contains 6,133 tools. If release
+validation expects that full catalog, rebuild with:
 
 ```bash
 CENTRALMCP_PRODUCT_ACCESS=read-write uv run python scripts/ingest_tools.py --products all

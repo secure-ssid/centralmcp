@@ -66,7 +66,10 @@ def _central_path_ok(path: str) -> bool:
     return path.startswith(_CENTRAL_ALLOWED_PREFIXES)
 
 
-async def _central_auth_headers(extra: dict[str, str] | None) -> tuple[str, dict[str, str]]:
+async def _central_auth_headers(
+    path: str | dict[str, str] | None,
+    extra: dict[str, str] | None = None,
+) -> tuple[str, dict[str, str]]:
     """Return ``(base_url, headers)`` with trusted Central auth injected last.
 
     Reuses the source-account CentralClient's token manager for the OAuth
@@ -75,6 +78,8 @@ async def _central_auth_headers(extra: dict[str, str] | None) -> tuple[str, dict
     preserved; any credential-bearing header is dropped before auth is applied.
     The CentralClient's httpx session is never touched here.
     """
+    if not isinstance(path, str):
+        extra = path
     client = get_client()
     # Acquire/rotate the bearer token off the event loop via the same token
     # manager the CentralClient uses; never touch the client's httpx session
@@ -89,10 +94,16 @@ async def _central_auth_headers(extra: dict[str, str] | None) -> tuple[str, dict
     return client.base_url, headers
 
 
+async def _central_refresh_auth() -> None:
+    client = get_client()
+    await asyncio.to_thread(client.token_manager.get_access_token, True)
+
+
 _central_generated_read = make_read_executor(
     resolve=_central_auth_headers,
     allowed_prefixes=_central_allowed_prefixes,
     not_configured="Central not configured",
+    refresh_auth=_central_refresh_auth,
 )
 
 _central_generated_write = make_write_executor(
@@ -102,6 +113,7 @@ _central_generated_write = make_write_executor(
     blocked_response=lambda name: platform_write_blocked("central", name),
     execute_hint=_EXECUTE_HINT,
     not_configured="Central not configured",
+    refresh_auth=_central_refresh_auth,
 )
 
 

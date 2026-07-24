@@ -136,6 +136,44 @@ def test_read_dispatch_bounds_injects_auth_and_preserves_false(monkeypatch):
     assert "_pagination" in out["data"]
 
 
+def test_read_retries_after_forced_token_refresh(monkeypatch):
+    client = _patch_client(monkeypatch)
+    attempts = {"count": 0}
+
+    class Resp:
+        text = "{}"
+        content = b"{}"
+        headers = {"content-type": "application/json"}
+
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+        def json(self):
+            return {"ok": self.status_code == 200}
+
+    class FakeClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            attempts["count"] += 1
+            return Resp(401 if attempts["count"] == 1 else 200)
+
+    monkeypatch.setattr(http_exec.httpx, "AsyncClient", FakeClient)
+
+    out = asyncio.run(_tool_fn(READ_TOOL)())
+
+    assert out["status_code"] == 200
+    assert attempts["count"] == 2
+    assert client.token_manager.calls >= 3
+
+
 def test_read_path_traversal_rejected(monkeypatch):
     _patch_client(monkeypatch)
     fn = _tool_fn("central_read_bcn_rpt_req_profiles_profile_by_id")

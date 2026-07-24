@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -65,6 +66,9 @@ _SENSITIVE_KEY_EXACT = {
     "auth",
     "authorization",
     "key",
+    "community_string",
+    "snmp_read",
+    "snmp_write",
 }
 _SENSITIVE_KEY_SUFFIXES = (
     "api_key",
@@ -782,11 +786,6 @@ def response_payload(resp: Any) -> Any:
 
 def bounded_response_payload(resp: Any, *, max_bytes: int = 131_072) -> Any:
     """Return JSON, bounded text, or bounded base64 metadata for an HTTP response."""
-    try:
-        return resp.json()
-    except (TypeError, ValueError):
-        pass
-
     raw = getattr(resp, "content", None)
     if raw is None:
         raw = str(getattr(resp, "text", "")).encode("utf-8", errors="replace")
@@ -796,8 +795,45 @@ def bounded_response_payload(resp: Any, *, max_bytes: int = 131_072) -> Any:
     headers = getattr(resp, "headers", {}) or {}
     content_type = str(headers.get("content-type", "")).split(";", 1)[0].strip().lower()
     size = len(raw)
+    try:
+        payload = resp.json()
+    except (TypeError, ValueError):
+        payload = None
+    else:
+        encoded = json.dumps(payload, ensure_ascii=False, default=str).encode()
+        if len(encoded) <= max_bytes:
+            return payload
+        collection_page = bound_collection_response(
+            payload,
+            limit=DEFAULT_LIST_LIMIT,
+            offset=0,
+        )
+        if collection_page is not payload:
+            page_encoded = json.dumps(
+                collection_page, ensure_ascii=False, default=str
+            ).encode()
+            if len(page_encoded) <= max_bytes and isinstance(collection_page, dict):
+                collection_page["_response_bounds"] = {
+                    "content_type": "application/json",
+                    "size_bytes": len(encoded),
+                    "truncated": True,
+                    "sha256": hashlib.sha256(encoded).hexdigest(),
+                }
+                return collection_page
+        raw = encoded
+        size = len(raw)
+        content_type = "application/json"
+
     preview = raw[:max_bytes]
     truncated = size > len(preview)
+    if content_type == "application/json" or content_type.endswith("+json"):
+        return {
+            "content_type": content_type,
+            "size_bytes": size,
+            "truncated": truncated,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "text": preview.decode("utf-8", errors="replace"),
+        }
     if content_type.startswith("text/") or content_type in {
         "application/xml",
         "application/yaml",
@@ -873,6 +909,7 @@ def bound_collection_response(
         }
     if not isinstance(data, dict):
         return data
+    existing_pagination = data.get("_pagination")
     out = {k: v for k, v in data.items() if k != "_pagination"}
     key = list_key
     if key is None:
@@ -884,13 +921,25 @@ def bound_collection_response(
     if not isinstance(val, list):
         return data
     total = len(val)
+    preserve_existing = (
+        off == 0
+        and isinstance(existing_pagination, dict)
+        and existing_pagination.get("offset", 0) == 0
+        and existing_pagination.get("list_key", key) == key
+        and isinstance(existing_pagination.get("total"), int)
+    )
+    if preserve_existing:
+        total = max(total, existing_pagination["total"])
     page = val[off : off + lim]
+    was_truncated = isinstance(existing_pagination, dict) and bool(
+        existing_pagination.get("truncated")
+    )
     out[key] = page
     out["_pagination"] = {
         "offset": off,
         "limit": lim,
         "total": total,
-        "truncated": total > off + len(page),
+        "truncated": total > off + len(page) or was_truncated,
         "list_key": key,
     }
     return out

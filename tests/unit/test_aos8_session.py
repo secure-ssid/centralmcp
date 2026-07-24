@@ -28,11 +28,17 @@ class _LoginResp:
         self.status_code = status_code
         self._uidaruba = uidaruba
         self._status = status
-        self.headers = {"X-CSRF-Token": csrf} if csrf else {}
+        self.headers = {"set-cookie": "SESSION=session-cookie; Path=/; Secure"}
         self.text = "{}"
 
     def json(self):
-        return {"_global_result": {"UIDARUBA": self._uidaruba, "status": self._status}}
+        return {
+            "_global_result": {
+                "UIDARUBA": self._uidaruba,
+                "X-CSRF-Token": "csrf-token-1",
+                "status": self._status,
+            }
+        }
 
 
 class _JsonResp:
@@ -59,8 +65,15 @@ def _fake_client(login_resp=None, get_resp=None, request_resp=None, calls=None):
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-        async def post(self, url, params=None, **kwargs):
-            calls.setdefault("post_calls", []).append({"url": url, "params": params})
+        async def post(self, url, params=None, data=None, headers=None, **kwargs):
+            calls.setdefault("post_calls", []).append(
+                {
+                    "url": url,
+                    "params": params,
+                    "data": data,
+                    "headers": headers or {},
+                }
+            )
             return login_resp
 
         async def get(self, url, headers=None, params=None):
@@ -136,10 +149,12 @@ def test_aos8_login_success_caches_uidaruba_and_csrf_token(monkeypatch):
 
     assert out["status"] == "logged_in"
     assert calls["post_calls"][0]["url"] == "https://mm.example.com/v1/api/login"
-    assert calls["post_calls"][0]["params"] == {"username": "admin", "password": "hunter2"}
+    assert calls["post_calls"][0]["params"] is None
+    assert calls["post_calls"][0]["data"] == {"username": "admin", "password": "hunter2"}
     entry = aos8._SESSION_CACHE["https://mm.example.com"]
     assert entry["uidaruba"] == "UID123"
     assert entry["csrf_token"] == "csrf-token-1"
+    assert entry["session_cookie"] == "SESSION=session-cookie"
 
 
 def test_aos8_login_sends_client_ip_when_configured(monkeypatch):
@@ -152,7 +167,7 @@ def test_aos8_login_sends_client_ip_when_configured(monkeypatch):
 
     asyncio.run(aos8.aos8_login())
 
-    assert calls["post_calls"][0]["params"]["client_ip"] == "203.0.113.5"
+    assert calls["post_calls"][0]["data"]["client_ip"] == "203.0.113.5"
 
 
 def test_aos8_login_failure_returns_error_and_does_not_cache(monkeypatch):

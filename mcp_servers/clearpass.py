@@ -1,4 +1,8 @@
-"""MCP server — optional ClearPass backend (15 curated + 816 generated OpenAPI tools).
+"""MCP server — optional ClearPass backend (14 curated + 815 generated API tools).
+
+The committed manifest contains 816 operations; the unauthenticated `/oauth`
+bootstrap operation is intentionally not model-visible because access and
+refresh tokens must remain server-side credentials.
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=clearpass
@@ -7,12 +11,8 @@ Auth/env:
   CLEARPASS_BASE_URL   e.g. https://clearpass.example.com
   CLEARPASS_API_TOKEN  static bearer token
 
-Covers endpoint/session/NAD/guest reads and writes, bounded Insight alert
-reads, and OnGuard posture reads plus one guarded revalidation mutation.
-OnGuard's REST surface varies by CPPM version — `clearpass_list_onguard_agents`,
-`clearpass_get_onguard_posture`, and `clearpass_trigger_onguard_revalidation`
-are marked as needing verification against the target CPPM API guide before
-relying on them operationally.
+Covers endpoint/session/NAD/guest reads and writes plus documented Insight
+endpoint and OnGuard activity APIs.
 """
 
 from __future__ import annotations
@@ -322,64 +322,6 @@ def _compact_guest(guest: Any) -> Any:
     )
 
 
-def _compact_insight_alert(alert: Any) -> Any:
-    if not isinstance(alert, dict):
-        return alert
-    return _pick(
-        alert,
-        (
-            "id",
-            "name",
-            "severity",
-            "category",
-            "status",
-            "summary",
-            "message",
-            "source",
-            "username",
-            "mac_address",
-            "created_at",
-            "updated_at",
-        ),
-    )
-
-
-def _compact_onguard_agent(agent: Any) -> Any:
-    if not isinstance(agent, dict):
-        return agent
-    return _pick(
-        agent,
-        (
-            "id",
-            "mac_address",
-            "username",
-            "hostname",
-            "os_type",
-            "agent_version",
-            "connection_state",
-            "health_status",
-            "last_check_in",
-        ),
-    )
-
-
-def _compact_onguard_posture(posture: Any) -> Any:
-    if not isinstance(posture, dict):
-        return posture
-    return _pick(
-        posture,
-        (
-            "mac_address",
-            "healthy",
-            "health_status",
-            "posture_token",
-            "webauth_required",
-            "last_evaluated",
-            "checks_failed",
-        ),
-    )
-
-
 @mcp.tool(annotations=READ_ONLY)
 def clearpass_status() -> dict[str, Any]:
     """Report whether ClearPass backend is configured."""
@@ -406,8 +348,10 @@ async def clearpass_get(
     """
     out = await _clearpass_get_request(path, params, bound=False)
     if "data" in out:
-        out["data"] = bound_collection_response(out["data"], limit=limit, offset=offset)
-    return out
+        out["data"] = redact_sensitive(
+            bound_collection_response(out["data"], limit=limit, offset=offset)
+        )
+    return redact_sensitive(out)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -538,69 +482,58 @@ async def clearpass_find_guest(
 
 
 @mcp.tool(annotations=READ_ONLY)
-async def clearpass_list_insight_alerts(limit: int = 25, offset: int = 0) -> dict[str, Any]:
-    """List recent ClearPass Insight alerts (bounded).
-
-    Queries `/api/insight/alert`, matching the `/api/*` base already used by
-    every other endpoint in this module. Returns compact severity/category/
-    status/summary fields for triage.
-    """
-    safe_limit = clamp_limit(limit, default=25)
-    params = {"offset": max(0, offset), "limit": safe_limit, "calculate_count": "false"}
-    out = await _clearpass_get_request(
-        "/api/insight/alert", params, limit=safe_limit, offset=0, bound=False
-    )
-    if "data" in out:
-        out["alerts"] = bound_collection_response(
-            [_compact_insight_alert(item) for item in _extract_items(out["data"])],
-            limit=safe_limit,
-            offset=0,
-        )
-        del out["data"]
-    return out
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def clearpass_list_onguard_agents(limit: int = 25, offset: int = 0) -> dict[str, Any]:
-    """List ClearPass OnGuard agents (bounded).
-
-    Queries `/api/onguard-agent`. OnGuard's exact REST surface can vary by
-    CPPM version; verify this path against the target ClearPass API guide
-    before relying on it for anything beyond a quick inventory check.
-    """
-    safe_limit = clamp_limit(limit, default=25)
-    params = {"offset": max(0, offset), "limit": safe_limit, "calculate_count": "false"}
-    out = await _clearpass_get_request(
-        "/api/onguard-agent", params, limit=safe_limit, offset=0, bound=False
-    )
-    if "data" in out:
-        out["agents"] = bound_collection_response(
-            [_compact_onguard_agent(item) for item in _extract_items(out["data"])],
-            limit=safe_limit,
-            offset=0,
-        )
-        del out["data"]
-    return out
-
-
-@mcp.tool(annotations=READ_ONLY)
-async def clearpass_get_onguard_posture(mac_address: str) -> dict[str, Any]:
-    """Get OnGuard posture/health status for one endpoint by MAC address.
-
-    Accepts colon, dash, dotted, or compact MAC input and queries
-    `/api/onguard/posture/mac-address/{mac}`. As with
-    `clearpass_list_onguard_agents`, verify this path against the target
-    CPPM version's API guide before depending on it operationally.
-    """
+async def clearpass_get_insight_endpoint(mac_address: str) -> dict[str, Any]:
+    """Get documented ClearPass Insight endpoint data by MAC address."""
     try:
         normalized = _normalize_mac(mac_address)
     except ValueError as exc:
         return {"error": str(exc)}
-    out = await _clearpass_get_request(f"/api/onguard/posture/mac-address/{normalized}")
+    out = await _clearpass_get_request(f"/api/insight/endpoint/mac/{normalized}")
     if "data" in out:
         out["normalized_mac"] = normalized
-        out["posture"] = _compact_onguard_posture(_first_item(out["data"]))
-        del out["data"]
+        out["endpoint"] = redact_sensitive(_first_item(out.pop("data")))
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_list_onguard_activity(
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List documented ClearPass OnGuard activity records."""
+    safe_limit = clamp_limit(limit, default=25)
+    params = {
+        "offset": max(0, offset),
+        "limit": safe_limit,
+        "calculate_count": "false",
+    }
+    out = await _clearpass_get_request(
+        "/api/onguard-activity",
+        params,
+        limit=safe_limit,
+        offset=0,
+        bound=False,
+    )
+    if "data" in out:
+        out["activity"] = redact_sensitive(
+            bound_collection_response(_extract_items(out.pop("data")), limit=safe_limit)
+        )
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_get_onguard_activity_by_mac(mac_address: str) -> dict[str, Any]:
+    """Get documented ClearPass OnGuard activity for one endpoint MAC."""
+    try:
+        normalized = _normalize_mac(mac_address)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    out = await _clearpass_get_request(
+        f"/api/onguard-activity/host_mac/{normalized}"
+    )
+    if "data" in out:
+        out["normalized_mac"] = normalized
+        out["activity"] = redact_sensitive(out.pop("data"))
     return out
 
 
@@ -742,36 +675,6 @@ async def clearpass_delete_guest(
     )
 
 
-@mcp.tool(annotations=DESTRUCTIVE)
-async def clearpass_trigger_onguard_revalidation(
-    mac_address: str,
-    dry_run: bool = True,
-    confirm: bool = False,
-) -> dict[str, Any]:
-    """Trigger an OnGuard posture revalidation for one endpoint by MAC address.
-
-    Uses `POST /api/onguard/posture/mac-address/{mac}/revalidate`. This is
-    the one write path in this module that is **guarded/uncertain**: the
-    OnGuard REST surface varies materially by CPPM version and there is no
-    source doc in this repo confirming this exact path — verify it against
-    the target ClearPass API guide before enabling `CENTRALMCP_PRODUCT_ACCESS
-    =read-write` against a real instance. Defaults to `dry_run=True`;
-    execution requires `dry_run=False` and `confirm=True`.
-    """
-    try:
-        normalized = _normalize_mac(mac_address)
-    except ValueError as exc:
-        return {"error": str(exc)}
-    out = await _clearpass_write_request(
-        "POST",
-        f"/api/onguard/posture/mac-address/{normalized}/revalidate",
-        dry_run=dry_run,
-        confirm=confirm,
-    )
-    out["normalized_mac"] = normalized
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Generated OpenAPI tools (see mcp_servers/openapi_gen). The committed manifest
 # at mcp_servers/openapi_gen/manifests/clearpass.json is a derived operation
@@ -827,9 +730,9 @@ async def _clearpass_generated_read(
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.request(method, url, headers=req_headers, params=clean_params)
-        payload = bound_collection_response(
+        payload = redact_sensitive(bound_collection_response(
             bounded_response_payload(resp), limit=clamp_limit(None), offset=0
-        )
+        ))
         return {"status_code": resp.status_code, "data": payload, "url": url}
     except httpx.HTTPError as exc:
         return {"error": str(exc), "url": url}
@@ -899,13 +802,24 @@ async def _clearpass_generated_write(
 
 def _register_generated_clearpass_tools() -> list[str]:
     """Register generated ClearPass tools at import time, failing on manifest errors."""
+    from mcp_servers.openapi_gen.manifest import load_manifest
     from mcp_servers.openapi_gen.runtime import register_generated_tools
 
+    manifest = load_manifest("clearpass")
+    filtered = {
+        **manifest,
+        "operations": [
+            operation
+            for operation in manifest.get("operations", [])
+            if operation.get("path") != "/oauth"
+        ],
+    }
     return register_generated_tools(
         mcp,
         "clearpass",
         read_executor=_clearpass_generated_read,
         write_executor=_clearpass_generated_write,
+        manifest=filtered,
     )
 
 

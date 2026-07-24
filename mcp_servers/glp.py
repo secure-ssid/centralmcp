@@ -1,7 +1,7 @@
 """MCP server — GreenLake Platform (GLP): inventory, licensing, users, and
-service catalog (41 curated + 918 generated OpenAPI tools).
+service catalog (40 curated + 904 active generated tools; 918 in provenance manifest).
 
-Covers: GLP device lifecycle (v1 + v2beta1), device groups (v2beta1, best-effort),
+Covers: GLP device lifecycle (v1 + v2beta1), device grouping summaries,
 subscription assignment/bulk-add, audit logs (v1 + v2beta1), users, workspaces
 (incl. contact PATCH), reporting statuses, service-catalog reads, and a guarded
 read-only GLP GET covering RBAC/authorization, events, webhooks, tags, location,
@@ -10,6 +10,7 @@ Uses the target_account (glp_account) credentials.
 """
 import asyncio
 import os
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -596,42 +597,26 @@ def get_glp_device_v2(device_id: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_ONLY)
-def list_glp_device_groups(
+def group_glp_devices(
+    group_by: str,
     limit: int = 100,
     offset: int = 0,
     filter: str | None = None,
 ) -> dict[str, Any]:
-    """List device groups via the GLP Devices v2beta1 service.
-
-    Endpoint path is inferred from the sibling /devices/v2beta1/devices
-    collection convention and has not been independently re-verified
-    against live spec text — a 404 here means "not confirmed on this
-    tenant," not a client bug. Use glp_get("/devices/...") to probe
-    alternate paths if this 404s.
-    """
+    """Group GLP devices by a documented v2beta1 attribute."""
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        items = glp.list_device_groups_v2beta1(
-            limit=clamp_limit(limit), offset=max(0, offset), filter=filter
+        items = glp.group_devices_v2beta1(
+            group_by=group_by,
+            limit=clamp_limit(limit),
+            offset=max(0, offset),
+            filter=filter,
         )
         return {"items": items, "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "errors": errors}
-
-
-@mcp.tool(annotations=READ_ONLY)
-def get_glp_device_group(group_id: str) -> dict[str, Any]:
-    """Fetch a single device group via the GLP Devices v2beta1 service by ID."""
-    glp = get_glp_client()
-    errors: list[str] = []
-    try:
-        group = glp.get_device_group_v2beta1(group_id)
-        return {"device_group": group, "errors": errors}
-    except Exception as exc:
-        errors.append(str(exc))
-        return {"device_group": None, "errors": errors}
 
 
 # ── Audit Logs v2beta1 ────────────────────────────────────────────────────────
@@ -761,7 +746,7 @@ def list_glp_api_families() -> dict[str, Any]:
             "list_glp_service_offers", "get_glp_service_offer",
         ],
         "best_effort_typed_tools": [
-            "list_glp_device_groups", "get_glp_device_group",
+            "group_glp_devices",
             "glp_add_subscriptions",
         ],
         "explore_only_families": {
@@ -793,7 +778,7 @@ def list_glp_api_families() -> dict[str, Any]:
 # target-account GLPClient auth/workspace/retry behavior. Registration is guarded
 # by CENTRALMCP_GLP_GENERATED_TOOLS and defaults ON when the manifest exists.
 #
-# The 41 curated GLP tools above are the confirmed-working, hand-tuned surface;
+# The 40 curated GLP tools above are the confirmed-working, hand-tuned surface;
 # the generated glp_* tools broaden coverage to the full workspace/inventory/
 # licensing/service-catalog/storage/compute surface. Generated writes stay
 # fail-closed behind the same CENTRALMCP_GLP_V2BETA1_WRITES gate and default to
@@ -808,6 +793,12 @@ _GLP_AUTH_HEADER_NAMES = {"authorization", "cookie"}
 # path allow-list). The shared runtime already URL-escapes path values and
 # rejects traversal segments, so this is belt-and-suspenders.
 _GLP_GENERATED_PREFIXES: tuple[str, ...] = ("/devices/", "/subscriptions/", "/workspaces/")
+_GLP_GENERATED_ROUTES: list[tuple[re.Pattern[str], tuple[str, ...]]] = []
+_GLP_SUNSET_OPERATION_PREFIXES = (
+    "/devices/v1beta1/",
+    "/subscriptions/v1alpha1/",
+    "/subscriptions/v1beta1/",
+)
 
 _GLP_GENERATED_EXECUTE_HINT = (
     "Re-run with dry_run=False and confirm=True to execute this GLP write "
@@ -819,7 +810,62 @@ def _glp_generated_prefixes() -> tuple[str, ...]:
     return _GLP_GENERATED_PREFIXES
 
 
-async def _glp_generated_auth_headers(extra: dict[str, str] | None) -> tuple[str, dict[str, str]]:
+def _glp_route_pattern(path_template: str) -> re.Pattern[str]:
+    parts = re.split(r"(\{[^}]+\})", path_template)
+    pattern = "".join("[^/]+" if part.startswith("{") else re.escape(part) for part in parts)
+    return re.compile(f"^{pattern}$")
+
+
+def _glp_generated_server(path: str, configured_base_url: str) -> str:
+    server_urls: tuple[str, ...] = ()
+    for pattern, candidates in _GLP_GENERATED_ROUTES:
+        if pattern.fullmatch(path):
+            server_urls = candidates
+            break
+    if not server_urls:
+        return configured_base_url.rstrip("/")
+    configured = configured_base_url.rstrip("/")
+    if configured in server_urls:
+        return configured
+    global_url = "https://global.api.greenlake.hpe.com"
+    if global_url in server_urls:
+        return global_url
+    if len(server_urls) == 1:
+        return server_urls[0]
+
+    region = os.environ.get("GLP_GENERATED_REGION", "").strip().lower()
+    regional_hosts = {
+        "us-west": "https://us-west.api.greenlake.hpe.com",
+        "eu-west": "https://eu-west.api.greenlake.hpe.com",
+        "eu-central": "https://eu-central.api.greenlake.hpe.com",
+        "ap-northeast": "https://ap-northeast.api.greenlake.hpe.com",
+    }
+    data_hosts = {
+        "us-west": "https://us1.data.cloud.hpe.com",
+        "us1": "https://us1.data.cloud.hpe.com",
+        "eu-west": "https://eu1.data.cloud.hpe.com",
+        "eu-central": "https://eu1.data.cloud.hpe.com",
+        "eu1": "https://eu1.data.cloud.hpe.com",
+        "ap-northeast": "https://jp1.data.cloud.hpe.com",
+        "jp1": "https://jp1.data.cloud.hpe.com",
+    }
+    requested = (
+        data_hosts.get(region)
+        if any(".data.cloud.hpe.com" in url for url in server_urls)
+        else regional_hosts.get(region)
+    )
+    if requested in server_urls:
+        return requested
+    raise ValueError(
+        "This generated GLP operation is region-specific. Set GLP_GENERATED_REGION "
+        "to one of us-west, eu-west, eu-central, or ap-northeast."
+    )
+
+
+async def _glp_generated_auth_headers(
+    path: str | dict[str, str] | None,
+    extra: dict[str, str] | None = None,
+) -> tuple[str, dict[str, str]]:
     """Return ``(base_url, headers)`` with trusted GLP auth injected last.
 
     Reuses the target-account GLPClient's underlying token manager (its
@@ -827,6 +873,9 @@ async def _glp_generated_auth_headers(extra: dict[str, str] | None) -> tuple[str
     Authorization header last. Non-auth header params are preserved; the
     client's httpx session is never touched here.
     """
+    if not isinstance(path, str):
+        extra = path
+        path = ""
     client = get_glp_client()._client
     # Acquire the workspace-scoped GLP bearer token off the event loop via the
     # GLPClient's underlying token manager; never touch the client's httpx
@@ -838,7 +887,17 @@ async def _glp_generated_auth_headers(extra: dict[str, str] | None) -> tuple[str
             continue
         headers[key] = str(value)
     headers["Authorization"] = f"Bearer {token}"  # trusted auth injected last
-    return client.base_url, headers
+    base_url = (
+        _glp_generated_server(path, client.base_url)
+        if path
+        else client.base_url.rstrip("/")
+    )
+    return base_url, headers
+
+
+async def _glp_generated_refresh_auth() -> None:
+    client = get_glp_client()._client
+    await asyncio.to_thread(client.token_manager.get_access_token, True)
 
 
 def _glp_generated_enabled() -> bool:
@@ -846,16 +905,22 @@ def _glp_generated_enabled() -> bool:
 
     Opt-in and **default OFF**: unlike the optional-product starter backends,
     the ~918 generated GLP tools are a very large surface, so we keep the
-    default ``aruba-glp`` catalog to the 41 curated tools and only expand when
+    default ``aruba-glp`` catalog to the 40 curated tools and only expand when
     an operator sets ``CENTRALMCP_GLP_GENERATED_TOOLS`` truthy. (Central's
     generated tools live on a separate ``aruba-central-generated`` server, so
     they can default on without inflating a shared catalog; the GLP generated
     tools share the curated ``aruba-glp`` server, hence the opt-in default.)
     """
     raw = os.environ.get("CENTRALMCP_GLP_GENERATED_TOOLS")
-    if raw is None:
-        return False
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    router_mode = os.environ.get("CENTRALMCP_ROUTER_MODE", "").strip().lower()
+    toolsets = {
+        item.strip().lower()
+        for item in os.environ.get("CENTRALMCP_TOOLSETS", "").split(",")
+        if item.strip()
+    }
+    return router_mode == "direct" and bool({"glp", "all"} & toolsets)
 
 
 def _register_generated_glp_tools() -> list[str]:
@@ -876,7 +941,15 @@ def _register_generated_glp_tools() -> list[str]:
     if not _glp_generated_enabled() or not manifest_exists("glp"):
         return []
     manifest = load_manifest("glp")
-    global _GLP_GENERATED_PREFIXES
+    active_manifest = {
+        **manifest,
+        "operations": [
+            operation
+            for operation in manifest.get("operations", [])
+            if not operation["path"].startswith(_GLP_SUNSET_OPERATION_PREFIXES)
+        ],
+    }
+    global _GLP_GENERATED_PREFIXES, _GLP_GENERATED_ROUTES
     prefixes = sorted(
         {
             "/" + op["path"].split("/", 2)[1] + "/"
@@ -886,11 +959,19 @@ def _register_generated_glp_tools() -> list[str]:
     )
     if prefixes:
         _GLP_GENERATED_PREFIXES = tuple(prefixes)
+    _GLP_GENERATED_ROUTES = [
+        (
+            _glp_route_pattern(operation["path"]),
+            tuple(operation.get("server_urls") or ()),
+        )
+        for operation in active_manifest.get("operations", [])
+    ]
 
     read_executor = make_read_executor(
         resolve=_glp_generated_auth_headers,
         allowed_prefixes=_glp_generated_prefixes,
         not_configured="GLP not configured",
+        refresh_auth=_glp_generated_refresh_auth,
     )
     write_executor = make_write_executor(
         resolve=_glp_generated_auth_headers,
@@ -899,13 +980,14 @@ def _register_generated_glp_tools() -> list[str]:
         blocked_response=lambda name: platform_write_blocked("glp", name),
         execute_hint=_GLP_GENERATED_EXECUTE_HINT,
         not_configured="GLP not configured",
+        refresh_auth=_glp_generated_refresh_auth,
     )
     GENERATED_GLP_TOOLS = register_generated_tools(
         mcp,
         "glp",
         read_executor=read_executor,
         write_executor=write_executor,
-        manifest=manifest,
+        manifest=active_manifest,
     )
     return GENERATED_GLP_TOOLS
 

@@ -56,9 +56,9 @@ def test_edgeconnect_manifest_count_registration_and_capabilities():
         "8f7d90cbd7777e3fac0dc2458249174068f4c373b400d1224f3c3dcc77e34c46"
     )
     assert manifest["reviewed_capability_counts"] == {
-        "read": 657,
-        "diagnostic": 120,
-        "write": 353,
+        "read": 652,
+        "diagnostic": 121,
+        "write": 357,
         "destructive": 86,
     }
 
@@ -120,6 +120,13 @@ def test_side_effecting_get_is_guarded_and_defaults_to_dry_run(monkeypatch):
     assert out["method"] == "GET"
     assert out["path"] == "/idle/clear"
     assert out["params"]["source"] == "menu_rest_apis_id"
+
+    cancel = edgeconnect.mcp._tool_manager._tools[
+        "edgeconnect_appliance_cp_ustats_cancel_fetch_get"
+    ].fn
+    out = asyncio.run(cancel(ne_pk="10.NE"))
+    assert out["dry_run"] is True
+    assert out["path"] == "/appliance/cpustat/historical/cancelfetch"
 
 
 def test_generated_request_supports_form_multipart_and_text(monkeypatch):

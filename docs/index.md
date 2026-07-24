@@ -2,7 +2,7 @@
 
 Low-token Model Context Protocol tooling for HPE Aruba Central, HPE GreenLake
 Platform, embedded docs/API lookup, and optional ClearPass, Mist, Apstra,
-ArubaOS 8, EdgeConnect, and UXI starter backends.
+ArubaOS 8, EdgeConnect, UXI, and Axis backends.
 
 ![centralmcp 0.3.0](assets/centralmcp-hero.svg)
 
@@ -10,11 +10,11 @@ ArubaOS 8, EdgeConnect, and UXI starter backends.
 
 | Area | Current snapshot |
 |---|---|
-| Tool catalog | 270 core / 392 all-product read-only / 448 all-product read-write |
+| Tool catalog | 5,703 generated operations / 6,133 backend tools / 6,136 direct-all |
 | RAG | 47,633 prose chunks in LanceDB |
 | Exact API lookup | 239 specs, 3,465 endpoints, 10,297 schemas, 57,131 fields |
-| API provenance | 25 Aruba ReadMe registries plus official Mist OpenAPI 2606.1.1 |
-| Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI |
+| API provenance | Aruba ReadMe registries, official Mist/Apstra sources, pinned GLP and EdgeConnect snapshots |
+| Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis |
 | Safety | Per-platform gates, dry-run writes, confirmation, HTTP host/origin and bearer controls |
 
 Read the [0.3.0 release notes](release-notes-0.3.0.md) for the complete

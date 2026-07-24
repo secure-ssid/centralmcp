@@ -20,6 +20,7 @@ import mcp_servers.openapi_gen.http_exec as http_exec
 from mcp_servers.openapi_gen import manifest_operation_count
 
 EXPECTED_OPERATION_COUNT = 918
+EXPECTED_REGISTERED_OPERATION_COUNT = 904
 
 READ_LIST = "glp_get_v1beta1_user_preferences"
 READ_PATH = "glp_get_audit_log"
@@ -119,7 +120,7 @@ def _fn(name):
 
 def test_committed_manifest_count_and_registration():
     assert manifest_operation_count("glp") == EXPECTED_OPERATION_COUNT
-    assert len(glp.GENERATED_GLP_TOOLS) == EXPECTED_OPERATION_COUNT
+    assert len(glp.GENERATED_GLP_TOOLS) == EXPECTED_REGISTERED_OPERATION_COUNT
 
 
 def test_manifest_provenance_and_digests():
@@ -144,7 +145,7 @@ def test_generated_tools_do_not_disturb_curated_glp_tools():
     for curated in ("glp_get", "list_glp_devices", "glp_write_status", "glp_assign_subscription"):
         assert curated in tools
     # Generated tools live on the same curated server, additive only.
-    assert len(tools) >= EXPECTED_OPERATION_COUNT + 41
+    assert len(tools) >= EXPECTED_REGISTERED_OPERATION_COUNT + 40
 
 
 def test_read_tool_hides_auth_and_write_tool_has_controls():
@@ -167,11 +168,12 @@ def test_dry_run_query_param_collision_preserved_as_suffixed_arg():
 
 def test_read_dispatch_reuses_glp_client_auth_and_bounds(monkeypatch):
     fake = _patch_glp(monkeypatch)
+    monkeypatch.setenv("GLP_GENERATED_REGION", "us-west")
     cap: dict = {}
     _fake_httpx(monkeypatch, cap, payload={"items": [1, 2, 3]})
     out = asyncio.run(_fn(READ_LIST)())
     assert cap["url"] == (
-        "https://global.api.greenlake.hpe.com/compute-ops-mgmt/v1beta1/user-preferences"
+        "https://us-west.api.greenlake.hpe.com/compute-ops-mgmt/v1beta1/user-preferences"
     )
     assert cap["headers"]["Authorization"] == "Bearer GLPTOKEN"
     assert fake._client.token_manager.calls == 1  # token acquired off the event loop
@@ -230,6 +232,8 @@ def test_multipart_write_uses_files(monkeypatch):
     assert out["status_code"] == 200
     assert cap["kw"]["files"]["file"] == (None, "csv,data")
     assert "Content-Type" not in cap["headers"]
+    body_schema = glp.mcp._tool_manager._tools[MULTIPART].parameters["properties"]["body"]
+    assert body_schema["type"] == "object"
 
 
 def test_dry_run_query_param_forwarded_with_original_name(monkeypatch):
@@ -271,12 +275,25 @@ def test_auth_header_param_cannot_shadow_injected_auth(monkeypatch):
     assert headers["X-Trace"] == "t"
 
 
+def test_glp_generated_server_requires_and_maps_region(monkeypatch):
+    path = "/block-storage/v1alpha1/devtype4-storage-systems/s1/application-summary"
+    monkeypatch.delenv("GLP_GENERATED_REGION", raising=False)
+    with pytest.raises(ValueError, match="GLP_GENERATED_REGION"):
+        glp._glp_generated_server(path, "https://global.api.greenlake.hpe.com")
+
+    monkeypatch.setenv("GLP_GENERATED_REGION", "eu-central")
+    assert glp._glp_generated_server(
+        path, "https://global.api.greenlake.hpe.com"
+    ) == "https://eu1.data.cloud.hpe.com"
+
+
 # ---------------------------------------------------------------------------
 # Response bounding
 # ---------------------------------------------------------------------------
 
 def test_binary_read_response_bounded(monkeypatch):
     _patch_glp(monkeypatch)
+    monkeypatch.setenv("GLP_GENERATED_REGION", "us-west")
 
     class BinResp:
         status_code = 200

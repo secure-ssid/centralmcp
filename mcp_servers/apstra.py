@@ -1,10 +1,9 @@
-"""MCP server — optional HPE Juniper Apstra backend (20 curated + 19 generated OpenAPI tools).
+"""MCP server — optional HPE Juniper Apstra backend.
 
 No authoritative distributable full Apstra OpenAPI spec is available, so the
-committed manifest is a *derived operation manifest* capturing the current
-maximum reviewed operation set (NOT full OpenAPI coverage). Of its 19 reviewed
-operations, 17 register as tools; the 2 `Auth` login endpoints are documented
-for provenance only and are never exposed as tools (session auth is injected).
+committed manifest is a *derived operation manifest* from pinned official
+Juniper SDK endpoint mappings (NOT full OpenAPI coverage). Auth endpoints are
+documented for provenance only and are never exposed as tools.
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=apstra
@@ -15,20 +14,18 @@ Auth/env:
   APSTRA_PASSWORD   session login password (preferred — see apstra_login)
   APSTRA_API_TOKEN  pre-issued static AuthToken (skips session login when set)
 
-Auth model: Apstra's documented login flow is `POST /api/user/login` with a
+Auth model: current Apstra's documented login flow is `POST /api/aaa/login` with a
 JSON `{"username", "password"}` body, returning a token that must be sent as
 an `AuthToken` header (not `Authorization: Bearer`) on every subsequent call.
-Older Apstra releases only expose the legacy `/api/aaa/login` endpoint — this
-module tries `/api/user/login` first and falls back to `/api/aaa/login` only
-when the live instance responds 404/405 on the current path. The resulting
-token is cached per base URL and refreshed proactively before its documented
-~24h expiry, or immediately on a 401 response (one retry after a fresh
-re-login). Set `APSTRA_API_TOKEN` to bypass session login entirely with a
-token you already obtained out of band.
+Older supported releases can expose `/api/user/login`; this module falls back
+to that path only when the current endpoint responds 404/405. The token is
+cached per base URL and refreshed on a 401 response. Set `APSTRA_API_TOKEN` to
+bypass session login with a token obtained out of band.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 from urllib.parse import quote
@@ -41,6 +38,7 @@ from mcp_servers.shared import (
     DIAGNOSTIC,
     IDEMPOTENT_WRITE,
     READ_ONLY,
+    bounded_response_payload,
     bound_collection_response,
     clamp_limit,
     compact_http_error,
@@ -66,12 +64,8 @@ def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _EXECUTE_HINT = "Review the request, then call again with dry_run=False and confirm=True."
 
-# Documented current login endpoint first; legacy endpoint only used as a
-# fallback when a live instance answers 404/405 on the current path.
-_LOGIN_ENDPOINTS = ("/api/user/login", "/api/aaa/login")
-# Apstra documents a ~24h token lifetime; refresh a bit early so a proactive
-# call never straddles expiry mid-request.
-_TOKEN_TTL_SECONDS = 20 * 60 * 60
+# Current Apstra 6.1 SDK endpoint first; older SDK releases use /api/user/login.
+_LOGIN_ENDPOINTS = ("/api/aaa/login", "/api/user/login")
 
 # base_url -> {"token", "endpoint", "legacy_fallback", "obtained_at"}
 _TOKEN_CACHE: dict[str, dict[str, Any]] = {}
@@ -259,9 +253,8 @@ def _path_segment(value: str) -> str:
 def _extract_apstra_token(payload: Any) -> str | None:
     """Pull the AuthToken value out of an Apstra login response body.
 
-    Current `/api/user/login` responses are JSON objects with a `token`
-    field; the legacy `/api/aaa/login` endpoint has historically returned a
-    bare JSON string containing the token.
+    Current `/api/aaa/login` responses are JSON objects with a `token` field.
+    Older releases may return a bare JSON token string.
     """
     if isinstance(payload, str):
         text = payload.strip().strip('"')
@@ -279,9 +272,8 @@ async def _apstra_login(
 ) -> dict[str, Any]:
     """Authenticate against Apstra, preferring the current login endpoint.
 
-    Tries `POST /api/user/login` first. Only falls back to the legacy
-    `POST /api/aaa/login` when the current instance answers 404/405 there,
-    i.e. when the live instance itself indicates the modern path is absent.
+    Tries `POST /api/aaa/login` first. Only falls back to the older
+    `POST /api/user/login` when the current instance answers 404/405 there.
     """
     body = {"username": username, "password": password}
     last_error: str | None = None
@@ -312,7 +304,7 @@ async def _get_apstra_token(
     """Return a cached Apstra AuthToken, refreshing on expiry or when `force=True`."""
     cached = _TOKEN_CACHE.get(base_url)
     now = time.monotonic()
-    if not force and cached and (now - cached["obtained_at"]) < _TOKEN_TTL_SECONDS:
+    if not force and cached:
         return {
             "token": cached["token"],
             "endpoint": cached["endpoint"],
@@ -400,7 +392,7 @@ async def _apstra_authenticated_request(
 
     return {
         "status_code": resp.status_code,
-        "data": response_payload(resp),
+        "data": redact_sensitive(bounded_response_payload(resp)),
         "url": url,
         "auth": {
             "mode": "static_token" if static_token else "session",
@@ -435,7 +427,7 @@ def apstra_status() -> dict[str, Any]:
     """Report whether the Apstra backend is configured and how it authenticates.
 
     `auth_mode` is `session` when `APSTRA_USERNAME`/`APSTRA_PASSWORD` are set
-    (documented `/api/user/login` flow, with automatic `/api/aaa/login`
+    (documented `/api/aaa/login` flow, with automatic `/api/user/login`
     fallback only if a live instance requires it), `static_token` when
     `APSTRA_API_TOKEN` is set instead, or `unconfigured`. Reports cached
     session-token age/endpoint without ever revealing the token value.
@@ -469,8 +461,8 @@ def apstra_status() -> dict[str, Any]:
 async def apstra_login(force: bool = False) -> dict[str, Any]:
     """Authenticate to Apstra and cache the resulting `AuthToken`.
 
-    Tries the documented `POST /api/user/login` endpoint first and falls
-    back to the legacy `POST /api/aaa/login` only if the live instance
+    Tries the current `POST /api/aaa/login` endpoint first and falls
+    back to the older `POST /api/user/login` only if the live instance
     responds 404/405 there. Set `force=True` to discard any cached token and
     re-authenticate immediately (e.g. after a password rotation). Never
     returns the token value itself — use this to diagnose login failures.
@@ -666,30 +658,6 @@ async def apstra_list_remote_gateways(
     return out
 
 
-async def _apstra_get_with_fallback(
-    primary_path: str,
-    legacy_path: str,
-    *,
-    limit: int,
-    offset: int,
-) -> dict[str, Any]:
-    """GET a current-API path, falling back to a legacy path only on 404/405.
-
-    Marks the response with `legacy_path_used` so callers can see when a
-    live instance actually required the older endpoint shape, rather than
-    guessing at legacy behavior blindly.
-    """
-    out = await apstra_get(primary_path, limit=limit, offset=offset)
-    if out.get("status_code") in (404, 405):
-        legacy_out = await apstra_get(legacy_path, limit=limit, offset=offset)
-        legacy_out["legacy_path_used"] = True
-        legacy_out["primary_path"] = primary_path
-        legacy_out["primary_path_status"] = out.get("status_code")
-        return legacy_out
-    out["legacy_path_used"] = False
-    return out
-
-
 @mcp.tool(annotations=READ_ONLY)
 async def apstra_list_connectivity_templates(
     blueprint_id: str,
@@ -698,14 +666,11 @@ async def apstra_list_connectivity_templates(
 ) -> dict[str, Any]:
     """List connectivity templates visible in one Apstra blueprint.
 
-    Uses the current `GET /api/blueprints/{id}/connectivity-templates`
-    catalog endpoint. Falls back to the legacy `obj-policy-export` shape
-    only if the live instance responds 404/405 on the current path (older
-    Apstra release) — check `legacy_path_used` in the response.
+    Uses the current `GET /api/blueprints/{id}/endpoint-policies` endpoint
+    from the official Apstra SDK.
     """
-    primary = f"/api/blueprints/{_path_segment(blueprint_id)}/connectivity-templates"
-    legacy = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-export"
-    out = await _apstra_get_with_fallback(primary, legacy, limit=limit, offset=offset)
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/endpoint-policies"
+    out = await apstra_get(path, limit=limit, offset=offset)
     if "data" in out:
         out["connectivity_templates"] = _compact_collection(
             out.pop("data"),
@@ -723,34 +688,16 @@ async def apstra_get_connectivity_template(
 ) -> dict[str, Any]:
     """Get one Apstra connectivity template by ID with compact fields.
 
-    Uses `GET /api/blueprints/{id}/connectivity-templates/{ct_id}`. Falls
-    back to filtering the legacy `obj-policy-export` catalog by ID only if
-    the live instance responds 404/405 on the current per-ID path.
+    Uses `GET /api/blueprints/{id}/endpoint-policies/{policy_id}`.
     """
-    primary = (
-        f"/api/blueprints/{_path_segment(blueprint_id)}/connectivity-templates/"
+    path = (
+        f"/api/blueprints/{_path_segment(blueprint_id)}/endpoint-policies/"
         f"{_path_segment(connectivity_template_id)}"
     )
-    out = await apstra_get(primary)
-    if out.get("status_code") in (404, 405):
-        legacy = await apstra_list_connectivity_templates(blueprint_id, limit=200, offset=0)
-        cts = legacy.get("connectivity_templates")
-        items = cts.get("items", []) if isinstance(cts, dict) else (cts or [])
-        match = next(
-            (item for item in items if isinstance(item, dict) and item.get("id") == connectivity_template_id),
-            None,
-        )
-        return {
-            "connectivity_template": match,
-            "blueprint_id": blueprint_id,
-            "legacy_path_used": True,
-            "primary_path": primary,
-            "primary_path_status": out.get("status_code"),
-        }
+    out = await apstra_get(path)
     if "data" in out:
         out["connectivity_template"] = _compact_record(out.pop("data"), _CONNECTIVITY_TEMPLATE_FIELDS)
         out["blueprint_id"] = blueprint_id
-        out["legacy_path_used"] = False
     return out
 
 
@@ -764,9 +711,7 @@ async def apstra_list_application_endpoints(
 
     Uses `POST /api/blueprints/{id}/obj-policy-application-points`, which
     remains the confirmed working shape for this query-style read across
-    recent Apstra releases (unlike the connectivity-template catalog, no
-    distinct `/connectivity-templates/*` application-point path has been
-    verified — confirm against a live instance if your release differs).
+    recent Apstra releases.
     """
     path = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-application-points"
     out = await _apstra_read_post(path, limit=limit, offset=offset)
@@ -827,6 +772,48 @@ async def apstra_get_system_info(
         )
         out["blueprint_id"] = blueprint_id
     return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def apstra_get_task(blueprint_id: str, task_id: str) -> dict[str, Any]:
+    """Get one Apstra asynchronous blueprint task."""
+    path = (
+        f"/api/blueprints/{_path_segment(blueprint_id)}/tasks/"
+        f"{_path_segment(task_id)}"
+    )
+    out = await apstra_get(path)
+    if "data" in out:
+        out["task"] = out.pop("data")
+        out["blueprint_id"] = blueprint_id
+        out["task_id"] = task_id
+    return out
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+async def apstra_wait_for_task(
+    blueprint_id: str,
+    task_id: str,
+    timeout_seconds: int = 120,
+    poll_interval_seconds: float = 2.0,
+) -> dict[str, Any]:
+    """Poll an Apstra blueprint task until it reaches a terminal state."""
+    timeout = max(1, min(timeout_seconds, 600))
+    interval = max(0.5, min(poll_interval_seconds, 30.0))
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] = {}
+    while True:
+        last = await apstra_get_task(blueprint_id, task_id)
+        task = last.get("task")
+        status = task.get("status") if isinstance(task, dict) else None
+        if status in {"succeeded", "failed", "timeout"}:
+            return last
+        if "error" in last or time.monotonic() >= deadline:
+            return {
+                **last,
+                "timed_out": "error" not in last,
+                "timeout_seconds": timeout,
+            }
+        await asyncio.sleep(interval)
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -910,15 +897,12 @@ async def apstra_create_connectivity_template(
 ) -> dict[str, Any]:
     """Guarded create/update for one Apstra connectivity template.
 
-    Uses `PUT /api/blueprints/{blueprint_id}/connectivity-templates` (current
-    catalog semantics) with `connectivity_template` as the request body. If a
-    live instance predates this endpoint (404/405), use `apstra_write`
-    directly against the legacy `obj-policy-export`/`obj-policy-import` shape
-    instead — this typed wrapper does not guess at that older payload shape.
+    Uses the current `PUT /api/blueprints/{blueprint_id}/obj-policy-import`
+    endpoint with `connectivity_template` as the request body.
     Defaults to `dry_run=True`; execution requires `dry_run=False` and
     `confirm=True`.
     """
-    path = f"/api/blueprints/{_path_segment(blueprint_id)}/connectivity-templates"
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-import"
     return await apstra_write("PUT", path, body=connectivity_template, dry_run=dry_run, confirm=confirm)
 
 
@@ -931,12 +915,12 @@ async def apstra_delete_connectivity_template(
 ) -> dict[str, Any]:
     """Delete one Apstra connectivity template by ID.
 
-    Uses `DELETE /api/blueprints/{blueprint_id}/connectivity-templates/{ct_id}`.
+    Uses `DELETE /api/blueprints/{blueprint_id}/endpoint-policies/{policy_id}`.
     Defaults to `dry_run=True`; execution requires `dry_run=False` and
     `confirm=True`.
     """
     path = (
-        f"/api/blueprints/{_path_segment(blueprint_id)}/connectivity-templates/"
+        f"/api/blueprints/{_path_segment(blueprint_id)}/endpoint-policies/"
         f"{_path_segment(connectivity_template_id)}"
     )
     return await apstra_write("DELETE", path, dry_run=dry_run, confirm=confirm)
@@ -951,7 +935,7 @@ async def apstra_set_application_point_assignment(
 ) -> dict[str, Any]:
     """Guarded batch assignment of connectivity templates to application points.
 
-    PATCHes `/api/blueprints/{blueprint_id}/obj-policy-application-points/batch-apply`
+    PATCHes `/api/blueprints/{blueprint_id}/obj-policy-batch-apply`
     with a caller-supplied `application_points` batch payload. Apstra's exact
     assignment schema for this call has changed across releases — use
     `apstra_list_application_endpoints` (or the Apstra Swagger UI under
@@ -959,7 +943,7 @@ async def apstra_set_application_point_assignment(
     before executing. Defaults to `dry_run=True`; execution requires
     `dry_run=False` and `confirm=True`.
     """
-    path = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-application-points/batch-apply"
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-batch-apply"
     return await apstra_write(
         "PATCH",
         path,
@@ -970,12 +954,10 @@ async def apstra_set_application_point_assignment(
 
 
 # ---------------------------------------------------------------------------
-# Generated operation tools (see mcp_servers/openapi_gen). No authoritative
-# distributable full Apstra OpenAPI spec is available, so the committed manifest
-# at mcp_servers/openapi_gen/manifests/apstra.json is a *derived operation
-# manifest* capturing the current maximum reviewed operation set from the
-# MIT-licensed upstream Apstra backend (this module's curated tools) — NOT full
-# OpenAPI coverage. Every generated call reuses the AuthToken session layer
+# Generated operation tools (see mcp_servers/openapi_gen). No distributable
+# full Apstra OpenAPI spec is available, so the committed manifest is derived
+# from pinned official Juniper SDK endpoint mappings — NOT full OpenAPI
+# coverage. Every generated call reuses the AuthToken session layer
 # (`_apstra_authenticated_request`, with 401 re-login) and preserves the curated
 # connectivity-template workflow endpoints. The two documented login endpoints
 # are auth-only and are skipped at registration (session auth is injected, never
@@ -1012,7 +994,9 @@ async def _apstra_generated_read(
     clean_params = {k: v for k, v in query.items() if v is not None}
     out = await _apstra_authenticated_request(method, url, params=clean_params)
     if isinstance(out, dict) and "data" in out:
-        out["data"] = bound_collection_response(out["data"], limit=clamp_limit(None), offset=0)
+        out["data"] = redact_sensitive(
+            bound_collection_response(out["data"], limit=clamp_limit(None), offset=0)
+        )
     return out
 
 
