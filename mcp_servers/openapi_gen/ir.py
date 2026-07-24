@@ -1,4 +1,4 @@
-"""OpenAPI 3.0/3.1 parser and intermediate representation (IR).
+"""Swagger 2.0 and OpenAPI 3.0/3.1 parser and intermediate representation (IR).
 
 This module turns a raw OpenAPI document into a deterministic, flattened list
 of :class:`OperationIR` records that the manifest builder and runtime consume.
@@ -35,6 +35,203 @@ class OpenApiError(Exception):
 
 class UnresolvedRefError(OpenApiError):
     """Raised when a ``$ref`` cannot be resolved to a local component."""
+
+
+def _rewrite_swagger_refs(value: Any) -> Any:
+    """Rewrite Swagger 2 component refs to their OpenAPI 3 locations."""
+    if isinstance(value, list):
+        return [_rewrite_swagger_refs(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    rewritten: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "$ref" and isinstance(item, str):
+            item = item.replace("#/definitions/", "#/components/schemas/", 1)
+            item = item.replace("#/parameters/", "#/components/parameters/", 1)
+            item = item.replace("#/responses/", "#/components/responses/", 1)
+        rewritten[key] = _rewrite_swagger_refs(item)
+    return rewritten
+
+
+def _swagger_parameter_schema(parameter: dict[str, Any]) -> dict[str, Any]:
+    schema = parameter.get("schema")
+    if isinstance(schema, dict):
+        return _rewrite_swagger_refs(schema)
+    return {
+        key: _rewrite_swagger_refs(parameter[key])
+        for key in ("type", "format", "items", "enum", "default")
+        if key in parameter
+    }
+
+
+def _normalize_swagger_parameters(
+    parameters: list[Any], consumes: list[str]
+) -> tuple[list[Any], dict[str, Any] | None]:
+    normalized: list[Any] = []
+    body_parameter: dict[str, Any] | None = None
+    form_properties: dict[str, Any] = {}
+    form_required: list[str] = []
+
+    for raw in parameters:
+        parameter = _rewrite_swagger_refs(raw)
+        if not isinstance(parameter, dict) or "$ref" in parameter:
+            normalized.append(parameter)
+            continue
+        location = parameter.get("in")
+        if location == "body":
+            if body_parameter is not None:
+                raise OpenApiError("Swagger 2 operation declares multiple body parameters")
+            body_parameter = {
+                "required": bool(parameter.get("required", False)),
+                "description": str(parameter.get("description", "")),
+                "content": {
+                    (consumes[0] if consumes else "application/json"): {
+                        "schema": _swagger_parameter_schema(parameter)
+                    }
+                },
+            }
+            continue
+        if location == "formData":
+            name = parameter.get("name")
+            if not isinstance(name, str) or not name:
+                raise OpenApiError(f"invalid Swagger 2 formData parameter: {raw!r}")
+            form_properties[name] = _swagger_parameter_schema(parameter)
+            if parameter.get("required"):
+                form_required.append(name)
+            continue
+        converted = dict(parameter)
+        converted["schema"] = _swagger_parameter_schema(parameter)
+        for key in ("type", "format", "items", "enum", "default"):
+            converted.pop(key, None)
+        normalized.append(converted)
+
+    if form_properties:
+        if body_parameter is not None:
+            raise OpenApiError("Swagger 2 operation mixes body and formData parameters")
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": dict(sorted(form_properties.items())),
+        }
+        if form_required:
+            schema["required"] = sorted(form_required)
+        content_type = next(
+            (
+                item
+                for item in consumes
+                if item in {"multipart/form-data", "application/x-www-form-urlencoded"}
+            ),
+            "multipart/form-data",
+        )
+        body_parameter = {
+            "required": bool(form_required),
+            "content": {content_type: {"schema": schema}},
+        }
+    return normalized, body_parameter
+
+
+def normalize_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a supported Swagger/OpenAPI document for the shared IR."""
+    if not isinstance(spec, dict):
+        raise OpenApiError("spec must be a JSON object")
+    if "openapi" in spec:
+        version = str(spec.get("openapi") or "")
+        if not version.startswith(("3.0", "3.1")):
+            raise OpenApiError(
+                f"unsupported OpenAPI version {version!r}; expected 3.0.x or 3.1.x"
+            )
+        return spec
+
+    version = str(spec.get("swagger") or "")
+    if version != "2.0":
+        raise OpenApiError(
+            f"unsupported API document version {version!r}; expected Swagger 2.0 "
+            "or OpenAPI 3.0.x/3.1.x"
+        )
+
+    definitions = _rewrite_swagger_refs(spec.get("definitions") or {})
+    global_consumes = [
+        str(item) for item in spec.get("consumes", []) if isinstance(item, str)
+    ]
+    paths: dict[str, Any] = {}
+    raw_paths = spec.get("paths")
+    if not isinstance(raw_paths, dict):
+        raise OpenApiError("spec has no 'paths' object")
+    for path, raw_item in raw_paths.items():
+        if not isinstance(raw_item, dict):
+            continue
+        item = _rewrite_swagger_refs(raw_item)
+        converted_item: dict[str, Any] = {}
+        shared_parameters, shared_body = _normalize_swagger_parameters(
+            list(item.get("parameters", [])), global_consumes
+        )
+        if shared_body is not None:
+            raise OpenApiError("Swagger 2 path-level body/formData parameters are unsupported")
+        if shared_parameters:
+            converted_item["parameters"] = shared_parameters
+        for method, raw_operation in item.items():
+            if method not in HTTP_METHODS or not isinstance(raw_operation, dict):
+                continue
+            operation = dict(raw_operation)
+            consumes = [
+                str(value)
+                for value in operation.get("consumes", global_consumes)
+                if isinstance(value, str)
+            ]
+            parameters, request_body = _normalize_swagger_parameters(
+                list(operation.get("parameters", [])), consumes
+            )
+            operation["parameters"] = parameters
+            operation.pop("consumes", None)
+            operation.pop("produces", None)
+            if request_body is not None:
+                operation["requestBody"] = request_body
+            converted_item[method] = operation
+        paths[str(path)] = converted_item
+
+    security_schemes: dict[str, Any] = {}
+    for name, raw_scheme in (spec.get("securityDefinitions") or {}).items():
+        if not isinstance(raw_scheme, dict):
+            continue
+        scheme = _rewrite_swagger_refs(raw_scheme)
+        if scheme.get("type") == "basic":
+            scheme = {"type": "http", "scheme": "basic"}
+        security_schemes[str(name)] = scheme
+
+    components: dict[str, Any] = {}
+    if definitions:
+        components["schemas"] = definitions
+    if spec.get("parameters"):
+        if not isinstance(spec["parameters"], dict):
+            raise OpenApiError("Swagger 2 reusable parameters must be an object")
+        converted_parameters: dict[str, Any] = {}
+        for name, raw_parameter in spec["parameters"].items():
+            if not isinstance(raw_parameter, dict):
+                continue
+            parameters, request_body = _normalize_swagger_parameters(
+                [raw_parameter], global_consumes
+            )
+            if request_body is not None:
+                raise OpenApiError(
+                    "reusable Swagger 2 body/formData parameters are unsupported"
+                )
+            if parameters:
+                converted_parameters[str(name)] = parameters[0]
+        components["parameters"] = converted_parameters
+    if spec.get("responses"):
+        components["responses"] = _rewrite_swagger_refs(spec["responses"])
+    if security_schemes:
+        components["securitySchemes"] = security_schemes
+
+    normalized: dict[str, Any] = {
+        "openapi": "3.0.3",
+        "info": _rewrite_swagger_refs(spec.get("info") or {}),
+        "paths": paths,
+    }
+    if components:
+        normalized["components"] = components
+    if isinstance(spec.get("security"), list):
+        normalized["security"] = _rewrite_swagger_refs(spec["security"])
+    return normalized
 
 
 @dataclass
@@ -146,14 +343,9 @@ class SpecParser:
     """Resolve refs and flatten operations for one OpenAPI document."""
 
     def __init__(self, spec: dict[str, Any]):
-        if not isinstance(spec, dict):
-            raise OpenApiError("spec must be a JSON object")
-        self.spec = spec
-        self.version = str(spec.get("openapi") or spec.get("swagger") or "")
-        if not self.version.startswith(("3.0", "3.1")):
-            raise OpenApiError(
-                f"unsupported OpenAPI version {self.version!r}; expected 3.0.x or 3.1.x"
-            )
+        original_version = str(spec.get("openapi") or spec.get("swagger") or "")
+        self.spec = normalize_spec(spec)
+        self.version = original_version
 
     # -- ref resolution ------------------------------------------------
     def resolve_ref(self, ref: str) -> Any:
@@ -256,7 +448,9 @@ class SpecParser:
             default=default,
             item_type=item_type,
             schema_format=(
-                str(schema.get("format")) if isinstance(schema, dict) and schema.get("format") else None
+                str(schema.get("format"))
+                if isinstance(schema, dict) and schema.get("format")
+                else None
             ),
             style=str(param["style"]) if param.get("style") else None,
             explode=param.get("explode") if isinstance(param.get("explode"), bool) else None,

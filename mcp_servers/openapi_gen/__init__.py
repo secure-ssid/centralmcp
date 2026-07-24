@@ -3,7 +3,7 @@
 This package provides a reusable pipeline that turns a vendor OpenAPI document
 into named FastMCP tools:
 
-* :mod:`ir` -- OpenAPI 3.0/3.1 parser and intermediate representation.
+* :mod:`ir` -- Swagger 2.0/OpenAPI 3.0/3.1 normalization and IR.
 * :mod:`naming` -- deterministic, globally-unique tool naming.
 * :mod:`classify` -- read/write/destructive capability classification.
 * :mod:`manifest` -- build/serialize/load the committed operation manifest.

@@ -3,7 +3,7 @@
 The core router catalog is quick to build locally. The full docs/API RAG index is
 larger, so public releases can include a prebuilt archive.
 
-## Current 0.3.0 snapshot
+## Current 0.4.0 snapshot
 
 | Artifact content | Count |
 |---|---:|
@@ -13,7 +13,7 @@ larger, so public releases can include a prebuilt archive.
 | Schemas | 10,297 |
 | Fields | 57,131 |
 | Generated operation manifests | 5,703 |
-| Complete backend tool catalog | 6,133 |
+| Complete backend tool catalog | 6,162 |
 
 OpenAPI documents are parsed only into SQLite exact lookup. They are not
 embedded into LanceDB, which keeps prose retrieval smaller and avoids lossy
@@ -58,7 +58,7 @@ uv run python ingestion/fetch_mist_openapi.py
 uv run python scripts/check_openapi_drift.py
 uv run python scripts/check_mist_openapi_drift.py
 uv run python ingestion/ingest_docs.py
-CENTRALMCP_PRODUCT_ACCESS=read-write uv run python scripts/ingest_tools.py --products all
+CENTRALMCP_PRODUCT_ACCESS=read-write CENTRALMCP_GLP_GENERATED_TOOLS=1 uv run python scripts/ingest_tools.py --products all
 ```
 
 Package them:

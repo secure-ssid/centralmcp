@@ -1,17 +1,18 @@
 """MCP server — GreenLake Platform (GLP): inventory, licensing, users, and
-service catalog (40 curated + 904 active generated tools; 918 in provenance manifest).
+service catalog (62 curated + 904 active generated tools; 918 in provenance manifest).
 
 Covers: GLP device lifecycle (v1 + v2beta1), device grouping summaries,
 subscription assignment/bulk-add, audit logs (v1 + v2beta1), users, workspaces
 (incl. contact PATCH), reporting statuses, service-catalog reads, and a guarded
-read-only GLP GET covering RBAC/authorization, events, webhooks, tags, location,
-and SCIM families pending dedicated typed wrappers (see list_glp_api_families).
+read-only GLP GET. Curated workflows also cover RBAC role/scope inspection,
+event webhooks/subscriptions/deliveries, workspace tags/locations, and SCIM
+user/group membership reads (see list_glp_api_families).
 Uses the target_account (glp_account) credentials.
 """
 import asyncio
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
@@ -41,13 +42,8 @@ _GLP_GET_PREFIXES = (
     "/service-catalog/",
     "/workspaces/",
     "/reporting/",
-    # Added for RBAC/authorization, events/webhooks, tags, location, and
-    # SCIM reads. Exact resource shapes for these families have not been
-    # independently re-verified against live spec text (unlike the
-    # devices/subscriptions/audit-log/workspaces families above, which back
-    # confirmed-working typed tools) — use glp_get to explore before adding
-    # dedicated typed wrappers. See glp_write_status / list_glp_api_families
-    # for what remains unconfirmed.
+    # Curated typed reads below cover the common workflows in these families;
+    # glp_get remains available for documented resources without a named tool.
     "/authorization/",
     "/events/",
     "/webhooks/",
@@ -167,6 +163,26 @@ def _glp_read(
         if warnings:
             result["warnings"] = warnings
         return result
+
+
+def _glp_list_read(
+    path: str,
+    params: dict[str, Any],
+    *,
+    limit: int,
+    list_key: str | None = "items",
+) -> dict[str, Any]:
+    result = _glp_read(path, params)
+    if result.get("data") is not None:
+        result["data"] = redact_sensitive(
+            bound_collection_response(
+                result["data"],
+                limit=clamp_limit(limit),
+                offset=0,
+                list_key=list_key,
+            )
+        )
+    return result
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -477,6 +493,325 @@ def get_glp_service_managers_for_region(region_id: str) -> dict[str, Any]:
     return _glp_read(f"/service-catalog/v1/per-region-service-managers/{_path_part(region_id)}")
 
 
+# ── Authorization / RBAC v1beta1 ─────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_role_assignments(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List RBAC role assignments with bounded offset pagination.
+
+    The documented OData subset supports `in` and `and` on role, scope, and
+    principal, with each attribute appearing at most once.
+    """
+    bounded_limit = clamp_limit(limit)
+    return _glp_list_read(
+        "/authorization/v1beta1/role-assignments",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_role_assignment(role_assignment_id: str) -> dict[str, Any]:
+    """Fetch one RBAC role assignment by ID."""
+    return _glp_read(
+        f"/authorization/v1beta1/role-assignments/{_path_part(role_assignment_id)}"
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_scope_groups(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+    sort: str | None = None,
+) -> dict[str, Any]:
+    """List RBAC scope groups with bounded offset pagination."""
+    bounded_limit = clamp_limit(limit)
+    return _glp_list_read(
+        "/authorization/v1beta1/scope-groups",
+        _paged_params(bounded_limit, offset, filter=filter, sort=sort),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_scope_group(scope_group_id: str) -> dict[str, Any]:
+    """Fetch one RBAC scope group by ID."""
+    return _glp_read(
+        f"/authorization/v1beta1/scope-groups/{_path_part(scope_group_id)}"
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_scope_group_scopes(
+    scope_group_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List scopes assigned to an RBAC scope group."""
+    bounded_limit = clamp_limit(limit)
+    return _glp_list_read(
+        f"/authorization/v1beta1/scope-groups/{_path_part(scope_group_id)}/scopes",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+# ── Event webhooks v1beta1 ───────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_event_webhooks(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List workspace event webhooks, newest first."""
+    bounded_limit = clamp_limit(limit)
+    return _glp_list_read(
+        "/events/v1beta1/webhooks",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_event_webhook(webhook_id: str) -> dict[str, Any]:
+    """Fetch one workspace event webhook by ID."""
+    return _glp_read(f"/events/v1beta1/webhooks/{_path_part(webhook_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_event_subscriptions(
+    filter: str,
+    limit: int = 10,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List event subscriptions for a webhook.
+
+    `filter` is required by the GLP v1beta1 operation; the documented
+    supported filter field is `webhookId`.
+    """
+    bounded_limit = clamp_limit(limit)
+    return _glp_list_read(
+        "/events/v1beta1/subscriptions",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_webhook_deliveries(
+    webhook_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List recent delivery attempts for a workspace event webhook."""
+    bounded_limit = clamp_limit(limit)
+    return _glp_list_read(
+        f"/events/v1beta1/webhooks/{_path_part(webhook_id)}/recent-deliveries",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+# ── Location management v1 ───────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_locations(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List workspace locations; the documented filter supports location name."""
+    bounded_limit = clamp_limit(limit)
+    return _glp_list_read(
+        "/locations/v1/locations",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_location(location_id: str) -> dict[str, Any]:
+    """Fetch one workspace location by ID."""
+    return _glp_read(f"/locations/v1/locations/{_path_part(location_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def reverse_geocode_glp_location(
+    latitude: float,
+    longitude: float,
+    language: str | None = None,
+) -> dict[str, Any]:
+    """Resolve latitude/longitude to a location, optionally using an ISO language code."""
+    return _glp_read(
+        "/locations/v1/locations/address/revgeocode",
+        _params(latitude=latitude, longitude=longitude, language=language),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_location_tags(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List location-management tags for the workspace."""
+    bounded_limit = clamp_limit(limit)
+    return _glp_list_read(
+        "/locations/v1/locations/tags",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_location_tags(location_id: str) -> dict[str, Any]:
+    """Fetch location-management tags assigned to one location."""
+    return _glp_read(f"/locations/v1/locations/tags/{_path_part(location_id)}")
+
+
+# ── Workspace tags v1 ────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_tags(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+    sort: str | None = None,
+    select: list[str] | None = None,
+) -> dict[str, Any]:
+    """List workspace tags with filter, sort, projection, and bounded pagination."""
+    bounded_limit = clamp_limit(limit)
+    return _glp_list_read(
+        "/tags/v1/tags",
+        _paged_params(
+            bounded_limit,
+            offset,
+            filter=filter,
+            sort=sort,
+            select=select,
+        ),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_tag_resources(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+    filter_tags: str | None = None,
+    sort: str | None = None,
+    select: list[str] | None = None,
+) -> dict[str, Any]:
+    """List tagged workspace resources with bounded pagination."""
+    bounded_limit = clamp_limit(limit)
+    return _glp_list_read(
+        "/tags/v1/tag-resources",
+        _paged_params(
+            bounded_limit,
+            offset,
+            filter=filter,
+            sort=sort,
+            select=select,
+            **{"filter-tags": filter_tags},
+        ),
+        limit=bounded_limit,
+    )
+
+
+# ── Identity SCIM v2beta1 ────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_scim_users(
+    filter: str | None = None,
+    count: int = 100,
+    start_index: int = 1,
+    sort_by: Literal["displayName", "meta.lastLogin"] | None = None,
+    sort_order: Literal["ascending", "descending"] | None = None,
+) -> dict[str, Any]:
+    """List SCIM users with 1-based pagination.
+
+    Supported user filters are displayName/userName with sw, eq, or co.
+    sort_by supports displayName or meta.lastLogin; sort_order supports
+    ascending or descending.
+    """
+    bounded_count = clamp_limit(count)
+    return _glp_list_read(
+        "/identity/v2beta1/scim/v2/Users",
+        _params(
+            filter=filter,
+            count=bounded_count,
+            startIndex=max(1, start_index),
+            sortBy=sort_by,
+            sortOrder=sort_order,
+        ),
+        limit=bounded_count,
+        list_key="Resources",
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_scim_user(user_id: str) -> dict[str, Any]:
+    """Fetch one SCIM user by ID."""
+    return _glp_read(f"/identity/v2beta1/scim/v2/Users/{_path_part(user_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_scim_groups(
+    filter: str | None = None,
+    count: int = 100,
+    start_index: int = 1,
+) -> dict[str, Any]:
+    """List SCIM user groups with 1-based pagination."""
+    bounded_count = clamp_limit(count)
+    return _glp_list_read(
+        "/identity/v2beta1/scim/v2/Groups",
+        _params(
+            filter=filter,
+            count=bounded_count,
+            startIndex=max(1, start_index),
+        ),
+        limit=bounded_count,
+        list_key="Resources",
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_scim_group(group_id: str) -> dict[str, Any]:
+    """Fetch one SCIM user group by ID."""
+    return _glp_read(f"/identity/v2beta1/scim/v2/Groups/{_path_part(group_id)}")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_scim_group_users(
+    group_id: str,
+    count: int = 100,
+    start_index: int = 1,
+) -> dict[str, Any]:
+    """List SCIM users assigned to a user group."""
+    bounded_count = clamp_limit(count)
+    return _glp_list_read(
+        f"/identity/v2beta1/scim/v2/extensions/Groups/{_path_part(group_id)}/users",
+        _params(count=bounded_count, startIndex=max(1, start_index)),
+        limit=bounded_count,
+        list_key="Resources",
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_scim_user_groups(
+    user_id: str,
+    count: int = 100,
+    start_index: int = 1,
+) -> dict[str, Any]:
+    """List SCIM groups assigned to a user."""
+    bounded_count = clamp_limit(count)
+    return _glp_list_read(
+        f"/identity/v2beta1/scim/v2/extensions/Users/{_path_part(user_id)}/groups",
+        _params(count=bounded_count, startIndex=max(1, start_index)),
+        limit=bounded_count,
+        list_key="Resources",
+    )
+
+
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
 def glp_assign_subscription(serial_number: str, subscription_key: str) -> dict[str, Any]:
     """Assign a GLP subscription (license) to a device.
@@ -725,44 +1060,45 @@ def glp_add_subscriptions(subscription_keys: list[str], dry_run: bool = False) -
 @mcp.tool(annotations=READ_ONLY)
 def list_glp_api_families() -> dict[str, Any]:
     """List guarded GLP GET path-prefixes reachable via glp_get, and note which
-    dedicated typed tools are confirmed-working vs. best-effort/unconfirmed.
-
-    Use this before assuming a typed wrapper exists for RBAC/authorization,
-    events, webhooks, tags, locations, SCIM, or API-client credentials —
-    those families are reachable through glp_get for exploration but do not
-    yet have dedicated typed wrappers pending live-tenant/spec verification.
+    dedicated typed tools are manifest-backed vs. best-effort/unconfirmed.
     """
+    manifest_backed_tools = [
+        "list_glp_devices", "get_glp_device", "get_glp_device_by_id",
+        "list_glp_devices_v2", "get_glp_device_v2",
+        "list_glp_subscriptions", "get_glp_subscription",
+        "list_glp_users", "get_glp_user",
+        "list_glp_audit_logs", "get_glp_audit_log_detail",
+        "list_glp_audit_logs_v2", "get_glp_audit_log_v2", "get_glp_audit_log_v2_detail",
+        "get_glp_workspace", "get_glp_workspace_contact", "update_glp_workspace_contact",
+        "list_glp_reporting_statuses", "get_glp_reporting_status",
+        "list_glp_service_offers", "get_glp_service_offer",
+        "list_glp_role_assignments", "get_glp_role_assignment",
+        "list_glp_scope_groups", "get_glp_scope_group", "list_glp_scope_group_scopes",
+        "list_glp_event_webhooks", "get_glp_event_webhook",
+        "list_glp_event_subscriptions", "list_glp_webhook_deliveries",
+        "list_glp_locations", "get_glp_location", "reverse_geocode_glp_location",
+        "list_glp_location_tags", "get_glp_location_tags",
+        "list_glp_tags", "list_glp_tag_resources",
+        "list_glp_scim_users", "get_glp_scim_user",
+        "list_glp_scim_groups", "get_glp_scim_group",
+        "list_glp_scim_group_users", "list_glp_scim_user_groups",
+    ]
     return {
         "guarded_get_prefixes": list(_GLP_GET_PREFIXES),
-        "confirmed_typed_tools": [
-            "list_glp_devices", "get_glp_device", "get_glp_device_by_id",
-            "list_glp_devices_v2", "get_glp_device_v2",
-            "list_glp_subscriptions", "get_glp_subscription",
-            "list_glp_users", "get_glp_user",
-            "list_glp_audit_logs", "get_glp_audit_log_detail",
-            "list_glp_audit_logs_v2", "get_glp_audit_log_v2", "get_glp_audit_log_v2_detail",
-            "get_glp_workspace", "get_glp_workspace_contact", "update_glp_workspace_contact",
-            "list_glp_reporting_statuses", "get_glp_reporting_status",
-            "list_glp_service_offers", "get_glp_service_offer",
-        ],
+        "confirmed_typed_tools": manifest_backed_tools,
+        "curated_manifest_backed_tools": manifest_backed_tools,
         "best_effort_typed_tools": [
             "group_glp_devices",
             "glp_add_subscriptions",
         ],
         "explore_only_families": {
-            "RBAC/authorization": "/authorization/...",
-            "events": "/events/...",
-            "webhooks": "/webhooks/...",
             "notifications": "/notifications/...",
-            "tags": "/tags/...",
-            "location": "/locations/...",
-            "SCIM": "/scim/...",
             "API client credentials": "no confirmed path — not exposed via glp_get yet",
         },
         "note": (
-            "explore_only_families have no dedicated typed wrapper in this pass — "
-            "call glp_get(path=...) against the listed prefix to probe the exact "
-            "resource shape on your tenant, then request a typed wrapper once confirmed."
+            "Named RBAC, event-webhook, tag, location, and SCIM reads are backed by "
+            "the committed GLP OpenAPI manifest. Use glp_get only for other documented "
+            "resources under an allowed prefix."
         ),
     }
 
@@ -776,9 +1112,11 @@ def list_glp_api_families() -> dict[str, Any]:
 # "provenance" block and scripts/generate_glp_tools.py). Every unique documented
 # GLP operation becomes a directly-callable, typed FastMCP tool that reuses the
 # target-account GLPClient auth/workspace/retry behavior. Registration is guarded
-# by CENTRALMCP_GLP_GENERATED_TOOLS and defaults ON when the manifest exists.
+# by CENTRALMCP_GLP_GENERATED_TOOLS and defaults OFF (see
+# _glp_generated_enabled below) except in `direct` router mode with the
+# `glp`/`all` toolset, so the default curated aruba-glp catalog stays small.
 #
-# The 40 curated GLP tools above are the confirmed-working, hand-tuned surface;
+# The 62 curated GLP tools above are the confirmed-working, hand-tuned surface;
 # the generated glp_* tools broaden coverage to the full workspace/inventory/
 # licensing/service-catalog/storage/compute surface. Generated writes stay
 # fail-closed behind the same CENTRALMCP_GLP_V2BETA1_WRITES gate and default to
@@ -905,7 +1243,7 @@ def _glp_generated_enabled() -> bool:
 
     Opt-in and **default OFF**: unlike the optional-product starter backends,
     the ~918 generated GLP tools are a very large surface, so we keep the
-    default ``aruba-glp`` catalog to the 40 curated tools and only expand when
+    default ``aruba-glp`` catalog to the 62 curated tools and only expand when
     an operator sets ``CENTRALMCP_GLP_GENERATED_TOOLS`` truthy. (Central's
     generated tools live on a separate ``aruba-central-generated`` server, so
     they can default on without inflating a shared catalog; the GLP generated

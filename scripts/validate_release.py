@@ -150,6 +150,10 @@ def main() -> int:
         [sys.executable, "scripts/check_generated_tool_manifests.py"],
         "Generated tool manifests",
     )
+    _run(
+        [sys.executable, "scripts/report_capability_gaps.py", "--check"],
+        "Capability gap report",
+    )
 
     print("\n==> Tool catalog count", flush=True)
     total = _tool_catalog_count(args.catalog_products)

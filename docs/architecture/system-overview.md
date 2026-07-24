@@ -44,7 +44,7 @@ Optional products are disabled until explicitly enabled:
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 ```
 
-The current catalog contains 5,703 generated operations and 6,133 backend tools
+The current catalog contains 5,703 generated operations and 6,162 backend tools
 when every platform and guarded write is indexed. Minimal
 router mode exposes only the compact discovery/dispatch surface to the client.
 

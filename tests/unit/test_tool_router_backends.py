@@ -8,6 +8,7 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 import mcp_servers.tool_router as router
+from mcp_servers.shared import IDEMPOTENT_WRITE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -125,6 +126,43 @@ def test_load_all_backends_exposes_optional_writes_when_read_write(monkeypatch):
     assert "clearpass_delete_guest" in router._tool_index
 
 
+@pytest.mark.parametrize(
+    ("shared_access", "axis_override", "expected"),
+    [
+        ("read-only", "1", True),
+        ("read-write", "0", False),
+        ("read-write", "invalid", False),
+    ],
+)
+def test_load_all_backends_honors_platform_override_precedence(
+    monkeypatch,
+    shared_access,
+    axis_override,
+    expected,
+):
+    backend = FastMCP("axis-override")
+
+    @backend.tool(annotations=IDEMPOTENT_WRITE)
+    def axis_update_widget() -> dict:
+        return {"updated": True}
+
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", shared_access)
+    monkeypatch.setenv("CENTRALMCP_AXIS_WRITES", axis_override)
+    monkeypatch.setattr(router, "_BACKENDS", {"axis-core": "demo.axis"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_tool_servers", {})
+    monkeypatch.setattr(router, "_tool_backend_names", {})
+    monkeypatch.setattr(
+        router.importlib,
+        "import_module",
+        lambda path: SimpleNamespace(mcp=backend),
+    )
+
+    router._load_all_backends()
+
+    assert ("axis_update_widget" in router._tool_index) is expected
+
+
 def test_load_all_backends_rejects_cross_backend_name_collisions(monkeypatch):
     first = FastMCP("first")
     second = FastMCP("second")
@@ -134,7 +172,7 @@ def test_load_all_backends_rejects_cross_backend_name_collisions(monkeypatch):
         return "first"
 
     @second.tool()
-    def duplicate_name() -> str:
+    def duplicate_name() -> str:  # noqa: F811
         return "second"
 
     modules = {
@@ -288,6 +326,17 @@ def test_find_tool_filters_optional_write_hits_when_read_only(monkeypatch):
 def test_find_tool_omits_schema_by_default(monkeypatch):
     monkeypatch.setattr(router, "_BACKEND", "lancedb")
     monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "mcp_servers.config"})
+    monkeypatch.setattr(
+        router,
+        "_tool_index",
+        {
+            "create_vlan": SimpleNamespace(
+                annotations=IDEMPOTENT_WRITE,
+                parameters={"properties": {"vlan_id": {"type": "integer"}}},
+            )
+        },
+    )
+    monkeypatch.setattr(router, "_load_all_backends", lambda: None)
     monkeypatch.setattr(router, "_keyword_hits", lambda query, limit, include_schema=False: [])
     monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
     monkeypatch.setattr(router._lance, "connect", lambda: object())
@@ -314,6 +363,17 @@ def test_find_tool_omits_schema_by_default(monkeypatch):
 def test_find_tool_can_include_schema_when_requested(monkeypatch):
     monkeypatch.setattr(router, "_BACKEND", "lancedb")
     monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "mcp_servers.config"})
+    monkeypatch.setattr(
+        router,
+        "_tool_index",
+        {
+            "create_vlan": SimpleNamespace(
+                annotations=IDEMPOTENT_WRITE,
+                parameters={"properties": {"vlan_id": {"type": "integer"}}},
+            )
+        },
+    )
+    monkeypatch.setattr(router, "_load_all_backends", lambda: None)
     monkeypatch.setattr(router, "_keyword_hits", lambda query, limit, include_schema=False: [])
     monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
     monkeypatch.setattr(router._lance, "connect", lambda: object())
@@ -372,6 +432,332 @@ def test_find_tool_hydrates_annotations_for_semantic_only_results(monkeypatch):
     assert result[0]["read_only"] is True
     assert result[0]["destructive"] is False
     assert result[0]["idempotent"] is True
+
+
+@pytest.mark.parametrize(
+    ("annotations", "schema", "capability", "dispatcher", "confirmation_required"),
+    [
+        (router.READ_ONLY, {}, "read", "invoke_read_tool", False),
+        (router.DIAGNOSTIC, {}, "diagnostic", "invoke_tool", False),
+        (
+            IDEMPOTENT_WRITE,
+            {"properties": {"confirm": {"type": "boolean"}}},
+            "write",
+            "invoke_tool",
+            True,
+        ),
+        (router.DESTRUCTIVE, {}, "destructive", "invoke_tool", True),
+    ],
+)
+def test_discovery_capability_is_normalized_from_annotations(
+    monkeypatch,
+    annotations,
+    schema,
+    capability,
+    dispatcher,
+    confirmation_required,
+):
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "demo.config"})
+    metadata = router._discovery_metadata(
+        SimpleNamespace(annotations=annotations),
+        "aruba-config",
+        schema,
+    )
+
+    assert metadata["capability"] == capability
+    assert metadata["recommended_dispatcher"] == dispatcher
+    assert metadata["requires_confirmation"] is confirmation_required
+
+
+def test_find_tool_filters_keyword_results_and_reports_write_contract(monkeypatch):
+    backend = FastMCP("discovery-keyword")
+
+    @backend.tool(annotations=router.READ_ONLY)
+    def list_widgets(limit: int = 10) -> dict:
+        return {"limit": limit}
+
+    @backend.tool(annotations=IDEMPOTENT_WRITE)
+    def update_widget(
+        widget_id: str,
+        dry_run: bool = True,
+        confirm: bool = False,
+    ) -> dict:
+        return {"widget_id": widget_id, "dry_run": dry_run, "confirm": confirm}
+
+    tools = dict(backend._tool_manager._tools)
+    monkeypatch.setenv("CENTRALMCP_CENTRAL_WRITES", "0")
+    monkeypatch.setattr(
+        router,
+        "_BACKENDS",
+        {
+            "aruba-monitoring": "demo.monitoring",
+            "aruba-config": "demo.config",
+        },
+    )
+    monkeypatch.setattr(router, "_tool_index", tools)
+    monkeypatch.setattr(
+        router,
+        "_tool_backend_names",
+        {
+            "list_widgets": "aruba-monitoring",
+            "update_widget": "aruba-config",
+        },
+    )
+    monkeypatch.setattr(router, "_load_all_backends", lambda: None)
+    monkeypatch.setattr(router, "_BACKEND", "lancedb")
+    monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
+    monkeypatch.setattr(router._lance, "connect", lambda: object())
+    monkeypatch.setattr(
+        router._lance,
+        "search_tools",
+        lambda db, query, vec, top_k: [],
+    )
+
+    result = router.find_tool(
+        "widget",
+        top_k=5,
+        platform="central",
+        server="aruba-config",
+        capability="write",
+    )
+
+    assert [item["name"] for item in result] == ["update_widget"]
+    item = result[0]
+    assert item["platform"] == "central"
+    assert item["capability"] == "write"
+    assert item["recommended_dispatcher"] == "invoke_tool"
+    assert item["requires_write_enablement"] is True
+    assert item["currently_enabled"] is False
+    assert item["supports_dry_run"] is True
+    assert item["supports_confirm"] is True
+    assert item["requires_confirmation"] is True
+    assert item["read_only"] is False
+    assert item["destructive"] is False
+    assert item["idempotent"] is True
+    assert item["execution_contract"] == {
+        "platform": "central",
+        "capability": "write",
+        "gate": {
+            "env_var": "CENTRALMCP_CENTRAL_WRITES",
+            "state": "disabled",
+            "source": "platform_override",
+        },
+        "dry_run": {"supported": True, "state": "default_preview"},
+        "confirm": {"supported": True, "required": True},
+        "idempotent": True,
+        "next_action": (
+            "Set CENTRALMCP_CENTRAL_WRITES=1, then call invoke_tool with "
+            "dry_run=true to preview."
+        ),
+    }
+
+
+def test_find_tool_filters_semantic_results_by_diagnostic_capability(monkeypatch):
+    backend = FastMCP("discovery-semantic")
+
+    @backend.tool(annotations=router.READ_ONLY)
+    def mist_widget_status() -> dict:
+        return {"status": "ok"}
+
+    @backend.tool(annotations=router.DIAGNOSTIC)
+    def mist_widget_diagnostic() -> dict:
+        return {"status": "healthy"}
+
+    tools = dict(backend._tool_manager._tools)
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+    monkeypatch.setattr(router, "_BACKEND", "lancedb")
+    monkeypatch.setattr(router, "_BACKENDS", {"mist-core": "demo.mist"})
+    monkeypatch.setattr(router, "_tool_index", tools)
+    monkeypatch.setattr(
+        router,
+        "_tool_backend_names",
+        {name: "mist-core" for name in tools},
+    )
+    monkeypatch.setattr(router, "_load_all_backends", lambda: None)
+    monkeypatch.setattr(
+        router,
+        "_keyword_hits",
+        lambda query, limit, include_schema=False: [],
+    )
+    monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
+    monkeypatch.setattr(router._lance, "connect", lambda: object())
+    monkeypatch.setattr(
+        router._lance,
+        "search_tools",
+        lambda db, query, vec, top_k: [
+            {
+                "name": "mist_widget_status",
+                "server": "mist-core",
+                "description": "Read widget status",
+                "schema_json": "{}",
+                "score": 0.99,
+            },
+            {
+                "name": "mist_widget_diagnostic",
+                "server": "mist-core",
+                "description": "Run widget diagnostic",
+                "schema_json": "{}",
+                "score": 0.9,
+            },
+        ],
+    )
+
+    result = router.find_tool(
+        "widget health",
+        top_k=2,
+        platform="mist",
+        server="mist-core",
+        capability="diagnostic",
+    )
+
+    assert [item["name"] for item in result] == ["mist_widget_diagnostic"]
+    item = result[0]
+    assert item["capability"] == "diagnostic"
+    assert item["recommended_dispatcher"] == "invoke_tool"
+    assert item["requires_write_enablement"] is False
+    assert item["currently_enabled"] is True
+    assert item["supports_dry_run"] is False
+    assert item["supports_confirm"] is False
+    assert item["requires_confirmation"] is False
+    assert item["read_only"] is False
+    assert item["destructive"] is False
+    assert item["idempotent"] is False
+    assert "execution_contract" not in item
+
+
+def _configure_dispatch_backend(monkeypatch, *, annotation=IDEMPOTENT_WRITE):
+    backend = FastMCP("router-dispatch")
+    calls: list[dict] = []
+
+    @backend.tool(annotations=annotation)
+    def update_widget(
+        widget_id: str,
+        dry_run: bool = True,
+        confirm: bool = False,
+    ) -> dict:
+        calls.append(
+            {"widget_id": widget_id, "dry_run": dry_run, "confirm": confirm}
+        )
+        if dry_run:
+            return {"dry_run": True, "widget_id": widget_id}
+        if not confirm:
+            return {"error": "confirm=True is required."}
+        return {"updated": widget_id}
+
+    tool = backend._tool_manager._tools["update_widget"]
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-config": "demo.config"})
+    monkeypatch.setattr(router, "_tool_index", {"update_widget": tool})
+    monkeypatch.setattr(router, "_tool_servers", {"update_widget": backend})
+    monkeypatch.setattr(
+        router,
+        "_tool_backend_names",
+        {"update_widget": "aruba-config"},
+    )
+    monkeypatch.setattr(router, "_load_all_backends", lambda: None)
+    return calls
+
+
+def test_router_dispatch_adds_contract_to_dry_run_preview(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_CENTRAL_WRITES", "1")
+    calls = _configure_dispatch_backend(monkeypatch)
+
+    result = asyncio.run(
+        router._dispatch_tool(object(), "update_widget", {"widget_id": "w1"})
+    )
+
+    assert result["dry_run"] is True
+    assert result["widget_id"] == "w1"
+    assert calls == [{"widget_id": "w1", "dry_run": True, "confirm": False}]
+    contract = result["execution_contract"]
+    assert contract["dry_run"]["state"] == "preview"
+    assert contract["confirm"] == {"supported": True, "required": True}
+    assert contract["idempotent"] is True
+    assert contract["next_action"] == (
+        "Review the preview, then call invoke_tool again with "
+        "dry_run=false and confirm=true."
+    )
+
+
+def test_router_dispatch_blocks_invalid_gate_without_calling_backend(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_CENTRAL_WRITES", "invalid")
+    calls = _configure_dispatch_backend(monkeypatch)
+
+    result = asyncio.run(
+        router._dispatch_tool(
+            object(),
+            "update_widget",
+            {"widget_id": "w1", "dry_run": False, "confirm": True},
+        )
+    )
+
+    assert calls == []
+    assert result["status"] == "blocked"
+    assert result["execution_contract"]["gate"]["state"] == "invalid"
+    assert result["execution_contract"]["dry_run"]["state"] == "execution_requested"
+    assert result["execution_contract"]["next_action"].startswith(
+        "Set CENTRALMCP_CENTRAL_WRITES=1"
+    )
+
+
+def test_router_dispatch_preserves_execution_result_and_contract(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_CENTRAL_WRITES", "1")
+    _configure_dispatch_backend(monkeypatch)
+
+    result = asyncio.run(
+        router._dispatch_tool(
+            object(),
+            "update_widget",
+            {"widget_id": "w1", "dry_run": False, "confirm": True},
+        )
+    )
+
+    assert result["updated"] == "w1"
+    assert result["execution_contract"]["dry_run"]["state"] == "execution_requested"
+    assert result["execution_contract"]["next_action"].startswith(
+        "No further safety action"
+    )
+
+
+def test_router_dispatch_preserves_fastmcp_validation(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_CENTRAL_WRITES", "1")
+    calls = _configure_dispatch_backend(monkeypatch)
+
+    result = asyncio.run(router._dispatch_tool(object(), "update_widget", {}))
+
+    assert calls == []
+    assert "validation" in result["error"].lower()
+    assert result["execution_contract"]["capability"] == "write"
+
+
+def test_router_dispatch_does_not_wrap_reads_or_diagnostics(monkeypatch):
+    backend = FastMCP("router-non-write")
+
+    @backend.tool(annotations=router.READ_ONLY)
+    def read_widget() -> dict:
+        return {"kind": "read"}
+
+    @backend.tool(annotations=router.DIAGNOSTIC)
+    def diagnose_widget() -> dict:
+        return {"kind": "diagnostic"}
+
+    tools = dict(backend._tool_manager._tools)
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-ops": "demo.ops"})
+    monkeypatch.setattr(router, "_tool_index", tools)
+    monkeypatch.setattr(router, "_tool_servers", {name: backend for name in tools})
+    monkeypatch.setattr(
+        router,
+        "_tool_backend_names",
+        {name: "aruba-ops" for name in tools},
+    )
+    monkeypatch.setattr(router, "_load_all_backends", lambda: None)
+
+    read_result = asyncio.run(router._dispatch_tool(object(), "read_widget"))
+    diagnostic_result = asyncio.run(
+        router._dispatch_tool(object(), "diagnose_widget")
+    )
+
+    assert read_result == {"kind": "read"}
+    assert diagnostic_result == {"kind": "diagnostic"}
 
 
 def test_find_tool_reports_semantic_error_without_keyword_fallback(monkeypatch):

@@ -20,12 +20,22 @@ context cost low and let small local models pick tools reliably.
 import importlib
 import json
 import os
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_servers.prompts import register_router_prompts
-from mcp_servers.shared import DESTRUCTIVE, DIAGNOSTIC, READ_ONLY, optional_product_access_mode
+from mcp_servers.shared import (
+    DESTRUCTIVE,
+    DIAGNOSTIC,
+    PLATFORM_WRITE_GATE_NAMES,
+    READ_ONLY,
+    build_write_execution_contract,
+    optional_product_access_mode,
+    platform_write_blocked,
+    platform_write_gate_state,
+    platform_writes_allowed,
+)
 
 _BACKEND = os.getenv("CENTRALMCP_RAG_BACKEND", "lancedb").strip().lower()
 _ROUTER_MODE = os.getenv("CENTRALMCP_ROUTER_MODE", "default").strip().lower()
@@ -79,6 +89,19 @@ _OPTIONAL_BACKENDS = {
     "axis": ("axis-core", "mcp_servers.axis"),
 }
 _OPTIONAL_SERVER_NAMES = {server_name for server_name, _ in _OPTIONAL_BACKENDS.values()}
+_SERVER_PLATFORMS = {
+    "aruba-config": "central",
+    "aruba-monitoring": "central",
+    "aruba-nac": "central",
+    "aruba-ops": "central",
+    "aruba-central-generated": "central",
+    "aruba-glp": "glp",
+    "aruba-rag": "rag",
+    **{
+        server_name: product
+        for product, (server_name, _) in _OPTIONAL_BACKENDS.items()
+    },
+}
 _TOOLSET_BACKENDS = {
     "config": {"aruba-config"},
     "monitoring": {"aruba-monitoring"},
@@ -119,14 +142,204 @@ def _is_diagnostic_tool(tool: Any) -> bool:
     return getattr(tool, "annotations", None) == DIAGNOSTIC
 
 
+def _tool_capability(tool: Any) -> str:
+    annotations = getattr(tool, "annotations", None)
+    if bool(getattr(annotations, "readOnlyHint", False)):
+        return "read"
+    if bool(getattr(annotations, "destructiveHint", False)):
+        return "destructive"
+    if _is_diagnostic_tool(tool):
+        return "diagnostic"
+    return "write"
+
+
+def _server_platform(server: str | None) -> str | None:
+    if not server:
+        return None
+    return _SERVER_PLATFORMS.get(server, server.removesuffix("-core").removeprefix("aruba-"))
+
+
+def _write_is_enabled(server: str | None, capability: str) -> bool:
+    if capability not in {"write", "destructive"}:
+        return True
+    platform = _server_platform(server)
+    if platform in PLATFORM_WRITE_GATE_NAMES:
+        return platform_writes_allowed(platform)
+    if server in _OPTIONAL_SERVER_NAMES:
+        return _optional_writes_allowed()
+    return True
+
+
+def _schema_default(properties: dict[str, Any], name: str) -> Any:
+    field = properties.get(name)
+    return field.get("default") if isinstance(field, dict) else None
+
+
+def _dry_run_state(
+    properties: dict[str, Any],
+    arguments: dict[str, Any] | None,
+) -> str:
+    if "dry_run" not in properties:
+        return "unsupported"
+    value = (
+        arguments["dry_run"]
+        if arguments is not None and "dry_run" in arguments
+        else _schema_default(properties, "dry_run")
+    )
+    if arguments is None:
+        if value is True:
+            return "default_preview"
+        if value is False:
+            return "default_execution"
+        return "unknown"
+    if value is True:
+        return "preview"
+    if value is False:
+        return "execution_requested"
+    return "unknown"
+
+
+def _contract_next_action(
+    *,
+    platform: str,
+    capability: str,
+    supports_dry_run: bool,
+    dry_run_state: str,
+    supports_confirm: bool,
+    requires_confirmation: bool,
+    arguments: dict[str, Any] | None,
+    result: Any = None,
+) -> str:
+    gate = platform_write_gate_state(platform)
+    if not gate["enabled"]:
+        retry = (
+            "call invoke_tool with dry_run=true to preview"
+            if supports_dry_run
+            else "retry invoke_tool after explicit user approval"
+        )
+        return f"Set {gate['env_var']}=1, then {retry}."
+
+    if isinstance(result, dict):
+        for key in ("next_step", "execute_hint"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        if "error" in result:
+            confirmed = bool((arguments or {}).get("confirm", False))
+            if requires_confirmation and supports_confirm and not confirmed:
+                return "Retry invoke_tool with confirm=true after explicit user approval."
+            return "Correct the reported error, then retry invoke_tool."
+        if dry_run_state == "preview":
+            confirm_arg = " and confirm=true" if supports_confirm else ""
+            return (
+                "Review the preview, then call invoke_tool again with "
+                f"dry_run=false{confirm_arg}."
+            )
+        return "No further safety action is required; review the backend result."
+
+    if supports_dry_run:
+        return "Call invoke_tool with dry_run=true to preview the change."
+    if requires_confirmation and supports_confirm:
+        return "Call invoke_tool with confirm=true after explicit user approval."
+    if capability == "destructive":
+        return (
+            "Call invoke_tool after explicit user approval; the backend confirmation "
+            "flow will run."
+        )
+    return "Call invoke_tool only after explicit user intent."
+
+
+def _execution_contract(
+    tool: Any,
+    server: str | None,
+    schema: dict[str, Any],
+    *,
+    arguments: dict[str, Any] | None = None,
+    result: Any = None,
+) -> dict[str, Any] | None:
+    capability = _tool_capability(tool)
+    if capability not in {"write", "destructive"}:
+        return None
+    platform = _server_platform(server)
+    if platform not in PLATFORM_WRITE_GATE_NAMES:
+        return None
+    properties = schema.get("properties") or {}
+    supports_dry_run = "dry_run" in properties
+    supports_confirm = "confirm" in properties
+    requires_confirmation = capability == "destructive" or supports_confirm
+    dry_run_state = _dry_run_state(properties, arguments)
+    return build_write_execution_contract(
+        platform,
+        capability,
+        supports_dry_run=supports_dry_run,
+        dry_run_state=dry_run_state,
+        supports_confirm=supports_confirm,
+        requires_confirmation=requires_confirmation,
+        idempotent=bool(
+            getattr(getattr(tool, "annotations", None), "idempotentHint", False)
+        ),
+        next_action=_contract_next_action(
+            platform=platform,
+            capability=capability,
+            supports_dry_run=supports_dry_run,
+            dry_run_state=dry_run_state,
+            supports_confirm=supports_confirm,
+            requires_confirmation=requires_confirmation,
+            arguments=arguments,
+            result=result,
+        ),
+    )
+
+
+def _discovery_metadata(tool: Any, server: str | None, schema: dict[str, Any]) -> dict[str, Any]:
+    capability = _tool_capability(tool)
+    properties = schema.get("properties") or {}
+    supports_confirm = "confirm" in properties
+    metadata = {
+        "platform": _server_platform(server),
+        "capability": capability,
+        "recommended_dispatcher": (
+            "invoke_read_tool" if capability == "read" else "invoke_tool"
+        ),
+        "requires_write_enablement": capability in {"write", "destructive"},
+        "currently_enabled": bool(server in _BACKENDS)
+        and _write_is_enabled(server, capability),
+        "supports_dry_run": "dry_run" in properties,
+        "supports_confirm": supports_confirm,
+        "requires_confirmation": capability == "destructive"
+        or (supports_confirm and capability == "write"),
+        **_annotation_flags(tool),
+    }
+    contract = _execution_contract(tool, server, schema)
+    if contract is not None:
+        metadata["execution_contract"] = contract
+    return metadata
+
+
+def _matches_discovery_filters(
+    item: dict[str, Any],
+    *,
+    platform: str | None,
+    server: str | None,
+    capability: str | None,
+) -> bool:
+    if platform and str(item.get("platform", "")).lower() != platform.strip().lower():
+        return False
+    if server and str(item.get("server", "")).lower() != server.strip().lower():
+        return False
+    if capability and item.get("capability") != capability:
+        return False
+    return True
+
+
 def _optional_write_disabled(name: str, tool: Any | None = None, server: str | None = None) -> bool:
     tool = tool or _tool_index.get(name)
     server = server or _tool_backend_names.get(name)
     return (
         server in _OPTIONAL_SERVER_NAMES
-        and not _optional_writes_allowed()
         and tool is not None
-        and not (_is_read_only_tool(tool) or _is_diagnostic_tool(tool))
+        and _tool_capability(tool) in {"write", "destructive"}
+        and not _write_is_enabled(server, _tool_capability(tool))
     )
 
 
@@ -175,15 +388,10 @@ def _load_all_backends() -> None:
     """Import every backend once and index tools by name."""
     if _tool_index:
         return
-    allow_optional_writes = _optional_writes_allowed()
     for server_name, module_path in _BACKENDS.items():
         mod = importlib.import_module(module_path)
         for name, tool in mod.mcp._tool_manager._tools.items():
-            if (
-                server_name in _OPTIONAL_SERVER_NAMES
-                and not allow_optional_writes
-                and not (_is_read_only_tool(tool) or _is_diagnostic_tool(tool))
-            ):
+            if _optional_write_disabled(name, tool, server_name):
                 continue
             previous = _tool_backend_names.get(name)
             if previous is not None and previous != server_name:
@@ -255,12 +463,12 @@ def _keyword_hits(query: str, limit: int, include_schema: bool = False) -> list[
         schema = t.parameters if isinstance(t.parameters, dict) else {}
         item = {
             "name": t.name,
-            "server": _tool_backend_names.get(t.name),
+            "server": (server := _tool_backend_names.get(t.name)),
             "description": (t.description or "").strip(),
             "params": list((schema.get("properties") or {}).keys()),
             "score": round(score, 4),
             "match": "keyword",
-            **_annotation_flags(t),
+            **_discovery_metadata(t, server, schema),
         }
         if include_schema:
             item["schema"] = schema
@@ -277,14 +485,15 @@ def _annotation_flags(tool: Any) -> dict[str, bool]:
     }
 
 
-def _annotation_flags_for_name(name: str) -> dict[str, bool]:
-    if name not in _tool_index:
-        _load_all_backends()
-    return _annotation_flags(_tool_index.get(name))
-
-
 @mcp.tool(annotations=READ_ONLY)
-def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[dict[str, Any]]:
+def find_tool(
+    query: str,
+    top_k: int = 5,
+    include_schema: bool = False,
+    platform: str | None = None,
+    server: str | None = None,
+    capability: Literal["read", "diagnostic", "write", "destructive"] | None = None,
+) -> list[dict[str, Any]]:
     """Find tools by query. Combines semantic search + tool-name keyword match.
 
     Call this first when you need an action. The returned `name` is what you
@@ -292,13 +501,19 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
     Results are deduplicated; semantic matches are annotated match='semantic',
     name-overlap matches match='keyword', and safety flags mirror backend
     ToolAnnotations. Results are compact by default; set include_schema=True
-    only when you need the full JSON schema for a selected tool.
+    only when you need the full JSON schema for a selected tool. Optional
+    platform, server, and normalized capability filters apply to both keyword
+    and semantic matches.
 
     Args:
         query: What you want to do. e.g. "create a VLAN", "disconnect a client".
         top_k: 1-10 results (default 5).
         include_schema: Include full JSON schemas in results. Defaults to False
             to keep MCP responses compact.
+        platform: Filter by normalized platform, such as central, glp, mist,
+            clearpass, or apstra.
+        server: Filter by exact backend server name, such as aruba-monitoring.
+        capability: Filter by read, diagnostic, write, or destructive.
     """
     top_k = max(1, min(top_k, 10))
     # Split the budget so one match type can't starve the other.
@@ -307,48 +522,79 @@ def find_tool(query: str, top_k: int = 5, include_schema: bool = False) -> list[
     by_name: dict[str, dict[str, Any]] = {}
     semantic_error: str | None = None
 
-    for h in _keyword_hits(query, kw_budget, include_schema=include_schema):
+    keyword_candidates = _keyword_hits(
+        query, min(max(top_k * 4, 20), 50), include_schema=include_schema
+    )
+    for h in keyword_candidates:
+        if not _matches_discovery_filters(
+            h, platform=platform, server=server, capability=capability
+        ):
+            continue
         by_name[h["name"]] = h
+        if len(by_name) >= kw_budget:
+            break
 
     try:
         if _BACKEND == "redis":
             hits = []
             if _redis_tools is not None:
                 vec = _ollama.embed(query)
-                hits = _search_tools(_redis_tools, vec, top_k=top_k * 2, index_name=TOOLS_INDEX)
+                hits = _search_tools(
+                    _redis_tools,
+                    vec,
+                    top_k=min(max(top_k * 4, 20), 50),
+                    index_name=TOOLS_INDEX,
+                )
         else:
             vec = _embedder.embed_query(query)
-            hits = _lance.search_tools(_lance.connect(), query, vec, top_k=top_k * 2)
+            hits = _lance.search_tools(
+                _lance.connect(), query, vec, top_k=min(max(top_k * 4, 20), 50)
+            )
         added = 0
         for h in hits:
             name = h.get("name", "")
-            server = h.get("server")
-            if not name or name in by_name or server not in _BACKENDS:
+            hit_server = h.get("server")
+            if not name or name in by_name or hit_server not in _BACKENDS:
                 continue
             if name not in _tool_index:
                 _load_all_backends()
             tool = _tool_index.get(name)
+            if tool is None:
+                continue
             if (
-                server in _OPTIONAL_SERVER_NAMES
-                and not _optional_writes_allowed()
-                and (tool is None or not _is_read_only_tool(tool))
+                hit_server in _OPTIONAL_SERVER_NAMES
+                and _optional_write_disabled(name, tool, hit_server)
             ):
                 continue
-            if added >= sem_budget + max(0, kw_budget - len(by_name)):
-                break
-            schema = json.loads(h.get("schema_json") or "{}")
-            item = {
+            indexed_schema = json.loads(h.get("schema_json") or "{}")
+            published_schema = getattr(tool, "parameters", None)
+            schema = (
+                published_schema
+                if isinstance(published_schema, dict)
+                else indexed_schema
+            )
+            metadata = _discovery_metadata(tool, hit_server, schema)
+            candidate = {
                 "name": name,
-                "server": server,
+                "server": hit_server,
                 "description": h.get("description", ""),
                 "params": list((schema.get("properties") or {}).keys()),
                 "score": h.get("score", 0.0),
                 "match": "semantic",
-                **_annotation_flags_for_name(name),
+                **metadata,
             }
+            if not _matches_discovery_filters(
+                candidate,
+                platform=platform,
+                server=server,
+                capability=capability,
+            ):
+                continue
+            if added >= sem_budget + max(0, kw_budget - len(by_name)):
+                break
             if include_schema:
-                item["schema"] = schema
-            by_name[name] = item
+                candidate["schema"] = schema
+            by_name[name] = candidate
             added += 1
     except Exception as exc:
         semantic_error = f"{type(exc).__name__}: {exc}"
@@ -370,21 +616,41 @@ async def _dispatch_tool(ctx: Context, name: str, arguments: dict[str, Any] | No
     backend = _tool_servers.get(name)
     if backend is None:
         return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
-    if _optional_write_disabled(name):
-        return {
-            "error": (
-                f"Tool '{name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only "
-                "or invalid. "
-                "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows."
-            ),
-            "tool": name,
-            "status": "blocked",
-        }
     args = {k: v for k, v in (arguments or {}).items() if v is not None}
+    tool = _tool_index[name]
+    server = _tool_backend_names.get(name)
+    schema = tool.parameters if isinstance(tool.parameters, dict) else {}
+    capability = _tool_capability(tool)
+    contract = _execution_contract(tool, server, schema, arguments=args)
+    platform = _server_platform(server)
+    if (
+        capability in {"write", "destructive"}
+        and platform in PLATFORM_WRITE_GATE_NAMES
+        and not _write_is_enabled(server, capability)
+    ):
+        assert contract is not None
+        return platform_write_blocked(
+            platform,
+            name,
+            capability=capability,
+            execution_contract=contract,
+        )
     try:
-        return await backend._tool_manager.call_tool(name, args, context=ctx)
+        result = await backend._tool_manager.call_tool(name, args, context=ctx)
     except Exception as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+        result = {"error": f"{type(e).__name__}: {e}"}
+    if contract is None:
+        return result
+    contract = _execution_contract(
+        tool,
+        server,
+        schema,
+        arguments=args,
+        result=result,
+    )
+    if isinstance(result, dict):
+        return {**result, "execution_contract": contract}
+    return {"result": result, "execution_contract": contract}
 
 
 @mcp.tool(annotations=READ_ONLY)

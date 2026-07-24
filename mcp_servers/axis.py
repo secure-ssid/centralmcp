@@ -34,7 +34,10 @@ from mcp_servers.shared import (
     validate_product_base_url,
 )
 from mcp_servers.shared import (
-    optional_product_writes_allowed as _shared_optional_product_writes_allowed,
+    platform_write_blocked as _platform_write_blocked,
+)
+from mcp_servers.shared import (
+    platform_writes_allowed as _platform_writes_allowed,
 )
 
 mcp = FastMCP("axis-core")
@@ -53,23 +56,24 @@ _AXIS_TYPES: dict[str, Any] = {
 
 
 def optional_product_writes_allowed() -> bool:
-    import os
-
-    raw = os.getenv("CENTRALMCP_AXIS_WRITES")
-    if raw is not None:
-        return raw.strip().lower() in {"1", "true", "yes", "on"}
-    return _shared_optional_product_writes_allowed()
+    return _platform_writes_allowed("axis")
 
 
-def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
-    return {
-        "error": (
-            f"Tool '{tool_name}' is disabled. Set CENTRALMCP_AXIS_WRITES=1 or "
-            "CENTRALMCP_PRODUCT_ACCESS=read-write to enable Axis writes."
-        ),
-        "tool": tool_name,
-        "status": "blocked",
-    }
+def optional_product_write_blocked(
+    tool_name: str,
+    *,
+    capability: str = "write",
+    dry_run_state: str = "default_preview",
+) -> dict[str, Any]:
+    return _platform_write_blocked(
+        "axis",
+        tool_name,
+        capability=capability,
+        supports_dry_run=True,
+        dry_run_state=dry_run_state,
+        supports_confirm=True,
+        requires_confirmation=True,
+    )
 
 
 def _axis_config() -> tuple[str | None, str | None]:
@@ -175,11 +179,16 @@ def _axis_write_preview(
     path: str,
     body: Any,
     *,
+    capability: str,
     dry_run: bool,
     confirm: bool,
 ) -> dict[str, Any] | None:
     if not optional_product_writes_allowed():
-        return optional_product_write_blocked(name)
+        return optional_product_write_blocked(
+            name,
+            capability=capability,
+            dry_run_state="preview" if dry_run else "execution_requested",
+        )
     url, _, error = _axis_prepare(path)
     if error:
         return {"error": error}
@@ -275,6 +284,7 @@ async def _axis_manage(operation: dict[str, Any], kwargs: dict[str, Any]) -> dic
         method,
         path,
         body,
+        capability=operation["capability"],
         dry_run=bool(kwargs.get("dry_run", True)),
         confirm=bool(kwargs.get("confirm", False)),
     )
@@ -330,6 +340,7 @@ async def _axis_dispatch(operation: dict[str, Any], kwargs: dict[str, Any]) -> d
             operation["method"],
             path,
             body,
+            capability=operation["capability"],
             dry_run=bool(kwargs.get("dry_run", True)),
             confirm=bool(kwargs.get("confirm", False)),
         )

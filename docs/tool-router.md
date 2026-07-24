@@ -29,17 +29,64 @@ router-call examples.
 | `invoke_tool` | destructive | Generic dispatcher for write/destructive tools |
 | Convenience wrappers | mixed | Available only outside `minimal` mode |
 
-`find_tool` results include safety flags:
+`find_tool` results include normalized routing and safety metadata:
 
 ```json
 {
   "name": "list_active_alerts",
   "server": "aruba-monitoring",
+  "platform": "central",
+  "capability": "read",
+  "recommended_dispatcher": "invoke_read_tool",
+  "requires_write_enablement": false,
+  "currently_enabled": true,
+  "supports_dry_run": false,
+  "supports_confirm": false,
+  "requires_confirmation": false,
   "read_only": true,
   "destructive": false,
   "idempotent": true
 }
 ```
+
+Filter discovery with `platform`, exact `server`, or normalized `capability`
+(`read`, `diagnostic`, `write`, or `destructive`). Filters apply equally to
+keyword and semantic matches:
+
+```text
+find_tool("configuration", platform="central", capability="write")
+find_tool("health check", server="mist-core", capability="diagnostic")
+```
+
+Write/destructive results report the current platform write-gate state.
+`supports_dry_run` and `supports_confirm` come from the published input schema;
+`requires_confirmation` also reflects destructive annotations. Diagnostic
+tools use `invoke_tool` because they are intentionally not annotated read-only.
+
+Write/destructive discovery results also include the same compact
+`execution_contract` attached to router-dispatched write responses:
+
+```json
+{
+  "platform": "central",
+  "capability": "write",
+  "gate": {
+    "env_var": "CENTRALMCP_CENTRAL_WRITES",
+    "state": "enabled",
+    "source": "platform_default"
+  },
+  "dry_run": {"supported": true, "state": "default_preview"},
+  "confirm": {"supported": true, "required": true},
+  "idempotent": true,
+  "next_action": "Call invoke_tool with dry_run=true to preview the change."
+}
+```
+
+At dispatch, `dry_run.state` becomes `preview` or `execution_requested` when
+the published schema and call arguments make that state knowable. The router
+preserves the backend payload and adds `execution_contract`; blocked writes use
+the same shape and identify the exact gate to enable. Invalid gate values fail
+closed. Read and diagnostic responses are not decorated with write metadata.
 
 To keep discovery responses small, `find_tool` omits full JSON schemas by
 default and returns only parameter names in `params`. Set
@@ -66,12 +113,14 @@ If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and inclu
 |---|---:|
 | Minimal router | 3 client-visible tools |
 | Default router | 12 client-visible tools |
-| Complete backend index | 6,133 tools |
-| Direct-all router | 6,136 client-visible tools |
+| Complete backend index | 6,162 tools |
+| Direct-all router | 6,165 client-visible tools |
 
 The complete catalog spans nine platform surfaces plus RAG. Its nine generated
-manifests contain 5,703 reproducible operations. Minimal mode does not expose
-that schema surface to the MCP client; it searches the catalog on demand.
+manifests contain 5,703 reproducible operations (5,686 register as active
+generated tools; 476 curated tools bring the executable backend total to
+6,162). Minimal mode does not expose that schema surface to the MCP client; it
+searches the catalog on demand.
 
 ## Toolsets
 
@@ -124,7 +173,8 @@ only after reviewing the preview with `dry_run=False` plus `confirm=True`.
 Unrecognized manual access-mode values fail closed as read-only.
 
 Use `CENTRALMCP_<PLATFORM>_WRITES=1` for a narrower per-platform override when
-one optional backend needs write access without enabling all optional writes.
+one optional backend needs write access without enabling all optional writes,
+for example `CENTRALMCP_AXIS_WRITES=1` for Axis Atmos Cloud alone.
 
 Set `CENTRALMCP_TOKENIZE_SECRETS=1` to install the optional session-scoped
 secret-tokenization middleware. Plaintext values remain in bounded TTL vaults

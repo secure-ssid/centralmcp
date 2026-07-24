@@ -61,7 +61,16 @@ def test_http_router_loads_http_hardening_env_keys():
 def test_http_router_loads_platform_write_gate_env_keys():
     allowed_keys = _http_helper_allowed_keys()
 
-    for platform in ("CENTRAL", "AOS8", "EDGECONNECT", "APSTRA", "MIST", "CLEARPASS", "UXI"):
+    for platform in (
+        "CENTRAL",
+        "AOS8",
+        "EDGECONNECT",
+        "APSTRA",
+        "MIST",
+        "CLEARPASS",
+        "UXI",
+        "AXIS",
+    ):
         assert f"CENTRALMCP_{platform}_WRITES" in allowed_keys
 
 

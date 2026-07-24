@@ -1,28 +1,8 @@
-"""Parsers turning `aos8_export_all()`-shaped export dicts into normalized objects.
+"""Pure-python parsers for `aos8_export_all()` migration exports.
 
-Pure-python, no network calls. `mcp_servers/aos8.py` produces the export shape
-consumed here (see `aos8_export_all`); keeping the parser in `pipeline/` keeps
-it independently unit-testable with canned dicts and reusable outside the MCP
-tool layer.
-
-Expected export shape (extra/missing keys are tolerated):
-
-    {
-        "config_path": "/md",
-        "wlans": {"ssid_profiles": [...], "virtual_aps": [...]},
-        "roles": [...],
-        "vlans": [...],
-        "ap_groups": [...],
-        "controllers": [...],
-        "policies": [...],
-        "warnings": [...],
-    }
-
-Raw AOS8 config-object field names are inconsistent between read and write
-paths (for example a `role` object's GET response uses `role` as the display
-key while the POST/write identifier field is `rolename`), so every parser
-below probes a short list of known-good candidate keys rather than assuming
-one canonical name.
+The parsers preserve source-native settings that are not normalized, and the
+reporting entry point returns warnings for malformed sections/items instead of
+raising or silently substituting defaults.
 """
 
 from __future__ import annotations
@@ -30,19 +10,42 @@ from __future__ import annotations
 from typing import Any
 
 from pipeline.aos8_schema import (
+    AOS8VRRP,
+    AOS8AAAProfile,
     AOS8ApGroup,
+    AOS8AuthProfile,
+    AOS8AuthServer,
     AOS8Controller,
     AOS8Policy,
+    AOS8PolicyRule,
     AOS8Role,
+    AOS8Route,
+    AOS8ServerGroup,
     AOS8Vlan,
     AOS8Wlan,
 )
 
 
-def _as_dict_list(value: Any) -> list[dict[str, Any]]:
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, dict)]
-    return []
+def _warn(warnings: list[str] | None, message: str) -> None:
+    if warnings is not None:
+        warnings.append(message)
+
+
+def _dict_items(
+    value: Any,
+    path: str,
+    warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        _warn(warnings, f"export: {path} section is missing or malformed.")
+        return []
+    out: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if isinstance(item, dict):
+            out.append(item)
+        else:
+            _warn(warnings, f"export: {path}[{index}] is not an object and was not parsed.")
+    return out
 
 
 def _first(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -53,29 +56,68 @@ def _first(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
-def parse_wlans(export: dict[str, Any]) -> list[AOS8Wlan]:
+def _remaining(item: dict[str, Any], consumed: set[str]) -> dict[str, Any]:
+    return {key: item[key] for key in sorted(item) if key not in consumed}
+
+
+def _identifier(
+    item: dict[str, Any],
+    keys: tuple[str, ...],
+    path: str,
+    index: int,
+    warnings: list[str] | None,
+) -> str:
+    value = _first(item, keys)
+    if value is not None:
+        return str(value)
+    generated = f"unknown-{index}"
+    _warn(
+        warnings,
+        f"export: {path}[{index}] has no supported identifier; using {generated!r}.",
+    )
+    return generated
+
+
+def parse_wlans(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8Wlan]:
     """Merge SSID profiles with their linked virtual AP (matched by name)."""
     wlans_section = export.get("wlans")
     if not isinstance(wlans_section, dict):
+        _warn(warnings, "export: wlans section is missing or malformed.")
         return []
-    ssid_profiles = _as_dict_list(wlans_section.get("ssid_profiles"))
-    virtual_aps = _as_dict_list(wlans_section.get("virtual_aps"))
+    ssid_profiles = _dict_items(
+        wlans_section.get("ssid_profiles"), "wlans.ssid_profiles", warnings
+    )
+    virtual_aps = _dict_items(
+        wlans_section.get("virtual_aps"), "wlans.virtual_aps", warnings
+    )
 
     vap_by_ssid: dict[str, dict[str, Any]] = {}
-    for vap in virtual_aps:
+    for index, vap in enumerate(virtual_aps):
         ssid_ref = _first(vap, ("ssid-profile", "ssid_prof"))
         if ssid_ref:
             vap_by_ssid[str(ssid_ref)] = vap
+        else:
+            _warn(
+                warnings,
+                f"export: wlans.virtual_aps[{index}] has no SSID-profile reference.",
+            )
 
     out: list[AOS8Wlan] = []
-    for profile in ssid_profiles:
-        name = _first(profile, ("profile-name", "name"))
-        if not name:
-            continue
-        vap = vap_by_ssid.get(str(name), {})
+    for index, profile in enumerate(ssid_profiles):
+        name = _identifier(
+            profile,
+            ("profile-name", "name"),
+            "wlans.ssid_profiles",
+            index,
+            warnings,
+        )
+        vap = vap_by_ssid.get(name, {})
         out.append(
             AOS8Wlan(
-                profile_name=str(name),
+                profile_name=name,
                 essid=_first(profile, ("essid", "ESSID")),
                 opmode=_first(profile, ("opmode",)),
                 vlan=_first(vap, ("vlan",)),
@@ -86,51 +128,67 @@ def parse_wlans(export: dict[str, Any]) -> list[AOS8Wlan]:
             )
         )
 
-    # Virtual APs with no matching SSID profile still count as WLANs.
     referenced = {wlan.virtual_ap_profile for wlan in out if wlan.virtual_ap_profile}
-    for vap in virtual_aps:
-        vap_name = _first(vap, ("profile-name", "name"))
-        if not vap_name or vap_name in referenced:
+    for index, vap in enumerate(virtual_aps):
+        vap_name = _identifier(
+            vap,
+            ("profile-name", "name"),
+            "wlans.virtual_aps",
+            index,
+            warnings,
+        )
+        if vap_name in referenced:
             continue
         out.append(
             AOS8Wlan(
-                profile_name=str(vap_name),
+                profile_name=vap_name,
                 vlan=_first(vap, ("vlan",)),
                 forward_mode=_first(vap, ("forward-mode", "forward_mode")),
                 aaa_profile=_first(vap, ("aaa-profile", "aaa_prof")),
-                virtual_ap_profile=str(vap_name),
+                virtual_ap_profile=vap_name,
                 raw={"ssid_profile": {}, "virtual_ap": vap},
             )
         )
     return out
 
 
-def parse_roles(export: dict[str, Any]) -> list[AOS8Role]:
-    items = _as_dict_list(export.get("roles"))
-    out: list[AOS8Role] = []
-    for item in items:
-        name = _first(item, ("rolename", "role", "name", "profile-name"))
-        if not name:
-            continue
-        out.append(
-            AOS8Role(
-                rolename=str(name),
-                vlan=_first(item, ("vlan",)),
-                acl=_first(item, ("acl", "access-list")),
-                captive_portal_profile=_first(item, ("captive-portal-profile",)),
-                raw=item,
-            )
+def parse_roles(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8Role]:
+    items = _dict_items(export.get("roles"), "roles", warnings)
+    return [
+        AOS8Role(
+            rolename=_identifier(
+                item,
+                ("rolename", "role", "name", "profile-name"),
+                "roles",
+                index,
+                warnings,
+            ),
+            vlan=_first(item, ("vlan",)),
+            acl=_first(item, ("acl", "access-list")),
+            captive_portal_profile=_first(item, ("captive-portal-profile",)),
+            raw=item,
         )
-    return out
+        for index, item in enumerate(items)
+    ]
 
 
-def parse_vlans(export: dict[str, Any]) -> list[AOS8Vlan]:
-    items = _as_dict_list(export.get("vlans"))
+def parse_vlans(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8Vlan]:
+    items = _dict_items(export.get("vlans"), "vlans", warnings)
     out: list[AOS8Vlan] = []
-    for item in items:
+    for index, item in enumerate(items):
         vlan_id = _first(item, ("id", "vlan-id", "vlan_id", "name"))
         if vlan_id is None:
-            continue
+            vlan_id = f"unknown-{index}"
+            _warn(
+                warnings,
+                f"export: vlans[{index}] has no VLAN identifier; using {vlan_id!r}.",
+            )
         out.append(
             AOS8Vlan(
                 vlan_id=vlan_id,
@@ -141,27 +199,54 @@ def parse_vlans(export: dict[str, Any]) -> list[AOS8Vlan]:
     return out
 
 
-def parse_ap_groups(export: dict[str, Any]) -> list[AOS8ApGroup]:
-    items = _as_dict_list(export.get("ap_groups"))
+def parse_ap_groups(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8ApGroup]:
+    items = _dict_items(export.get("ap_groups"), "ap_groups", warnings)
     out: list[AOS8ApGroup] = []
-    for item in items:
-        name = _first(item, ("profile-name", "name"))
-        if not name:
-            continue
-        vaps = item.get("virtual-ap") or item.get("virtual_ap") or []
-        vap_names = [str(v) for v in vaps] if isinstance(vaps, list) else []
-        out.append(AOS8ApGroup(profile_name=str(name), virtual_ap_profiles=vap_names, raw=item))
+    for index, item in enumerate(items):
+        vaps = item.get("virtual-ap", item.get("virtual_ap", []))
+        if not isinstance(vaps, list):
+            _warn(
+                warnings,
+                f"export: ap_groups[{index}].virtual-ap is malformed; no references parsed.",
+            )
+            vaps = []
+        out.append(
+            AOS8ApGroup(
+                profile_name=_identifier(
+                    item,
+                    ("profile-name", "name"),
+                    "ap_groups",
+                    index,
+                    warnings,
+                ),
+                virtual_ap_profiles=[str(value) for value in vaps],
+                raw=item,
+            )
+        )
     return out
 
 
-def parse_controllers(export: dict[str, Any]) -> list[AOS8Controller]:
-    items = _as_dict_list(export.get("controllers"))
+def parse_controllers(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8Controller]:
+    items = _dict_items(export.get("controllers"), "controllers", warnings)
     out: list[AOS8Controller] = []
-    for item in items:
+    for index, item in enumerate(items):
+        name = _first(item, ("Name", "name", "hostname"))
+        ip_address = _first(item, ("IP Address", "ip_address"))
+        if name is None and ip_address is None:
+            _warn(
+                warnings,
+                f"export: controllers[{index}] has no name or IP address.",
+            )
         out.append(
             AOS8Controller(
-                name=_first(item, ("Name", "name", "hostname")),
-                ip_address=_first(item, ("IP Address", "ip_address")),
+                name=name,
+                ip_address=ip_address,
                 model=_first(item, ("Model", "model")),
                 version=_first(item, ("Version", "version")),
                 raw=item,
@@ -170,35 +255,447 @@ def parse_controllers(export: dict[str, Any]) -> list[AOS8Controller]:
     return out
 
 
-def parse_policies(export: dict[str, Any]) -> list[AOS8Policy]:
-    items = _as_dict_list(export.get("policies"))
-    out: list[AOS8Policy] = []
-    for item in items:
-        name = _first(item, ("name", "profile-name"))
-        if not name:
+def _parse_policy_rules(
+    value: Any,
+    address_family: str,
+    path: str,
+    warnings: list[str] | None,
+) -> list[AOS8PolicyRule]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        _warn(warnings, f"export: {path} is malformed; expected a list of rules.")
+        return [
+            AOS8PolicyRule(
+                address_family=address_family,  # type: ignore[arg-type]
+                unsupported_fields={"raw_rule": value},
+                raw=value,
+            )
+        ]
+    rules: list[AOS8PolicyRule] = []
+    aliases = {
+        "source": ("source", "src", "source-address", "source_alias", "srcalias"),
+        "destination": (
+            "destination",
+            "dst",
+            "destination-address",
+            "destination_alias",
+            "dstalias",
+        ),
+        "service": ("service", "svc", "protocol", "application", "app"),
+        "action": ("action", "permit", "deny"),
+        "log": ("log", "logging"),
+    }
+    consumed = {key for values in aliases.values() for key in values}
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            _warn(warnings, f"export: {path}[{index}] is not an object.")
+            rules.append(
+                AOS8PolicyRule(
+                    address_family=address_family,  # type: ignore[arg-type]
+                    unsupported_fields={"raw_rule": item},
+                    raw=item,
+                )
+            )
             continue
-        rules = item.get("rule") or item.get("rules")
-        rule_count = len(rules) if isinstance(rules, list) else None
-        out.append(AOS8Policy(name=str(name), rule_count=rule_count, raw=item))
+        rules.append(
+            AOS8PolicyRule(
+                address_family=address_family,  # type: ignore[arg-type]
+                source=_first(item, aliases["source"]),
+                destination=_first(item, aliases["destination"]),
+                service=_first(item, aliases["service"]),
+                action=_first(item, aliases["action"]),
+                log=_first(item, aliases["log"]),
+                unsupported_fields=_remaining(item, consumed),
+                raw=item,
+            )
+        )
+    return rules
+
+
+def parse_policies(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8Policy]:
+    items = _dict_items(export.get("policies"), "policies", warnings)
+    out: list[AOS8Policy] = []
+    for index, item in enumerate(items):
+        name = _identifier(
+            item,
+            ("accname", "name", "profile-name"),
+            "policies",
+            index,
+            warnings,
+        )
+        legacy_rules = item.get("rule", item.get("rules"))
+        ipv4_value = item.get("acl_sess__v4policy", legacy_rules)
+        ipv6_value = item.get("acl_sess__v6policy")
+        ipv4_rules = _parse_policy_rules(
+            ipv4_value,
+            "ipv4",
+            f"policies[{index}].ipv4_rules",
+            warnings,
+        )
+        ipv6_rules = _parse_policy_rules(
+            ipv6_value,
+            "ipv6",
+            f"policies[{index}].ipv6_rules",
+            warnings,
+        )
+        out.append(
+            AOS8Policy(
+                name=name,
+                rule_count=len(ipv4_rules) + len(ipv6_rules),
+                ipv4_rules=ipv4_rules,
+                ipv6_rules=ipv6_rules,
+                raw=item,
+            )
+        )
     return out
 
 
-def parse_export(export: dict[str, Any]) -> dict[str, list[Any]]:
-    """Parse an `aos8_export_all()`-shaped dict into normalized object lists."""
-    if not isinstance(export, dict):
-        return {
-            "wlans": [],
-            "roles": [],
-            "vlans": [],
-            "ap_groups": [],
-            "controllers": [],
-            "policies": [],
-        }
-    return {
-        "wlans": parse_wlans(export),
-        "roles": parse_roles(export),
-        "vlans": parse_vlans(export),
-        "ap_groups": parse_ap_groups(export),
-        "controllers": parse_controllers(export),
-        "policies": parse_policies(export),
+def parse_aaa_profiles(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8AAAProfile]:
+    aaa = export.get("aaa")
+    if not isinstance(aaa, dict):
+        _warn(warnings, "export: aaa section is missing or malformed.")
+        return []
+    items = _dict_items(aaa.get("aaa_profiles"), "aaa.aaa_profiles", warnings)
+    aliases = {
+        "profile_name": ("profile-name", "name"),
+        "default_user_role": ("default_user_role", "default-user-role"),
+        "dot1x_auth_profile": ("dot1x_auth_profile", "dot1x-auth-profile"),
+        "dot1x_default_role": ("dot1x_default_role", "dot1x-default-role"),
+        "dot1x_server_group": ("dot1x_server_group", "dot1x-server-group"),
+        "mac_auth_profile": ("mac_auth_profile", "mac-auth-profile"),
+        "mac_default_role": ("mac_default_role", "mac-default-role"),
+        "mac_server_group": ("mba_server_group", "mac-server-group"),
+        "accounting_server_group": ("rad_acct_sg", "radius-accounting-server-group"),
     }
+    consumed = {key for values in aliases.values() for key in values}
+    out: list[AOS8AAAProfile] = []
+    for index, item in enumerate(items):
+        out.append(
+            AOS8AAAProfile(
+                profile_name=_identifier(
+                    item, aliases["profile_name"], "aaa.aaa_profiles", index, warnings
+                ),
+                default_user_role=_first(item, aliases["default_user_role"]),
+                dot1x_auth_profile=_first(item, aliases["dot1x_auth_profile"]),
+                dot1x_default_role=_first(item, aliases["dot1x_default_role"]),
+                dot1x_server_group=_first(item, aliases["dot1x_server_group"]),
+                mac_auth_profile=_first(item, aliases["mac_auth_profile"]),
+                mac_default_role=_first(item, aliases["mac_default_role"]),
+                mac_server_group=_first(item, aliases["mac_server_group"]),
+                accounting_server_group=_first(item, aliases["accounting_server_group"]),
+                settings=_remaining(item, consumed),
+                raw=item,
+            )
+        )
+    return out
+
+
+def parse_auth_profiles(
+    export: dict[str, Any],
+    auth_type: str,
+    warnings: list[str] | None = None,
+) -> list[AOS8AuthProfile]:
+    aaa = export.get("aaa")
+    if not isinstance(aaa, dict):
+        return []
+    section = f"{auth_type}_auth_profiles"
+    items = _dict_items(aaa.get(section), f"aaa.{section}", warnings)
+    out: list[AOS8AuthProfile] = []
+    for index, item in enumerate(items):
+        out.append(
+            AOS8AuthProfile(
+                profile_name=_identifier(
+                    item,
+                    ("profile-name", "name"),
+                    f"aaa.{section}",
+                    index,
+                    warnings,
+                ),
+                auth_type=auth_type,  # type: ignore[arg-type]
+                settings=_remaining(item, {"profile-name", "name"}),
+                raw=item,
+            )
+        )
+    return out
+
+
+def _server_reference(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, dict):
+        reference = _first(
+            value,
+            ("name", "server", "auth_server", "rad_server_name", "ldap_server_name"),
+        )
+        return str(reference) if reference is not None else None
+    return None
+
+
+def parse_server_groups(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8ServerGroup]:
+    aaa = export.get("aaa")
+    if not isinstance(aaa, dict):
+        return []
+    items = _dict_items(aaa.get("server_groups"), "aaa.server_groups", warnings)
+    out: list[AOS8ServerGroup] = []
+    consumed = {
+        "sg_name",
+        "profile-name",
+        "name",
+        "auth_server",
+        "auth-server",
+        "fail_thru",
+        "fail-through",
+        "load_balance",
+        "load-balance",
+        "derivation_rules_vlan_role",
+    }
+    for index, item in enumerate(items):
+        raw_servers = item.get("auth_server", item.get("auth-server", []))
+        if raw_servers in (None, ""):
+            raw_servers = []
+        elif not isinstance(raw_servers, list):
+            raw_servers = [raw_servers]
+        servers: list[str] = []
+        for server_index, value in enumerate(raw_servers):
+            reference = _server_reference(value)
+            if reference:
+                servers.append(reference)
+            else:
+                _warn(
+                    warnings,
+                    f"export: aaa.server_groups[{index}].auth_server[{server_index}] "
+                    "has no server reference.",
+                )
+        out.append(
+            AOS8ServerGroup(
+                name=_identifier(
+                    item,
+                    ("sg_name", "profile-name", "name"),
+                    "aaa.server_groups",
+                    index,
+                    warnings,
+                ),
+                auth_servers=servers,
+                auth_server_entries=list(raw_servers),
+                fail_through=_first(item, ("fail_thru", "fail-through")),
+                load_balance=_first(item, ("load_balance", "load-balance")),
+                derivation_rules=item.get("derivation_rules_vlan_role"),
+                settings=_remaining(item, consumed),
+                raw=item,
+            )
+        )
+    return out
+
+
+def parse_auth_servers(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8AuthServer]:
+    aaa = export.get("aaa")
+    if not isinstance(aaa, dict):
+        return []
+    specs = (
+        ("radius_servers", "radius", ("rad_server_name", "name"), ("rad_host", "host")),
+        ("ldap_servers", "ldap", ("ldap_server_name", "name"), ("ldap_host", "host")),
+        (
+            "tacacs_servers",
+            "tacacs",
+            ("tacacs_server_name", "name"),
+            ("tacacs_host", "host"),
+        ),
+    )
+    out: list[AOS8AuthServer] = []
+    for section, server_type, name_keys, host_keys in specs:
+        items = _dict_items(aaa.get(section), f"aaa.{section}", warnings)
+        consumed = {*name_keys, *host_keys}
+        for index, item in enumerate(items):
+            out.append(
+                AOS8AuthServer(
+                    name=_identifier(
+                        item, name_keys, f"aaa.{section}", index, warnings
+                    ),
+                    server_type=server_type,  # type: ignore[arg-type]
+                    host=_first(item, host_keys),
+                    settings=_remaining(item, consumed),
+                    raw=item,
+                )
+            )
+    return out
+
+
+def parse_routes(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8Route]:
+    routing = export.get("routing")
+    if not isinstance(routing, dict):
+        _warn(warnings, "export: routing section is missing or malformed.")
+        return []
+    out: list[AOS8Route] = []
+    for section, address_family in (("ipv4_routes", "ipv4"), ("ipv6_routes", "ipv6")):
+        items = _dict_items(routing.get(section), f"routing.{section}", warnings)
+        consumed = {
+            "destip",
+            "destination",
+            "destmask",
+            "netmask",
+            "nexthop",
+            "next-hop",
+            "nexthop1",
+            "secondary-next-hop",
+            "vlanid",
+            "vlan",
+            "cost",
+            "cost1",
+            "zero",
+        }
+        for index, item in enumerate(items):
+            destination = _first(item, ("destip", "destination"))
+            next_hop = _first(item, ("nexthop", "next-hop"))
+            if destination is None:
+                _warn(
+                    warnings,
+                    f"export: routing.{section}[{index}] has no destination.",
+                )
+            if next_hop is None:
+                _warn(
+                    warnings,
+                    f"export: routing.{section}[{index}] has no primary next hop.",
+                )
+            out.append(
+                AOS8Route(
+                    address_family=address_family,  # type: ignore[arg-type]
+                    destination=str(destination) if destination is not None else None,
+                    netmask=_first(item, ("destmask", "netmask")),
+                    next_hop=str(next_hop) if next_hop is not None else None,
+                    secondary_next_hop=_first(
+                        item, ("nexthop1", "secondary-next-hop")
+                    ),
+                    vlan_id=_first(item, ("vlanid", "vlan")),
+                    cost=item.get("cost"),
+                    secondary_cost=item.get("cost1"),
+                    zero=item.get("zero"),
+                    settings=_remaining(item, consumed),
+                    raw=item,
+                )
+            )
+    return out
+
+
+def parse_vrrp(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8VRRP]:
+    routing = export.get("routing")
+    if not isinstance(routing, dict):
+        return []
+    out: list[AOS8VRRP] = []
+    for section, address_family, prefix in (
+        ("vrrp", "ipv4", "vrrp"),
+        ("vrrp6", "ipv6", "vrrp6"),
+    ):
+        items = _dict_items(routing.get(section), f"routing.{section}", warnings)
+        keys = {
+            "id",
+            f"{prefix}_ip",
+            f"{prefix}_vlan",
+            f"{prefix}_priority",
+            f"{prefix}_preempt",
+            f"{prefix}_shut",
+            f"{prefix}_adv_interval",
+            f"{prefix}_holdtime",
+            f"{prefix}_desc",
+            f"{prefix}_auth",
+            f"{prefix}_track_intf",
+            f"{prefix}_track_master",
+            f"{prefix}_track_uptime",
+            f"{prefix}_track_vlan",
+        }
+        for index, item in enumerate(items):
+            vrid = item.get("id")
+            if vrid is None:
+                _warn(warnings, f"export: routing.{section}[{index}] has no VRRP ID.")
+            tracking = {
+                key.removeprefix(f"{prefix}_track_"): item[key]
+                for key in sorted(item)
+                if key.startswith(f"{prefix}_track_")
+            }
+            out.append(
+                AOS8VRRP(
+                    address_family=address_family,  # type: ignore[arg-type]
+                    vrid=vrid,
+                    virtual_ip=item.get(f"{prefix}_ip"),
+                    vlan_id=item.get(f"{prefix}_vlan"),
+                    priority=item.get(f"{prefix}_priority"),
+                    preempt=item.get(f"{prefix}_preempt"),
+                    shutdown=item.get(f"{prefix}_shut"),
+                    advertisement_interval=item.get(f"{prefix}_adv_interval"),
+                    hold_time=item.get(f"{prefix}_holdtime"),
+                    description=item.get(f"{prefix}_desc"),
+                    authentication=item.get(f"{prefix}_auth"),
+                    tracking=tracking,
+                    settings=_remaining(item, keys),
+                    raw=item,
+                )
+            )
+    return out
+
+
+def parse_export_report(
+    export: dict[str, Any],
+) -> tuple[dict[str, list[Any]], list[str]]:
+    """Parse an export and return normalized objects plus explicit parse warnings."""
+    warnings: list[str] = []
+    if not isinstance(export, dict):
+        return _empty_parse(), ["export: expected an object; no source objects were parsed."]
+    parsed = {
+        "wlans": parse_wlans(export, warnings),
+        "roles": parse_roles(export, warnings),
+        "vlans": parse_vlans(export, warnings),
+        "ap_groups": parse_ap_groups(export, warnings),
+        "controllers": parse_controllers(export, warnings),
+        "policies": parse_policies(export, warnings),
+        "aaa_profiles": parse_aaa_profiles(export, warnings),
+        "dot1x_auth_profiles": parse_auth_profiles(export, "dot1x", warnings),
+        "mac_auth_profiles": parse_auth_profiles(export, "mac", warnings),
+        "server_groups": parse_server_groups(export, warnings),
+        "auth_servers": parse_auth_servers(export, warnings),
+        "routes": parse_routes(export, warnings),
+        "vrrp": parse_vrrp(export, warnings),
+    }
+    return parsed, sorted(set(warnings))
+
+
+def _empty_parse() -> dict[str, list[Any]]:
+    return {
+        "wlans": [],
+        "roles": [],
+        "vlans": [],
+        "ap_groups": [],
+        "controllers": [],
+        "policies": [],
+        "aaa_profiles": [],
+        "dot1x_auth_profiles": [],
+        "mac_auth_profiles": [],
+        "server_groups": [],
+        "auth_servers": [],
+        "routes": [],
+        "vrrp": [],
+    }
+
+
+def parse_export(export: dict[str, Any]) -> dict[str, list[Any]]:
+    """Backward-compatible normalized parse without the companion warning list."""
+    if not isinstance(export, dict):
+        return _empty_parse()
+    return parse_export_report(export)[0]

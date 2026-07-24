@@ -94,6 +94,12 @@ def test_axis_writes_are_gated_and_previewed(monkeypatch):
         axis.axis_manage_connector(action_type="create", payload={"name": "branch"})
     )
     assert blocked["status"] == "blocked"
+    contract = blocked["execution_contract"]
+    assert contract["platform"] == "axis"
+    assert contract["gate"]["env_var"] == "CENTRALMCP_AXIS_WRITES"
+    assert contract["gate"]["state"] == "disabled"
+    assert contract["dry_run"] == {"supported": True, "state": "preview"}
+    assert contract["confirm"] == {"supported": True, "required": True}
 
     monkeypatch.setenv("CENTRALMCP_AXIS_WRITES", "1")
     preview = asyncio.run(
@@ -102,6 +108,20 @@ def test_axis_writes_are_gated_and_previewed(monkeypatch):
     assert preview["dry_run"] is True
     assert preview["method"] == "POST"
     assert preview["path"] == "/Connectors"
+
+
+def test_axis_shared_gate_override_precedence_and_invalid_values(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+    monkeypatch.setenv("CENTRALMCP_AXIS_WRITES", "invalid")
+    assert axis.optional_product_writes_allowed() is False
+
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+    monkeypatch.setenv("CENTRALMCP_AXIS_WRITES", "1")
+    assert axis.optional_product_writes_allowed() is True
+
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+    monkeypatch.setenv("CENTRALMCP_AXIS_WRITES", "0")
+    assert axis.optional_product_writes_allowed() is False
 
 
 def test_axis_confirmed_write_executes_and_returns_commit_hint(monkeypatch):

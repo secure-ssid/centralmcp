@@ -1,4 +1,4 @@
-"""MCP server — optional Juniper Mist backend (26 curated + 1050 generated OpenAPI tools).
+"""MCP server — optional Juniper Mist backend (27 curated + 1050 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=mist
@@ -13,8 +13,10 @@ Covers the generic passthrough/WLAN/alarm tools plus typed, bounded workflow
 tools for: NAC/Access Assurance (nactags/nacportals/usermacs, plus NAC IDP
 realm mappings read from org settings), Marvis AI (client telemetry, client
 experience insights, device event search, org Marvis settings), org
-inventory and device claims, Wired Assurance switch/port stats, and WAN
-Assurance gateway (SRX/SSR) stats. Endpoints and field names verified
+inventory and device claims, Wired Assurance switch/port stats, WAN
+Assurance gateway (SRX/SSR) stats, and bounded authenticated regional
+WebSocket diagnostic-result collection (`mist_collect_diagnostic_results`,
+requires the `websockets` dependency). Endpoints and field names verified
 directly against the mistsys/mist_openapi spec (mist.openapi.yaml) at commit
 f374cffdd5a275c7954645a306fcab7f1227e7a3 (OpenAPI version 2606.1.1,
 2026-07-10).
@@ -24,28 +26,36 @@ any remaining live-instance verification caveats.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from websockets.asyncio.client import connect as websocket_connect
+from websockets.exceptions import PayloadTooBig
 
 from mcp_servers.openapi_gen.http_exec import build_multipart_files
 from mcp_servers.shared import (
     DESTRUCTIVE,
     IDEMPOTENT_WRITE,
     READ_ONLY,
-    bounded_response_payload,
     bound_collection_response,
+    bounded_response_payload,
     clamp_limit,
-    platform_write_blocked as _platform_write_blocked,
-    platform_writes_allowed as _platform_writes_allowed,
     redact_sensitive,
     response_payload,
     safe_api_path,
     validate_product_base_url,
+)
+from mcp_servers.shared import (
+    platform_write_blocked as _platform_write_blocked,
+)
+from mcp_servers.shared import (
+    platform_writes_allowed as _platform_writes_allowed,
 )
 
 mcp = FastMCP("mist-core")
@@ -80,6 +90,152 @@ def _normalize_mac(mac_address: str) -> str:
 
 def _path_segment(value: str) -> str:
     return quote(value, safe="")
+
+
+_MIST_WEBSOCKET_HOSTS = {
+    "api.mist.com": "api-ws.mist.com",
+    "api.gc1.mist.com": "api-ws.gc1.mist.com",
+    "api.ac2.mist.com": "api-ws.ac2.mist.com",
+    "api.gc2.mist.com": "api-ws.gc2.mist.com",
+    "api.gc4.mist.com": "api-ws.gc4.mist.com",
+    "api.eu.mist.com": "api-ws.eu.mist.com",
+    "api.gc3.mist.com": "api-ws.gc3.mist.com",
+    "api.ac6.mist.com": "api-ws.ac6.mist.com",
+    "api.gc6.mist.com": "api-ws.gc6.mist.com",
+    "api.ac5.mist.com": "api-ws.ac5.mist.com",
+    "api.gc5.mist.com": "api-ws.gc5.mist.com",
+    "api.gc7.mist.com": "api-ws.gc7.mist.com",
+}
+_MIST_DIAGNOSTIC_CHANNEL = re.compile(
+    r"^/sites/(?P<site_id>[^/]+)/devices/(?P<device_id>[^/]+)/cmd$"
+)
+_mist_websocket_connect = websocket_connect
+
+
+def _mist_websocket_url() -> tuple[str | None, str | None]:
+    host, _ = _mist_config()
+    if not host:
+        return None, "Mist not configured. Set MIST_HOST."
+    try:
+        trusted_host = validate_product_base_url(host, product="Mist")
+    except ValueError as exc:
+        return None, str(exc)
+    parsed = urlsplit(trusted_host)
+    try:
+        port = parsed.port
+    except ValueError:
+        return None, "Mist WebSocket diagnostics received an invalid MIST_HOST port."
+    if (
+        parsed.scheme != "https"
+        or port not in (None, 443)
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None, (
+            "Mist WebSocket diagnostics require a documented HTTPS Mist API origin "
+            "without a custom port, path, query, or fragment."
+        )
+    websocket_host = _MIST_WEBSOCKET_HOSTS.get((parsed.hostname or "").lower())
+    if not websocket_host:
+        supported = ", ".join(sorted(_MIST_WEBSOCKET_HOSTS))
+        return None, (
+            f"Mist WebSocket diagnostics do not support configured host "
+            f"{parsed.hostname!r}. Supported documented Mist API hosts: {supported}."
+        )
+    return f"wss://{websocket_host}/api-ws/v1/stream", None
+
+
+def _mist_websocket_headers() -> tuple[dict[str, str] | None, str | None]:
+    import os
+
+    _, token = _mist_config()
+    session_cookie = os.getenv("MIST_SESSION_COOKIE", "").strip()
+    csrf_token = os.getenv("MIST_CSRF_TOKEN", "").strip()
+    if token:
+        return {"Authorization": "Token " + token}, None
+    if session_cookie and csrf_token:
+        return {"Cookie": session_cookie, "X-CSRFToken": csrf_token}, None
+    if session_cookie or csrf_token:
+        return None, (
+            "Mist session authentication requires both MIST_SESSION_COOKIE and "
+            "MIST_CSRF_TOKEN."
+        )
+    return None, (
+        "Mist WebSocket authentication requires MIST_API_TOKEN or both "
+        "MIST_SESSION_COOKIE and MIST_CSRF_TOKEN."
+    )
+
+
+def _decode_diagnostic_event(message: str | bytes) -> tuple[str, dict[str, Any]] | None:
+    if isinstance(message, bytes):
+        message = message.decode("utf-8", errors="strict")
+    value: Any = json.loads(message)
+    if not isinstance(value, dict):
+        return None
+
+    for _ in range(3):
+        if value.get("event") != "data" or not isinstance(value.get("channel"), str):
+            return None
+        data = value.get("data")
+        if isinstance(data, str):
+            try:
+                decoded = json.loads(data)
+            except json.JSONDecodeError:
+                return None
+            if (
+                isinstance(decoded, dict)
+                and decoded.get("event") == "data"
+                and isinstance(decoded.get("channel"), str)
+            ):
+                value = decoded
+                continue
+            data = decoded
+        if isinstance(data, dict):
+            return value["channel"], data
+        return None
+    return None
+
+
+def _diagnostic_event_finished(data: dict[str, Any]) -> bool:
+    if data.get("finished") is True:
+        return True
+    raw = data.get("raw")
+    if not isinstance(raw, str):
+        return False
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(decoded, dict) and decoded.get("finished") is True
+
+
+def _mist_diagnostic_secrets() -> tuple[str, ...]:
+    import os
+
+    values = {
+        os.getenv("MIST_API_TOKEN", "").strip(),
+        os.getenv("MIST_CSRF_TOKEN", "").strip(),
+        os.getenv("MIST_SESSION_COOKIE", "").strip(),
+    }
+    cookie = os.getenv("MIST_SESSION_COOKIE", "")
+    for part in cookie.split(";"):
+        _, separator, value = part.partition("=")
+        if separator:
+            values.add(value.strip())
+    return tuple(sorted((value for value in values if value), key=len, reverse=True))
+
+
+def _redact_diagnostic_data(value: Any, secrets: tuple[str, ...]) -> Any:
+    redacted = redact_sensitive(value)
+    if isinstance(redacted, dict):
+        return {key: _redact_diagnostic_data(item, secrets) for key, item in redacted.items()}
+    if isinstance(redacted, list):
+        return [_redact_diagnostic_data(item, secrets) for item in redacted]
+    if isinstance(redacted, str):
+        for secret in secrets:
+            redacted = redacted.replace(secret, "[REDACTED]")
+    return redacted
 
 
 async def _mist_get_request(
@@ -324,7 +480,16 @@ def _compact_nac_portal(portal: Any) -> Any:
     # read-only URLs are `portal_sso_url`, `portal_authorize_url`, `ui_url`.
     return _pick(
         portal,
-        ("id", "name", "type", "ssid", "portal_sso_url", "portal_authorize_url", "ui_url", "org_id"),
+        (
+            "id",
+            "name",
+            "type",
+            "ssid",
+            "portal_sso_url",
+            "portal_authorize_url",
+            "ui_url",
+            "org_id",
+        ),
     )
 
 
@@ -1266,6 +1431,180 @@ async def mist_set_marvis_settings(
         dry_run=dry_run,
         confirm=confirm,
     )
+
+
+# ---------------------------------------------------------------------------
+# WebSocket diagnostic result collection
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def mist_collect_diagnostic_results(
+    site_id: str,
+    device_id: str,
+    session_id: str,
+    timeout_seconds: float = 30.0,
+    max_events: int = 50,
+    max_bytes: int = 131_072,
+) -> dict[str, Any]:
+    """Collect bounded output for a previously started Mist device diagnostic.
+
+    Connects to the documented regional `WS /api-ws/v1/stream` endpoint,
+    subscribes with `{"subscribe": "/sites/{site_id}/devices/{device_id}/cmd"}`,
+    and returns only `event=data` payloads whose documented `session` correlation
+    identifier matches `session_id`. The connection URL is derived from the
+    configured documented `MIST_HOST`; callers cannot supply a WebSocket URL.
+
+    Authentication reuses `MIST_API_TOKEN` (preferred) or the complete
+    `MIST_SESSION_COOKIE` + `MIST_CSRF_TOKEN` login-session configuration.
+    Collection is bounded by total received event count, bytes, and elapsed
+    time. Timeout, unmatched/bound exhaustion, malformed streams, and premature
+    connection closure are explicit non-success results. Connections close on
+    success, error, timeout, or cancellation.
+    """
+    if any(not value.strip() or "/" in value for value in (site_id, device_id, session_id)):
+        return {
+            "status": "validation_error",
+            "completed": False,
+            "error": "site_id, device_id, and session_id must be non-empty single segments.",
+        }
+    if not 0 < timeout_seconds <= 120:
+        return {
+            "status": "validation_error",
+            "completed": False,
+            "error": "timeout_seconds must be greater than 0 and at most 120.",
+        }
+    if not 1 <= max_events <= 200:
+        return {
+            "status": "validation_error",
+            "completed": False,
+            "error": "max_events must be between 1 and 200.",
+        }
+    if not 1_024 <= max_bytes <= 1_048_576:
+        return {
+            "status": "validation_error",
+            "completed": False,
+            "error": "max_bytes must be between 1024 and 1048576.",
+        }
+
+    websocket_url, url_error = _mist_websocket_url()
+    headers, auth_error = _mist_websocket_headers()
+    if url_error or auth_error:
+        return {
+            "status": "configuration_error",
+            "completed": False,
+            "error": url_error or auth_error,
+        }
+
+    channel = f"/sites/{site_id}/devices/{device_id}/cmd"
+    subscription = json.dumps({"subscribe": channel}, separators=(",", ":"))
+    started = time.monotonic()
+    received_events = 0
+    received_bytes = 0
+    unrelated_events = 0
+    malformed_events = 0
+    events: list[dict[str, Any]] = []
+    status = "connection_error"
+    error = "Mist WebSocket closed before a terminal diagnostic event was received."
+    secrets = _mist_diagnostic_secrets()
+
+    try:
+        async with _mist_websocket_connect(
+            websocket_url,
+            additional_headers=headers,
+            open_timeout=min(timeout_seconds, 10.0),
+            close_timeout=5.0,
+            max_size=max_bytes,
+            max_queue=4,
+        ) as websocket:
+            await websocket.send(subscription)
+            while received_events < max_events:
+                remaining = timeout_seconds - (time.monotonic() - started)
+                if remaining <= 0:
+                    status = "timeout"
+                    error = "Timed out before receiving a terminal diagnostic event."
+                    break
+                try:
+                    message = await asyncio.wait_for(websocket.recv(), timeout=remaining)
+                except (TimeoutError, asyncio.TimeoutError):
+                    status = "timeout"
+                    error = "Timed out before receiving a terminal diagnostic event."
+                    break
+
+                received_events += 1
+                message_size = len(message) if isinstance(message, bytes) else len(message.encode())
+                received_bytes += message_size
+                if received_bytes > max_bytes:
+                    status = "byte_limit"
+                    error = "Diagnostic WebSocket byte limit reached before completion."
+                    break
+
+                try:
+                    decoded = _decode_diagnostic_event(message)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    malformed_events += 1
+                    continue
+                if decoded is None:
+                    try:
+                        control = json.loads(
+                            message.decode("utf-8") if isinstance(message, bytes) else message
+                        )
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        malformed_events += 1
+                    else:
+                        if isinstance(control, dict) and control.get("event") != "data":
+                            unrelated_events += 1
+                        else:
+                            malformed_events += 1
+                    continue
+
+                event_channel, data = decoded
+                match = _MIST_DIAGNOSTIC_CHANNEL.fullmatch(event_channel)
+                if (
+                    not match
+                    or match.group("site_id") != site_id
+                    or match.group("device_id") != device_id
+                    or data.get("session") != session_id
+                ):
+                    unrelated_events += 1
+                    continue
+
+                safe_data = _redact_diagnostic_data(data, secrets)
+                events.append({"channel": event_channel, "data": safe_data})
+                if _diagnostic_event_finished(data):
+                    status = "completed"
+                    error = ""
+                    break
+            else:
+                status = "event_limit"
+                error = "Diagnostic WebSocket event limit reached before completion."
+    except asyncio.CancelledError:
+        raise
+    except PayloadTooBig:
+        status = "byte_limit"
+        error = "A diagnostic WebSocket message exceeded max_bytes before completion."
+    except Exception as exc:
+        safe_error = _redact_diagnostic_data(str(exc), secrets)
+        error = f"Mist WebSocket failed before completion: {safe_error}"
+
+    result: dict[str, Any] = {
+        "status": status,
+        "completed": status == "completed",
+        "site_id": site_id,
+        "device_id": device_id,
+        "session_id": session_id,
+        "channel": channel,
+        "events": events,
+        "received_events": received_events,
+        "matched_events": len(events),
+        "unrelated_events": unrelated_events,
+        "malformed_events": malformed_events,
+        "received_bytes": received_bytes,
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+    }
+    if error:
+        result["error"] = error
+    return result
 
 
 # ---------------------------------------------------------------------------

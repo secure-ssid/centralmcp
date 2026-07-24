@@ -18,16 +18,16 @@ python3 scripts/setup_wizard.py --with-products
 | Product | Read-only annotated / total | Enables | Required settings | Safety surface |
 |---|---:|---|---|---|
 | ClearPass | 272 / 829 | CPPM 6.12.7 APIs plus verified Insight endpoint and OnGuard activity workflows | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | `/oauth` is excluded; writes dry-run by default |
-| Juniper Mist | 543 / 1,076 | Official 1,050-operation OpenAPI plus NAC, Marvis, inventory, Wired and WAN Assurance | `MIST_HOST`, `MIST_API_TOKEN`; optional session cookie/CSRF | Writes dry-run by default; diagnostics are distinct from config writes |
+| Juniper Mist | 544 / 1,077 | Official 1,050-operation OpenAPI plus NAC, Marvis, inventory, Wired and WAN Assurance, and bounded authenticated regional WebSocket diagnostic-result collection | `MIST_HOST`, `MIST_API_TOKEN`; optional session cookie/CSRF | Writes dry-run by default; diagnostics are distinct from config writes |
 | Apstra | 46 / 68 | Official 6.1 SDK-derived blueprints, tasks, endpoint policies, object policies, topology, and protocols | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional `APSTRA_API_TOKEN` | Current `/api/aaa/login` with older `/api/user/login` fallback |
-| ArubaOS 8 | 125 / 301 | UIDARUBA/X-CSRF/SESSION auth, 258 generated config operations, exhaustive exports, and migration plans | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` | Writes dry-run by default and require write-memory to persist |
-| EdgeConnect | 684 / 1,265 | 1,216 generated operations, multipart uploads, Swagger diagnostics, and curated SD-WAN workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` and session overrides | Source artifact is reproducible but must be checked against live Orchestrator Swagger |
+| ArubaOS 8 | 129 / 307 | UIDARUBA/X-CSRF/SESSION auth, 258 generated config operations, exhaustive exports, and resumable Classic/New Central migration runs | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` | Writes dry-run by default and require write-memory to persist |
+| EdgeConnect | 684 / 1,265 | 1,216 generated operations, multipart uploads, fail-closed Swagger compatibility diagnostics, and curated SD-WAN workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` and session overrides | Source artifact is reproducible but must be checked against live Orchestrator Swagger |
 | HPE Aruba UXI | 24 / 49 | Current 25-operation API plus OAuth, sensor/agent/group/network/test inventories and documented writes | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Generic writes accept only documented method/path pairs; 5 requests/second |
-| Axis Atmos Cloud | 12 / 25 | Reviewed application, connector, tunnel, location, policy, status, and commit workflows | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Writes dry-run by default |
-| **Optional subtotal** | **1,706 / 3,613** | Seven opt-in product backends | Product-specific | Hidden and blocked unless enabled |
+| Axis Atmos Cloud | 12 / 25 | Reviewed application, connector, tunnel, location, policy, status, and commit workflows from the deterministic SHA-pinned manifest generator | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Writes dry-run by default |
+| **Optional subtotal** | **1,711 / 3,620** | Seven opt-in product backends | Product-specific | Hidden and blocked unless enabled |
 
-Combined with the Central/GLP/RAG surfaces, the backend catalog contains 2,786
-read-only-annotated tools and 6,133 registered tools. Diagnostic tools are
+Combined with the Central/GLP/RAG surfaces, the backend catalog contains 2,813
+read-only-annotated tools and 6,162 registered tools. Diagnostic tools are
 available in optional read-only mode but are not included in the read-only
 annotation count.
 
@@ -43,8 +43,10 @@ tools from router discovery and blocks direct write-tool execution. Set
 `CENTRALMCP_PRODUCT_ACCESS=read-write` or run the setup wizard with
 `--product-access read-write` only for trusted lab workflows where confirmed
 writes are expected. Per-platform overrides such as
-`CENTRALMCP_MIST_WRITES=1` and `CENTRALMCP_UXI_WRITES=1` can enable one product
-without opening every optional backend. Unrecognized values fail closed.
+`CENTRALMCP_MIST_WRITES=1`, `CENTRALMCP_UXI_WRITES=1`, and
+`CENTRALMCP_AXIS_WRITES=1` can enable one product without opening every
+optional backend. A platform-specific setting takes precedence over
+`CENTRALMCP_PRODUCT_ACCESS`; unrecognized values fail closed.
 
 For ArubaOS 8 typed configuration-object writes, the manage tools return
 `requires_write_memory_for` with each affected `config_path`. Run
@@ -58,11 +60,53 @@ normalizes the supported migration objects into
 separate Classic Central and New Central candidates, reports lossy mappings,
 produces deterministic diffs, and returns read-only post-migration checks.
 
+For resumable execution, use `aos8_preview_migration_run`, then
+`aos8_create_migration_run`. Run `aos8_apply_migration_run` with its default
+`dry_run=True` before calling it with `dry_run=False`, `confirm=True`, and any
+required target secrets. Secrets are accepted only for that attempt and are
+never written to `state/aos8_migrations/`. Use `aos8_get_migration_run`,
+`aos8_list_migration_runs`, and `aos8_verify_migration_run` for bounded status
+and read-only source-intent/target-result comparisons. New Central guidance is
+limited to post-change checkpoint policy plus automatic device rollback; there
+is no manual checkpoint listing or restore workflow. Classic Central guidance
+remains export-before-apply. Override the state directory only when needed with
+`CENTRALMCP_AOS8_MIGRATION_STATE_DIR`.
+
 EdgeConnect API generations differ materially. Run
 `edgeconnect_doctor` against the target Orchestrator before using operational
 tools. The pinned artifact is named for 9.7 but declares API version 7.2.0
 internally, so production compatibility must be confirmed against that
 Orchestrator's instance-hosted Swagger specification.
+
+Export the target Orchestrator's Swagger/OpenAPI document to a local file, then
+run the fail-closed compatibility check:
+
+```bash
+uv run python scripts/generate_edgeconnect_tools.py \
+  --source inputs/target-orchestrator-openapi.json \
+  --expect-sha256 <sha256> \
+  --report-output outputs/edgeconnect-compatibility.json
+```
+
+JSON and YAML Swagger 2.0, OpenAPI 3.0, and OpenAPI 3.1 documents are accepted.
+The report compares operations, methods, paths, auth declarations, API version,
+base-path assumptions, and source/manifest digests with the committed
+1,216-operation baseline. Malformed input, unsupported versions, stale
+baselines, digest mismatch, endpoint drift, unsupported auth, and non-root
+server base paths all fail closed. The local document and credentials are never
+uploaded; authenticated download is intentionally left to approved local
+operator tooling.
+
+The command is read-only unless `--generate` is explicitly supplied. Even then,
+it replaces the generated manifest only after validation succeeds and updates
+`mcp_servers/openapi_gen/provenance/edgeconnect.json`.
+
+The 25-operation Axis manifest is a reviewed derivation from the MIT-licensed
+upstream registry, not a redistributed proprietary specification. Verify the
+committed pin offline with
+`uv run python scripts/generate_axis_manifest.py --check`. Regenerate from a
+pinned local checkout with `--source-dir PATH`, or use the explicit
+digest-validated network path with `--fetch`.
 
 Generated EdgeConnect multipart upload tools accept file fields as
 `{"filename": "...", "content_base64": "...", "content_type": "..."}` and

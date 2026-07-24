@@ -13,11 +13,11 @@ from generic GET exploration into named MCP workflows.
 | Surface | Tool count |
 |---|---:|
 | Central generated + curated configuration, monitoring, NAC, and operations | 1,573 |
-| GreenLake Platform | 944 |
+| GreenLake Platform | 966 |
 | RAG/OpenAPI | 3 |
-| Optional products, read-only annotated | 1,706 |
-| Optional products, guarded writes included | 3,613 |
-| **Complete backend catalog** | **6,133** |
+| Optional products, read-only annotated | 1,711 |
+| Optional products, guarded writes included | 3,620 |
+| **Complete backend catalog** | **6,162** |
 
 ## Promotion rule
 
@@ -41,6 +41,10 @@ Promote a generic GET pattern to a typed tool when it is:
 | v2beta1 devices and grouping | `list_glp_devices_v2` / `get_glp_device_v2` / `group_glp_devices` | Current device inventory plus documented grouping by make, model, source, category, device type, and other supported attributes; GLP does not expose a device-group resource by ID |
 | Audit Logs v2beta1 | `list_glp_audit_logs_v2` / `get_glp_audit_log_v2` / `get_glp_audit_log_v2_detail` | Bounded audit event search and detail |
 | Workspace contact and subscriptions | `update_glp_workspace_contact` / `glp_add_subscriptions` | Feature-gated writes with dry-run and confirmation |
+| RBAC role assignments and scope groups | `list_glp_role_assignments` / `get_glp_role_assignment` / `list_glp_scope_groups` / `get_glp_scope_group` / `list_glp_scope_group_scopes` | 22 high-frequency typed GLP reads promoted from generic exploration; RBAC/IAM detail and scope-group membership |
+| Events, webhooks, and deliveries | `list_glp_event_webhooks` / `get_glp_event_webhook` / `list_glp_event_subscriptions` / `list_glp_webhook_deliveries` | Bounded event subscription, webhook, and delivery-history reads |
+| Locations and tags | `list_glp_locations` / `get_glp_location` / `reverse_geocode_glp_location` / `list_glp_location_tags` / `get_glp_location_tags` / `list_glp_tags` / `list_glp_tag_resources` | Location inventory, reverse geocoding, and tag/resource association reads |
+| SCIM users, groups, and membership | `list_glp_scim_users` / `get_glp_scim_user` / `list_glp_scim_groups` / `get_glp_scim_group` / `list_glp_scim_group_users` / `list_glp_scim_user_groups` | Bounded SCIM identity reads for users, groups, and group/user membership |
 
 ## ClearPass implemented starters
 
@@ -65,6 +69,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Marvis client troubleshooting | `mist_search_marvis_clients` / `mist_get_client_insights` / `mist_search_events` | Official Mist OpenAPI 2606.1.1 paths |
 | Wired and WAN Assurance | `mist_list_switches` / `mist_list_switch_ports` / `mist_list_gateways` / `mist_get_gateway` | Unified device-stat workflows |
 | Org inventory | `mist_list_org_inventory` | Omits claim secrets from output |
+| Diagnostic result collection | `mist_collect_diagnostic_results` | Bounded authenticated regional WebSocket collection from `/api-ws/v1/stream`, correlated by `session_id` and capped by event count, byte size, and elapsed time; requires the `websockets>=14.0` dependency |
 
 ## ClearPass implemented lab writes
 
@@ -151,6 +156,9 @@ Promote a generic GET pattern to a typed tool when it is:
 | Session lifecycle | `aos8_login` / `aos8_logout` | Preferred UIDARUBA/X-CSRF session flow; legacy token remains a compatibility fallback |
 | Migration export | `aos8_get_vlans` / `aos8_get_policies` / `aos8_export_wlans` / `aos8_export_all` | Exhaustive local paging plus WLAN, role, VLAN, AP group, controller, policy, AAA server/profile, route, and VRRP inventory |
 | Classic/New Central migration plan | `aos8_migration_plan` | Candidate schemas, warnings, deterministic diffs, and verification steps without target writes |
+| Resumable migration run | `aos8_preview_migration_run` / `aos8_create_migration_run` / `aos8_apply_migration_run` | Atomic per-candidate state, dry-run-first confirmed writes, dependency-aware resume/retry, and ephemeral target secrets |
+| Migration run status | `aos8_get_migration_run` / `aos8_list_migration_runs` | Bounded persisted status, partial results, retryability, and exact checkpoint/rollback guidance |
+| Migration verification | `aos8_verify_migration_run` | Bounded read-only identity/direct-field comparison; does not claim unsupported semantic equivalence |
 
 ## EdgeConnect implemented starters
 

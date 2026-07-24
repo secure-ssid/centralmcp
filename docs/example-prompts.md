@@ -225,6 +225,68 @@ find_tool("Mist acknowledge alarm")
 invoke_tool("mist_ack_alarm", {"site_id": "SITE_ID", "alarm_id": "ALARM_ID", "note": "lab verified", "dry_run": true})
 ```
 
+## Preview a resumable AOS8 migration run
+
+```text
+Preview a resumable AOS8 migration run to New Central for the Branch APs
+scope using the migration plan I already exported. Do not create or apply
+it yet.
+```
+
+Router flow:
+
+```text
+find_tool("AOS8 preview migration run")
+invoke_read_tool("aos8_preview_migration_run", {"target_type": "new_central", "migration_plan": {"wlans": []}, "scope_name": "Branch APs", "persona": "CAMPUS_AP", "limit": 50, "offset": 0})
+```
+
+Once the preview looks right, create the run and apply it dry-run first:
+
+```text
+find_tool("AOS8 create migration run")
+invoke_tool("aos8_create_migration_run", {"target_type": "new_central", "migration_plan": {"wlans": []}, "scope_name": "Branch APs", "persona": "CAMPUS_AP", "conflict_policy": "fail"})
+find_tool("AOS8 apply migration run")
+invoke_tool("aos8_apply_migration_run", {"run_id": "RUN_ID", "dry_run": true})
+```
+
+Only pass `dry_run=false` with `confirm=true` and any required target secrets
+after reviewing the dry-run output. New Central rollback guidance is limited
+to its post-change checkpoint policy and automatic device rollback.
+
+## Collect Mist device diagnostic results
+
+```text
+Collect the results for a diagnostic session I already started on a Mist
+device, bounded to 30 seconds and 50 events.
+```
+
+Router flow:
+
+```text
+find_tool("Mist collect diagnostic results")
+invoke_read_tool("mist_collect_diagnostic_results", {"site_id": "SITE_ID", "device_id": "DEVICE_ID", "session_id": "SESSION_ID", "timeout_seconds": 30, "max_events": 50})
+```
+
+This requires `MIST_API_TOKEN` (or `MIST_SESSION_COOKIE` + `MIST_CSRF_TOKEN`)
+and the `websockets` dependency; it only connects to the documented regional
+`WS /api-ws/v1/stream` endpoint derived from `MIST_HOST`.
+
+## Look up GreenLake Platform RBAC and SCIM details
+
+```text
+List the first 10 GreenLake Platform RBAC role assignments, then look up SCIM
+group membership for one group ID.
+```
+
+Router flow:
+
+```text
+find_tool("GLP RBAC role assignments")
+invoke_read_tool("list_glp_role_assignments", {"limit": 10, "offset": 0})
+find_tool("GLP SCIM group users")
+invoke_read_tool("list_glp_scim_group_users", {"group_id": "GROUP_ID"})
+```
+
 ## Write or destructive work
 
 For writes, make intent explicit and dry-run first when the selected tool supports it:

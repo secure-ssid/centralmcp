@@ -251,7 +251,7 @@
       {
         "file": "sources.json",
         "sha256": "701887e758415699e82418bd157620f46418839f3cdc7f3ae60581eb462c63d2",
-        "reason": "unsupported OpenAPI version ''; expected 3.0.x or 3.1.x"
+        "reason": "unsupported API document version ''; expected Swagger 2.0 or OpenAPI 3.0.x/3.1.x"
       }
     ],
     "note": "Raw HPE GreenLake OpenAPI specs are HPE proprietary and are NOT committed. Only this derived operation manifest (names/methods/paths/parameters plus per-source sha256 digests) is committed. Regenerate with scripts/generate_glp_tools.py --fetch (specs are pinned to upstream_ref)."

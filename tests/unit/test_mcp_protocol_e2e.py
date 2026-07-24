@@ -29,6 +29,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
@@ -41,6 +44,8 @@ from mcp_servers._middleware import (
     install_middleware,
 )
 from mcp_servers.shared import DESTRUCTIVE, READ_ONLY, enforce_platform_write
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _build_server() -> FastMCP:
@@ -108,6 +113,140 @@ def test_initialize_and_list_tools_over_real_protocol_boundary():
     assert by_name["reboot_device"].annotations.destructiveHint is True
 
 
+def test_minimal_router_discovery_contract_over_real_protocol_boundary():
+    script = r'''
+import asyncio
+import json
+import os
+
+os.environ["CENTRALMCP_RAG_BACKEND"] = "lancedb"
+os.environ["CENTRALMCP_ROUTER_MODE"] = "minimal"
+os.environ["CENTRALMCP_CENTRAL_WRITES"] = "1"
+
+from mcp.server.fastmcp import FastMCP
+from mcp.shared.memory import create_connected_server_and_client_session
+
+import mcp_servers.tool_router as router
+from mcp_servers.shared import IDEMPOTENT_WRITE
+
+backend = FastMCP("protocol-discovery-backend")
+
+@backend.tool(annotations=router.READ_ONLY)
+def list_widgets(limit: int = 10) -> dict:
+    return {"limit": limit}
+
+@backend.tool(annotations=IDEMPOTENT_WRITE)
+def update_widget(
+    widget_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict:
+    return {
+        "widget_id": widget_id,
+        "dry_run": dry_run,
+        "confirm": confirm,
+    }
+
+tools = dict(backend._tool_manager._tools)
+router._BACKENDS = {
+    "aruba-monitoring": "demo.monitoring",
+    "aruba-config": "demo.config",
+}
+router._tool_index = tools
+router._tool_servers = {name: backend for name in tools}
+router._tool_backend_names = {
+    "list_widgets": "aruba-monitoring",
+    "update_widget": "aruba-config",
+}
+router._load_all_backends = lambda: None
+router._embedder.embed_query = lambda query: [0.0]
+router._lance.connect = lambda: object()
+router._lance.search_tools = lambda db, query, vec, top_k: []
+
+async def main():
+    async with create_connected_server_and_client_session(router.mcp) as session:
+        await session.initialize()
+        listed = await session.list_tools()
+        by_name = {tool.name: tool for tool in listed.tools}
+        called = await session.call_tool(
+            "find_tool",
+            {
+                "query": "widgets",
+                "top_k": 1,
+                "platform": "central",
+                "server": "aruba-monitoring",
+                "capability": "read",
+            },
+        )
+        write_discovery = await session.call_tool(
+            "find_tool",
+            {
+                "query": "update widget",
+                "top_k": 1,
+                "capability": "write",
+            },
+        )
+        preview = await session.call_tool(
+            "invoke_tool",
+            {
+                "name": "update_widget",
+                "arguments": {"widget_id": "w1"},
+            },
+        )
+        print(json.dumps({
+            "names": sorted(by_name),
+            "find_tool_properties": sorted(
+                by_name["find_tool"].inputSchema["properties"]
+            ),
+            "result": json.loads(called.content[0].text),
+            "write_discovery": json.loads(write_discovery.content[0].text),
+            "preview": json.loads(preview.content[0].text),
+        }))
+
+asyncio.run(main())
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    assert payload["names"] == ["find_tool", "invoke_read_tool", "invoke_tool"]
+    assert {
+        "query",
+        "top_k",
+        "include_schema",
+        "platform",
+        "server",
+        "capability",
+    } <= set(payload["find_tool_properties"])
+    result = payload["result"].get("result", payload["result"])
+    if isinstance(result, dict):
+        result = [result]
+    assert result[0]["name"] == "list_widgets"
+    assert result[0]["platform"] == "central"
+    assert result[0]["capability"] == "read"
+    assert result[0]["recommended_dispatcher"] == "invoke_read_tool"
+    assert result[0]["currently_enabled"] is True
+    write_result = payload["write_discovery"].get(
+        "result", payload["write_discovery"]
+    )
+    if isinstance(write_result, dict):
+        write_result = [write_result]
+    write_contract = write_result[0]["execution_contract"]
+    assert write_contract["capability"] == "write"
+    assert write_contract["gate"]["state"] == "enabled"
+    assert write_contract["dry_run"]["state"] == "default_preview"
+    preview = payload["preview"].get("result", payload["preview"])
+    assert preview["widget_id"] == "w1"
+    assert preview["dry_run"] is True
+    assert preview["execution_contract"]["dry_run"]["state"] == "preview"
+    assert preview["execution_contract"]["idempotent"] is True
+
+
 def test_read_tool_call_round_trips_real_json_rpc():
     async def _run():
         server = _build_server()
@@ -163,6 +302,11 @@ def test_blocked_write_envelope_survives_the_wire():
     assert payload["data"]["status"] == "blocked"
     assert payload["tool"] == "reboot_device"
     assert "CENTRALMCP_MIST_WRITES" in payload["message"]
+    contract = payload["data"]["execution_contract"]
+    assert contract["platform"] == "mist"
+    assert contract["capability"] == "write"
+    assert contract["gate"]["state"] == "disabled"
+    assert contract["next_action"].startswith("Set CENTRALMCP_MIST_WRITES=1")
 
 
 def test_allowed_write_executes_over_the_wire(monkeypatch):

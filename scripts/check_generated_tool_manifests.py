@@ -7,7 +7,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -15,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 from mcp_servers.openapi_gen.classify import CAPABILITIES  # noqa: E402
 from mcp_servers.openapi_gen.manifest import MANIFEST_DIR, SCHEMA_VERSION  # noqa: E402
+from scripts.generate_axis_manifest import check_manifest as check_axis_manifest  # noqa: E402
 
 
 def validate_manifest(path: Path) -> tuple[str, int]:
@@ -65,7 +65,10 @@ def validate_all(manifest_dir: Path = MANIFEST_DIR) -> list[tuple[str, int]]:
     paths = sorted(manifest_dir.glob("*.json"))
     if not paths:
         raise ValueError(f"no generated manifests found under {manifest_dir}")
-    return [validate_manifest(path) for path in paths]
+    results = [validate_manifest(path) for path in paths]
+    if (manifest_dir / "axis.json").exists():
+        check_axis_manifest(manifest_dir / "axis.json")
+    return results
 
 
 def main() -> int:

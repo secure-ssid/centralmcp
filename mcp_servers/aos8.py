@@ -1,4 +1,4 @@
-"""MCP server — optional ArubaOS 8 / Mobility Conductor backend (43 curated + 258 generated OpenAPI tools).
+"""ArubaOS 8 MCP server (49 curated + 258 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=aos8
@@ -26,8 +26,10 @@ this: only `GET`/`POST` are accepted.
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -37,16 +39,22 @@ from mcp.server.fastmcp import FastMCP
 from mcp_servers.shared import (
     DESTRUCTIVE,
     DIAGNOSTIC,
+    IDEMPOTENT_WRITE,
     READ_ONLY,
     bound_collection_response,
     bounded_response_payload,
     clamp_limit,
-    platform_write_blocked as _platform_write_blocked,
-    platform_writes_allowed as _platform_writes_allowed,
+    get_client,
     redact_sensitive,
     response_payload,
     safe_api_path,
     validate_product_base_url,
+)
+from mcp_servers.shared import (
+    platform_write_blocked as _platform_write_blocked,
+)
+from mcp_servers.shared import (
+    platform_writes_allowed as _platform_writes_allowed,
 )
 
 mcp = FastMCP("aos8-core")
@@ -992,7 +1000,10 @@ async def aos8_login(force: bool = False) -> dict[str, Any]:
         _SESSION_CACHE.pop(base_url, None)
     entry = _SESSION_CACHE.get(base_url)
     if entry and entry["expires_at"] > time.time():
-        return {"status": "already_logged_in", "session_age_seconds": time.time() - entry["logged_in_at"]}
+        return {
+            "status": "already_logged_in",
+            "session_age_seconds": time.time() - entry["logged_in_at"],
+        }
     return await _aos8_session_login(base_url)
 
 
@@ -1114,7 +1125,12 @@ async def aos8_list_active_aps(
         offset=offset,
     )
     if "data" in out:
-        out["active_aps"] = _compact_primary_list(out.pop("data"), _AP_FIELDS, limit=limit, offset=offset)
+        out["active_aps"] = _compact_primary_list(
+            out.pop("data"),
+            _AP_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
         out["config_path"] = config_path
     return out
 
@@ -1183,7 +1199,12 @@ async def aos8_find_client(
         offset=offset,
     )
     if "data" in out:
-        out["client"] = _compact_primary_list(out.pop("data"), _CLIENT_FIELDS, limit=limit, offset=offset)
+        out["client"] = _compact_primary_list(
+            out.pop("data"),
+            _CLIENT_FIELDS,
+            limit=limit,
+            offset=offset,
+        )
         out["config_path"] = config_path
     return out
 
@@ -1712,7 +1733,17 @@ async def _aos8_collect_all(
         if failure:
             warnings.append(f"{label}: {failure}")
             break
-        page = _extract_primary_list(out.get(label))
+        collection = out.get(label)
+        page = _extract_primary_list(collection)
+        collection_is_valid = isinstance(collection, list) or (
+            isinstance(collection, dict)
+            and any(isinstance(value, list) for value in collection.values())
+        )
+        if not collection_is_valid:
+            warnings.append(
+                f"{label}: response collection was missing or malformed"
+            )
+            break
         items.extend(page)
         if len(page) < min(page_size, max_items - offset):
             break
@@ -1795,10 +1826,11 @@ async def aos8_export_all(
 ) -> dict[str, Any]:
     """Export the AOS8 objects used for Classic/New Central migration planning.
 
-    Fans out to WLANs (SSID profiles + virtual APs), user roles, VLANs, AP
-    groups, controllers, and session-ACL policies. A failure on any single
-    object type is collected in `warnings` instead of aborting the whole
-    export, so a partial export is still usable. Feed the result to
+    Fans out to WLANs, roles, VLANs, AP groups, controllers, session ACLs,
+    AAA/authentication profiles and servers, IPv4/IPv6 routes, and VRRP.
+    A failed or malformed response for any single object type is collected in
+    `warnings` instead of aborting the whole export, so a partial export is
+    still usable. Feed the result to
     `aos8_migration_plan()` (or `pipeline.aos8_migration.build_migration_plan`
     directly) for a deterministic migration plan.
     """
@@ -1924,6 +1956,389 @@ async def aos8_migration_plan(config_path: str = "/md", limit: int = 200) -> dic
     from pipeline.aos8_migration import build_migration_plan
 
     return build_migration_plan(export)
+
+
+def _aos8_migration_candidates(
+    target_type: str,
+    *,
+    migration_plan: dict[str, Any] | None,
+    candidates: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if (migration_plan is None) == (candidates is None):
+        raise ValueError("Provide exactly one of migration_plan or candidates.")
+    if candidates is not None:
+        return candidates
+    planned = migration_plan.get("candidates", {}) if migration_plan else {}
+    selected = planned.get(target_type)
+    if not isinstance(selected, list):
+        raise ValueError(
+            f"migration_plan.candidates[{target_type!r}] must be a candidate list."
+        )
+    return selected
+
+
+def _aos8_migration_target(
+    target_type: str,
+    *,
+    scope_id: str | None,
+    scope_name: str | None,
+    persona: str,
+    conflict_policy: str,
+    cluster_name: str | None,
+    cluster_scope_id: str | None,
+    gateway_name: str | None,
+    gateway_scope_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "type": target_type,
+        "scope_id": scope_id,
+        "scope_name": scope_name,
+        "persona": persona,
+        "conflict_policy": conflict_policy,
+        "cluster_name": cluster_name,
+        "cluster_scope_id": cluster_scope_id,
+        "gateway_name": gateway_name,
+        "gateway_scope_id": gateway_scope_id,
+    }
+
+
+def _aos8_migration_scope_resolver(context: Any) -> tuple[str, str]:
+    from mcp_servers.monitoring import get_global_scope_id, list_scopes
+
+    requested_id = str(context.scope_id).strip() if context.scope_id else None
+    requested_name = str(context.scope_name).strip() if context.scope_name else None
+    if requested_name and requested_name.casefold() in {
+        "global",
+        "everywhere",
+        "org-wide",
+        "all aps",
+    }:
+        global_scope = get_global_scope_id().get("global_scope_id")
+        if not global_scope:
+            raise ValueError("Could not resolve the target global scope.")
+        return str(global_scope), "Global"
+    if not requested_id and not requested_name:
+        raise ValueError("Target scope_id or scope_name is required.")
+    response = list_scopes(full_list=True)
+    items = response.get("items", []) if isinstance(response, dict) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("scope_id") or item.get("scopeId") or item.get("id")
+        item_name = (
+            item.get("scope_name")
+            or item.get("scopeName")
+            or item.get("name")
+        )
+        id_matches = requested_id is None or str(item_id) == requested_id
+        name_matches = (
+            requested_name is None
+            or str(item_name).casefold() == requested_name.casefold()
+        )
+        if item_id and item_name and id_matches and name_matches:
+            return str(item_id), str(item_name)
+    raise ValueError(
+        f"Target scope was not found (scope_id={requested_id!r}, "
+        f"scope_name={requested_name!r})."
+    )
+
+
+def _aos8_migration_persona_validator(context: Any) -> str:
+    allowed = {
+        "CAMPUS_AP",
+        "MOBILITY_GW",
+        "BRANCH_GW",
+        "ACCESS_SWITCH",
+        "AGG_SWITCH",
+        "CORE_SWITCH",
+    }
+    persona = str(context.persona or "").strip().upper()
+    if persona not in allowed:
+        raise ValueError(f"persona must be one of {sorted(allowed)}")
+    return persona
+
+
+def _aos8_migration_read_invoker(operation: Any) -> Any:
+    if operation.invocation == "endpoint":
+        return get_client().get(str(operation.endpoint))
+    from mcp_servers import config as config_tools
+    from mcp_servers import nac as nac_tools
+
+    tools = {
+        "get_aaa_profile": nac_tools.get_aaa_profile,
+        "get_auth_server": nac_tools.get_auth_server,
+        "get_ssid": config_tools.get_ssid,
+        "list_roles": config_tools.list_roles,
+    }
+    tool = tools.get(operation.name)
+    if tool is None:
+        raise ValueError(f"Unapproved migration read tool {operation.name!r}.")
+    return tool(**dict(operation.arguments))
+
+
+def _aos8_migration_write_invoker(
+    operation: Any,
+    *,
+    confirmation: bool,
+) -> Any:
+    arguments = dict(operation.arguments)
+    dry_run = bool(arguments.get("dry_run", False))
+    if not dry_run and not confirmation:
+        raise PermissionError("Migration write requires explicit confirmation.")
+    if not dry_run and not _platform_writes_allowed("central"):
+        raise PermissionError(
+            "Central writes are disabled; set CENTRALMCP_CENTRAL_WRITES=1."
+        )
+    if operation.invocation == "endpoint":
+        if dry_run:
+            return {
+                "dry_run": True,
+                "method": operation.method,
+                "endpoint": operation.endpoint,
+                "payload": redact_sensitive(operation.payload),
+            }
+        method = str(operation.method or arguments.get("method", "")).upper()
+        if method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            raise ValueError(f"Unapproved migration write method {method!r}.")
+        response = get_client()._request(
+            method,
+            safe_api_path(
+                str(operation.endpoint),
+                ("/network-config/", "/configuration/"),
+            ),
+            json=arguments.get("data", operation.payload),
+        )
+        return bounded_response_payload(response)
+
+    from mcp_servers import config as config_tools
+    from mcp_servers import nac as nac_tools
+
+    tools = {
+        "build_overlay_ssid": config_tools.build_overlay_ssid,
+        "build_underlay_ssid": config_tools.build_underlay_ssid,
+        "create_aaa_profile": nac_tools.create_aaa_profile,
+        "create_auth_server": nac_tools.create_auth_server,
+        "create_role": config_tools.create_role,
+        "create_vlan": config_tools.create_vlan,
+        "update_role": config_tools.update_role,
+    }
+    tool = tools.get(operation.name)
+    if tool is None:
+        raise ValueError(f"Unapproved migration write tool {operation.name!r}.")
+    return tool(**arguments)
+
+
+def _aos8_migration_orchestrator() -> Any:
+    from pipeline.aos8_migration_orchestrator import (
+        AOS8MigrationOrchestrator,
+        MigrationRunStore,
+    )
+    from pipeline.aos8_target_adapters import (
+        ClassicCentralAdapter,
+        NewCentralAdapter,
+        TargetType,
+    )
+
+    default_state = Path(__file__).resolve().parents[1] / "state" / "aos8_migrations"
+    state_dir = os.environ.get(
+        "CENTRALMCP_AOS8_MIGRATION_STATE_DIR",
+        str(default_state),
+    )
+
+    def adapter_factory(context: Any) -> Any:
+        adapter_class = (
+            NewCentralAdapter
+            if context.target_type is TargetType.NEW_CENTRAL
+            else ClassicCentralAdapter
+        )
+        return adapter_class(
+            context,
+            scope_resolver=_aos8_migration_scope_resolver,
+            persona_validator=_aos8_migration_persona_validator,
+            read_invoker=_aos8_migration_read_invoker,
+            write_invoker=_aos8_migration_write_invoker,
+            writes_enabled=lambda _target: _platform_writes_allowed("central"),
+        )
+
+    return AOS8MigrationOrchestrator(MigrationRunStore(state_dir), adapter_factory)
+
+
+def _aos8_migration_error(exc: Exception) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "error": str(redact_sensitive(str(exc))),
+        "secrets_persisted": False,
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def aos8_preview_migration_run(
+    target_type: str,
+    migration_plan: dict[str, Any] | None = None,
+    candidates: list[dict[str, Any]] | None = None,
+    scope_id: str | None = None,
+    scope_name: str | None = None,
+    persona: str = "CAMPUS_AP",
+    conflict_policy: str = "fail",
+    cluster_name: str | None = None,
+    cluster_scope_id: str | None = None,
+    gateway_name: str | None = None,
+    gateway_scope_id: str | None = None,
+    selected_candidates: list[str] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Preview a bounded, dependency-ordered migration run without persisting it."""
+    try:
+        selected = _aos8_migration_candidates(
+            target_type,
+            migration_plan=migration_plan,
+            candidates=candidates,
+        )
+        target = _aos8_migration_target(
+            target_type,
+            scope_id=scope_id,
+            scope_name=scope_name,
+            persona=persona,
+            conflict_policy=conflict_policy,
+            cluster_name=cluster_name,
+            cluster_scope_id=cluster_scope_id,
+            gateway_name=gateway_name,
+            gateway_scope_id=gateway_scope_id,
+        )
+        return _aos8_migration_orchestrator().preview(
+            selected,
+            target,
+            selected=selected_candidates,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:
+        return _aos8_migration_error(exc)
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def aos8_create_migration_run(
+    target_type: str,
+    migration_plan: dict[str, Any] | None = None,
+    candidates: list[dict[str, Any]] | None = None,
+    scope_id: str | None = None,
+    scope_name: str | None = None,
+    persona: str = "CAMPUS_AP",
+    conflict_policy: str = "fail",
+    cluster_name: str | None = None,
+    cluster_scope_id: str | None = None,
+    gateway_name: str | None = None,
+    gateway_scope_id: str | None = None,
+    selected_candidates: list[str] | None = None,
+    run_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Create an atomic resumable run from a plan/candidate set; secrets are never stored."""
+    try:
+        selected = _aos8_migration_candidates(
+            target_type,
+            migration_plan=migration_plan,
+            candidates=candidates,
+        )
+        target = _aos8_migration_target(
+            target_type,
+            scope_id=scope_id,
+            scope_name=scope_name,
+            persona=persona,
+            conflict_policy=conflict_policy,
+            cluster_name=cluster_name,
+            cluster_scope_id=cluster_scope_id,
+            gateway_name=gateway_name,
+            gateway_scope_id=gateway_scope_id,
+        )
+        return _aos8_migration_orchestrator().create_run(
+            selected,
+            target,
+            selected=selected_candidates,
+            run_id=run_id,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:
+        return _aos8_migration_error(exc)
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def aos8_apply_migration_run(
+    run_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+    target_secrets: dict[str, dict[str, str]] | None = None,
+    retry_failed: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Dry-run, apply, or resume a run; real writes require confirm and prior dry-run."""
+    try:
+        return _aos8_migration_orchestrator().apply(
+            run_id,
+            dry_run=dry_run,
+            confirmation=confirm,
+            target_secrets=target_secrets,
+            retry_failed=retry_failed,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:
+        return _aos8_migration_error(exc)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def aos8_get_migration_run(
+    run_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    include_details: bool = False,
+) -> dict[str, Any]:
+    """Get bounded candidate state, results, and verification for one migration run."""
+    try:
+        return _aos8_migration_orchestrator().get_run(
+            run_id,
+            limit=limit,
+            offset=offset,
+            include_details=include_details,
+        )
+    except Exception as exc:
+        return _aos8_migration_error(exc)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def aos8_list_migration_runs(
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List bounded migration-run summaries, reporting malformed state without crashing."""
+    try:
+        return _aos8_migration_orchestrator().list_runs(
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:
+        return _aos8_migration_error(exc)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def aos8_verify_migration_run(
+    run_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Read target objects and record bounded identity/field verification comparisons."""
+    try:
+        return _aos8_migration_orchestrator().verify(
+            run_id,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:
+        return _aos8_migration_error(exc)
 
 
 @mcp.tool(annotations=DESTRUCTIVE)

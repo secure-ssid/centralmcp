@@ -3,7 +3,7 @@
 Covers:
 - Central defaults enabled (preserves the historical "no gate" behavior).
 - GLP defaults disabled (preserves the historical fail-closed behavior).
-- The six optional-product backends fall back to CENTRALMCP_PRODUCT_ACCESS
+- The optional-product backends fall back to CENTRALMCP_PRODUCT_ACCESS
   by default (unchanged legacy behavior) but can be overridden per-platform.
 - Ambiguous/ambivalent override values fail closed.
 - Unknown platform names raise instead of silently allowing/denying.
@@ -17,8 +17,10 @@ import pytest
 
 from mcp_servers.shared import (
     PLATFORM_WRITE_GATE_NAMES,
+    build_write_execution_contract,
     enforce_platform_write,
     platform_write_blocked,
+    platform_write_gate_state,
     platform_writes_allowed,
 )
 
@@ -33,7 +35,8 @@ class TestDefaults:
         assert platform_writes_allowed("glp") is False
 
     @pytest.mark.parametrize(
-        "platform", ["aos8", "edgeconnect", "apstra", "mist", "clearpass", "uxi"]
+        "platform",
+        ["aos8", "edgeconnect", "apstra", "mist", "clearpass", "uxi", "axis"],
     )
     def test_optional_products_default_to_shared_toggle(self, platform, monkeypatch):
         for gate in PLATFORM_WRITE_GATE_NAMES:
@@ -53,6 +56,12 @@ class TestOverrides:
         monkeypatch.setenv("CENTRALMCP_MIST_WRITES", "0")
 
         assert platform_writes_allowed("mist") is False
+        assert platform_write_gate_state("mist") == {
+            "env_var": "CENTRALMCP_MIST_WRITES",
+            "state": "disabled",
+            "enabled": False,
+            "source": "platform_override",
+        }
 
     def test_platform_override_can_enable_a_single_optional_product(self, monkeypatch):
         monkeypatch.delenv("CENTRALMCP_PRODUCT_ACCESS", raising=False)
@@ -74,6 +83,17 @@ class TestOverrides:
     def test_ambiguous_override_value_fails_closed(self, monkeypatch, value):
         monkeypatch.setenv("CENTRALMCP_CENTRAL_WRITES", value)
         assert platform_writes_allowed("central") is False
+        assert platform_write_gate_state("central")["state"] == "invalid"
+
+    def test_invalid_shared_fallback_fails_closed(self, monkeypatch):
+        monkeypatch.delenv("CENTRALMCP_AXIS_WRITES", raising=False)
+        monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "surprise")
+
+        state = platform_write_gate_state("axis")
+
+        assert state["enabled"] is False
+        assert state["state"] == "invalid"
+        assert state["source"] == "CENTRALMCP_PRODUCT_ACCESS"
 
 
 class TestValidation:
@@ -91,6 +111,7 @@ class TestValidation:
             "mist",
             "clearpass",
             "uxi",
+            "axis",
         }
         assert required <= set(PLATFORM_WRITE_GATE_NAMES)
 
@@ -110,10 +131,43 @@ class TestEnforcementHelper:
         assert blocked["tool"] == "mist_set_site"
         assert blocked["platform"] == "mist"
         assert "CENTRALMCP_MIST_WRITES=1" in blocked["error"]
+        assert blocked["execution_contract"]["gate"]["state"] == "disabled"
+        assert blocked["execution_contract"]["next_action"].startswith(
+            "Set CENTRALMCP_MIST_WRITES=1"
+        )
 
     def test_platform_write_blocked_mentions_correct_env_var_per_platform(self):
         blocked = platform_write_blocked("glp", "glp_write")
         assert "CENTRALMCP_GLP_V2BETA1_WRITES" in blocked["error"]
+
+    def test_contract_shape_is_compact_and_stable(self, monkeypatch):
+        monkeypatch.setenv("CENTRALMCP_AXIS_WRITES", "1")
+
+        contract = build_write_execution_contract(
+            "axis",
+            "destructive",
+            supports_dry_run=True,
+            dry_run_state="preview",
+            supports_confirm=True,
+            requires_confirmation=True,
+            idempotent=False,
+            next_action="Review the preview.",
+        )
+
+        assert set(contract) == {
+            "platform",
+            "capability",
+            "gate",
+            "dry_run",
+            "confirm",
+            "idempotent",
+            "next_action",
+        }
+        assert contract["gate"] == {
+            "env_var": "CENTRALMCP_AXIS_WRITES",
+            "state": "enabled",
+            "source": "platform_override",
+        }
 
 
 class TestOptionalBackendIntegration:
@@ -130,6 +184,7 @@ class TestOptionalBackendIntegration:
             ("mcp_servers.mist", "mist", "CENTRALMCP_MIST_WRITES"),
             ("mcp_servers.clearpass", "clearpass", "CENTRALMCP_CLEARPASS_WRITES"),
             ("mcp_servers.uxi", "uxi", "CENTRALMCP_UXI_WRITES"),
+            ("mcp_servers.axis", "axis", "CENTRALMCP_AXIS_WRITES"),
         ],
     )
     def test_backend_honors_platform_override(

@@ -86,6 +86,8 @@ uv run python ingestion/ingest_docs.py
 | Apstra session authentication fails | Configure `APSTRA_USERNAME` and `APSTRA_PASSWORD`, or supply a pre-issued `APSTRA_API_TOKEN`; requests use the `AuthToken` header. |
 | EdgeConnect operational tool reports `blocked` | Run `edgeconnect_doctor`. The bundled pre-9.3 endpoint map is disabled unless `EDGECONNECT_ALLOW_LEGACY_API=1` is explicitly set for a validated older/lab instance; production 9.3+ use requires the target Swagger spec. |
 | Central troubleshooting endpoint returns 404 | The client tries `/network-troubleshooting/v1` first and falls back to `v1alpha1` only on 404. Set `CENTRALMCP_TROUBLESHOOTING_API_VERSION=v1alpha1` only for a tenant that still requires the legacy path. |
+| `mist_collect_diagnostic_results` times out or reports `configuration_error` | Confirm `MIST_API_TOKEN` (or the full `MIST_SESSION_COOKIE` + `MIST_CSRF_TOKEN` pair) is set and that `websockets>=14.0` is installed; the tool only connects to the documented regional `WS /api-ws/v1/stream` endpoint derived from `MIST_HOST`. |
+| EdgeConnect compatibility check fails closed | Expected for malformed input, unsupported Swagger/OpenAPI versions, digest mismatch, endpoint drift, unsupported auth, or a non-root server base path; export a fresh Swagger/OpenAPI document from the target 9.3+ Orchestrator and re-run `scripts/generate_edgeconnect_tools.py`. |
 
 ## Router and catalog
 
@@ -112,11 +114,11 @@ If `find_tool` cannot locate expected optional product tools, confirm
 `CENTRALMCP_PRODUCTS` and the catalog were built with the same selected
 products.
 
-The complete read-write backend catalog contains 6,133 tools. If release
+The complete read-write backend catalog contains 6,162 tools. If release
 validation expects that full catalog, rebuild with:
 
 ```bash
-CENTRALMCP_PRODUCT_ACCESS=read-write uv run python scripts/ingest_tools.py --products all
+CENTRALMCP_PRODUCT_ACCESS=read-write CENTRALMCP_GLP_GENERATED_TOOLS=1 uv run python scripts/ingest_tools.py --products all
 ```
 
 ## First useful call flow

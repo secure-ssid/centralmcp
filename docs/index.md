@@ -4,35 +4,43 @@ Low-token Model Context Protocol tooling for HPE Aruba Central, HPE GreenLake
 Platform, embedded docs/API lookup, and optional ClearPass, Mist, Apstra,
 ArubaOS 8, EdgeConnect, UXI, and Axis backends.
 
-![centralmcp 0.3.0](assets/centralmcp-hero.svg)
+![centralmcp 0.4.0](assets/centralmcp-hero.svg)
 
-## Version 0.3.0 project snapshot
+## Version 0.4.0 project snapshot
 
 | Area | Current snapshot |
 |---|---|
-| Tool catalog | 5,703 generated operations / 6,133 backend tools / 6,136 direct-all |
+| Tool catalog | 5,703 generated operations (5,686 active) / 476 curated / 6,162 backend tools / 6,165 direct-all |
+| Capability totals | 2,813 read, 164 diagnostic, 2,382 write, 803 destructive |
 | RAG | 47,633 prose chunks in LanceDB |
 | Exact API lookup | 239 specs, 3,465 endpoints, 10,297 schemas, 57,131 fields |
-| API provenance | Aruba ReadMe registries, official Mist/Apstra sources, pinned GLP and EdgeConnect snapshots |
-| Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis |
+| API provenance | Aruba ReadMe registries, official Mist/Apstra sources, pinned GLP and EdgeConnect snapshots, SHA-pinned Axis generator |
+| Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis Atmos Cloud |
 | Safety | Per-platform gates, dry-run writes, confirmation, HTTP host/origin and bearer controls |
 
-Read the [0.3.0 release notes](release-notes-0.3.0.md) for the complete
-platform, migration, framework, and API-source update.
+Read the [0.4.0 release notes](release-notes-0.4.0.md) for the complete
+resumable AOS8 migration execution, Mist WebSocket diagnostics, EdgeConnect
+compatibility workflow, GLP typed workflows, and Axis generator update. The
+[0.3.0 release notes](release-notes-0.3.0.md) remain available for historical
+platform, migration, framework, and API-source context.
+
+See the [capability gap matrix](capability-gap-matrix.md) for reproducible
+executable-tool, generated-operation, benchmark, and practical-gap comparisons.
 
 ## Search keywords
 
 HPE Networking MCP server, HPE Aruba Networking MCP server, HPE Aruba Central
 MCP server, Aruba Central AI tools, HPE GreenLake Platform MCP, GreenLake
-Platform MCP, GreenLake service catalog MCP, GreenLake reporting status MCP,
-FastMCP network automation, Model Context Protocol networking, network
-configuration MCP, Aruba API RAG, Aruba Central OpenAPI lookup, ClearPass MCP,
-Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP, AOS8 automation, HPE Aruba
-EdgeConnect MCP, EdgeConnect SD-WAN MCP, HPE Aruba UXI MCP, UXI sensor status MCP,
-guarded read/write lab automation, EdgeConnect zones, EdgeConnect interface
-labels, zone-based firewall MCP, Python `httpx` network automation, EdgeConnect
-ACL object groups, EdgeConnect services, EdgeConnect bypass mode, EdgeConnect
-link integrity diagnostics.
+Platform automation, GreenLake Platform MCP, GreenLake service catalog MCP,
+GreenLake reporting status MCP, FastMCP network automation, Model Context
+Protocol networking, network configuration MCP, Aruba API RAG, Aruba Central
+OpenAPI lookup, ClearPass MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP,
+ArubaOS 8 migration MCP, AOS8 automation, HPE Aruba EdgeConnect MCP,
+EdgeConnect SD-WAN MCP, HPE Aruba UXI MCP, UXI sensor status MCP, Axis Atmos
+Cloud MCP, guarded read/write lab automation, EdgeConnect zones, EdgeConnect
+interface labels, zone-based firewall MCP, Python `httpx` network automation,
+EdgeConnect ACL object groups, EdgeConnect services, EdgeConnect bypass mode,
+EdgeConnect link integrity diagnostics, low-token MCP router.
 
 ## Start fast
 
@@ -88,7 +96,8 @@ flowchart TD
 | Plan typed product-specific workflows | [Typed product workflow roadmap](product-workflows.md) |
 | Fix setup, credentials, HTTP, or catalog issues | [Troubleshooting](troubleshooting.md) |
 | Download or package prebuilt RAG/OpenAPI indexes | [Prebuilt RAG/OpenAPI indexes](release-indexes.md) |
-| Review the complete 0.3.0 expansion | [0.3.0 release notes](release-notes-0.3.0.md) |
+| Review the complete 0.4.0 expansion | [0.4.0 release notes](release-notes-0.4.0.md) |
+| Review the prior 0.3.0 expansion (historical) | [0.3.0 release notes](release-notes-0.3.0.md) |
 | Understand the low-token router | [Tool router](tool-router.md) |
 | Browse all backend counts and coverage | [Tool catalog](tool-catalog.md) |
 | Try useful prompts | [Example prompts](example-prompts.md) |
@@ -132,9 +141,10 @@ safety model.
 
 Optional product writes default to blocked. Use the global
 `CENTRALMCP_PRODUCT_ACCESS=read-write` lab mode or a narrower
-`CENTRALMCP_<PLATFORM>_WRITES=1` override. AOS8 migration planning, Mist
-NAC/Marvis/Wired/WAN, ClearPass Insight/OnGuard, and UXI guarded writes remain
-hidden from the MCP client until their backend is enabled.
+`CENTRALMCP_<PLATFORM>_WRITES=1` override. AOS8 resumable migration execution,
+Mist NAC/Marvis/Wired/WAN and WebSocket diagnostics, ClearPass Insight/OnGuard,
+and UXI guarded writes remain hidden from the MCP client until their backend
+is enabled.
 
 ## Streamable HTTP
 

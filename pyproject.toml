@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "centralmcp"
-version = "0.3.0"
-description = "Low-token HPE Networking MCP server with 448 tools for Aruba Central, GreenLake, AOS8 migrations, Mist, ClearPass, Apstra, EdgeConnect, UXI, RAG, and OpenAPI."
+version = "0.4.0"
+description = "Low-token HPE Networking MCP router (3 discovery/dispatch tools) over a 6,162-tool backend catalog for Aruba Central, GreenLake Platform, AOS8 migrations, Mist, ClearPass, Apstra, EdgeConnect, UXI, Axis Atmos, RAG, and OpenAPI."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -15,9 +15,11 @@ keywords = [
     "apstra",
     "aruba-api",
     "aruba-central",
+    "aruba-central-mcp",
     "aruba-mcp",
     "arubaos8",
     "aos8-migration",
+    "axis-atmos",
     "clearpass",
     "edgeconnect-acl-groups",
     "edgeconnect-bypass",
@@ -29,12 +31,14 @@ keywords = [
     "fastmcp",
     "greenlake",
     "greenlake-mcp",
+    "greenlake-platform",
     "greenlake-reporting",
     "greenlake-service-catalog",
     "hpe-aruba-uxi",
     "hpe-aruba-networking",
     "hpe-greenlake",
     "hpe-networking",
+    "low-token-router",
     "mcp-server",
     "mist",
     "model-context-protocol",
@@ -69,6 +73,7 @@ dependencies = [
     "numpy>=2.2.6",
     "lancedb>=0.33.0",
     "fastembed>=0.8.0",
+    "websockets>=14.0",
 ]
 
 [project.scripts]
@@ -80,7 +85,7 @@ Homepage = "https://secure-ssid.github.io/centralmcp/"
 Repository = "https://github.com/secure-ssid/centralmcp"
 Documentation = "https://secure-ssid.github.io/centralmcp/"
 Issues = "https://github.com/secure-ssid/centralmcp/issues"
-Changelog = "https://secure-ssid.github.io/centralmcp/release-notes-0.3.0.html"
+Changelog = "https://secure-ssid.github.io/centralmcp/release-notes-0.4.0.html"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
@@ -92,7 +97,7 @@ py-modules = ["run_pipeline", "run_ssid"]
 include = ["pipeline*", "mcp_servers*"]
 
 [tool.setuptools.package-data]
-"mcp_servers.openapi_gen" = ["manifests/*.json", "overrides/*.json"]
+"mcp_servers.openapi_gen" = ["manifests/*.json", "overrides/*.json", "provenance/*.json"]
 
 [tool.ruff]
 line-length = 100

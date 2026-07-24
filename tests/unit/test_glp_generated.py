@@ -37,7 +37,7 @@ def _register_generated_glp_tools():
     The generated tools default OFF so the curated ``aruba-glp`` catalog stays
     lean (and the public README/catalog counts stay valid). We register them on
     the shared ``glp.mcp`` for these tests, then fully remove them on teardown
-    so later count/catalog tests see the untouched 41-tool curated server.
+    so later count/catalog tests see the untouched 62-tool curated server.
     """
     prev = os.environ.get("CENTRALMCP_GLP_GENERATED_TOOLS")
     os.environ["CENTRALMCP_GLP_GENERATED_TOOLS"] = "1"
@@ -145,7 +145,7 @@ def test_generated_tools_do_not_disturb_curated_glp_tools():
     for curated in ("glp_get", "list_glp_devices", "glp_write_status", "glp_assign_subscription"):
         assert curated in tools
     # Generated tools live on the same curated server, additive only.
-    assert len(tools) >= EXPECTED_REGISTERED_OPERATION_COUNT + 40
+    assert len(tools) >= EXPECTED_REGISTERED_OPERATION_COUNT + 62
 
 
 def test_read_tool_hides_auth_and_write_tool_has_controls():

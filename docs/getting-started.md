@@ -141,7 +141,7 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 ```
 
 This exposes only the router discovery/dispatch surface and keeps tool-list token cost low.
-The router can search 6,133 backend tools when all platforms and guarded writes
+The router can search 6,162 backend tools when all platforms and guarded writes
 are indexed, while minimal mode exposes only three client-visible tools.
 
 ### Streamable HTTP instead of stdio
@@ -196,11 +196,11 @@ Include optional product starters:
 uv run python scripts/ingest_tools.py --products all
 ```
 
-The safe default hides optional write tools. Build all 6,133 backend tools only
+The safe default hides optional write tools. Build all 6,162 backend tools only
 for an intentional lab read/write profile:
 
 ```bash
-CENTRALMCP_PRODUCT_ACCESS=read-write uv run python scripts/ingest_tools.py --products all
+CENTRALMCP_PRODUCT_ACCESS=read-write CENTRALMCP_GLP_GENERATED_TOOLS=1 uv run python scripts/ingest_tools.py --products all
 ```
 
 Or let the wizard enable only the products you want:
@@ -240,7 +240,7 @@ index with 239 specs, 3,465 endpoints, 10,297 schemas, and 57,131 fields.
 python3 scripts/setup_wizard.py --yes --skip-credentials --skip-catalog
 uv run python scripts/doctor.py
 uv run pytest tests/unit -q
-uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6133
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6162
 ```
 
 `scripts/doctor.py` is a non-mutating local setup diagnostic. It checks Python
@@ -282,6 +282,11 @@ python3 scripts/setup_wizard.py --products clearpass
 
 Set `CENTRALMCP_PRODUCT_ACCESS=read-write` only for trusted lab writes, or
 enable a single platform with `CENTRALMCP_<PLATFORM>_WRITES=1`.
+
+Mist device diagnostic result collection (`mist_collect_diagnostic_results`)
+requires the `websockets>=14.0` dependency installed by `uv sync` and connects
+only to the documented regional `WS /api-ws/v1/stream` endpoint derived from
+`MIST_HOST`.
 
 Run `edgeconnect_doctor` before any EdgeConnect operational workflow. The
 bundled pre-9.3 endpoint map is blocked by default; production 9.3+ remapping

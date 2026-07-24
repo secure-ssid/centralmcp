@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from mcp_servers import glp
-from pipeline.clients.glp_client import GLPClient, _V2BETA1_WRITES_FLAG
+from pipeline.clients.glp_client import _V2BETA1_WRITES_FLAG, GLPClient
 
 
 @pytest.fixture
@@ -248,9 +248,10 @@ def test_glp_add_subscriptions_blocked_when_writes_disabled(monkeypatch):
     assert result["status"] == "FORBIDDEN"
 
 
-def test_list_glp_api_families_lists_explore_only_families():
+def test_list_glp_api_families_lists_manifest_backed_families():
     result = glp.list_glp_api_families()
 
     assert "/authorization/" in result["guarded_get_prefixes"]
-    assert "RBAC/authorization" in result["explore_only_families"]
+    assert "list_glp_role_assignments" in result["curated_manifest_backed_tools"]
+    assert "RBAC/authorization" not in result["explore_only_families"]
     assert "glp_add_subscriptions" in result["best_effort_typed_tools"]

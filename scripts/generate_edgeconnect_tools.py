@@ -1,95 +1,189 @@
 #!/usr/bin/env python3
-"""Rebuild the pinned EdgeConnect generated-tool manifest."""
+"""Check a target EdgeConnect Swagger/OpenAPI document and optionally generate.
+
+The default action is read-only: compare a user-supplied local document with
+the committed 1,216-operation manifest and print a deterministic compatibility
+report. The manifest is overwritten only when ``--generate`` is explicit and
+every compatibility check succeeds.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
-import urllib.request
+import sys
 from collections import Counter
 from pathlib import Path
 
-from mcp_servers.openapi_gen.manifest import (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from mcp_servers.openapi_gen.compatibility import (  # noqa: E402
+    CompatibilityError,
+    build_compatibility_report,
+    dumps_report,
+)
+from mcp_servers.openapi_gen.manifest import (  # noqa: E402
     build_manifest,
     dumps,
+    manifest_path,
     override_path,
     sha256_bytes,
-    write_manifest,
 )
 
-REPOSITORY = "nowireless4u/hpe-networking-mcp"
-COMMIT = "c73e14f6d06fa8e47797553adacff20c91fe2184"
-SOURCE_PATH = "vendor/edgeconnect/EdgeConnect-9-7-REST-API.json"
-SOURCE_SHA256 = "8f7d90cbd7777e3fac0dc2458249174068f4c373b400d1224f3c3dcc77e34c46"
-BLOB_SHA = "f4bc3d2df48f64db3c05f90972a5241526c4876f"
-
-
-def _source_bytes(path: Path | None) -> bytes:
-    if path is not None:
-        return path.read_bytes()
-    url = f"https://raw.githubusercontent.com/{REPOSITORY}/{COMMIT}/{SOURCE_PATH}"
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "centralmcp-openapi-generation"}
-    )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return response.read()
+PLATFORM = "edgeconnect"
+PROVENANCE_PATH = (
+    _REPO_ROOT / "mcp_servers/openapi_gen/provenance/edgeconnect.json"
+)
 
 
 def _overrides() -> dict[str, str]:
-    doc = json.loads(override_path("edgeconnect").read_text())
-    overrides = {str(key): str(value) for key, value in doc["capabilities"].items()}
-    overrides.update({str(key): "diagnostic" for key in doc.get("diagnostics", [])})
+    document = json.loads(override_path(PLATFORM).read_text())
+    overrides = {
+        str(key): str(value) for key, value in document["capabilities"].items()
+    }
+    overrides.update(
+        {str(key): "diagnostic" for key in document.get("diagnostics", [])}
+    )
     return overrides
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path)
-    parser.add_argument("--check", action="store_true")
-    args = parser.parse_args()
+def _load_baseline() -> tuple[dict, bytes, dict]:
+    path = manifest_path(PLATFORM)
+    try:
+        raw = path.read_bytes()
+        manifest = json.loads(raw)
+        provenance = json.loads(PROVENANCE_PATH.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CompatibilityError(f"cannot load EdgeConnect compatibility baseline: {exc}") from exc
+    return manifest, raw, provenance
 
-    payload = _source_bytes(args.source)
-    digest = sha256_bytes(payload)
-    if digest != SOURCE_SHA256:
-        raise SystemExit(
-            f"EdgeConnect source digest mismatch: expected {SOURCE_SHA256}, received {digest}"
-        )
+
+def compatibility_report(
+    source: Path, *, expected_source_sha256: str | None = None
+) -> dict:
+    payload = source.read_bytes()
+    manifest, manifest_bytes, provenance = _load_baseline()
+    return build_compatibility_report(
+        payload=payload,
+        source_name=source.name,
+        baseline_manifest=manifest,
+        baseline_manifest_bytes=manifest_bytes,
+        provenance=provenance,
+        expected_source_sha256=expected_source_sha256,
+    )
+
+
+def _generate(source: Path, payload: bytes, baseline: dict, provenance: dict) -> None:
+    from mcp_servers.openapi_gen.compatibility import load_api_document
+
+    document = load_api_document(payload)
+    source_sha256 = sha256_bytes(payload)
     manifest = build_manifest(
-        json.loads(payload),
-        platform="edgeconnect",
-        source_file=f"{REPOSITORY}@{COMMIT}:{SOURCE_PATH}",
-        source_sha256=digest,
+        document,
+        platform=PLATFORM,
+        source_file=source.name,
+        source_sha256=source_sha256,
         overrides=_overrides(),
     )
+
+    baseline_by_key = {
+        operation["key"]: operation for operation in baseline["operations"]
+    }
+    for operation in manifest["operations"]:
+        previous = baseline_by_key[operation["key"]]
+        operation["name"] = previous["name"]
+        operation["capability"] = previous["capability"]
+
     manifest["source"].update(
         {
-            "repository": f"https://github.com/{REPOSITORY}",
-            "commit": COMMIT,
-            "blob_sha": BLOB_SHA,
-            "artifact_name": Path(SOURCE_PATH).name,
+            "artifact_name": source.name,
             "provenance": (
-                "Derived from the generated artifact committed by the MIT-licensed "
-                "upstream project; the proprietary raw API document is intentionally "
-                "not redistributed here."
+                "Generated from a user-supplied target Orchestrator API document "
+                "after fail-closed compatibility validation. The raw document is "
+                "not copied into this repository."
             ),
         }
     )
     manifest["reviewed_capability_counts"] = dict(
         sorted(Counter(op["capability"] for op in manifest["operations"]).items())
     )
-
     rendered = dumps(manifest)
-    output = Path(__file__).resolve().parents[1] / "mcp_servers/openapi_gen/manifests/edgeconnect.json"
-    if args.check:
-        if not output.exists() or output.read_text() != rendered:
-            raise SystemExit(f"{output} is stale; regenerate it")
-        print(f"{output} is current")
-        return 0
-    write_manifest("edgeconnect", manifest)
-    print(
-        f"Wrote {output}: {manifest['source']['operation_count']} operations, "
-        f"sha256 {digest}"
+    manifest_path(PLATFORM).write_text(rendered)
+
+    updated_provenance = dict(provenance)
+    updated_provenance["manifest_sha256"] = sha256_bytes(rendered.encode())
+    updated_provenance["operation_count"] = len(manifest["operations"])
+    updated_provenance["source_sha256"] = source_sha256
+    PROVENANCE_PATH.write_text(
+        json.dumps(updated_provenance, indent=2, ensure_ascii=False) + "\n"
     )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--source",
+        required=True,
+        type=Path,
+        help="local target Orchestrator Swagger/OpenAPI JSON or YAML document",
+    )
+    parser.add_argument(
+        "--expect-sha256",
+        help="optional expected SHA-256 for the local source; mismatch fails closed",
+    )
+    parser.add_argument(
+        "--report-output",
+        type=Path,
+        help="optional local path for the deterministic JSON report",
+    )
+    parser.add_argument(
+        "--generate",
+        action="store_true",
+        help="explicitly replace the committed manifest after successful validation",
+    )
+    args = parser.parse_args()
+
+    if not args.source.is_file():
+        print(f"EdgeConnect API document not found: {args.source}", file=sys.stderr)
+        return 2
+    expected_sha = args.expect_sha256.lower() if args.expect_sha256 else None
+    if expected_sha is not None and (
+        len(expected_sha) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha)
+    ):
+        print("--expect-sha256 must be a 64-character hexadecimal digest", file=sys.stderr)
+        return 2
+
+    try:
+        payload = args.source.read_bytes()
+        baseline, baseline_bytes, provenance = _load_baseline()
+        report = build_compatibility_report(
+            payload=payload,
+            source_name=args.source.name,
+            baseline_manifest=baseline,
+            baseline_manifest_bytes=baseline_bytes,
+            provenance=provenance,
+            expected_source_sha256=expected_sha,
+        )
+    except (OSError, CompatibilityError) as exc:
+        print(f"EdgeConnect compatibility check failed closed: {exc}", file=sys.stderr)
+        return 2
+
+    rendered_report = dumps_report(report)
+    if args.report_output:
+        args.report_output.write_text(rendered_report)
+    print(rendered_report, end="")
+
+    if not report["verdict"]["compatible"]:
+        return 1
+    if args.generate:
+        _generate(args.source, payload, baseline, provenance)
+        print(
+            f"Generated {manifest_path(PLATFORM).relative_to(_REPO_ROOT)} "
+            f"from validated source sha256 {report['source']['sha256']}"
+        )
     return 0
 
 

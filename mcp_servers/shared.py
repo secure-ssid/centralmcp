@@ -134,7 +134,7 @@ def optional_product_writes_allowed() -> bool:
     return optional_product_access_mode() == "read-write"
 
 
-def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
+def optional_product_write_blocked(tool_name: str) -> dict[str, Any]:
     return {
         "error": (
             f"Tool '{tool_name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only "
@@ -156,14 +156,14 @@ def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
 #     gate. That default is preserved; CENTRALMCP_CENTRAL_WRITES=0 is a new,
 #     opt-*out* safety valve for anyone who wants a read-only Central MCP
 #     server without touching CENTRALMCP_PRODUCT_ACCESS (which also governs
-#     the six optional-product backends below).
+#     the optional-product backends below).
 #   - GLP writes stay fail-closed behind CENTRALMCP_GLP_V2BETA1_WRITES=1,
 #     enforced at the GLPClient layer (pipeline.clients.glp_client). The gate
 #     below just gives that platform a name in the same lookup table so
 #     tooling/docs can treat every platform uniformly.
 #
-# The six optional-product starter backends (AOS8, EdgeConnect, Apstra,
-# Mist, ClearPass, UXI) continue to share CENTRALMCP_PRODUCT_ACCESS by
+# The seven optional-product starter backends (AOS8, EdgeConnect, Apstra,
+# Mist, ClearPass, UXI, Axis) continue to share CENTRALMCP_PRODUCT_ACCESS by
 # default -- unchanged behavior for anyone who already sets it. Each also
 # gets its own override env var so an operator can diverge a single
 # platform (e.g. allow Mist writes without opening every optional product).
@@ -183,7 +183,7 @@ class PlatformWriteGate:
             "no gate" behavior), False (GLP's historical fail-closed
             behavior), or None to fall back to
             :func:`optional_product_writes_allowed` (unchanged legacy
-            behavior for the six optional-product backends).
+            behavior for the optional-product backends).
     """
 
     platform: str
@@ -200,6 +200,7 @@ _PLATFORM_WRITE_GATES: dict[str, PlatformWriteGate] = {
     "mist": PlatformWriteGate("mist", "CENTRALMCP_MIST_WRITES", None),
     "clearpass": PlatformWriteGate("clearpass", "CENTRALMCP_CLEARPASS_WRITES", None),
     "uxi": PlatformWriteGate("uxi", "CENTRALMCP_UXI_WRITES", None),
+    "axis": PlatformWriteGate("axis", "CENTRALMCP_AXIS_WRITES", None),
 }
 
 PLATFORM_WRITE_GATE_NAMES: tuple[str, ...] = tuple(sorted(_PLATFORM_WRITE_GATES))
@@ -215,6 +216,53 @@ def _platform_gate(platform: str) -> PlatformWriteGate:
     return gate
 
 
+def platform_write_gate_state(platform: str) -> dict[str, Any]:
+    """Resolve a platform write gate, including override precedence.
+
+    Explicit platform values win over defaults and the shared optional-product
+    fallback. Invalid explicit values are reported as ``invalid`` and fail
+    closed.
+    """
+    gate = _platform_gate(platform)
+    raw = os.environ.get(gate.env_var)
+    if raw is not None:
+        value = raw.strip().lower()
+        if value in _TRUTHY_ENV_VALUES:
+            state = "enabled"
+        elif value in _FALSY_ENV_VALUES:
+            state = "disabled"
+        else:
+            state = "invalid"
+        return {
+            "env_var": gate.env_var,
+            "state": state,
+            "enabled": state == "enabled",
+            "source": "platform_override",
+        }
+    if gate.default_enabled is not None:
+        return {
+            "env_var": gate.env_var,
+            "state": "enabled" if gate.default_enabled else "disabled",
+            "enabled": gate.default_enabled,
+            "source": "platform_default",
+        }
+
+    shared_raw = os.environ.get("CENTRALMCP_PRODUCT_ACCESS")
+    shared_mode = optional_product_access_mode()
+    shared_invalid = (
+        shared_raw is not None
+        and shared_raw.strip().lower()
+        not in (_READ_ONLY_ACCESS_VALUES | _READ_WRITE_ACCESS_VALUES)
+    )
+    enabled = shared_mode == "read-write"
+    return {
+        "env_var": gate.env_var,
+        "state": "invalid" if shared_invalid else ("enabled" if enabled else "disabled"),
+        "enabled": enabled,
+        "source": "CENTRALMCP_PRODUCT_ACCESS",
+    }
+
+
 def platform_writes_allowed(platform: str) -> bool:
     """Return whether write tools are enabled for ``platform``.
 
@@ -226,28 +274,72 @@ def platform_writes_allowed(platform: str) -> bool:
        (Central defaults enabled; GLP defaults disabled -- both preserve
        pre-existing behavior).
     3. :func:`optional_product_writes_allowed` (the shared
-       ``CENTRALMCP_PRODUCT_ACCESS`` toggle) for the six optional-product
+       ``CENTRALMCP_PRODUCT_ACCESS`` toggle) for the optional-product
        backends -- unchanged legacy behavior.
 
     Raises:
         ValueError: ``platform`` is not one of the known platform keys.
     """
-    gate = _platform_gate(platform)
-    raw = os.environ.get(gate.env_var)
-    if raw is not None:
-        value = raw.strip().lower()
-        if value in _TRUTHY_ENV_VALUES:
-            return True
-        if value in _FALSY_ENV_VALUES:
-            return False
-        # Ambiguous explicit value: fail closed rather than guess.
-        return False
-    if gate.default_enabled is not None:
-        return gate.default_enabled
-    return optional_product_writes_allowed()
+    return bool(platform_write_gate_state(platform)["enabled"])
 
 
-def platform_write_blocked(platform: str, tool_name: str) -> dict[str, str]:
+def build_write_execution_contract(
+    platform: str,
+    capability: str,
+    *,
+    supports_dry_run: bool = False,
+    dry_run_state: str = "unsupported",
+    supports_confirm: bool = False,
+    requires_confirmation: bool = False,
+    idempotent: bool = False,
+    next_action: str | None = None,
+) -> dict[str, Any]:
+    """Build the compact contract used for write discovery and dispatch."""
+    gate = platform_write_gate_state(platform)
+    if next_action is None:
+        if not gate["enabled"]:
+            next_action = (
+                f"Set {gate['env_var']}=1, then retry only after explicit user approval."
+            )
+        elif supports_dry_run:
+            next_action = "Call invoke_tool with dry_run=true to preview the change."
+        elif requires_confirmation:
+            next_action = "Call invoke_tool only after explicit user confirmation."
+        else:
+            next_action = "Call invoke_tool only after explicit user intent."
+    return {
+        "platform": platform,
+        "capability": capability,
+        "gate": {
+            "env_var": gate["env_var"],
+            "state": gate["state"],
+            "source": gate["source"],
+        },
+        "dry_run": {
+            "supported": supports_dry_run,
+            "state": dry_run_state if supports_dry_run else "unsupported",
+        },
+        "confirm": {
+            "supported": supports_confirm,
+            "required": requires_confirmation,
+        },
+        "idempotent": idempotent,
+        "next_action": next_action,
+    }
+
+
+def platform_write_blocked(
+    platform: str,
+    tool_name: str,
+    *,
+    capability: str = "write",
+    supports_dry_run: bool = False,
+    dry_run_state: str = "unsupported",
+    supports_confirm: bool = False,
+    requires_confirmation: bool = False,
+    idempotent: bool = False,
+    execution_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build the standard blocked-write response for ``tool_name`` on ``platform``."""
     gate = _platform_gate(platform)
     shared_hint = (
@@ -265,10 +357,20 @@ def platform_write_blocked(platform: str, tool_name: str) -> dict[str, str]:
         "tool": tool_name,
         "status": "blocked",
         "platform": platform,
+        "execution_contract": execution_contract
+        or build_write_execution_contract(
+            platform,
+            capability,
+            supports_dry_run=supports_dry_run,
+            dry_run_state=dry_run_state,
+            supports_confirm=supports_confirm,
+            requires_confirmation=requires_confirmation,
+            idempotent=idempotent,
+        ),
     }
 
 
-def enforce_platform_write(platform: str, tool_name: str) -> dict[str, str] | None:
+def enforce_platform_write(platform: str, tool_name: str) -> dict[str, Any] | None:
     """Return a blocked-response dict if ``platform`` write access is disabled,
     or ``None`` if the caller should proceed with the write.
 

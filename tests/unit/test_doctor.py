@@ -131,6 +131,7 @@ class TestHttpSecurityChecks:
 
     def test_platform_write_gate_overrides_are_listed(self, monkeypatch):
         monkeypatch.setenv("MCP_HOST", "127.0.0.1")
+        assert "CENTRALMCP_AXIS_WRITES" in doctor._PLATFORM_WRITE_ENV_VARS
         for name in doctor._PLATFORM_WRITE_ENV_VARS:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv("CENTRALMCP_MIST_WRITES", "1")

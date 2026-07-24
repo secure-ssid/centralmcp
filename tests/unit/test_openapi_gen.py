@@ -165,7 +165,7 @@ def test_parser_raises_on_unresolved_ref():
 
 def test_parser_rejects_unsupported_version():
     with pytest.raises(Exception):
-        SpecParser({"swagger": "2.0", "paths": {}})
+        SpecParser({"swagger": "1.2", "paths": {}})
 
 
 # ---------------------------------------------------------------------------

@@ -145,16 +145,63 @@ def test_aos8_export_all_fans_out_and_shapes_result(monkeypatch):
                 "Switches": [{"Name": "mc1", "IP Address": "10.0.0.1"}]
             },
             "/v1/configuration/object/acl_sess": {"acl_sess": [{"name": "corp-acl"}]},
-            "/v1/configuration/object/aaa_prof": {"aaa_prof": []},
-            "/v1/configuration/object/dot1x_auth_profile": {"dot1x_auth_profile": []},
-            "/v1/configuration/object/mac_auth_profile": {"mac_auth_profile": []},
-            "/v1/configuration/object/server_group_prof": {"server_group_prof": []},
-            "/v1/configuration/object/rad_server": {"rad_server": []},
-            "/v1/configuration/object/ldap_server": {"ldap_server": []},
-            "/v1/configuration/object/tacacs_server": {"tacacs_server": []},
-            "/v1/configuration/object/ip_route": {"ip_route": []},
-            "/v1/configuration/object/ipv6_route": {"ipv6_route": []},
-            "/v1/configuration/object/vrrp": {"vrrp": []},
+            "/v1/configuration/object/aaa_prof": {
+                "aaa_prof": [
+                    {
+                        "profile-name": "corp-aaa",
+                        "dot1x_auth_profile": "corp-dot1x",
+                        "dot1x_server_group": "corp-sg",
+                    }
+                ]
+            },
+            "/v1/configuration/object/dot1x_auth_profile": {
+                "dot1x_auth_profile": [
+                    {"profile-name": "corp-dot1x", "reauthentication": True}
+                ]
+            },
+            "/v1/configuration/object/mac_auth_profile": {
+                "mac_auth_profile": [{"profile-name": "corp-mac"}]
+            },
+            "/v1/configuration/object/server_group_prof": {
+                "server_group_prof": [
+                    {"sg_name": "corp-sg", "auth_server": ["rad1"]}
+                ]
+            },
+            "/v1/configuration/object/rad_server": {
+                "rad_server": [{"rad_server_name": "rad1", "rad_host": "10.0.0.10"}]
+            },
+            "/v1/configuration/object/ldap_server": {
+                "ldap_server": [{"ldap_server_name": "ldap1", "ldap_host": "10.0.0.11"}]
+            },
+            "/v1/configuration/object/tacacs_server": {
+                "tacacs_server": [
+                    {"tacacs_server_name": "tac1", "tacacs_host": "10.0.0.12"}
+                ]
+            },
+            "/v1/configuration/object/ip_route": {
+                "ip_route": [
+                    {
+                        "destip": "10.20.0.0",
+                        "destmask": "255.255.0.0",
+                        "nexthop": "10.0.0.254",
+                        "zero": 0,
+                    }
+                ]
+            },
+            "/v1/configuration/object/ipv6_route": {
+                "ipv6_route": [
+                    {
+                        "destip": "2001:db8:20::/64",
+                        "nexthop": "2001:db8::1",
+                        "nexthop1": "2001:db8::2",
+                        "vlanid": 20,
+                        "zero": 0,
+                    }
+                ]
+            },
+            "/v1/configuration/object/vrrp": {
+                "vrrp": [{"id": 20, "vrrp_ip": "10.0.20.1", "vrrp_vlan": 20}]
+            },
             "/v1/configuration/object/vrrp6": {"vrrp6": []},
         }
     )
@@ -170,7 +217,32 @@ def test_aos8_export_all_fans_out_and_shapes_result(monkeypatch):
     assert out["vlans"] == [{"id": 20, "description": "Corp"}]
     assert out["ap_groups"] == [{"profile-name": "Lab-AP-Group"}]
     assert out["policies"] == [{"name": "corp-acl"}]
+    assert out["aaa"]["aaa_profiles"][0]["profile-name"] == "corp-aaa"
+    assert out["aaa"]["radius_servers"][0]["rad_server_name"] == "rad1"
+    assert out["routing"]["ipv4_routes"][0]["destip"] == "10.20.0.0"
+    assert out["routing"]["vrrp"][0]["id"] == 20
     assert out["warnings"] == []
+
+
+def test_aos8_export_all_warns_on_malformed_success_collection(monkeypatch):
+    fake_cls = _fake_client_for_paths(
+        {
+            "/v1/configuration/object/ssid_prof": {"ssid_prof": []},
+            "/v1/configuration/object/virtual_ap": {"virtual_ap": []},
+            "/v1/configuration/object/role": {"role": {"unexpected": "object"}},
+        }
+    )
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", fake_cls)
+
+    out = asyncio.run(aos8.aos8_export_all(config_path="/md/lab"))
+
+    assert out["roles"] == []
+    assert any(
+        "user_roles: response collection was missing or malformed" in warning
+        for warning in out["warnings"]
+    )
 
 
 def test_aos8_export_all_reports_warnings_without_aborting(monkeypatch):
