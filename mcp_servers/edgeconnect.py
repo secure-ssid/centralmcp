@@ -1,4 +1,4 @@
-"""MCP server — optional HPE Aruba EdgeConnect backend starter tools.
+"""MCP server — EdgeConnect (49 curated + 1216 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=edgeconnect
@@ -6,20 +6,23 @@ Enabled via tool router env:
 Auth/env:
   EDGECONNECT_BASE_URL       e.g. https://orchestrator.example.com
   EDGECONNECT_API_TOKEN      API token
-  EDGECONNECT_AUTH_HEADER    Header name; defaults to Authorization
+  EDGECONNECT_AUTH_HEADER    Header name; defaults to X-Auth-Token
   EDGECONNECT_ALLOW_LEGACY_API  opt-in gate for pre-9.3 Orchestrator API
                                  compatibility paths; unset/false by default.
 
-The existing `/gms/rest/*` and `/rest/json/*` endpoint map predates the
-incompatible Orchestrator 9.3 API change. Those operational tools now fail
-closed unless `EDGECONNECT_ALLOW_LEGACY_API=1` is explicitly set for a
-validated older/lab instance. `edgeconnect_doctor()` remains available without
-that flag to probe live Swagger/API-info discovery paths. A complete 9.3+
-remap requires the target Orchestrator's instance-hosted Swagger document.
+The curated `/gms/rest/*` and `/rest/json/*` compatibility tools remain behind
+`EDGECONNECT_ALLOW_LEGACY_API`. In addition, 1,216 generated direct tools are
+registered from the reviewed EdgeConnect 9.7-derived operation manifest in
+`mcp_servers/openapi_gen/manifests/edgeconnect.json`; those current operations
+do not pass through the legacy compatibility gate.
 """
 
 from __future__ import annotations
 
+import hashlib
+import inspect
+import json
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -28,14 +31,21 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import (
     DESTRUCTIVE,
+    DIAGNOSTIC,
     READ_ONLY,
     bound_collection_response,
-    platform_write_blocked as _platform_write_blocked,
-    platform_writes_allowed as _platform_writes_allowed,
+    bounded_response_payload,
+    clamp_limit,
     redact_sensitive,
     response_payload,
     safe_api_path,
     validate_product_base_url,
+)
+from mcp_servers.shared import (
+    platform_write_blocked as _platform_write_blocked,
+)
+from mcp_servers.shared import (
+    platform_writes_allowed as _platform_writes_allowed,
 )
 
 mcp = FastMCP("edgeconnect-core")
@@ -446,7 +456,7 @@ def _edgeconnect_config() -> tuple[str | None, str | None, str]:
 
     base_url = os.getenv("EDGECONNECT_BASE_URL", "").strip().rstrip("/")
     token = os.getenv("EDGECONNECT_API_TOKEN", "").strip()
-    header = os.getenv("EDGECONNECT_AUTH_HEADER", "Authorization").strip() or "Authorization"
+    header = os.getenv("EDGECONNECT_AUTH_HEADER", "X-Auth-Token").strip() or "X-Auth-Token"
     return (base_url or None, token or None, header)
 
 
@@ -1300,15 +1310,25 @@ async def edgeconnect_doctor() -> dict[str, Any]:
     return {
         "configured": configured,
         "base_url": base_url,
+        "generated_operation_count": len(GENERATED_EDGECONNECT_TOOLS),
+        "generated_api_status": (
+            "enabled-current-derived-surface"
+            if GENERATED_EDGECONNECT_TOOLS
+            else "disabled-by-feature-flag"
+        ),
         "legacy_mode_enabled": _edgeconnect_legacy_api_allowed(),
         "legacy_mode_note": (
-            "Operational endpoint mappings predate the incompatible 9.3 API change "
-            "and remain blocked unless this explicit legacy/lab flag is enabled."
+            "The curated compatibility mappings predate the incompatible 9.3 API "
+            "change and remain blocked unless this explicit legacy/lab flag is enabled."
         ),
         "operational_api_status": (
-            "legacy-enabled"
+            "generated-current-plus-legacy-enabled"
+            if GENERATED_EDGECONNECT_TOOLS and _edgeconnect_legacy_api_allowed()
+            else "generated-current"
+            if GENERATED_EDGECONNECT_TOOLS
+            else "legacy-enabled"
             if _edgeconnect_legacy_api_allowed()
-            else "blocked-pending-9.3-remap"
+            else "disabled"
         ),
         "swagger_discovery_probe": probes,
     }
@@ -2485,6 +2505,237 @@ async def edgeconnect_write(
         }
     except httpx.HTTPError as exc:
         return {"error": str(exc), "url": url}
+
+
+# ---------------------------------------------------------------------------
+# Generated EdgeConnect 9.7 operation surface
+# ---------------------------------------------------------------------------
+
+_EDGECONNECT_SOURCE_PARAM = {"source": "menu_rest_apis_id"}
+_EDGECONNECT_MAX_RESPONSE_BYTES = 131_072
+_EDGECONNECT_AUTH_HEADER_NAME = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
+_EDGECONNECT_GENERATED_AUTH_HEADERS = {
+    "authorization",
+    "cookie",
+    "host",
+    "x-auth-token",
+    "x-xsrf-token",
+}
+_EDGECONNECT_DIAGNOSTIC_TOOL_NAMES: set[str] = set()
+
+
+def _edgeconnect_generated_prepare(
+    path: str,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Validate generated request configuration and return URL/auth details."""
+    base_url, token, auth_header = _edgeconnect_config()
+    if not base_url or not token:
+        return (
+            None,
+            None,
+            None,
+            "EdgeConnect not configured. Set EDGECONNECT_BASE_URL and EDGECONNECT_API_TOKEN.",
+        )
+    if not _EDGECONNECT_AUTH_HEADER_NAME.fullmatch(auth_header):
+        return None, None, None, "EDGECONNECT_AUTH_HEADER is not a valid HTTP header name."
+    try:
+        base_url = validate_product_base_url(base_url, product="EdgeConnect")
+        safe_path = safe_api_path(path, ("/",))
+    except ValueError as exc:
+        return None, None, None, str(exc)
+    api_base = base_url if base_url.endswith("/gms/rest") else f"{base_url}/gms/rest"
+    return f"{api_base}{safe_path}", token, auth_header, None
+
+
+def _edgeconnect_generated_headers(
+    token: str,
+    auth_header: str,
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build request headers while preventing model-provided auth shadowing."""
+    headers: dict[str, str] = {"Accept": "*/*"}
+    for key, value in (extra or {}).items():
+        if key.strip().lower() not in _EDGECONNECT_GENERATED_AUTH_HEADERS:
+            headers[key] = value
+    auth_value = f"Bearer {token}" if auth_header.lower() == "authorization" else token
+    headers[auth_header] = auth_value
+    return headers
+
+
+def _edgeconnect_bounded_payload(resp: Any) -> Any:
+    """Return bounded JSON, text, or binary response data."""
+    try:
+        payload = resp.json()
+    except (TypeError, ValueError):
+        return bounded_response_payload(resp, max_bytes=_EDGECONNECT_MAX_RESPONSE_BYTES)
+
+    encoded = json.dumps(payload, ensure_ascii=False, default=str).encode()
+    if len(encoded) > _EDGECONNECT_MAX_RESPONSE_BYTES:
+        preview = encoded[:_EDGECONNECT_MAX_RESPONSE_BYTES]
+        return {
+            "content_type": "application/json",
+            "size_bytes": len(encoded),
+            "truncated": True,
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+            "text": preview.decode("utf-8", errors="replace"),
+        }
+    return bound_collection_response(payload, limit=clamp_limit(None), offset=0)
+
+
+async def _edgeconnect_generated_request(
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+    body: Any = None,
+    content_type: str = "application/json",
+) -> dict[str, Any]:
+    """Execute a generated operation with trusted auth and bounded output."""
+    url, token, auth_header, error = _edgeconnect_generated_prepare(path)
+    if error:
+        return {"error": error}
+    assert url is not None and token is not None and auth_header is not None
+    req_headers = _edgeconnect_generated_headers(token, auth_header, headers)
+    params = {**{k: v for k, v in query.items() if v is not None}, **_EDGECONNECT_SOURCE_PARAM}
+    kwargs: dict[str, Any] = {"headers": req_headers, "params": params}
+    normalized_content_type = content_type.split(";", 1)[0].strip().lower()
+    if body is not None:
+        if normalized_content_type == "application/json":
+            kwargs["json"] = body
+        elif normalized_content_type == "application/x-www-form-urlencoded":
+            if not isinstance(body, dict):
+                return {"error": "form-urlencoded body must be an object of form fields"}
+            kwargs["data"] = body
+        elif normalized_content_type == "multipart/form-data":
+            if not isinstance(body, dict):
+                return {"error": "multipart/form-data body must be an object of form fields"}
+            files: dict[str, tuple[Any, ...]] = {}
+            for key, value in body.items():
+                if isinstance(value, bytes):
+                    files[str(key)] = (str(key), value, "application/octet-stream")
+                elif isinstance(value, (dict, list)):
+                    files[str(key)] = (None, json.dumps(value), "application/json")
+                else:
+                    files[str(key)] = (None, "" if value is None else str(value))
+            kwargs["files"] = files
+        else:
+            kwargs["content"] = body if isinstance(body, (bytes, str)) else str(body)
+            req_headers["Content-Type"] = content_type
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(method, url, **kwargs)
+        return {
+            "status_code": resp.status_code,
+            "data": redact_sensitive(_edgeconnect_bounded_payload(resp)),
+            "url": url,
+        }
+    except httpx.HTTPError as exc:
+        return {"error": str(exc), "url": url}
+
+
+async def _edgeconnect_generated_read(
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    return await _edgeconnect_generated_request(method, path, query, headers)
+
+
+async def _edgeconnect_generated_write(
+    name: str,
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+    body: Any,
+    content_type: str,
+    dry_run: bool,
+    confirm: bool,
+) -> dict[str, Any]:
+    """Execute diagnostics directly and guard configuration-changing operations."""
+    is_diagnostic = name in _EDGECONNECT_DIAGNOSTIC_TOOL_NAMES
+    if not is_diagnostic and not optional_product_writes_allowed():
+        return optional_product_write_blocked(name)
+
+    url, _, _, error = _edgeconnect_generated_prepare(path)
+    if error:
+        return {"error": error}
+    assert url is not None
+    params = {**{k: v for k, v in query.items() if v is not None}, **_EDGECONNECT_SOURCE_PARAM}
+    preview = {
+        "method": method,
+        "path": path,
+        "url": url,
+        "params": redact_sensitive(params),
+        "body": redact_sensitive(body),
+        "content_type": content_type,
+    }
+    if not is_diagnostic:
+        if dry_run:
+            return {"dry_run": True, **preview, "execute_hint": _EXECUTE_HINT}
+        if not confirm:
+            return {
+                "error": "confirm=True is required when dry_run=False.",
+                "dry_run": True,
+                **preview,
+            }
+    return await _edgeconnect_generated_request(
+        method, path, query, headers, body=body, content_type=content_type
+    )
+
+
+def _strip_diagnostic_guard_parameters(tool: Any) -> None:
+    """Remove write-only dry-run parameters from a diagnostic POST tool."""
+    signature = inspect.signature(tool.fn)
+    tool.fn.__signature__ = signature.replace(
+        parameters=[
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.name not in {"dry_run", "confirm"}
+        ]
+    )
+    tool.fn.__annotations__.pop("dry_run", None)
+    tool.fn.__annotations__.pop("confirm", None)
+    schema = dict(tool.parameters)
+    properties = dict(schema.get("properties") or {})
+    properties.pop("dry_run", None)
+    properties.pop("confirm", None)
+    schema["properties"] = properties
+    if "required" in schema:
+        schema["required"] = [
+            name for name in schema["required"] if name not in {"dry_run", "confirm"}
+        ]
+    tool.parameters = schema
+    tool.annotations = DIAGNOSTIC
+
+
+def _register_generated_edgeconnect_tools() -> list[str]:
+    """Register the complete reviewed EdgeConnect manifest at import time."""
+    from mcp_servers.openapi_gen.manifest import load_manifest
+    from mcp_servers.openapi_gen.runtime import register_generated_tools
+
+    manifest = load_manifest("edgeconnect")
+    registered = register_generated_tools(
+        mcp,
+        "edgeconnect",
+        read_executor=_edgeconnect_generated_read,
+        write_executor=_edgeconnect_generated_write,
+        manifest=manifest,
+    )
+    if not registered:
+        return []
+    if len(registered) != len(manifest.get("operations", [])):
+        raise RuntimeError("EdgeConnect generated registration count does not match the manifest")
+    for operation, registered_name in zip(manifest.get("operations", []), registered, strict=True):
+        if operation.get("capability") != "diagnostic":
+            continue
+        _EDGECONNECT_DIAGNOSTIC_TOOL_NAMES.add(registered_name)
+        _strip_diagnostic_guard_parameters(mcp._tool_manager._tools[registered_name])
+    return registered
+
+
+GENERATED_EDGECONNECT_TOOLS = _register_generated_edgeconnect_tools()
 
 
 if __name__ == "__main__":
