@@ -121,6 +121,11 @@ def main() -> int:
             print("\n==> RAG/API eval gate", flush=True)
             print("Skipping: data/docs.lance or data/specs.sqlite is missing.", flush=True)
 
+    _run(
+        [sys.executable, "scripts/check_generated_tool_manifests.py"],
+        "Generated tool manifests",
+    )
+
     print("\n==> Tool catalog count", flush=True)
     total = _tool_catalog_count(args.catalog_products)
     print(f"{total} tools discovered with products={args.catalog_products!r}")
