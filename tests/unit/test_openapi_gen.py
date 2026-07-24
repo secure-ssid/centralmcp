@@ -11,7 +11,12 @@ import mcp_servers.mist as mist
 from mcp_servers.openapi_gen import manifest_operation_count
 from mcp_servers.openapi_gen.classify import classify
 from mcp_servers.openapi_gen.ir import SpecParser, UnresolvedRefError
-from mcp_servers.openapi_gen.manifest import build_manifest, dumps, sha256_bytes
+from mcp_servers.openapi_gen.manifest import (
+    build_manifest,
+    build_merged_manifest,
+    dumps,
+    sha256_bytes,
+)
 from mcp_servers.openapi_gen.naming import DuplicateNameError, NameAllocator, base_name, snake
 from mcp_servers.openapi_gen.runtime import register_generated_tools
 
@@ -208,6 +213,32 @@ def test_manifest_is_deterministic_and_records_source():
 
 def test_sha256_bytes_stable():
     assert sha256_bytes(b"abc") == sha256_bytes(b"abc")
+
+
+def test_merged_manifest_is_deterministic_and_deduplicates_operations():
+    second = {
+        "openapi": "3.0.3",
+        "info": {"title": "Second", "version": "2"},
+        "paths": {
+            "/api/v1/orgs/{org_id}/widgets": {
+                "get": {
+                    "operationId": "duplicateListWidgets",
+                    "parameters": [{"$ref": "#/components/parameters/org_id"}],
+                }
+            },
+            "/api/v1/health": {"get": {"operationId": "getHealth"}},
+        },
+        "components": {"parameters": SPEC["components"]["parameters"]},
+    }
+    docs = [
+        ("b.json", "bbb", second),
+        ("a.json", "aaa", SPEC),
+    ]
+    merged = build_merged_manifest(docs, platform="demo")
+    assert merged["source"]["operation_count"] == 4
+    assert merged["source"]["duplicate_operation_count"] == 1
+    assert merged["duplicate_operations"][0]["kept_source"] == "a.json"
+    assert dumps(merged) == dumps(build_merged_manifest(list(reversed(docs)), platform="demo"))
 
 
 # ---------------------------------------------------------------------------

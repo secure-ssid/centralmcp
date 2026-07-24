@@ -114,6 +114,94 @@ def build_manifest(
     return manifest
 
 
+def build_merged_manifest(
+    documents: list[tuple[str, str, dict[str, Any]]],
+    *,
+    platform: str,
+    overrides: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build one deterministic manifest from multiple independently resolved specs.
+
+    ``documents`` entries are ``(source_file, source_sha256, parsed_spec)``.
+    Duplicate method/path operations are kept once from the lexicographically
+    first source file and recorded in source metadata.
+    """
+    overrides = overrides or {}
+    allocator = NameAllocator()
+    records: list[dict[str, Any]] = []
+    used_override_keys: set[str] = set()
+    seen_operations: dict[str, str] = {}
+    duplicates: list[dict[str, str]] = []
+    sources: list[dict[str, Any]] = []
+
+    for source_file, source_sha256, spec in sorted(documents, key=lambda item: item[0]):
+        parser = SpecParser(spec)
+        operations = parser.operations()
+        info = spec.get("info", {}) if isinstance(spec.get("info"), dict) else {}
+        sources.append(
+            {
+                "file": source_file,
+                "sha256": source_sha256,
+                "openapi": parser.version,
+                "title": info.get("title", ""),
+                "version": info.get("version", ""),
+                "operation_count": len(operations),
+            }
+        )
+        for op in operations:
+            if op.key in seen_operations:
+                duplicates.append(
+                    {
+                        "key": op.key,
+                        "kept_source": seen_operations[op.key],
+                        "duplicate_source": source_file,
+                    }
+                )
+                continue
+            seen_operations[op.key] = source_file
+            name = allocator.allocate(platform, op.method, op.path, op.operation_id)
+            capability = classify(op.method, op.key, overrides)
+            if op.key in overrides:
+                used_override_keys.add(op.key)
+            record: dict[str, Any] = {
+                "name": name,
+                "key": op.key,
+                "method": op.method,
+                "path": op.path,
+                "capability": capability,
+                "source_file": source_file,
+            }
+            if op.operation_id:
+                record["operation_id"] = op.operation_id
+            if op.summary:
+                record["summary"] = op.summary
+            if op.description:
+                record["description"] = op.description
+            if op.tags:
+                record["tags"] = op.tags
+            record["parameters"] = [p.to_dict() for p in op.parameters]
+            if op.request_body is not None:
+                record["request_body"] = op.request_body.to_dict()
+            records.append(record)
+
+    digest_input = "\n".join(f"{source['file']}:{source['sha256']}" for source in sources)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "platform": platform,
+        "source": {
+            "file_count": len(sources),
+            "sha256": sha256_bytes(digest_input.encode()),
+            "operation_count": len(records),
+            "duplicate_operation_count": len(duplicates),
+            "files": sources,
+        },
+        "override_keys_applied": sorted(used_override_keys),
+        "override_keys_unmatched": sorted(set(overrides) - used_override_keys),
+        "duplicate_operations": duplicates,
+        "operations": records,
+    }
+
+
 def dumps(manifest: dict[str, Any]) -> str:
     """Serialize a manifest deterministically (stable, diff-friendly)."""
     return json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=False) + "\n"
