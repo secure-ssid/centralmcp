@@ -333,13 +333,28 @@ def test_verification_records_identity_and_comparable_field_success(tmp_path):
     )
     service.apply("verified", dry_run=True, confirmation=False)
     service.apply("verified", dry_run=False, confirmation=True)
-    backend.read_values["central_api_read"] = {"id": "20", "name": "Corp"}
+    # Target read must confirm every non-secret expected field
+    # (identifier, vlan_id, vlan_name) for status to legitimately reach
+    # "verified" under finding #3's stricter partially_verified gate --
+    # if any expected non-secret field were absent/unverifiable here the
+    # status must drop to "partially_verified" instead (covered by
+    # test_verify_partially_verified_when_no_nonsecret_field_can_be_confirmed
+    # and the reordered/incomplete server-group tests below).
+    backend.read_values["central_api_read"] = {
+        "id": "20",
+        "name": "Corp",
+        "vlan-id": "20",
+    }
 
     result = service.verify("verified")
     comparison = result["comparisons"][0]
     assert comparison["verification_status"] == "verified"
     assert any(
         field["field"] == "vlan_name" and field["status"] == "match"
+        for field in comparison["field_comparison"]
+    )
+    assert any(
+        field["field"] == "vlan_id" and field["status"] == "match"
         for field in comparison["field_comparison"]
     )
 
@@ -506,72 +521,90 @@ def test_mcp_run_wrappers_use_injected_orchestrator_without_credentials(
 # ---------------------------------------------------------------------------
 
 
+# NOTE: `auth_server` (and every other unverified-assignment SHARED profile
+# type -- see the "finding #1" tests below) is permanently "blocked" and
+# never reaches "applied" any more, so it can no longer serve as a test
+# vehicle for these Finding #6 verification-mechanics tests. `wlan` (a
+# `wpa2_personal` SSID, "ready" on the default CAMPUS_AP persona) is used
+# instead: it has a genuine payload field distinct from its identity
+# (`vlan_ids`), a `match_identifier` distinct from its qualified candidate
+# key ("wlan:Guest" vs the bare SSID name "Guest"), and a real transient
+# secret (`wpa_passphrase`, surfaced as the sensitive `passphrase` argument).
+
+
+def _wpa2_wlan_candidate(name: str = "Guest", *, vlan: int = 20) -> dict:
+    return candidate(
+        "wlan",
+        name,
+        payload={
+            "essid": name,
+            "security": {"mode": "wpa2_personal", "ambiguous": False},
+            "vlan": vlan,
+        },
+        requires_secret_input=True,
+        secret_fields=["wpa_passphrase"],
+    )
+
+
 def test_verify_catches_payload_field_mismatch_via_operation_payload(tmp_path):
-    """Finding #6: expected fields must come from Operation.payload (the
-    exact endpoint request body), and a genuine field mismatch there must be
-    reported -- not silently passed on identity alone."""
+    """Finding #6: expected fields must come from Operation.payload/arguments
+    (the exact request the SSID build tool receives), and a genuine field
+    mismatch there must be reported -- not silently passed on identity
+    alone."""
     backend = FakeBackend()
     service, _ = orchestrator(tmp_path, backend)
-    ldap = candidate(
-        "auth_server",
-        "ldap:ldap1",
-        payload={"name": "ldap1", "server_type": "ldap", "host": "10.0.0.11"},
-        unsupported_fields={"ldap_admindn": "cn=admin,dc=example,dc=com"},
-        requires_secret_input=True,
-        secret_fields=["admin_password"],
-    )
-    service.create_run([ldap], target(), run_id="ldap-mismatch")
-    supplied = {"auth_server:ldap:ldap1": {"admin_password": "bindpw"}}
-    service.apply("ldap-mismatch", dry_run=True, confirmation=False, target_secrets=supplied)
-    service.apply("ldap-mismatch", dry_run=False, confirmation=True, target_secrets=supplied)
+    wlan = _wpa2_wlan_candidate()
+    service.create_run([wlan], target(), run_id="wlan-mismatch")
+    supplied = {"wlan:Guest": {"wpa_passphrase": "Sup3rSecret!"}}
+    service.apply("wlan-mismatch", dry_run=True, confirmation=False, target_secrets=supplied)
+    service.apply("wlan-mismatch", dry_run=False, confirmation=True, target_secrets=supplied)
 
-    # Target read: identity (qualified short `name`, not the full candidate
-    # key "ldap:ldap1") matches, `admin-dn` matches, but the actual host
-    # differs from what was sent -- a genuine payload field mismatch.
-    backend.read_values["get_auth_server"] = {
-        "name": "ldap1",
-        "auth-server-address": "10.0.0.99",
-        "admin-dn": "cn=admin,dc=example,dc=com",
+    # Target read: identity (qualified short SSID `name`, not the full
+    # candidate key "wlan:Guest") matches and `opmode` matches, but the
+    # actual VLAN differs from what was sent -- a genuine payload field
+    # mismatch.
+    backend.read_values["get_ssid"] = {
+        "name": "Guest",
+        "opmode": "WPA2_PERSONAL",
+        "vlan_ids": [99],
     }
 
-    result = service.verify("ldap-mismatch")
+    result = service.verify("wlan-mismatch")
     comparison = result["comparisons"][0]
     assert comparison["verification_status"] == "mismatch"
     fields = {item["field"]: item for item in comparison["field_comparison"]}
-    assert fields["auth_server_address"]["status"] == "mismatch"
-    assert fields["auth_server_address"]["expected"] == "10.0.0.11"
-    assert fields["auth_server_address"]["actual"] == "10.0.0.99"
+    assert fields["vlan_ids[0]"]["status"] == "mismatch"
+    assert fields["vlan_ids[0]"]["expected"] == 20
+    assert fields["vlan_ids[0]"]["actual"] == 99
     # A correctly-matching non-identifier field is still confirmed.
-    assert fields["admin_dn"]["status"] == "match"
+    assert fields["opmode"]["status"] == "match"
 
 
 def test_verify_uses_qualified_match_identifier_not_full_candidate_key(tmp_path):
     """Finding #6: identity/field comparison must use `match_identifier`
-    (the short profile `name` New Central actually returns), not the fully
-    qualified candidate key ("ldap:ldap1") which would never appear in a
+    (the short SSID `name` New Central actually returns), not the fully
+    qualified candidate key ("wlan:Guest") which would never appear in a
     real target read response."""
     backend = FakeBackend()
     service, _ = orchestrator(tmp_path, backend)
-    ldap = candidate(
-        "auth_server",
-        "ldap:ldap1",
-        payload={"name": "ldap1", "server_type": "ldap", "host": "10.0.0.11"},
-        requires_secret_input=True,
-        secret_fields=["admin_password"],
-    )
-    service.create_run([ldap], target(), run_id="ldap-qualified")
-    supplied = {"auth_server:ldap:ldap1": {"admin_password": "bindpw"}}
-    service.apply("ldap-qualified", dry_run=True, confirmation=False, target_secrets=supplied)
-    service.apply("ldap-qualified", dry_run=False, confirmation=True, target_secrets=supplied)
+    wlan = _wpa2_wlan_candidate()
+    service.create_run([wlan], target(), run_id="wlan-qualified")
+    supplied = {"wlan:Guest": {"wpa_passphrase": "Sup3rSecret!"}}
+    service.apply("wlan-qualified", dry_run=True, confirmation=False, target_secrets=supplied)
+    service.apply("wlan-qualified", dry_run=False, confirmation=True, target_secrets=supplied)
 
-    # The target only ever returns the short `name`; a naive comparison
-    # against the full candidate key "ldap:ldap1" would incorrectly report
-    # the identity as missing.
-    backend.read_values["get_auth_server"] = {
-        "name": "ldap1",
-        "auth-server-address": "10.0.0.11",
+    # The target only ever returns the short SSID `name`; a naive
+    # comparison against the full candidate key "wlan:Guest" would
+    # incorrectly report the identity as missing. Every other non-secret
+    # expected field is also returned so status legitimately reaches
+    # "verified" (Finding #3's stricter gate).
+    backend.read_values["get_ssid"] = {
+        "name": "Guest",
+        "opmode": "WPA2_PERSONAL",
+        "vlan_ids": [20],
+        "wpa3_transition": False,
     }
-    result = service.verify("ldap-qualified")
+    result = service.verify("wlan-qualified")
     comparison = result["comparisons"][0]
     assert comparison["verification_status"] == "verified"
 
@@ -581,30 +614,27 @@ def test_verify_reports_secret_fields_as_unverifiable_never_mismatch(tmp_path):
     fields must be reported "unverifiable", never compared/"mismatch"."""
     backend = FakeBackend()
     service, _ = orchestrator(tmp_path, backend)
-    ldap = candidate(
-        "auth_server",
-        "ldap:ldap1",
-        payload={"name": "ldap1", "server_type": "ldap", "host": "10.0.0.11"},
-        requires_secret_input=True,
-        secret_fields=["admin_password"],
-    )
-    service.create_run([ldap], target(), run_id="ldap-secret")
-    supplied = {"auth_server:ldap:ldap1": {"admin_password": "bindpw"}}
-    service.apply("ldap-secret", dry_run=True, confirmation=False, target_secrets=supplied)
-    service.apply("ldap-secret", dry_run=False, confirmation=True, target_secrets=supplied)
+    wlan = _wpa2_wlan_candidate()
+    service.create_run([wlan], target(), run_id="wlan-secret")
+    supplied = {"wlan:Guest": {"wpa_passphrase": "Sup3rSecret!"}}
+    service.apply("wlan-secret", dry_run=True, confirmation=False, target_secrets=supplied)
+    service.apply("wlan-secret", dry_run=False, confirmation=True, target_secrets=supplied)
 
-    # Target read omits admin-password entirely, as any real GET would.
-    backend.read_values["get_auth_server"] = {
-        "name": "ldap1",
-        "auth-server-address": "10.0.0.11",
+    # Target read omits wpa_passphrase entirely, as any real GET would.
+    backend.read_values["get_ssid"] = {
+        "name": "Guest",
+        "opmode": "WPA2_PERSONAL",
+        "vlan_ids": [20],
+        "wpa3_transition": False,
     }
-    result = service.verify("ldap-secret")
+    result = service.verify("wlan-secret")
     comparison = result["comparisons"][0]
     secret_entries = [
-        item for item in comparison["field_comparison"] if item["field"] == "admin_password"
+        item for item in comparison["field_comparison"] if item["field"] == "passphrase"
     ]
     assert len(secret_entries) == 1
     assert secret_entries[0]["status"] == "unverifiable"
+    assert secret_entries[0]["expected"] == "***"
     assert comparison["verification_status"] == "verified"
 
 
@@ -625,144 +655,170 @@ def test_verify_partially_verified_when_no_nonsecret_field_can_be_confirmed(tmp_
     assert comparison["verification_status"] == "partially_verified"
 
 
-def test_rollback_requires_dry_run_first_and_reverses_dependency_order(tmp_path):
-    """Finding #7: rollback must invoke delete_operations in reverse
-    dependency order, gated by dry-run/confirmation/writes-enabled."""
+# ---------------------------------------------------------------------------
+# Finding #4 (final-pass safety decision): rollback is fully retracted for
+# 0.5, not left as a half-safe/unsafe feature. These tests confirm the
+# adapter/orchestrator rollback-execution path introduced in `9c9a7b0` is
+# completely removed and unreachable -- not merely gated -- and that no
+# preview/API surface still advertises rollback as verified/executable.
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrator_has_no_rollback_method(tmp_path):
     backend = FakeBackend()
     service, _ = orchestrator(tmp_path, backend)
-    rad1 = candidate(
-        "auth_server",
-        "radius:rad1",
-        payload={"name": "rad1", "server_type": "radius", "host": "10.0.0.10"},
-        requires_secret_input=True,
-        secret_fields=["shared_secret"],
+    assert not hasattr(service, "rollback")
+    assert not hasattr(service, "_rollback_locked")
+
+
+def test_adapters_have_no_rollback_method():
+    for adapter_cls in (NewCentralAdapter, ClassicCentralAdapter):
+        assert not hasattr(adapter_cls, "rollback")
+
+
+def test_preview_reports_rollback_supported_false_never_verified_available(tmp_path):
+    """Finding #4: preview output must honestly report rollback as
+    unsupported -- never the retracted `verified_rollback_available: True`
+    claim, and delete/read-back operation metadata (if present at all) must
+    not be presented as executable rollback."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    vlan = candidate("vlan", "20", payload={"description": "Corp"})
+    preview = service.preview([vlan], target())
+    operation = preview["operations"][0]
+    assert operation["rollback_supported"] is False
+    assert "verified_rollback_available" not in operation
+
+    role = candidate(
+        "role",
+        "employee",
+        payload={"policies": ["allowall"]},
     )
-    group = candidate(
+    role_preview = service.preview([role], target())
+    role_operation = role_preview["operations"][0]
+    assert role_operation["rollback_supported"] is False
+    assert "verified_rollback_available" not in role_operation
+    # Role's assignment write is still verified/ready -- rollback dishonesty
+    # is not conflated with the (separate) finding #1 assignment gating.
+    assert role_operation["status"] == "ready"
+
+
+def test_run_summary_and_entry_summary_have_no_rollback_fields(tmp_path):
+    """Finding #4: no rollback timestamps/results survive in run or entry
+    summaries -- the feature is retracted, not merely hidden behind a flag."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    vlan = candidate("vlan", "20", payload={"description": "Corp"})
+    service.create_run([vlan], target(), run_id="rollback-retracted-summary")
+    service.apply("rollback-retracted-summary", dry_run=True, confirmation=False)
+    applied = service.apply("rollback-retracted-summary", dry_run=False, confirmation=True)
+
+    forbidden_run_keys = {
+        "rollback_dry_run_attempted_at",
+        "last_rollback_at",
+        "rolled_back",
+    }
+    assert not forbidden_run_keys & set(applied.keys())
+    forbidden_entry_keys = {
+        "rollback_dry_run_ok",
+        "last_rollback_result",
+        "conflict",
+    }
+    for entry in applied["candidates"]:
+        assert not forbidden_entry_keys & set(entry.keys())
+        assert entry["status"] != "rolled_back"
+
+    status = service.get_run("rollback-retracted-summary")
+    assert not forbidden_run_keys & set(status.keys())
+    for entry in status["candidates"]:
+        assert not forbidden_entry_keys & set(entry.keys())
+
+
+def test_no_mcp_rollback_tool_is_registered():
+    """Finding #4: rollback must not be exposed as an MCP tool."""
+    tool_names = {name for name in dir(aos8) if name.startswith("aos8_")}
+    assert not any("rollback" in name for name in tool_names)
+
+
+# ---------------------------------------------------------------------------
+# Finding #3 (final-pass safety decision): indexed array flattening must
+# catch a reordered or truncated `servers` array in a server-group payload,
+# never silently "match" on the first element alone. Server-group
+# candidates are permanently "blocked" (finding #1 -- unverified
+# `server-groups` assignment profile-type) and can no longer reach
+# "applied" through the normal apply() path, so `_verify_entry` is invoked
+# directly with a synthetic "applied" entry -- a legitimate, supported way
+# to exercise this general verification mechanism against a real
+# `_map_server_group` payload shape.
+# ---------------------------------------------------------------------------
+
+
+def _server_group_candidate() -> dict:
+    return candidate(
         "server_group",
         "corp-sg",
         payload={
-            "name": "corp-sg",
-            "auth_server_entries": [{"name": "rad1", "position": 1}],
+            "auth_server_entries": [
+                {"name": "rad1", "position": 1},
+                {"name": "rad2", "position": 2},
+            ]
         },
-        dependencies=["auth_server:radius:rad1"],
-        apply_order=20,
+        dependencies=["auth_server:radius:rad1", "auth_server:radius:rad2"],
     )
-    service.create_run([rad1, group], target(), run_id="rollback-order")
-    secrets = {"auth_server:radius:rad1": {"shared_secret": "s3cret"}}
-    service.apply("rollback-order", dry_run=True, confirmation=False, target_secrets=secrets)
-    applied = service.apply(
-        "rollback-order", dry_run=False, confirmation=True, target_secrets=secrets
-    )
-    assert [item["status"] for item in applied["candidates"]] == ["applied", "applied"]
-
-    with pytest.raises(WriteGateError, match="dry_run=True"):
-        service.rollback("rollback-order", dry_run=False, confirmation=True)
-
-    dry = service.rollback("rollback-order", dry_run=True, confirmation=False)
-    assert [item["status"] for item in dry["rollback_results"]] == ["dry-run", "dry-run"]
-    # Reverse of the dependency-ordered apply: the dependent server-group is
-    # rolled back before the auth-server it depended on.
-    assert [item["candidate"] for item in dry["rollback_results"]] == [
-        "server_group:corp-sg",
-        "auth_server:radius:rad1",
-    ]
-
-    with pytest.raises(WriteGateError, match="confirmation=True"):
-        service.rollback("rollback-order", dry_run=False, confirmation=False)
-
-    real = service.rollback("rollback-order", dry_run=False, confirmation=True)
-    assert [item["candidate"] for item in real["rollback_results"]] == [
-        "server_group:corp-sg",
-        "auth_server:radius:rad1",
-    ]
-    assert [item["status"] for item in real["rollback_results"]] == [
-        "rolled_back",
-        "rolled_back",
-    ]
-    assert [item["status"] for item in real["candidates"]] == [
-        "rolled_back",
-        "rolled_back",
-    ]
-    # Delete writes were actually invoked in that same reverse order.
-    real_delete_names = [
-        op.name
-        for op, confirmed in backend.write_calls
-        if confirmed and not bool(op.arguments.get("dry_run"))
-        and op.name in {"delete_config_assignment", "delete_auth_server"}
-    ]
-    assert real_delete_names.index("delete_config_assignment") < len(real_delete_names)
-    # server-group's own delete_operations run before auth-server's.
-    group_positions = [i for i, n in enumerate(real_delete_names)]
-    assert group_positions  # sanity: at least one delete call recorded
 
 
-def test_rollback_never_deletes_pre_existing_updated_object(tmp_path):
-    """Finding #7: a candidate that updated a pre-existing target object
-    (conflict == "update") must never be deleted by rollback."""
-    backend = FakeBackend()
-    backend.read_values["central_api_read"] = {"id": "20", "name": "Existing"}
+def _verify_server_group_directly(tmp_path, backend, target_read):
     service, _ = orchestrator(tmp_path, backend)
-    vlan = candidate("vlan", "20", payload={"description": "Corp"})
-    service.create_run([vlan], target(policy="update"), run_id="rollback-update")
-    service.apply("rollback-update", dry_run=True, confirmation=False)
-    applied = service.apply("rollback-update", dry_run=False, confirmation=True)
-    assert applied["candidates"][0]["status"] == "applied"
-
-    service.rollback("rollback-update", dry_run=True, confirmation=False)
-    real = service.rollback("rollback-update", dry_run=False, confirmation=True)
-    assert real["rollback_results"][0]["status"] == "rollback_unavailable"
-    assert "pre-existing" in real["rollback_results"][0]["reason"]
-    # Status remains "applied" -- rollback did not touch it.
-    assert real["candidates"][0]["status"] == "applied"
+    sg_candidate = _server_group_candidate()
+    adapter = service._adapter(target(), [sg_candidate], placeholders=True)
+    entry = {
+        "key": "server_group:corp-sg",
+        "status": "applied",
+        "candidate": sg_candidate,
+        "last_result": {"ok": True},
+    }
+    backend.read_values["central_api_read"] = target_read
+    return service._verify_entry(adapter, entry)
 
 
-def test_rollback_records_failure_without_crashing_and_keeps_applied_status(tmp_path):
-    """Finding #7: a failed delete during rollback must be reported, never
-    silently swallowed or mis-marked, and must not crash the sweep."""
+def test_verify_detects_reordered_server_group_servers_array(tmp_path):
     backend = FakeBackend()
-    service, _ = orchestrator(tmp_path, backend)
-    vlan = candidate("vlan", "20", payload={"description": "Corp"})
-    service.create_run([vlan], target(), run_id="rollback-fail")
-    service.apply("rollback-fail", dry_run=True, confirmation=False)
-    service.apply("rollback-fail", dry_run=False, confirmation=True)
+    reordered = {
+        "name": "corp-sg",
+        "type": "RADIUS",
+        "servers": [
+            {"server-name": "rad2", "position": 2},
+            {"server-name": "rad1", "position": 1},
+        ],
+    }
+    comparison = _verify_server_group_directly(tmp_path, backend, reordered)
+    assert comparison["verification_status"] == "mismatch"
+    fields = {item["field"]: item for item in comparison["field_comparison"]}
+    assert fields["servers[0].server_name"]["status"] == "mismatch"
+    assert fields["servers[0].server_name"]["expected"] == "rad1"
+    assert fields["servers[0].server_name"]["actual"] == "rad2"
+    assert fields["servers[1].server_name"]["status"] == "mismatch"
+    assert fields["servers[1].server_name"]["expected"] == "rad2"
+    assert fields["servers[1].server_name"]["actual"] == "rad1"
 
-    service.rollback("rollback-fail", dry_run=True, confirmation=False)
-    result = service.rollback("rollback-fail", dry_run=False, confirmation=True)
-    # vlan has no verified delete_operations today -> rollback_unavailable,
-    # never a crash and never falsely reported as rolled back.
-    assert result["rollback_results"][0]["status"] == "rollback_unavailable"
-    assert result["candidates"][0]["status"] == "applied"
 
-
-def test_rollback_gated_by_writes_enabled(tmp_path):
-    # Apply successfully with writes enabled, then attempt a real rollback
-    # against a second orchestrator instance (same on-disk state) where
-    # writes have since been disabled -- the per-operation writes_enabled
-    # gate inside adapter.rollback() must still block the delete.
+def test_verify_detects_incomplete_server_group_servers_array(tmp_path):
+    """A target read missing the second `servers` entry must not be
+    reported "verified" merely because the first (bare-key) entry matches
+    -- the missing indexed entry must be explicitly unverifiable, forcing
+    "partially_verified"."""
     backend = FakeBackend()
-    service, _ = orchestrator(tmp_path, backend, writes=True)
-    rad1 = candidate(
-        "auth_server",
-        "radius:rad1",
-        payload={"name": "rad1", "server_type": "radius", "host": "10.0.0.10"},
-        requires_secret_input=True,
-        secret_fields=["shared_secret"],
-    )
-    service.create_run([rad1], target(), run_id="rollback-writes-disabled")
-    secrets = {"auth_server:radius:rad1": {"shared_secret": "s3cret"}}
-    service.apply(
-        "rollback-writes-disabled", dry_run=True, confirmation=False, target_secrets=secrets
-    )
-    applied = service.apply(
-        "rollback-writes-disabled", dry_run=False, confirmation=True, target_secrets=secrets
-    )
-    assert applied["candidates"][0]["status"] == "applied"
-
-    disabled_service, _ = orchestrator(tmp_path, backend, writes=False)
-    disabled_service.rollback("rollback-writes-disabled", dry_run=True, confirmation=False)
-    result = disabled_service.rollback(
-        "rollback-writes-disabled", dry_run=False, confirmation=True
-    )
-    assert result["rollback_results"][0]["status"] == "failed"
-    assert "writes are disabled" in result["rollback_results"][0]["errors"][0]
-    assert result["candidates"][0]["status"] == "applied"
+    truncated = {
+        "name": "corp-sg",
+        "type": "RADIUS",
+        "servers": [{"server-name": "rad1", "position": 1}],
+    }
+    comparison = _verify_server_group_directly(tmp_path, backend, truncated)
+    fields = {item["field"]: item for item in comparison["field_comparison"]}
+    # The first (bare-key) entry legitimately matches.
+    assert fields["servers[0].server_name"]["status"] == "match"
+    # The second, missing entry is explicitly unverifiable, not silently
+    # dropped and not a false "match".
+    assert fields["servers[1].server_name"]["status"] == "unverifiable"
+    assert fields["servers[1].position"]["status"] == "unverifiable"
+    assert comparison["verification_status"] == "partially_verified"

@@ -488,7 +488,13 @@ class BaseCentralTargetAdapter:
                 if action.delete_operations is not None
                 else None
             ),
-            "verified_rollback_available": action.delete_operations is not None,
+            # 0.5: rollback/reversal is NOT an executable feature. `delete_
+            # operations` above (when present) is retained purely as non-
+            # executable manual/future reference metadata -- no adapter,
+            # orchestrator, or MCP method invokes it in this release. Do not
+            # reintroduce a "verified_rollback_available"-style claim without
+            # also shipping a real, gated rollback execution path.
+            "rollback_supported": False,
             "warnings": sorted(set(candidate.get("warnings", []))),
             "unsupported_warnings": sorted(action.compatibility_errors),
             "blockers": sorted(action.blockers),
@@ -611,64 +617,17 @@ class BaseCentralTargetAdapter:
         return preview
 
     def candidate_action(self, candidate: Mapping[str, Any]) -> CandidateAction:
-        """Return the mapped action for orchestration and read-only verification."""
-        return self._map_candidate(candidate)
+        """Return the mapped action for orchestration and read-only verification.
 
-    def rollback(
-        self,
-        action: CandidateAction,
-        *,
-        dry_run: bool,
-        confirmation: bool,
-    ) -> dict[str, Any]:
-        """Invoke this candidate's verified ``delete_operations`` (reverse-order
-        rollback of a prior create/update). Mirrors ``execute()``'s write-gate
-        protections: a real (non-dry-run) rollback requires explicit
-        confirmation and platform writes enabled for this target type. Never
-        raises for a per-operation failure -- reported in ``errors`` instead --
-        so a caller performing a reverse-dependency-order sweep can decide
-        whether to stop after the first failure.
+        0.5: there is no adapter- or orchestrator-level rollback execution
+        method. `CandidateAction.delete_operations`, when present, is bounded
+        reference metadata only (see `_action_preview`'s `rollback_supported:
+        False`); no code path here invokes it. A prior revision added an
+        executable `rollback()` gated like `execute()` -- it has been
+        retracted for this release rather than exposed as a half-verified
+        feature (docs/aos8-migration-contract-matrix.md §2.1/§5).
         """
-        if not dry_run:
-            if not confirmation:
-                raise WriteGateError("Rollback requires explicit confirmation.")
-            if not self.writes_enabled(self.target_type):
-                raise WriteGateError(
-                    f"Platform writes are disabled for {self.target_type.value}."
-                )
-        if action.delete_operations is None:
-            return {
-                "candidate": action.key,
-                "status": "rollback_unavailable",
-                "results": [],
-                "errors": [
-                    "no verified delete/rollback operations exist for this mapping"
-                ],
-            }
-        if not action.delete_operations:
-            return {
-                "candidate": action.key,
-                "status": "rolled_back",
-                "results": [],
-                "errors": [],
-            }
-        operation_results: list[dict[str, Any]] = []
-        errors: list[str] = []
-        for operation in action.delete_operations:
-            invoked = operation.with_dry_run(dry_run)
-            try:
-                value = self.write_invoker(invoked, confirmation=confirmation)
-                operation_results.append({"operation": invoked.preview_dict(), "result": value})
-            except Exception as exc:
-                errors.append(f"{operation.name}: {exc}")
-                break
-        status = "failed" if errors else ("dry-run" if dry_run else "rolled_back")
-        return {
-            "candidate": action.key,
-            "status": status,
-            "results": operation_results,
-            "errors": errors,
-        }
+        return self._map_candidate(candidate)
 
 
 # Per auth-server `type`, the allow-listed AOS8 source fields with a proven
@@ -837,62 +796,42 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             match_identifier=match_identifier,
         )
 
-    def _config_assignment_operations(
-        self, profile_type: str, profile_instance: str
-    ) -> tuple[Operation, Operation]:
-        """Build the SHARED-profile config-assignment create and unassign ops.
+    def _unverified_assignment_blocker(self, profile_type: str) -> str:
+        """Explain why a SHARED profile's config-assignment step is blocked.
 
-        Every `object-type=SHARED` New Central library profile (roles,
-        server-groups, and -- per this fix -- auth-servers, aaa-profile,
-        dot1xauth, macauth) must be bound to a scope + device-function through
-        a separate `/network-config/v1alpha1/config-assignments` call; it is
-        never enough to just create the library object itself
-        (docs/aos8-migration-contract-matrix.md SS1.2). This mirrors the
-        collection-body form `_map_role`/`_map_server_group` already use
-        (SS2.1: the generated spec only declares `delete` on the
-        path-parameterized form; `post`/`get` require the collection body).
+        `object-type=SHARED` New Central library profiles must be bound to a
+        scope + device-function through a separate
+        `/network-config/v1alpha1/config-assignments` call
+        (docs/aos8-migration-contract-matrix.md SS1.2); creating the library
+        object alone is not a complete, usable migration.
 
-        `profile_type` follows the same convention already relied on for
-        "roles" and "server-groups" -- the resource's own endpoint path
-        segment. This is a reasonable, locally-consistent inference, not an
-        independently confirmed literal enum member (the exact spec file is
-        not present in this checkout); it remains subject to the same
-        live-read verification SS2.1 already requires before any
-        config-assignment write is trusted.
+        Only "roles" is independently evidenced as the correct
+        `profile-type` literal for this call -- the generated manifest's own
+        parameter description gives it as the worked example ("If a config
+        is a role called Role1, the profile type would be roles";
+        mcp_servers/openapi_gen/manifests/central.json, PUT
+        /network-config/v1alpha1/config-assignments/{scope-id}/{device-
+        function}/{profile-type}/{profile-instance} `profile-type` parameter
+        description). No equivalent citation exists locally for
+        {profile_type!r} -- it is only an endpoint-path-segment convention
+        (auth-servers/aaa-profile/dot1xauth/macauth/server-groups all share
+        this same *unverified* status). Per docs/aos8-migration-contract-
+        matrix.md SS2.1/SS5, this divergence must be resolved against a live
+        read before any such config-assignment write is authorized, so no
+        assignment write is attempted and this candidate cannot be applied
+        as a complete migration until that literal is confirmed.
         """
-        assignment_payload = {
-            "config-assignment": [
-                {
-                    "scope-id": self.context.scope_id,
-                    "device-function": self.context.persona,
-                    "profile-type": profile_type,
-                    "profile-instance": profile_instance,
-                }
-            ]
-        }
-        assignment_operation = self._spec_endpoint_operation(
-            "POST",
-            "/network-config/v1alpha1/config-assignments",
-            assignment_payload,
-            provenance=(
-                "Official New Central Working with Library Profiles: POST "
-                "/network-config/v1alpha1/config-assignments with "
-                f"scope-id/device-function/profile-type={profile_type}/profile-instance"
-            ),
+        return (
+            f"the New Central library-object contract for profile-type "
+            f"{profile_type!r} is verified (create/update/delete/read "
+            "operations below), but the SHARED config-assignment binding "
+            f"for {profile_type!r} is not independently evidenced locally "
+            "(only inferred by endpoint-path convention, same as the other "
+            "non-'roles' profile types); no config-assignment write will be "
+            "attempted, and this candidate is not executable as a complete "
+            "migration until that literal is confirmed against a live read "
+            "(docs/aos8-migration-contract-matrix.md §2.1/§5)."
         )
-        delete_assignment_operation = Operation(
-            invocation="tool",
-            name="delete_config_assignment",
-            arguments={
-                "scope_id": self.context.scope_id,
-                "device_function": self.context.persona,
-                "profile_type": profile_type,
-                "profile_instance": profile_instance,
-                "dry_run": True,
-            },
-            provenance="mcp_servers.config.delete_config_assignment",
-        )
-        return assignment_operation, delete_assignment_operation
 
     def _map_vlan(self, candidate: Mapping[str, Any]) -> CandidateAction:
         self._reject_unmapped(candidate)
@@ -984,7 +923,15 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             provenance=(
                 "Official New Central Working with Library Profiles: POST "
                 "/network-config/v1alpha1/config-assignments with "
-                "scope-id/device-function/profile-type/profile-instance"
+                "scope-id/device-function/profile-type/profile-instance. "
+                "profile-type='roles' is independently evidenced (not just "
+                "endpoint-path convention): the generated manifest's own "
+                "parameter description gives it as the worked example -- "
+                "mcp_servers/openapi_gen/manifests/central.json, PUT "
+                "/network-config/v1alpha1/config-assignments/{scope-id}/"
+                "{device-function}/{profile-type}/{profile-instance} "
+                "`profile-type` parameter description: \"If a config is a "
+                "role called Role1, the profile type would be roles.\""
             ),
         )
         create = Operation(
@@ -1170,16 +1117,22 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             dry_run_field=None,
             match_identifier=name,
         )
-        assignment_operation, delete_assignment_operation = (
-            self._config_assignment_operations("auth-servers", name)
-        )
+        # Finding #1 (fail-closed): the SHARED config-assignment
+        # profile-type "auth-servers" is not independently evidenced
+        # locally (see `_unverified_assignment_blocker`); the object-level
+        # operations below are verified and kept for reference, but this
+        # candidate is blocked -- never "ready" -- until the assignment
+        # literal is confirmed.
         return CandidateAction(
             key=key,
             candidate=candidate,
-            operations=[create_operation, assignment_operation],
-            update_operations=[update_operation, assignment_operation],
-            delete_operations=[delete_assignment_operation, delete_operation],
+            operations=[create_operation],
+            update_operations=[update_operation],
+            delete_operations=[delete_operation],
             read_operation=read_operation,
+            blockers=[
+                f"{key}: {self._unverified_assignment_blocker('auth-servers')}"
+            ],
         )
 
     def _map_aaa_profile(self, candidate: Mapping[str, Any]) -> CandidateAction:
@@ -1250,15 +1203,18 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             arguments={"name": name, "dry_run": True},
             provenance="mcp_servers.nac.delete_aaa_profile",
         )
-        assignment_operation, delete_assignment_operation = (
-            self._config_assignment_operations("aaa-profile", name)
-        )
+        # Finding #1 (fail-closed): the SHARED config-assignment
+        # profile-type "aaa-profile" is not independently evidenced locally
+        # (see `_unverified_assignment_blocker`); the object-level
+        # operations below are verified and kept for reference, but this
+        # candidate is blocked -- never "ready" -- until the assignment
+        # literal is confirmed.
         return CandidateAction(
             key=key,
             candidate=candidate,
-            operations=[create_operation, assignment_operation],
-            update_operations=[update_operation, assignment_operation],
-            delete_operations=[delete_assignment_operation, delete_operation],
+            operations=[create_operation],
+            update_operations=[update_operation],
+            delete_operations=[delete_operation],
             read_operation=Operation(
                 invocation="tool",
                 name="get_aaa_profile",
@@ -1267,6 +1223,9 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                 dry_run_field=None,
                 match_identifier=name,
             ),
+            blockers=[
+                f"{key}: {self._unverified_assignment_blocker('aaa-profile')}"
+            ],
         )
 
     def _map_device_auth_profile(
@@ -1314,16 +1273,21 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
         read_operation = self._spec_endpoint_read(
             endpoint, provenance=f"{resource}.json GET {endpoint}", match_identifier=name
         )
-        assignment_operation, delete_assignment_operation = (
-            self._config_assignment_operations(resource, name)
-        )
+        # Finding #1 (fail-closed): the SHARED config-assignment
+        # profile-type for this resource (dot1xauth/macauth) is not
+        # independently evidenced locally (see
+        # `_unverified_assignment_blocker`); the object-level operations
+        # above are verified and kept for reference, but this candidate is
+        # blocked -- never "ready" -- until the assignment literal is
+        # confirmed.
         return CandidateAction(
             key=key,
             candidate=candidate,
-            operations=[create_operation, assignment_operation],
-            update_operations=[update_operation, assignment_operation],
-            delete_operations=[delete_assignment_operation, delete_operation],
+            operations=[create_operation],
+            update_operations=[update_operation],
+            delete_operations=[delete_operation],
             read_operation=read_operation,
+            blockers=[f"{key}: {self._unverified_assignment_blocker(resource)}"],
         )
 
     def _map_dot1x_auth_profile(self, candidate: Mapping[str, Any]) -> CandidateAction:
@@ -1464,16 +1428,23 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             provenance=f"auth-server-group.json GET {endpoint}",
             match_identifier=name,
         )
-        assignment_operation, delete_assignment_operation = (
-            self._config_assignment_operations("server-groups", name)
-        )
+        # Finding #1 (fail-closed): the SHARED config-assignment
+        # profile-type "server-groups" is not independently evidenced
+        # locally (see `_unverified_assignment_blocker`) -- unlike "roles",
+        # no manifest parameter-description worked example names it. The
+        # object-level operations above are verified and kept for
+        # reference, but this candidate is blocked -- never "ready" --
+        # until the assignment literal is confirmed.
         return CandidateAction(
             key=key,
             candidate=candidate,
-            operations=[create_operation, assignment_operation],
-            update_operations=[update_operation, assignment_operation],
-            delete_operations=[delete_assignment_operation, delete_operation],
+            operations=[create_operation],
+            update_operations=[update_operation],
+            delete_operations=[delete_operation],
             read_operation=read_operation,
+            blockers=[
+                f"{key}: {self._unverified_assignment_blocker('server-groups')}"
+            ],
         )
 
     def _map_wlan(self, candidate: Mapping[str, Any]) -> CandidateAction:

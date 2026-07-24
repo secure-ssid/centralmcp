@@ -353,20 +353,20 @@ def test_aaa_profile_rejects_ap_persona_and_exposes_update_delete_operations():
 
     preview = new_adapter(FakeBackend(), persona="ACCESS_SWITCH").preview([aaa])
     entry = preview["operations"][0]
+    # Finding #1 (fail-closed): the aaa-profile object itself is verified
+    # (create/update/delete/read all present below), but the SHARED
+    # config-assignment profile-type "aaa-profile" is not independently
+    # evidenced locally, so this candidate stays "blocked" -- it is never
+    # executed and never claims a completed migration.
+    assert entry["status"] == "blocked"
     assert entry["update_operations"][0]["method"] == "PATCH"
-    # SHARED-profile rollback unassigns the config-assignment before deleting
-    # the aaa-profile object itself.
-    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_config_assignment"
-    assert entry["delete_operations"][0]["arguments"]["profile_type"] == "aaa-profile"
-    assert entry["delete_operations"][1]["tool_or_endpoint"] == "delete_aaa_profile"
-    assert entry["verified_rollback_available"] is True
-    # Assignment operation is present alongside the create/update writes too.
-    assert entry["operations"][1]["payload"]["config-assignment"][0]["profile-type"] == (
-        "aaa-profile"
-    )
-    assert entry["update_operations"][1]["payload"]["config-assignment"][0][
-        "profile-type"
-    ] == "aaa-profile"
+    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_aaa_profile"
+    assert len(entry["operations"]) == 1
+    assert len(entry["update_operations"]) == 1
+    assert len(entry["delete_operations"]) == 1
+    assert entry["rollback_supported"] is False
+    assert any("aaa-profile" in blocker for blocker in entry["blockers"])
+    assert any("config-assignment" in blocker for blocker in entry["blockers"])
 
 
 def test_unsupported_objects_and_lossy_mappings_remain_unapplied():
@@ -549,20 +549,22 @@ def test_radius_auth_server_has_verified_update_and_delete_operations():
         secrets={"auth_server:radius:rad1": {"shared_secret": "s3cret"}},
     ).preview([auth])
     entry = preview["operations"][0]
+    # Finding #1 (fail-closed): the auth-server object itself is verified,
+    # but the SHARED config-assignment profile-type "auth-servers" is not
+    # independently evidenced locally, so this candidate stays "blocked".
+    assert entry["status"] == "blocked"
     assert entry["operations"][0]["tool_or_endpoint"] == "create_auth_server"
+    assert len(entry["operations"]) == 1
     assert entry["update_operations"][0]["method"] == "PATCH"
     assert entry["update_operations"][0]["tool_or_endpoint"] == (
         "/network-config/v1alpha1/auth-servers/rad1"
     )
+    assert len(entry["update_operations"]) == 1
     assert "s3cret" not in str(entry["update_operations"])
-    # SHARED-profile rollback unassigns before deleting the auth-server object.
-    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_config_assignment"
-    assert entry["delete_operations"][0]["arguments"]["profile_type"] == "auth-servers"
-    assert entry["delete_operations"][1]["tool_or_endpoint"] == "delete_auth_server"
-    assert entry["verified_rollback_available"] is True
-    assert entry["operations"][1]["payload"]["config-assignment"][0]["profile-type"] == (
-        "auth-servers"
-    )
+    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_auth_server"
+    assert len(entry["delete_operations"]) == 1
+    assert entry["rollback_supported"] is False
+    assert any("auth-servers" in blocker for blocker in entry["blockers"])
 
 
 def test_ldap_auth_server_maps_exact_fields_and_requires_admin_password_secret():
@@ -584,7 +586,10 @@ def test_ldap_auth_server_maps_exact_fields_and_requires_admin_password_secret()
         secrets={"auth_server:ldap:ldap1": {"admin_password": "bindpw"}},
     ).preview([ldap])
     entry = preview["operations"][0]
-    assert entry["status"] == "ready"
+    # Finding #1 (fail-closed): the object mapping is verified, but the
+    # SHARED config-assignment profile-type "auth-servers" is not
+    # independently evidenced locally, so this stays "blocked".
+    assert entry["status"] == "blocked"
     operation = entry["operations"][0]
     assert operation["method"] == "POST"
     assert operation["tool_or_endpoint"] == "/network-config/v1alpha1/auth-servers/ldap1"
@@ -594,8 +599,8 @@ def test_ldap_auth_server_maps_exact_fields_and_requires_admin_password_secret()
     assert operation["payload"]["admin-password"] == "***"
     assert "bindpw" not in str(preview)
     assert entry["update_operations"][0]["method"] == "PATCH"
-    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_config_assignment"
-    assert entry["delete_operations"][1]["tool_or_endpoint"] == "delete_auth_server"
+    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_auth_server"
+    assert len(entry["delete_operations"]) == 1
 
 
 def test_ldap_auth_server_rejected_on_switch_persona():
@@ -627,7 +632,11 @@ def test_tacacs_auth_server_maps_exact_fields_on_every_persona_family():
             secrets={"auth_server:tacacs:tac1": {"shared_secret": "tacsecret"}},
         ).preview([tacacs])
         entry = preview["operations"][0]
-        assert entry["status"] == "ready", persona
+        # Finding #1 (fail-closed): the object mapping is verified, but the
+        # SHARED config-assignment profile-type "auth-servers" is not
+        # independently evidenced locally, so this stays "blocked" on every
+        # persona.
+        assert entry["status"] == "blocked", persona
         payload = entry["operations"][0]["payload"]
         assert payload["type"] == "TACACS"
         assert payload["tcp-port"] == 49
@@ -689,7 +698,13 @@ def test_server_group_builds_ordered_servers_array_from_dependencies():
     entry = next(
         item for item in preview["operations"] if item["candidate"] == "server_group:corp-sg"
     )
-    assert entry["status"] == "ready"
+    # Finding #1 (fail-closed): the server-groups object contract (ordered
+    # `servers` array with positions) is verified below, but the SHARED
+    # config-assignment profile-type "server-groups" is not independently
+    # evidenced locally (unlike "roles", no manifest worked example names
+    # it) -- this candidate stays "blocked", never a complete migration.
+    assert entry["status"] == "blocked"
+    assert len(entry["operations"]) == 1
     create_op = entry["operations"][0]
     assert create_op["tool_or_endpoint"] == "/network-config/v1alpha1/server-groups/corp-sg"
     servers = create_op["payload"]["servers"]
@@ -699,12 +714,12 @@ def test_server_group_builds_ordered_servers_array_from_dependencies():
     ]
     assert create_op["payload"]["type"] == "RADIUS"
     assert create_op["payload"]["fail-through"] is True
-    assign_op = entry["operations"][1]
-    assert assign_op["payload"]["config-assignment"][0]["profile-type"] == "server-groups"
-    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_config_assignment"
-    assert entry["delete_operations"][1]["tool_or_endpoint"] == (
+    assert entry["delete_operations"][0]["tool_or_endpoint"] == (
         "/network-config/v1alpha1/server-groups/corp-sg"
     )
+    assert len(entry["delete_operations"]) == 1
+    assert entry["rollback_supported"] is False
+    assert any("server-groups" in blocker for blocker in entry["blockers"])
 
 
 def test_server_group_rejects_mixed_auth_server_types():
@@ -821,23 +836,22 @@ def test_bare_dot1x_and_macauth_profiles_map_on_gateway_switch_only():
         for persona in ("MOBILITY_GW", "ACCESS_SWITCH"):
             preview = new_adapter(FakeBackend(), persona=persona).preview([object_candidate])
             entry = preview["operations"][0]
-            assert entry["status"] == "ready", (resource, persona)
+            # Finding #1 (fail-closed): the dot1xauth/macauth object
+            # contract is verified below, but the SHARED config-assignment
+            # profile-type for this resource is not independently
+            # evidenced locally, so this candidate stays "blocked".
+            assert entry["status"] == "blocked", (resource, persona)
             create_op = entry["operations"][0]
             assert create_op["method"] == "POST"
             assert resource in create_op["tool_or_endpoint"]
             assert create_op["payload"] == {"name": object_candidate["identifier"]}
+            assert len(entry["operations"]) == 1
             assert entry["update_operations"][0]["method"] == "PATCH"
-            # SHARED-profile rollback unassigns the config-assignment first,
-            # then deletes the dot1xauth/macauth object itself.
-            assert entry["delete_operations"][0]["tool_or_endpoint"] == (
-                "delete_config_assignment"
-            )
-            assert entry["delete_operations"][0]["arguments"]["profile_type"] == resource
-            assert entry["delete_operations"][1]["method"] == "DELETE"
-            assert entry["operations"][1]["payload"]["config-assignment"][0][
-                "profile-type"
-            ] == resource
-            assert entry["verified_rollback_available"] is True
+            assert len(entry["update_operations"]) == 1
+            assert entry["delete_operations"][0]["method"] == "DELETE"
+            assert len(entry["delete_operations"]) == 1
+            assert entry["rollback_supported"] is False
+            assert any(resource in blocker for blocker in entry["blockers"])
 
 
 def test_rich_dot1x_and_macauth_profiles_are_rejected_not_guessed():
@@ -1166,11 +1180,15 @@ def test_server_group_radsec_dependency_is_unsupported_not_a_crash():
     assert "no verified New Central server-groups mapping" in entry["unsupported_warnings"][0]
 
 
-def test_config_assignment_operation_uses_collection_body_endpoint_for_all_shared_profiles():
-    """Finding #1: every SHARED profile type (auth-servers, aaa-profile,
-    dot1xauth, macauth, server-groups) must add a spec-correct collection-
-    body /network-config/v1alpha1/config-assignments write after
-    create/update, with unassign-before-delete rollback ordering."""
+def test_unverified_shared_profile_assignment_types_stay_blocked_not_ready():
+    """Finding #1 (fail-closed, final pass): auth-servers, aaa-profile,
+    dot1xauth, macauth, and server-groups all share the same SHARED
+    config-assignment problem -- their `profile-type` literal is only an
+    endpoint-path-segment convention, never independently evidenced
+    locally. Every one of them must return a "blocked" CandidateAction
+    (library object contract verified, but not executable as a complete
+    migration) -- never "ready", never carrying an assignment operation,
+    and never claiming `rollback_supported`."""
     cases = [
         (
             candidate(
@@ -1180,7 +1198,6 @@ def test_config_assignment_operation_uses_collection_body_endpoint_for_all_share
             ),
             "CAMPUS_AP",
             "auth-servers",
-            "rad1",
             {"auth_server:radius:rad1": {"shared_secret": "s3cret"}},
         ),
         (
@@ -1191,43 +1208,66 @@ def test_config_assignment_operation_uses_collection_body_endpoint_for_all_share
             ),
             "MOBILITY_GW",
             "aaa-profile",
-            "corp-aaa",
             None,
         ),
         (
             candidate("dot1x_auth_profile", "corp-dot1x", payload={"name": "corp-dot1x"}),
             "ACCESS_SWITCH",
             "dot1xauth",
-            "corp-dot1x",
             None,
         ),
         (
             candidate("mac_auth_profile", "corp-mac", payload={"name": "corp-mac"}),
             "ACCESS_SWITCH",
             "macauth",
-            "corp-mac",
             None,
         ),
     ]
-    for object_candidate, persona, profile_type, profile_instance, secrets in cases:
+    for object_candidate, persona, profile_type, secrets in cases:
         preview = new_adapter(FakeBackend(), persona=persona, secrets=secrets).preview(
             [object_candidate]
         )
         entry = preview["operations"][0]
-        assert entry["status"] == "ready", profile_type
-        assignment_op = entry["operations"][1]
-        assert assignment_op["tool_or_endpoint"] == "/network-config/v1alpha1/config-assignments"
-        assert assignment_op["method"] == "POST"
-        assignment_body = assignment_op["payload"]["config-assignment"][0]
-        assert assignment_body["profile-type"] == profile_type
-        assert assignment_body["scope-id"] == "100"
-        assert assignment_body["device-function"] == persona
-        assert assignment_body["profile-instance"] == profile_instance
-        # Update also carries the assignment (idempotent re-assert).
-        assert entry["update_operations"][1]["tool_or_endpoint"] == (
-            "/network-config/v1alpha1/config-assignments"
-        )
-        # Rollback order: unassign before deleting the object itself.
-        assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_config_assignment"
-        assert entry["delete_operations"][0]["arguments"]["profile_type"] == profile_type
-        assert len(entry["delete_operations"]) == 2
+        assert entry["status"] == "blocked", profile_type
+        assert entry["rollback_supported"] is False, profile_type
+        assert len(entry["operations"]) == 1, profile_type
+        assert len(entry["update_operations"]) == 1, profile_type
+        assert len(entry["delete_operations"]) == 1, profile_type
+        assert not any(
+            "config-assignment" in str(op.get("payload") or {})
+            for op in entry["operations"] + entry["update_operations"] + entry["delete_operations"]
+        ), profile_type
+        assert any(profile_type in blocker for blocker in entry["blockers"]), profile_type
+        assert any(
+            "config-assignment" in blocker or "assignment" in blocker
+            for blocker in entry["blockers"]
+        ), profile_type
+        # Never executed: dry_run()/execute() must not attempt a write for a
+        # blocked candidate.
+        backend = FakeBackend()
+        adapter = new_adapter(backend, persona=persona, secrets=secrets)
+        result = adapter.execute([object_candidate], dry_run=False, confirmation=True)
+        assert result["results"][0]["status"] == "blocked", profile_type
+        assert backend.write_calls == [], profile_type
+
+
+def test_roles_assignment_stays_ready_evidenced_by_manifest_worked_example():
+    """"roles" is the one SHARED profile-type whose literal is
+    independently evidenced (not just endpoint-path convention): the
+    generated New Central manifest's own `profile-type` parameter
+    description gives it as the worked example (mcp_servers/openapi_gen/
+    manifests/central.json). It must remain "ready" with an executable
+    config-assignment operation, unlike the unverified profile types above."""
+    role = candidate("role", "employee", payload={"policies": ["allowall"]})
+    preview = new_adapter(FakeBackend()).preview([role])
+    entry = preview["operations"][0]
+    assert entry["status"] == "ready"
+    assignment_op = entry["operations"][1]
+    assert assignment_op["tool_or_endpoint"] == "/network-config/v1alpha1/config-assignments"
+    assert assignment_op["payload"]["config-assignment"][0]["profile-type"] == "roles"
+    assert entry["update_operations"][1]["payload"]["config-assignment"][0][
+        "profile-type"
+    ] == "roles"
+    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_config_assignment"
+    assert entry["delete_operations"][0]["arguments"]["profile_type"] == "roles"
+    assert len(entry["delete_operations"]) == 2

@@ -511,10 +511,21 @@ def build_overlay_ssid(
                     logger.error("Failed to create policy '%s': %s", effective_policy, exc)
 
             try:
-                central_client._request(
-                    "PATCH",
+                # Use the validated `.patch()` wrapper (raises via
+                # `response.raise_for_status()` on any non-2xx) rather than
+                # the raw `._request()` primitive -- a raw `_request` call
+                # returns the httpx.Response unchecked, so a non-2xx would
+                # be silently logged as success below instead of failing
+                # the migration step.
+                central_client.patch(
                     "/network-config/v1alpha1/policy-groups",
-                    json={"policy-group": {"policy-group-list": [{"name": effective_policy, "position": 3}]}},
+                    data={
+                        "policy-group": {
+                            "policy-group-list": [
+                                {"name": effective_policy, "position": 3}
+                            ]
+                        }
+                    },
                 )
                 logger.info("Added '%s' to policy group", effective_policy)
             except Exception as exc:

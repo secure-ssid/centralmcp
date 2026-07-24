@@ -8,6 +8,7 @@ import pytest
 
 from pipeline.create_ssid import (
     _build_ssid_body,
+    build_overlay_ssid,
     build_underlay_ssid,
     delete_underlay_ssid,
     get_underlay_ssid,
@@ -298,3 +299,70 @@ def test_list_underlay_ssids_empty_on_error():
     client = MagicMock()
     client.get.side_effect = Exception("connection error")
     assert list_underlay_ssids(client) == []
+
+
+
+# ---------------------------------------------------------------------------
+# build_overlay_ssid — overlay policy-group write validation (Finding #2:
+# the raw `_request()` PATCH call bypassed response validation and would
+# log success even on a non-2xx result. The fix reuses the already-validated
+# `.patch()` wrapper, which calls `response.raise_for_status()`.)
+# ---------------------------------------------------------------------------
+
+
+def _overlay_client(patch_side_effect=None) -> MagicMock:
+    client = MagicMock()
+    client.get.return_value = {
+        "scope-map": [{"persona": "SERVICE_PERSONA", "scope-id": 1}]
+    }
+    client.post.return_value = {"errorCode": "SUCC_001"}
+    if patch_side_effect is not None:
+        client.patch.side_effect = patch_side_effect
+    else:
+        client.patch.return_value = {}
+    return client
+
+
+def test_build_overlay_ssid_policy_group_write_failure_is_recorded_not_logged_success():
+    """A non-2xx (raised by the validated `.patch()` wrapper) on the
+    policy-group add must be recorded in `errors`, never silently treated as
+    success."""
+    client = _overlay_client(
+        patch_side_effect=[_make_http_exc(500, "internal server error"), {}]
+    )
+    result = build_overlay_ssid(
+        client,
+        "Overlay-WiFi",
+        ["200"],
+        "99999",
+        "cluster1",
+        "88888",
+    )
+    assert any("add_policy_group" in err for err in result["errors"])
+
+
+def test_build_overlay_ssid_policy_group_write_success_uses_validated_patch():
+    """The overlay policy-group add must go through the validated `.patch()`
+    wrapper (never the raw, unchecked `._request()` primitive) with the
+    exact spec-correct collection-body payload."""
+    client = _overlay_client()
+    result = build_overlay_ssid(
+        client,
+        "Overlay-WiFi",
+        ["200"],
+        "99999",
+        "cluster1",
+        "88888",
+    )
+    assert not any("add_policy_group" in err for err in result["errors"])
+    patch_calls = [
+        call_args
+        for call_args in client.patch.call_args_list
+        if call_args.args and call_args.args[0] == "/network-config/v1alpha1/policy-groups"
+    ]
+    assert len(patch_calls) == 1
+    assert patch_calls[0].kwargs["data"] == {
+        "policy-group": {
+            "policy-group-list": [{"name": "Overlay-WiFi", "position": 3}]
+        }
+    }
