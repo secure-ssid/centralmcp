@@ -49,6 +49,7 @@ from mcp_servers.shared import (
     response_payload,
     safe_api_path,
     validate_product_base_url,
+    validate_write_result,
 )
 from mcp_servers.shared import (
     platform_write_blocked as _platform_write_blocked,
@@ -2128,7 +2129,13 @@ def _aos8_migration_write_invoker(
             ),
             json=arguments.get("data", operation.payload),
         )
-        return bounded_response_payload(response)
+        # `client._request` deliberately does not raise_for_status (callers
+        # decide) -- validate the raw response status *and* the parsed
+        # envelope before this write is ever reported as applied.
+        validate_write_result(response, context=f"{method} {operation.endpoint}")
+        payload = bounded_response_payload(response)
+        validate_write_result(payload, context=f"{method} {operation.endpoint}")
+        return payload
 
     from mcp_servers import config as config_tools
     from mcp_servers import nac as nac_tools
@@ -2151,7 +2158,14 @@ def _aos8_migration_write_invoker(
     tool = tools.get(operation.name)
     if tool is None:
         raise ValueError(f"Unapproved migration write tool {operation.name!r}.")
-    return tool(**arguments)
+    result = tool(**arguments)
+    # Curated tools use inconsistent failure conventions (some raise via
+    # `client.post`/`.put`/`.patch`/`.delete`'s `raise_for_status()`, others
+    # return a 2xx-shaped dict with a populated `errors` list and no
+    # exception) -- validate the returned envelope here so every write this
+    # invoker performs fails closed the same way.
+    validate_write_result(result, context=operation.name)
+    return result
 
 
 def _aos8_migration_orchestrator() -> Any:

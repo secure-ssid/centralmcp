@@ -10,7 +10,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import unquote, urlsplit
 
 from dotenv import load_dotenv
@@ -876,6 +876,80 @@ def compact_http_error(resp: Any, endpoint: str | None = None, max_chars: int = 
     body = response_payload(resp)
     where = f" at {endpoint}" if endpoint else ""
     return f"HTTP {resp.status_code}{where}: {_truncate_text(body, max_chars=max_chars)}"
+
+
+class WriteResultError(RuntimeError):
+    """Raised when a write result indicates the target rejected the change.
+
+    Central write paths are inconsistent about how they report failure: some
+    tools call `client.post`/`.put`/`.patch`/`.delete` (which already raise
+    `httpx.HTTPStatusError` on a non-2xx status via `raise_for_status()`),
+    others call `client._request(...)` directly (which explicitly does NOT
+    raise -- "any other status: return immediately, callers decide") and
+    return the raw response/payload regardless of status, and a few attach a
+    best-effort `errors` list to an otherwise-2xx envelope. A caller that only
+    checks "did this raise?" will silently treat a rejected write as applied.
+    """
+
+
+def validate_write_result(result: Any, *, context: str = "") -> Any:
+    """Fail closed on a non-2xx/error write result; return `result` unchanged.
+
+    Handles, in order:
+      * raw HTTP response-like objects (anything with a `status_code`
+        attribute, e.g. `httpx.Response` or a test double) -- checked via
+        `.is_success` when present, else `200 <= status_code < 300`;
+      * response envelopes (`Mapping`) carrying a non-empty `errors` list/str
+        or a non-empty `error` string;
+      * response envelopes with an explicit `success`/`ok` field set to
+        `False`;
+      * response envelopes with a `status` field of `failed`/`failure`/
+        `error`, or a `status_code` field outside the 2xx range (the shape
+        `resp_json()` falls back to for a non-JSON body).
+
+    Never rejects a legitimate empty success body: `None`, `{}`, `[]`, or a
+    plain string with none of the above failure markers all pass through
+    unchanged -- this is intentionally narrow so it never produces a false
+    failure on a real 2xx/empty-body success.
+    """
+    where = f"{context}: " if context else ""
+    status_code = getattr(result, "status_code", None)
+    if status_code is not None:
+        is_success = getattr(result, "is_success", None)
+        if not isinstance(is_success, bool):
+            try:
+                is_success = 200 <= int(status_code) < 300
+            except (TypeError, ValueError):
+                is_success = False
+        if not is_success:
+            raise WriteResultError(f"{where}{compact_http_error(result)}")
+        return result
+    if isinstance(result, Mapping):
+        errors = result.get("errors")
+        if isinstance(errors, (list, tuple)) and any(
+            item not in (None, "", [], {}) for item in errors
+        ):
+            raise WriteResultError(f"{where}write reported errors: {list(errors)}")
+        if isinstance(errors, str) and errors.strip():
+            raise WriteResultError(f"{where}write reported error: {errors}")
+        error = result.get("error")
+        if isinstance(error, str) and error.strip():
+            raise WriteResultError(f"{where}write reported error: {error}")
+        for flag_name in ("success", "ok"):
+            if result.get(flag_name) is False:
+                raise WriteResultError(f"{where}write reported {flag_name}=False")
+        status_field = result.get("status")
+        if (
+            isinstance(status_field, str)
+            and status_field.strip().lower() in {"failed", "failure", "error"}
+        ):
+            raise WriteResultError(f"{where}write reported status={status_field!r}")
+        result_status_code = result.get("status_code")
+        if isinstance(result_status_code, int) and not (200 <= result_status_code < 300):
+            raise WriteResultError(
+                f"{where}write reported status_code={result_status_code}"
+            )
+    return result
 
 
 def response_payload(resp: Any) -> Any:

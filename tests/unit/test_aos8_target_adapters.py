@@ -68,7 +68,12 @@ def resolve_scope(context):
 
 
 def validate_persona(context):
-    if context.persona not in {"CAMPUS_AP", "MOBILITY_GW", "ACCESS_SWITCH"}:
+    if context.persona not in {
+        "CAMPUS_AP",
+        "MICROBRANCH_AP",
+        "MOBILITY_GW",
+        "ACCESS_SWITCH",
+    }:
         raise ValueError("invalid persona")
     return context.persona
 
@@ -349,8 +354,19 @@ def test_aaa_profile_rejects_ap_persona_and_exposes_update_delete_operations():
     preview = new_adapter(FakeBackend(), persona="ACCESS_SWITCH").preview([aaa])
     entry = preview["operations"][0]
     assert entry["update_operations"][0]["method"] == "PATCH"
-    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_aaa_profile"
+    # SHARED-profile rollback unassigns the config-assignment before deleting
+    # the aaa-profile object itself.
+    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_config_assignment"
+    assert entry["delete_operations"][0]["arguments"]["profile_type"] == "aaa-profile"
+    assert entry["delete_operations"][1]["tool_or_endpoint"] == "delete_aaa_profile"
     assert entry["verified_rollback_available"] is True
+    # Assignment operation is present alongside the create/update writes too.
+    assert entry["operations"][1]["payload"]["config-assignment"][0]["profile-type"] == (
+        "aaa-profile"
+    )
+    assert entry["update_operations"][1]["payload"]["config-assignment"][0][
+        "profile-type"
+    ] == "aaa-profile"
 
 
 def test_unsupported_objects_and_lossy_mappings_remain_unapplied():
@@ -539,8 +555,14 @@ def test_radius_auth_server_has_verified_update_and_delete_operations():
         "/network-config/v1alpha1/auth-servers/rad1"
     )
     assert "s3cret" not in str(entry["update_operations"])
-    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_auth_server"
+    # SHARED-profile rollback unassigns before deleting the auth-server object.
+    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_config_assignment"
+    assert entry["delete_operations"][0]["arguments"]["profile_type"] == "auth-servers"
+    assert entry["delete_operations"][1]["tool_or_endpoint"] == "delete_auth_server"
     assert entry["verified_rollback_available"] is True
+    assert entry["operations"][1]["payload"]["config-assignment"][0]["profile-type"] == (
+        "auth-servers"
+    )
 
 
 def test_ldap_auth_server_maps_exact_fields_and_requires_admin_password_secret():
@@ -572,7 +594,8 @@ def test_ldap_auth_server_maps_exact_fields_and_requires_admin_password_secret()
     assert operation["payload"]["admin-password"] == "***"
     assert "bindpw" not in str(preview)
     assert entry["update_operations"][0]["method"] == "PATCH"
-    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_auth_server"
+    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_config_assignment"
+    assert entry["delete_operations"][1]["tool_or_endpoint"] == "delete_auth_server"
 
 
 def test_ldap_auth_server_rejected_on_switch_persona():
@@ -804,7 +827,16 @@ def test_bare_dot1x_and_macauth_profiles_map_on_gateway_switch_only():
             assert resource in create_op["tool_or_endpoint"]
             assert create_op["payload"] == {"name": object_candidate["identifier"]}
             assert entry["update_operations"][0]["method"] == "PATCH"
-            assert entry["delete_operations"][0]["method"] == "DELETE"
+            # SHARED-profile rollback unassigns the config-assignment first,
+            # then deletes the dot1xauth/macauth object itself.
+            assert entry["delete_operations"][0]["tool_or_endpoint"] == (
+                "delete_config_assignment"
+            )
+            assert entry["delete_operations"][0]["arguments"]["profile_type"] == resource
+            assert entry["delete_operations"][1]["method"] == "DELETE"
+            assert entry["operations"][1]["payload"]["config-assignment"][0][
+                "profile-type"
+            ] == resource
             assert entry["verified_rollback_available"] is True
 
 
@@ -1035,3 +1067,167 @@ def test_deterministic_ordering_across_new_object_types():
         assert entry["read_operation"] is not None
         assert entry["update_operations"] is not None
         assert entry["delete_operations"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Review-fix regression tests.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mode,opmode",
+    [
+        ("open", "open"),
+        ("wpa2_personal", "wpa2-aes"),
+        ("wpa3_sae", "wpa3-sae"),
+        ("enhanced_open", "enhanced-open"),
+    ],
+)
+def test_pure_security_modes_explicitly_set_wpa3_transition_false(mode, opmode):
+    """Finding #3: OPEN/WPA2_PERSONAL/WPA3_SAE/ENHANCED_OPEN must never
+    inherit a transition=True default; the mapper must set an explicit
+    `False` for every currently-supported pure mode."""
+    secrets = (
+        {"wlan:Corp": {"wpa_passphrase": "SuperSecretPass1"}}
+        if mode in {"wpa2_personal", "wpa3_sae"}
+        else None
+    )
+    wlan = _wlan_candidate(mode, opmode=opmode)
+    preview = new_adapter(FakeBackend(), secrets=secrets).preview([wlan])
+    entry = preview["operations"][0]
+    assert entry["status"] == "ready"
+    operation = entry["operations"][0]
+    assert operation["arguments"]["wpa3_transition"] is False
+
+
+def test_wpa3_transition_candidate_remains_blocked_never_ready_with_transition_true():
+    """Transition candidates stay blocked; they must never surface a
+    `wpa3_transition: True` optimistic write."""
+    wlan = _wlan_candidate("wpa3_transition_personal", opmode="wpa3-sae-transition")
+    preview = new_adapter(FakeBackend()).preview([wlan])
+    entry = preview["operations"][0]
+    assert entry["status"] == "blocked"
+    assert entry["operations"] == []
+
+
+def test_wlan_candidate_rejected_on_gateway_and_switch_personas():
+    """Finding #4: only AP-family personas may map WLAN candidates; Gateway
+    and Switch target contexts must return unsupported, never ready."""
+    wlan = _wlan_candidate("wpa2_personal")
+    for persona in ("MOBILITY_GW", "ACCESS_SWITCH"):
+        preview = new_adapter(
+            FakeBackend(),
+            persona=persona,
+            secrets={"wlan:Corp": {"wpa_passphrase": "SuperSecretPass1"}},
+        ).preview([wlan])
+        entry = preview["operations"][0]
+        assert entry["status"] == "unsupported", persona
+        assert "device-function" in entry["unsupported_warnings"][0]
+
+
+def test_wlan_candidate_still_ready_on_ap_family_personas():
+    wlan = _wlan_candidate("wpa2_personal")
+    for persona in ("CAMPUS_AP", "MICROBRANCH_AP"):
+        preview = new_adapter(
+            FakeBackend(),
+            persona=persona,
+            secrets={"wlan:Corp": {"wpa_passphrase": "SuperSecretPass1"}},
+        ).preview([wlan])
+        entry = preview["operations"][0]
+        assert entry["status"] == "ready", persona
+
+
+def test_server_group_radsec_dependency_is_unsupported_not_a_crash():
+    """Finding #5: an unsupported auth-server type dependency (e.g. radsec)
+    must return a precise unsupported action, never raise KeyError."""
+    group = candidate(
+        "server_group",
+        "radsec-sg",
+        payload={
+            "name": "radsec-sg",
+            "auth_server_entries": [{"name": "radsec1", "position": 1}],
+        },
+        dependencies=["auth_server:radsec:radsec1"],
+    )
+    radsec = candidate(
+        "auth_server",
+        "radsec:radsec1",
+        payload={"name": "radsec1", "server_type": "radsec", "host": "10.0.0.20"},
+    )
+    # Must not raise -- this is the precise regression for the KeyError risk.
+    preview = new_adapter(FakeBackend()).preview(
+        [group, radsec], selected={"server_group:radsec-sg"}
+    )
+    entry = next(
+        item for item in preview["operations"] if item["candidate"] == "server_group:radsec-sg"
+    )
+    assert entry["status"] == "unsupported"
+    assert "radsec" in entry["unsupported_warnings"][0]
+    assert "no verified New Central server-groups mapping" in entry["unsupported_warnings"][0]
+
+
+def test_config_assignment_operation_uses_collection_body_endpoint_for_all_shared_profiles():
+    """Finding #1: every SHARED profile type (auth-servers, aaa-profile,
+    dot1xauth, macauth, server-groups) must add a spec-correct collection-
+    body /network-config/v1alpha1/config-assignments write after
+    create/update, with unassign-before-delete rollback ordering."""
+    cases = [
+        (
+            candidate(
+                "auth_server",
+                "radius:rad1",
+                payload={"name": "rad1", "server_type": "radius", "host": "10.0.0.10"},
+            ),
+            "CAMPUS_AP",
+            "auth-servers",
+            "rad1",
+            {"auth_server:radius:rad1": {"shared_secret": "s3cret"}},
+        ),
+        (
+            candidate(
+                "aaa_profile",
+                "corp-aaa",
+                payload={"name": "corp-aaa", "default_user_role": "employee"},
+            ),
+            "MOBILITY_GW",
+            "aaa-profile",
+            "corp-aaa",
+            None,
+        ),
+        (
+            candidate("dot1x_auth_profile", "corp-dot1x", payload={"name": "corp-dot1x"}),
+            "ACCESS_SWITCH",
+            "dot1xauth",
+            "corp-dot1x",
+            None,
+        ),
+        (
+            candidate("mac_auth_profile", "corp-mac", payload={"name": "corp-mac"}),
+            "ACCESS_SWITCH",
+            "macauth",
+            "corp-mac",
+            None,
+        ),
+    ]
+    for object_candidate, persona, profile_type, profile_instance, secrets in cases:
+        preview = new_adapter(FakeBackend(), persona=persona, secrets=secrets).preview(
+            [object_candidate]
+        )
+        entry = preview["operations"][0]
+        assert entry["status"] == "ready", profile_type
+        assignment_op = entry["operations"][1]
+        assert assignment_op["tool_or_endpoint"] == "/network-config/v1alpha1/config-assignments"
+        assert assignment_op["method"] == "POST"
+        assignment_body = assignment_op["payload"]["config-assignment"][0]
+        assert assignment_body["profile-type"] == profile_type
+        assert assignment_body["scope-id"] == "100"
+        assert assignment_body["device-function"] == persona
+        assert assignment_body["profile-instance"] == profile_instance
+        # Update also carries the assignment (idempotent re-assert).
+        assert entry["update_operations"][1]["tool_or_endpoint"] == (
+            "/network-config/v1alpha1/config-assignments"
+        )
+        # Rollback order: unassign before deleting the object itself.
+        assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_config_assignment"
+        assert entry["delete_operations"][0]["arguments"]["profile_type"] == profile_type
+        assert len(entry["delete_operations"]) == 2

@@ -777,6 +777,7 @@ def build_underlay_ssid(
     vlan_ids: list[int] | None = None,
     mac_auth_server_group: str | None = "sys_central_nac",
     default_role: str | None = None,
+    wpa3_transition: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a bridge-mode (underlay) SSID and scope-map it.
@@ -792,6 +793,10 @@ def build_underlay_ssid(
         vlan_id / vlan_ids: Single VLAN or list of VLAN IDs.
         mac_auth_server_group: Central NAC server-group for MAC auth. None to skip.
         default_role: Override default MAC-auth role (omit to use SSID name).
+        wpa3_transition: Explicit opt-in for a WPA3-transition-mode SSID. Defaults to
+                False for every currently supported pure opmode (OPEN, WPA2_PERSONAL,
+                WPA3_SAE, ENHANCED_OPEN) -- never silently inherited as True. Only set
+                True when you specifically intend a WPA3-transition SSID.
         dry_run: Return payload without sending.
     """
     client = get_client()
@@ -804,6 +809,7 @@ def build_underlay_ssid(
         persona=persona,
         opmode=opmode,
         wpa_passphrase=passphrase,
+        wpa3_transition=wpa3_transition,
         dry_run=dry_run,
     )
     if dry_run:
@@ -890,6 +896,7 @@ def build_overlay_ssid(
     passphrase: str | None = None,
     mac_auth_server_group: str | None = None,
     policy_name: str | None = None,
+    wpa3_transition: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a tunneled (overlay/GRE) SSID via a gateway cluster.
@@ -905,6 +912,9 @@ def build_overlay_ssid(
         passphrase: Required for PSK opmodes — always ask, never generate.
         mac_auth_server_group: If set, creates an AAA profile and enables MAC auth.
         policy_name: Existing GW security policy to attach; auto-creates allow-all if omitted.
+        wpa3_transition: Explicit opt-in for a WPA3-transition-mode SSID. Defaults to
+                False for every currently supported pure opmode (OPEN, WPA2_PERSONAL,
+                WPA3_SAE, ENHANCED_OPEN) -- never silently inherited as True.
         dry_run: Return payload without sending.
     """
     client = get_client()
@@ -917,6 +927,7 @@ def build_overlay_ssid(
         cluster_scope_id=cluster_scope_id,
         opmode=opmode,
         wpa_passphrase=passphrase,
+        wpa3_transition=wpa3_transition,
         mac_auth_server_group=mac_auth_server_group,
         policy_name=policy_name,
         dry_run=dry_run,
@@ -951,9 +962,13 @@ def delete_overlay_ssid(
     if dry_run:
         return {"dry_run": True, "profile_name": profile_name, "endpoint": f"/network-config/v1alpha1/overlay-wlan/{profile_name}"}
 
+    endpoint = f"/network-config/v1alpha1/overlay-wlan/{profile_name}"
     client = get_client()
-    resp = client._request("DELETE", f"/network-config/v1alpha1/overlay-wlan/{profile_name}")
-    return resp_json(resp)
+    resp = client._request("DELETE", endpoint)
+    result = resp_json(resp)
+    if not resp.is_success:
+        result.setdefault("errors", []).append(compact_http_error(resp, endpoint))
+    return result
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -1568,7 +1583,12 @@ def create_role(
         f"/network-config/v1/roles/{name}",
         json=payload,
     )
-    return resp_json(resp)
+    result = resp_json(resp)
+    if not resp.is_success:
+        result.setdefault("errors", []).append(
+            compact_http_error(resp, f"/network-config/v1/roles/{name}")
+        )
+    return result
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -1599,7 +1619,12 @@ def update_role(
         f"/network-config/v1/roles/{name}",
         json=payload,
     )
-    return resp_json(resp)
+    result = resp_json(resp)
+    if not resp.is_success:
+        result.setdefault("errors", []).append(
+            compact_http_error(resp, f"/network-config/v1/roles/{name}")
+        )
+    return result
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1729,7 +1754,10 @@ def delete_config_assignment(
 
     client = get_client()
     resp = client._request("DELETE", endpoint)
-    return resp_json(resp)
+    result = resp_json(resp)
+    if not resp.is_success:
+        result.setdefault("errors", []).append(compact_http_error(resp, endpoint))
+    return result
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -1754,7 +1782,10 @@ def create_config_assignment(
 
     client = get_client()
     resp = client._request("POST", endpoint)
-    return resp_json(resp)
+    result = resp_json(resp)
+    if not resp.is_success:
+        result.setdefault("errors", []).append(compact_http_error(resp, endpoint))
+    return result
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1798,9 +1829,13 @@ def delete_role(
     if dry_run:
         return {"dry_run": True, "name": name}
 
+    endpoint = f"/network-config/v1alpha1/roles/{name}"
     client = get_client()
-    resp = client._request("DELETE", f"/network-config/v1alpha1/roles/{name}")
-    return resp_json(resp)
+    resp = client._request("DELETE", endpoint)
+    result = resp_json(resp)
+    if not resp.is_success:
+        result.setdefault("errors", []).append(compact_http_error(resp, endpoint))
+    return result
 
 
 # ── Device Fingerprinting ─────────────────────────────────────────────────────

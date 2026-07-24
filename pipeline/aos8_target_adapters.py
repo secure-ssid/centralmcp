@@ -614,6 +614,62 @@ class BaseCentralTargetAdapter:
         """Return the mapped action for orchestration and read-only verification."""
         return self._map_candidate(candidate)
 
+    def rollback(
+        self,
+        action: CandidateAction,
+        *,
+        dry_run: bool,
+        confirmation: bool,
+    ) -> dict[str, Any]:
+        """Invoke this candidate's verified ``delete_operations`` (reverse-order
+        rollback of a prior create/update). Mirrors ``execute()``'s write-gate
+        protections: a real (non-dry-run) rollback requires explicit
+        confirmation and platform writes enabled for this target type. Never
+        raises for a per-operation failure -- reported in ``errors`` instead --
+        so a caller performing a reverse-dependency-order sweep can decide
+        whether to stop after the first failure.
+        """
+        if not dry_run:
+            if not confirmation:
+                raise WriteGateError("Rollback requires explicit confirmation.")
+            if not self.writes_enabled(self.target_type):
+                raise WriteGateError(
+                    f"Platform writes are disabled for {self.target_type.value}."
+                )
+        if action.delete_operations is None:
+            return {
+                "candidate": action.key,
+                "status": "rollback_unavailable",
+                "results": [],
+                "errors": [
+                    "no verified delete/rollback operations exist for this mapping"
+                ],
+            }
+        if not action.delete_operations:
+            return {
+                "candidate": action.key,
+                "status": "rolled_back",
+                "results": [],
+                "errors": [],
+            }
+        operation_results: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for operation in action.delete_operations:
+            invoked = operation.with_dry_run(dry_run)
+            try:
+                value = self.write_invoker(invoked, confirmation=confirmation)
+                operation_results.append({"operation": invoked.preview_dict(), "result": value})
+            except Exception as exc:
+                errors.append(f"{operation.name}: {exc}")
+                break
+        status = "failed" if errors else ("dry-run" if dry_run else "rolled_back")
+        return {
+            "candidate": action.key,
+            "status": status,
+            "results": operation_results,
+            "errors": errors,
+        }
+
 
 # Per auth-server `type`, the allow-listed AOS8 source fields with a proven
 # New Central mapping, and the device-function persona families each type is
@@ -780,6 +836,63 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             dry_run_field=None,
             match_identifier=match_identifier,
         )
+
+    def _config_assignment_operations(
+        self, profile_type: str, profile_instance: str
+    ) -> tuple[Operation, Operation]:
+        """Build the SHARED-profile config-assignment create and unassign ops.
+
+        Every `object-type=SHARED` New Central library profile (roles,
+        server-groups, and -- per this fix -- auth-servers, aaa-profile,
+        dot1xauth, macauth) must be bound to a scope + device-function through
+        a separate `/network-config/v1alpha1/config-assignments` call; it is
+        never enough to just create the library object itself
+        (docs/aos8-migration-contract-matrix.md SS1.2). This mirrors the
+        collection-body form `_map_role`/`_map_server_group` already use
+        (SS2.1: the generated spec only declares `delete` on the
+        path-parameterized form; `post`/`get` require the collection body).
+
+        `profile_type` follows the same convention already relied on for
+        "roles" and "server-groups" -- the resource's own endpoint path
+        segment. This is a reasonable, locally-consistent inference, not an
+        independently confirmed literal enum member (the exact spec file is
+        not present in this checkout); it remains subject to the same
+        live-read verification SS2.1 already requires before any
+        config-assignment write is trusted.
+        """
+        assignment_payload = {
+            "config-assignment": [
+                {
+                    "scope-id": self.context.scope_id,
+                    "device-function": self.context.persona,
+                    "profile-type": profile_type,
+                    "profile-instance": profile_instance,
+                }
+            ]
+        }
+        assignment_operation = self._spec_endpoint_operation(
+            "POST",
+            "/network-config/v1alpha1/config-assignments",
+            assignment_payload,
+            provenance=(
+                "Official New Central Working with Library Profiles: POST "
+                "/network-config/v1alpha1/config-assignments with "
+                f"scope-id/device-function/profile-type={profile_type}/profile-instance"
+            ),
+        )
+        delete_assignment_operation = Operation(
+            invocation="tool",
+            name="delete_config_assignment",
+            arguments={
+                "scope_id": self.context.scope_id,
+                "device_function": self.context.persona,
+                "profile_type": profile_type,
+                "profile_instance": profile_instance,
+                "dry_run": True,
+            },
+            provenance="mcp_servers.config.delete_config_assignment",
+        )
+        return assignment_operation, delete_assignment_operation
 
     def _map_vlan(self, candidate: Mapping[str, Any]) -> CandidateAction:
         self._reject_unmapped(candidate)
@@ -1057,12 +1170,15 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             dry_run_field=None,
             match_identifier=name,
         )
+        assignment_operation, delete_assignment_operation = (
+            self._config_assignment_operations("auth-servers", name)
+        )
         return CandidateAction(
             key=key,
             candidate=candidate,
-            operations=[create_operation],
-            update_operations=[update_operation],
-            delete_operations=[delete_operation],
+            operations=[create_operation, assignment_operation],
+            update_operations=[update_operation, assignment_operation],
+            delete_operations=[delete_assignment_operation, delete_operation],
             read_operation=read_operation,
         )
 
@@ -1134,12 +1250,15 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             arguments={"name": name, "dry_run": True},
             provenance="mcp_servers.nac.delete_aaa_profile",
         )
+        assignment_operation, delete_assignment_operation = (
+            self._config_assignment_operations("aaa-profile", name)
+        )
         return CandidateAction(
             key=key,
             candidate=candidate,
-            operations=[create_operation],
-            update_operations=[update_operation],
-            delete_operations=[delete_operation],
+            operations=[create_operation, assignment_operation],
+            update_operations=[update_operation, assignment_operation],
+            delete_operations=[delete_assignment_operation, delete_operation],
             read_operation=Operation(
                 invocation="tool",
                 name="get_aaa_profile",
@@ -1195,12 +1314,15 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
         read_operation = self._spec_endpoint_read(
             endpoint, provenance=f"{resource}.json GET {endpoint}", match_identifier=name
         )
+        assignment_operation, delete_assignment_operation = (
+            self._config_assignment_operations(resource, name)
+        )
         return CandidateAction(
             key=key,
             candidate=candidate,
-            operations=[create_operation],
-            update_operations=[update_operation],
-            delete_operations=[delete_operation],
+            operations=[create_operation, assignment_operation],
+            update_operations=[update_operation, assignment_operation],
+            delete_operations=[delete_assignment_operation, delete_operation],
             read_operation=read_operation,
         )
 
@@ -1252,6 +1374,18 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                 "a verified New Central server-groups mapping"
             )
         server_type = next(iter(dependency_types))
+        if server_type not in _AUTH_SERVER_PERSONA_FAMILIES:
+            # e.g. radsec (and any other auth-server `type` not yet mapped by
+            # `_map_auth_server`) has no verified server-groups mapping either.
+            # Validate homogeneous-type support *before* the persona-family
+            # dict lookup below so an unsupported dependency type returns a
+            # precise unsupported CandidateAction instead of a raw KeyError.
+            raise AdapterError(
+                f"{key}: server-group references a {server_type!r} auth-server "
+                "type with no verified New Central server-groups mapping "
+                "(only RADIUS, LDAP, and TACACS member auth-servers are "
+                "supported today)"
+            )
         _require_persona_family(
             key,
             str(self.context.persona),
@@ -1330,37 +1464,8 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             provenance=f"auth-server-group.json GET {endpoint}",
             match_identifier=name,
         )
-        assignment_payload = {
-            "config-assignment": [
-                {
-                    "scope-id": self.context.scope_id,
-                    "device-function": self.context.persona,
-                    "profile-type": "server-groups",
-                    "profile-instance": name,
-                }
-            ]
-        }
-        assignment_operation = self._spec_endpoint_operation(
-            "POST",
-            "/network-config/v1alpha1/config-assignments",
-            assignment_payload,
-            provenance=(
-                "Official New Central Working with Library Profiles: POST "
-                "/network-config/v1alpha1/config-assignments with "
-                "scope-id/device-function/profile-type=server-groups/profile-instance"
-            ),
-        )
-        delete_assignment_operation = Operation(
-            invocation="tool",
-            name="delete_config_assignment",
-            arguments={
-                "scope_id": self.context.scope_id,
-                "device_function": self.context.persona,
-                "profile_type": "server-groups",
-                "profile_instance": name,
-                "dry_run": True,
-            },
-            provenance="mcp_servers.config.delete_config_assignment",
+        assignment_operation, delete_assignment_operation = (
+            self._config_assignment_operations("server-groups", name)
         )
         return CandidateAction(
             key=key,
@@ -1372,12 +1477,22 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
         )
 
     def _map_wlan(self, candidate: Mapping[str, Any]) -> CandidateAction:
+        key = _candidate_key(candidate)
+        # WLAN SSIDs are an AP-family device concept only (build_underlay_ssid /
+        # build_overlay_ssid scope-map to a CAMPUS_AP/MICROBRANCH_AP persona);
+        # Gateway/Switch target contexts have no verified WLAN-SSID mapping and
+        # must never receive a "ready" WLAN candidate.
+        _require_persona_family(
+            key,
+            str(self.context.persona),
+            {"ap"},
+            concept="a WLAN SSID (AP-family device-function concept)",
+        )
         unsupported = _unsupported_values(candidate)
         consumed = {"ssid_profile.opmode", "virtual_ap.forward_mode"}
         self._reject_unmapped(candidate, allowed=consumed)
         payload = dict(candidate.get("payload", {}))
         name = str(candidate["identifier"])
-        key = _candidate_key(candidate)
         if payload.get("essid", name) != name:
             raise AdapterError(
                 f"{key}: build SSID tools require profile name and ESSID to match"
@@ -1455,6 +1570,11 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                     "vlan_ids": [int(vlan)],
                     "mac_auth_server_group": None,
                     "default_role": None,
+                    # Explicit, never inherited: every mode reaching this branch
+                    # (open/wpa2_personal/wpa3_sae/enhanced_open) is a pure,
+                    # currently-supported mode. wpa3_transition_personal is
+                    # blocked earlier and never reaches here.
+                    "wpa3_transition": False,
                     "dry_run": True,
                 },
                 provenance=(
@@ -1493,6 +1613,8 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                     "passphrase": passphrase,
                     "mac_auth_server_group": None,
                     "policy_name": None,
+                    # Explicit, never inherited: see build_underlay_ssid above.
+                    "wpa3_transition": False,
                     "dry_run": True,
                 },
                 provenance=(

@@ -37,7 +37,7 @@ def _build_ssid_body(
     rf_band: str = "BAND_ALL",
     hide_ssid: bool = False,
     max_clients: int = 1024,
-    wpa3_transition: bool = True,
+    wpa3_transition: bool = False,
     wpa_passphrase: str | None = None,
     client_isolation: bool = False,
     dmo_enable: bool = True,
@@ -57,6 +57,13 @@ def _build_ssid_body(
     stale `WPA2_PSK` token will silently get an open/no-passphrase body from
     this function, exactly like any other unrecognized opmode; it is never
     treated as a personal-security alias.
+
+    `wpa3_transition` defaults to False: every currently supported/verified
+    pure security mode (OPEN, WPA2_PERSONAL, WPA3_SAE, ENHANCED_OPEN) must
+    never silently inherit a WPA3-transition-mode SSID. Callers building a
+    real WPA3-transition SSID must opt in explicitly and are responsible for
+    the live-validation caveat documented in
+    docs/aos8-migration-contract-matrix.md §6.2.
     """
     body: dict[str, Any] = {
         "ssid": ssid_name,
@@ -154,7 +161,7 @@ def build_underlay_ssid(
     rf_band: str = "BAND_ALL",
     hide_ssid: bool = False,
     max_clients: int = 1024,
-    wpa3_transition: bool = True,
+    wpa3_transition: bool = False,
     wpa_passphrase: str | None = None,
     client_isolation: bool = False,
     dmo_enable: bool = True,
@@ -282,7 +289,7 @@ def build_overlay_ssid(
     opmode: str = "OPEN",
     rf_band: str = "BAND_ALL",
     wpa_passphrase: str | None = None,
-    wpa3_transition: bool = True,
+    wpa3_transition: bool = False,
     mac_auth_server_group: str | None = None,
     policy_name: str | None = None,
     dry_run: bool = False,

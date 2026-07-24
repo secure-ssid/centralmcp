@@ -51,7 +51,10 @@ _PRESENCE_ONLY_BOOLEAN_METADATA_KEYS = {
     "psk_hexkey_present",
 }
 _TERMINAL_SUCCESS = {"applied", "skipped"}
-_TERMINAL = {*_TERMINAL_SUCCESS, "unsupported"}
+# "rolled_back" is terminal (no further apply attempts) but is never a
+# _TERMINAL_SUCCESS state: a rolled-back candidate no longer exists on the
+# target and must not satisfy a dependent candidate's dependency check.
+_TERMINAL = {*_TERMINAL_SUCCESS, "unsupported", "rolled_back"}
 
 
 class MigrationRunError(ValueError):
@@ -446,11 +449,14 @@ def _status_counts(run: Mapping[str, Any]) -> dict[str, int]:
 def _refresh_run_status(run: dict[str, Any]) -> None:
     statuses = [str(entry.get("status", "pending")) for entry in run["candidates"]]
     if statuses and all(status in _TERMINAL for status in statuses):
-        run["status"] = (
-            "completed_with_issues"
-            if "unsupported" in statuses
-            else "completed"
-        )
+        if "rolled_back" in statuses:
+            run["status"] = "rolled_back"
+        else:
+            run["status"] = (
+                "completed_with_issues"
+                if "unsupported" in statuses
+                else "completed"
+            )
     elif "failed" in statuses:
         run["status"] = (
             "partial" if any(status in _TERMINAL_SUCCESS for status in statuses) else "failed"
@@ -476,6 +482,8 @@ def _run_summary(run: Mapping[str, Any]) -> dict[str, Any]:
         "dry_run_attempted_at": run.get("dry_run_attempted_at"),
         "last_apply_at": run.get("last_apply_at"),
         "last_verification_at": run.get("last_verification_at"),
+        "rollback_dry_run_attempted_at": run.get("rollback_dry_run_attempted_at"),
+        "last_rollback_at": run.get("last_rollback_at"),
         "checkpoint_and_rollback": run.get("checkpoint_and_rollback"),
     }
 
@@ -493,11 +501,13 @@ def _entry_summary(entry: Mapping[str, Any], *, include_details: bool) -> dict[s
         "required_secret_names": entry.get("required_secret_names", []),
         "last_error": entry.get("last_error"),
         "dry_run_ok": entry.get("dry_run_ok", False),
+        "rollback_dry_run_ok": entry.get("rollback_dry_run_ok", False),
         "verification": entry.get("verification"),
     }
     if include_details:
         out["source_candidate"] = entry.get("candidate")
         out["last_result"] = entry.get("last_result")
+        out["last_rollback_result"] = entry.get("last_rollback_result")
         out["attempt_history"] = entry.get("attempt_history", [])
     return out
 
@@ -866,6 +876,20 @@ class AOS8MigrationOrchestrator:
                     },
                 )
                 result_status = str(candidate_result.get("status", "failed"))
+                # Record whether this candidate was freshly created ("absent")
+                # or an update to a pre-existing target object ("update") so
+                # rollback() never deletes an object this migration did not
+                # create (see _rollback_locked()).
+                candidate_operation = next(
+                    (
+                        item
+                        for item in result.get("operations", [])
+                        if item.get("candidate") == key
+                    ),
+                    None,
+                )
+                if candidate_operation is not None:
+                    entry["conflict"] = candidate_operation.get("conflict")
                 if dry_run and result_status == "dry-run":
                     entry["dry_run_ok"] = True
                     persisted_status = "pending"
@@ -946,6 +970,135 @@ class AOS8MigrationOrchestrator:
         entry["attempt_history"] = history[-MAX_HISTORY_ITEMS:]
         _refresh_run_status(run)
         self.store.save(run)
+
+    def rollback(
+        self,
+        run_id: str,
+        *,
+        dry_run: bool = True,
+        confirmation: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Roll back applied candidates in reverse dependency order.
+
+        Gated exactly like ``apply()``: a real (non-dry-run) rollback
+        requires a prior successful rollback dry-run and explicit
+        confirmation; per-candidate writes additionally require platform
+        writes to be enabled (enforced by ``adapter.rollback()``). Only
+        candidates with a persisted ``status == "applied"`` are considered;
+        candidates that updated a pre-existing target object (``conflict ==
+        "update"``) are never deleted -- rollback only removes objects this
+        migration itself created.
+
+        No original create-time secrets are required or accepted here:
+        ``delete_operations`` never reference the create/update secret value
+        itself (mirroring ``verify()``, this uses placeholder secret inputs
+        purely so the adapter can still resolve the candidate's mapping to
+        obtain its verified delete operations).
+        """
+        with self.store.lock_run(run_id):
+            return self._rollback_locked(
+                run_id,
+                dry_run=dry_run,
+                confirmation=confirmation,
+                limit=limit,
+                offset=offset,
+            )
+
+    def _rollback_locked(
+        self,
+        run_id: str,
+        *,
+        dry_run: bool,
+        confirmation: bool,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        run = self.store.load(run_id)
+        if not dry_run and not confirmation:
+            raise WriteGateError("Real rollback requires confirmation=True.")
+        if not dry_run and not run.get("rollback_dry_run_attempted_at"):
+            raise WriteGateError(
+                "Run aos8_rollback_migration_run with dry_run=True before "
+                "rolling back for real."
+            )
+        candidates = [entry["candidate"] for entry in run["candidates"]]
+        adapter = self._adapter(run["target"], candidates, placeholders=True)
+        secret_values: tuple[str, ...] = ()
+        rollback_results: list[dict[str, Any]] = []
+        # Reverse of the dependency-ordered apply sequence: candidates that
+        # depended on others are rolled back first, so a dependency is never
+        # deleted while something that relied on it still exists downstream.
+        for entry in reversed(run["candidates"]):
+            key = str(entry.get("key"))
+            status = str(entry.get("status", "pending"))
+            if status != "applied":
+                rollback_results.append(
+                    {
+                        "candidate": key,
+                        "status": "skipped",
+                        "results": [],
+                        "errors": [],
+                        "reason": (
+                            f"candidate status is {status!r}; nothing was "
+                            "applied to roll back"
+                        ),
+                    }
+                )
+                continue
+            if entry.get("conflict") == "update":
+                rollback_results.append(
+                    {
+                        "candidate": key,
+                        "status": "rollback_unavailable",
+                        "results": [],
+                        "errors": [],
+                        "reason": (
+                            "this candidate updated a pre-existing target "
+                            "object; rollback never deletes an object this "
+                            "migration did not create"
+                        ),
+                    }
+                )
+                continue
+            try:
+                action = adapter.candidate_action(entry["candidate"])
+                outcome = adapter.rollback(
+                    action, dry_run=dry_run, confirmation=confirmation
+                )
+            except Exception as exc:
+                outcome = {
+                    "candidate": key,
+                    "status": "failed",
+                    "results": [],
+                    "errors": [str(exc)],
+                }
+            safe_outcome = _sanitize(outcome, secret_values=secret_values)
+            rollback_results.append(safe_outcome)
+            if dry_run:
+                if outcome.get("status") == "dry-run":
+                    entry["rollback_dry_run_ok"] = True
+            elif outcome.get("status") == "rolled_back":
+                entry["status"] = "rolled_back"
+                entry["last_rollback_result"] = safe_outcome
+            else:
+                entry["last_rollback_result"] = safe_outcome
+        if dry_run:
+            run["rollback_dry_run_attempted_at"] = _now()
+        else:
+            run["last_rollback_at"] = _now()
+        _refresh_run_status(run)
+        self.store.save(run)
+        response = self.get_run(
+            run_id,
+            limit=limit,
+            offset=offset,
+            include_details=True,
+        )
+        response["dry_run"] = dry_run
+        response["rollback_results"] = rollback_results[:MAX_RESULT_ITEMS]
+        return _sanitize(response, secret_values=secret_values)
 
     def verify(
         self,
@@ -1056,10 +1209,12 @@ class AOS8MigrationOrchestrator:
                 "target_state": safe_target,
                 "field_comparison": [],
             }
-        expected = _expected_fields(action, entry["candidate"])
+        expected, secret_fields = _expected_fields(action, entry["candidate"])
         target_fields = _flatten_fields(safe_target)
         comparisons: list[dict[str, Any]] = []
         mismatches: list[str] = []
+        verified_fields: list[str] = []
+        unverifiable_fields: list[str] = []
         for field, expected_value in expected.items():
             aliases = _field_aliases(field)
             matches = [
@@ -1068,6 +1223,19 @@ class AOS8MigrationOrchestrator:
                 if alias in target_fields
             ]
             if not matches:
+                # Explicitly reported, not silently skipped: the target read
+                # simply did not return this field (e.g. it is write-only, or
+                # the read shape differs from the write shape).
+                comparisons.append(
+                    {
+                        "field": field,
+                        "expected": expected_value,
+                        "actual": None,
+                        "status": "unverifiable",
+                        "reason": "field was not present in the target read response",
+                    }
+                )
+                unverifiable_fields.append(field)
                 continue
             matched = any(_comparable_equal(expected_value, actual) for actual in matches)
             comparisons.append(
@@ -1078,19 +1246,63 @@ class AOS8MigrationOrchestrator:
                     "status": "match" if matched else "mismatch",
                 }
             )
-            if not matched:
+            if matched:
+                verified_fields.append(field)
+            else:
                 mismatches.append(field)
+        for field in sorted(secret_fields):
+            # Secrets are never returned by a GET -- report as unverifiable,
+            # never as a mismatch (which would be a false negative for every
+            # secret-bearing candidate).
+            comparisons.append(
+                {
+                    "field": field,
+                    "expected": "***",
+                    "actual": None,
+                    "status": "unverifiable",
+                    "reason": "secret field is not returned by target reads and cannot be verified",
+                }
+            )
+            unverifiable_fields.append(field)
+
+        comparable_fields = [f for f in expected if f not in secret_fields]
+        # "identifier" is the identity field already confirmed by the
+        # `_contains_identifier` gate above; it must not, by itself, count
+        # as a verified *payload* field for the purposes of this decision --
+        # otherwise a candidate with real payload fields that are all
+        # unverifiable would still be reported "verified" on identity alone.
+        payload_fields = [f for f in comparable_fields if f != "identifier"]
+        payload_verified = [f for f in verified_fields if f != "identifier"]
+        if mismatches:
+            verification_status = "mismatch"
+            reason = f"Directly comparable fields differed: {sorted(mismatches)}"
+        elif payload_fields and not payload_verified:
+            # Identity matched, but every non-secret, non-identity expected
+            # field was unverifiable (e.g. absent from the read response) --
+            # do not claim success on identity alone when payload fields
+            # exist.
+            verification_status = "partially_verified"
+            reason = (
+                "Candidate identity was present, but no non-secret payload "
+                f"field could be confirmed against the target read response: "
+                f"{sorted(unverifiable_fields)}"
+            )
+        else:
+            verification_status = "verified"
+            reason = (
+                "Candidate identity was present; directly comparable returned "
+                "fields matched."
+                + (
+                    f" Unverifiable fields (not returned by the read, or secret "
+                    f"and never returned): {sorted(unverifiable_fields)}."
+                    if unverifiable_fields
+                    else " Unreturned fields were not asserted."
+                )
+            )
         return {
             **base,
-            "verification_status": "mismatch" if mismatches else "verified",
-            "reason": (
-                f"Directly comparable fields differed: {sorted(mismatches)}"
-                if mismatches
-                else (
-                    "Candidate identity was present; directly comparable returned "
-                    "fields matched. Unreturned fields were not asserted."
-                )
-            ),
+            "verification_status": verification_status,
+            "reason": reason,
             "target_state": safe_target,
             "field_comparison": comparisons,
         }
@@ -1153,24 +1365,68 @@ def _flatten_fields(value: Any, out: dict[str, Any] | None = None) -> dict[str, 
     return fields
 
 
-def _expected_fields(action: Any, candidate: Mapping[str, Any]) -> dict[str, Any]:
-    expected: dict[str, Any] = {"identifier": candidate.get("identifier")}
+_VERIFICATION_IGNORED_KEYS = {
+    "dry_run",
+    "scope_id",
+    "persona",
+    "cluster_scope_id",
+    "cluster_name",
+    "gateway_scope_id",
+    "gateway_name",
+    # `invocation="endpoint"` Operation.arguments wrapper keys -- never a
+    # verifiable target field in their own right. Only relevant when an
+    # operation has no `.payload` and we fall back to raw `.arguments`
+    # (tool-invocation operations); endpoint operations always have
+    # `.payload` populated and never reach this fallback.
+    "method",
+    "endpoint",
+    "data",
+}
+
+
+def _expected_fields(
+    action: Any, candidate: Mapping[str, Any]
+) -> tuple[dict[str, Any], set[str]]:
+    """Return (expected non-secret fields, secret field names) for `action`.
+
+    Sourced from `Operation.payload` when the primary operation is an
+    `invocation="endpoint"` write (the exact request body New Central will
+    receive) -- never from `method`/`endpoint`/the wrapper `data` argument.
+    Tool-invocation operations have no `.payload`; their top-level
+    `.arguments` (minus admin/context keys) are used instead. Secret fields
+    (matched by `Operation.sensitive_argument_fields` or `_is_sensitive_key`)
+    are separated out and never compared -- GET responses omit secret
+    material, so they are reported as unverifiable rather than mismatched.
+    """
+    # Use the qualified `match_identifier` (the short, unqualified name New
+    # Central actually returns, e.g. "ldap1") rather than the raw candidate
+    # identifier (e.g. "ldap:ldap1", qualified by auth-server type) --
+    # otherwise this synthetic field would never match a real target read
+    # even when the true object identity check above already succeeded.
+    read_operation = getattr(action, "read_operation", None)
+    qualified_identifier = (
+        getattr(read_operation, "match_identifier", None)
+        if read_operation is not None
+        else None
+    ) or candidate.get("identifier")
+    raw: dict[str, Any] = {"identifier": qualified_identifier}
+    secret_fields: set[str] = set()
     if action.operations:
-        for key, value in action.operations[0].arguments.items():
+        primary = action.operations[0]
+        sensitive = {_normalized_key(field) for field in primary.sensitive_argument_fields}
+        source = primary.payload if primary.payload is not None else primary.arguments
+        for key, value in source.items():
             normalized = _normalized_key(key)
-            if normalized in {
-                "dry_run",
-                "scope_id",
-                "persona",
-                "cluster_scope_id",
-                "cluster_name",
-                "gateway_scope_id",
-                "gateway_name",
-            } or _is_sensitive_key(normalized):
+            if normalized in _VERIFICATION_IGNORED_KEYS:
                 continue
-            if value not in (None, "", [], {}):
-                expected[normalized] = _sanitize(value)
-    return expected
+            if normalized in sensitive or _is_sensitive_key(normalized):
+                secret_fields.add(normalized)
+                continue
+            if value in (None, "", [], {}):
+                continue
+            raw[normalized] = value
+    expected = {key: _sanitize(value) for key, value in _flatten_fields(raw).items()}
+    return expected, secret_fields
 
 
 def _field_aliases(field: str) -> set[str]:
