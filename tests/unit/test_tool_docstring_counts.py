@@ -2,10 +2,14 @@ import ast
 import re
 from pathlib import Path
 
+from mcp_servers.openapi_gen import manifest_operation_count
 from scripts import ingest_tools
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL_COUNT_RE = re.compile(r"\((\d+) tools\)")
+GENERATED_TOOL_COUNT_RE = re.compile(
+    r"\((?P<curated>\d+) curated \+ (?P<generated>\d+) generated OpenAPI tools\)"
+)
 PUBLIC_TOOL_COUNT_RE = re.compile(
     r"(?P<core>\d+) core tools\s*/\s+"
     r"(?P<read_only>\d+) read-only optional starters\s*/\s+"
@@ -32,11 +36,28 @@ def _registered_tool_count(tree: ast.Module) -> int:
 
 def test_module_docstring_tool_counts_match_registered_tools():
     counted_modules = []
+    generated_modules = []
 
     for path in sorted((REPO_ROOT / "mcp_servers").glob("*.py")):
         tree = ast.parse(path.read_text())
         docstring = ast.get_docstring(tree) or ""
         first_line = docstring.splitlines()[0] if docstring else ""
+
+        # Modules that register generated OpenAPI tools declare the split count
+        # "(C curated + G generated OpenAPI tools)". Only the C curated tools use
+        # @mcp.tool decorators; the G generated tools come from the committed
+        # manifest, so the AST decorator count must equal C and G must equal the
+        # manifest operation count for the module's platform (module stem).
+        gen_match = GENERATED_TOOL_COUNT_RE.search(first_line)
+        if gen_match is not None:
+            generated_modules.append(path.name)
+            curated = int(gen_match.group("curated"))
+            generated = int(gen_match.group("generated"))
+            assert _registered_tool_count(tree) == curated, path.relative_to(REPO_ROOT)
+            platform = path.stem
+            assert manifest_operation_count(platform) == generated, path.relative_to(REPO_ROOT)
+            continue
+
         match = TOOL_COUNT_RE.search(first_line)
         if match is None:
             continue
@@ -46,6 +67,7 @@ def test_module_docstring_tool_counts_match_registered_tools():
         assert _registered_tool_count(tree) == expected, path.relative_to(REPO_ROOT)
 
     assert counted_modules
+    assert "mist.py" in generated_modules
 
 
 def test_public_tool_count_claims_match_registered_catalog(monkeypatch):

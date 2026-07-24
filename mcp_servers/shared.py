@@ -1,5 +1,7 @@
 """Shared clients, helpers, and constants for all MCP servers."""
 import asyncio
+import base64
+import hashlib
 import hmac
 import ipaddress
 import logging
@@ -31,6 +33,13 @@ READ_ONLY = ToolAnnotations(
 )
 
 DIAGNOSTIC = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+
+WRITE = ToolAnnotations(
     readOnlyHint=False,
     destructiveHint=False,
     idempotentHint=False,
@@ -768,6 +777,44 @@ def response_payload(resp: Any) -> Any:
         return resp.json()
     except ValueError:
         return resp.text
+
+
+def bounded_response_payload(resp: Any, *, max_bytes: int = 131_072) -> Any:
+    """Return JSON, bounded text, or bounded base64 metadata for an HTTP response."""
+    try:
+        return resp.json()
+    except (TypeError, ValueError):
+        pass
+
+    raw = getattr(resp, "content", None)
+    if raw is None:
+        raw = str(getattr(resp, "text", "")).encode("utf-8", errors="replace")
+    elif not isinstance(raw, bytes):
+        raw = bytes(raw)
+
+    headers = getattr(resp, "headers", {}) or {}
+    content_type = str(headers.get("content-type", "")).split(";", 1)[0].strip().lower()
+    size = len(raw)
+    preview = raw[:max_bytes]
+    truncated = size > len(preview)
+    if content_type.startswith("text/") or content_type in {
+        "application/xml",
+        "application/yaml",
+        "application/x-yaml",
+    }:
+        return {
+            "content_type": content_type or "text/plain",
+            "size_bytes": size,
+            "truncated": truncated,
+            "text": preview.decode("utf-8", errors="replace"),
+        }
+    return {
+        "content_type": content_type or "application/octet-stream",
+        "size_bytes": size,
+        "truncated": truncated,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "base64": base64.b64encode(preview).decode("ascii"),
+    }
 
 
 def safe_api_path(path: str, allowed_prefixes: tuple[str, ...]) -> str:

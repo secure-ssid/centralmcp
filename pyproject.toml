@@ -91,6 +91,9 @@ py-modules = ["run_pipeline", "run_ssid"]
 [tool.setuptools.packages.find]
 include = ["pipeline*", "mcp_servers*"]
 
+[tool.setuptools.package-data]
+"mcp_servers.openapi_gen" = ["manifests/*.json", "overrides/*.json"]
+
 [tool.ruff]
 line-length = 100
 

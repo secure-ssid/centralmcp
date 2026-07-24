@@ -165,7 +165,7 @@ final scores:
 released documentation sources. The 5,419 OpenAPI vector records from the
 previous build were intentionally removed because structured API lookup is
 authoritative. The rebuilt SQLite index contains 239 specs, 3,465 endpoints,
-10,297 schemas, and 57,131 fields. The router index contains 270 core tools / 392 read-only optional starters / 448 read-write optional starters.
+10,297 schemas, and 57,131 fields. The router index contains 270 core tools / 916 read-only optional starters / 1498 read-write optional starters.
 Minimal mode keeps this catalog behind the three-tool discovery/dispatch
 surface. 18/20 eval questions hit at rank 1.
 

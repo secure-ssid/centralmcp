@@ -1,0 +1,12 @@
+{
+  "_doc": [
+    "Capability overrides for the generated Mist tools. Keys are operation keys",
+    "('METHOD /path'); values are one of 'read', 'write', 'destructive'. Use this",
+    "to reclassify POST diagnostics that are effectively read-only, or GETs that",
+    "have side effects. Add entries here with a short justification rather than",
+    "editing the generated manifest directly."
+  ],
+  "capabilities": {
+    "GET /api/v1/installer/sites/{site_name}/optimize": "write"
+  }
+}

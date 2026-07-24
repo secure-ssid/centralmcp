@@ -17,9 +17,10 @@ It is built around direct REST calls with `httpx`.
 
 ## Version 0.3.0 highlights
 
-- **448-tool guarded catalog:** 270 core tools, 392 tools in the all-product
-  read-only catalog, or 448 when guarded optional writes are intentionally
-  enabled.
+- **1,498-tool guarded catalog:** 270 core tools, 916 tools in the all-product
+  read-only catalog, or 1,498 when guarded optional writes are intentionally
+  enabled. The optional Mist backend contributes 1,050 generated OpenAPI tools
+  from its committed manifest (see `mcp_servers/openapi_gen`).
 - **Migration-ready AOS8:** UIDARUBA/X-CSRF sessions, structured exports and
   parsing, Classic/New Central candidates, compatibility warnings, diffs, and
   post-migration verification plans.
@@ -105,7 +106,7 @@ EdgeConnect link integrity diagnostics.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 270 core tools / 392 read-only optional starters / 448 read-write optional starters indexed |
+| MCP tools | 270 core tools / 916 read-only optional starters / 1498 read-write optional starters indexed |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |

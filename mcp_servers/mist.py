@@ -1,4 +1,4 @@
-"""MCP server — optional Juniper Mist backend (low-surface starter tools, 26 tools).
+"""MCP server — optional Juniper Mist backend (26 curated + 1050 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=mist
@@ -21,6 +21,7 @@ any remaining live-instance verification caveats.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 from urllib.parse import quote
@@ -32,6 +33,7 @@ from mcp_servers.shared import (
     DESTRUCTIVE,
     IDEMPOTENT_WRITE,
     READ_ONLY,
+    bounded_response_payload,
     bound_collection_response,
     clamp_limit,
     platform_write_blocked as _platform_write_blocked,
@@ -1260,6 +1262,160 @@ async def mist_set_marvis_settings(
         dry_run=dry_run,
         confirm=confirm,
     )
+
+
+# ---------------------------------------------------------------------------
+# Generated OpenAPI tools (see mcp_servers/openapi_gen). The committed manifest
+# at mcp_servers/openapi_gen/manifests/mist.json is derived from the MIT-licensed
+# mistsys OpenAPI spec and exposes every documented /api/v1 operation as a
+# directly-callable, typed FastMCP tool. Registration is guarded by
+# CENTRALMCP_MIST_GENERATED_TOOLS and defaults ON when the manifest exists.
+# ---------------------------------------------------------------------------
+
+_MIST_ALLOWED_PREFIXES = ("/api/v1/",)
+
+
+def _mist_prepare(path: str) -> tuple[str | None, str | None, str | None]:
+    """Return (host, token, error) after validating config and a runtime path.
+
+    The generated runtime already URL-escapes path values and rejects traversal
+    segments, so we validate the prefix/host here without re-quoting (which would
+    double-encode the escaped segments).
+    """
+    host, token = _mist_config()
+    if not host or not token:
+        return None, None, "Mist not configured. Set MIST_HOST and MIST_API_TOKEN."
+    if not path.startswith(_MIST_ALLOWED_PREFIXES):
+        return None, None, "Generated path must begin with /api/v1/."
+    try:
+        host = validate_product_base_url(host, product="Mist")
+    except ValueError as exc:
+        return None, None, str(exc)
+    return host, token, None
+
+
+def _mist_auth_headers(token: str, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Build request headers, injecting the trusted auth header last."""
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if extra:
+        # Non-auth header params from the model; auth params are filtered by the
+        # runtime, but strip any that would shadow the credential just in case.
+        for key, value in extra.items():
+            if key.strip().lower() in {"authorization", "cookie"}:
+                continue
+            headers[key] = value
+    headers["Authorization"] = "Token " + token
+    return headers
+
+
+async def _mist_generated_read(
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    """Read executor for generated Mist tools (GET/HEAD, bounded, direct)."""
+    host, token, error = _mist_prepare(path)
+    if error:
+        return {"error": error}
+    url = f"{host}{path}"
+    req_headers = _mist_auth_headers(token, headers)
+    clean_params = {k: v for k, v in query.items() if v is not None}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(method, url, headers=req_headers, params=clean_params)
+        payload = bound_collection_response(
+            bounded_response_payload(resp), limit=clamp_limit(None), offset=0
+        )
+        return {"status_code": resp.status_code, "data": payload, "url": url}
+    except httpx.HTTPError as exc:
+        return {"error": str(exc), "url": url}
+
+
+async def _mist_generated_write(
+    name: str,
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+    body: Any,
+    content_type: str,
+    dry_run: bool,
+    confirm: bool,
+) -> dict[str, Any]:
+    """Write executor for generated Mist tools (gate + dry-run/confirm)."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked(name)
+    host, token, error = _mist_prepare(path)
+    if error:
+        return {"error": error}
+    url = f"{host}{path}"
+    clean_params = {k: v for k, v in query.items() if v is not None}
+    preview: dict[str, Any] = {
+        "method": method,
+        "path": path,
+        "url": url,
+        "params": redact_sensitive(clean_params),
+        "json": redact_sensitive(body),
+        "content_type": content_type,
+    }
+    if dry_run:
+        return {"dry_run": True, **preview, "execute_hint": _EXECUTE_HINT}
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True,
+            **preview,
+        }
+    req_headers = _mist_auth_headers(token, headers)
+    kwargs: dict[str, Any] = {"headers": req_headers, "params": clean_params}
+    if body is not None:
+        if content_type == "application/json":
+            kwargs["json"] = body
+        elif content_type == "multipart/form-data":
+            if not isinstance(body, dict):
+                return {"error": "multipart/form-data body must be an object of form fields"}
+            files: dict[str, tuple[Any, ...]] = {}
+            for key, value in body.items():
+                if isinstance(value, bytes):
+                    files[str(key)] = (str(key), value, "application/octet-stream")
+                elif isinstance(value, (dict, list)):
+                    files[str(key)] = (None, json.dumps(value), "application/json")
+                else:
+                    files[str(key)] = (None, "" if value is None else str(value))
+            kwargs["files"] = files
+        elif content_type == "application/x-www-form-urlencoded":
+            if not isinstance(body, dict):
+                return {"error": "form-urlencoded body must be an object of form fields"}
+            kwargs["data"] = body
+        else:
+            kwargs["content"] = body if isinstance(body, (bytes, str)) else str(body)
+            req_headers.setdefault("Content-Type", content_type)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(method, url, **kwargs)
+        return {
+            "status_code": resp.status_code,
+            "data": redact_sensitive(bounded_response_payload(resp)),
+            "url": url,
+        }
+    except httpx.HTTPError as exc:
+        return {"error": str(exc), "url": url}
+
+
+def _register_generated_mist_tools() -> list[str]:
+    """Register generated Mist tools at import time, failing on manifest errors."""
+    from mcp_servers.openapi_gen.runtime import register_generated_tools
+
+    return register_generated_tools(
+        mcp,
+        "mist",
+        read_executor=_mist_generated_read,
+        write_executor=_mist_generated_write,
+    )
+
+
+GENERATED_MIST_TOOLS = _register_generated_mist_tools()
 
 
 if __name__ == "__main__":
