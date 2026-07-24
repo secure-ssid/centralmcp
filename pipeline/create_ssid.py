@@ -48,8 +48,15 @@ def _build_ssid_body(
 ) -> dict[str, Any]:
     """Return the full WLAN SSID POST body for an underlay SSID.
 
-    wpa_passphrase is required when opmode is WPA3_SAE or WPA2_PSK.
+    wpa_passphrase is required when opmode is WPA3_SAE or WPA2_PERSONAL.
     It maps to personal-security.wpa-passphrase in the API body.
+
+    Note: the New Central WLAN security schema (`wlan.json`,
+    `ArubaWlanSecurity_WlanSecurityConfig.opmode`) has no `WPA2_PSK` value —
+    the correct enum member is `WPA2_PERSONAL`. Any caller still passing the
+    stale `WPA2_PSK` token will silently get an open/no-passphrase body from
+    this function, exactly like any other unrecognized opmode; it is never
+    treated as a personal-security alias.
     """
     body: dict[str, Any] = {
         "ssid": ssid_name,
@@ -122,7 +129,7 @@ def _build_ssid_body(
         "out-of-service": "NONE",
         "client-isolation": client_isolation,
     }
-    if wpa_passphrase and opmode in ("WPA3_SAE", "WPA2_PSK"):
+    if wpa_passphrase and opmode in ("WPA3_SAE", "WPA2_PERSONAL"):
         body["personal-security"] = {
             "passphrase-format": "STRING",
             "wpa-passphrase": wpa_passphrase,

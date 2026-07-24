@@ -2095,6 +2095,7 @@ def _aos8_migration_read_invoker(operation: Any) -> Any:
     return tool(**dict(operation.arguments))
 
 
+
 def _aos8_migration_write_invoker(
     operation: Any,
     *,
@@ -2140,6 +2141,12 @@ def _aos8_migration_write_invoker(
         "create_role": config_tools.create_role,
         "create_vlan": config_tools.create_vlan,
         "update_role": config_tools.update_role,
+        "delete_auth_server": nac_tools.delete_auth_server,
+        "delete_aaa_profile": nac_tools.delete_aaa_profile,
+        "delete_role": config_tools.delete_role,
+        "delete_config_assignment": config_tools.delete_config_assignment,
+        "delete_underlay_ssid": config_tools.delete_underlay_ssid,
+        "delete_overlay_ssid": config_tools.delete_overlay_ssid,
     }
     tool = tools.get(operation.name)
     if tool is None:

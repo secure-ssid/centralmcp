@@ -58,8 +58,17 @@ def test_build_ssid_body_wpa3_passphrase():
 
 
 def test_build_ssid_body_wpa2_passphrase():
-    body = _build_ssid_body("X", ["1"], opmode="WPA2_PSK", wpa_passphrase="mypassword")
+    body = _build_ssid_body("X", ["1"], opmode="WPA2_PERSONAL", wpa_passphrase="mypassword")
     assert "personal-security" in body
+
+
+def test_build_ssid_body_rejects_stale_wpa2_psk_enum():
+    """`WPA2_PSK` is not a valid New Central opmode (the real enum member is
+    `WPA2_PERSONAL` — see docs/aos8-migration-contract-matrix.md §4). A caller
+    that still passes the stale token must never get personal-security
+    attached; treat it exactly like any other unrecognized opmode."""
+    body = _build_ssid_body("X", ["1"], opmode="WPA2_PSK", wpa_passphrase="mypassword")
+    assert "personal-security" not in body
 
 
 def test_build_ssid_body_no_passphrase_for_open():

@@ -74,6 +74,14 @@ class Operation:
         for field_name in self.sensitive_argument_fields:
             if field_name in arguments:
                 arguments[field_name] = "***"
+        # `invocation="endpoint"` operations duplicate the write body under
+        # `arguments["data"]` (consumed by `_aos8_migration_write_invoker`)
+        # in addition to the top-level `payload` field below -- both copies
+        # must be redacted, or a sensitive nested field (e.g.
+        # `shared-secret-config`, `admin-password`) leaks through the
+        # unmasked `arguments["data"]` copy even though `payload` looks safe.
+        if isinstance(arguments.get("data"), Mapping):
+            arguments["data"] = _mask_mapping(arguments["data"], self.sensitive_argument_fields)
         payload = _mask_mapping(self.payload or {}, self.sensitive_argument_fields)
         return {
             "invocation": self.invocation,
@@ -92,6 +100,11 @@ class CandidateAction:
     operations: list[Operation] = field(default_factory=list)
     read_operation: Operation | None = None
     update_operations: list[Operation] | None = None
+    # Bounded rollback/DELETE operations for a successfully-applied candidate,
+    # in execution order (e.g. unassign-then-delete). `None` means no
+    # verified delete/rollback path exists yet for this mapping (distinct
+    # from an empty list, which would mean "verified: nothing to delete").
+    delete_operations: list[Operation] | None = None
     inline_dependencies: set[str] = field(default_factory=set)
     compatibility_errors: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
@@ -174,6 +187,42 @@ def _secret_bundle_error(
     if invalid:
         return f"{key}: target secret inputs are empty or redacted: {sorted(invalid)}."
     return None
+
+
+# Persona (device-function) family classification shared by every New Central
+# mapper that must restrict an object to Gateway/Switch-only or AP-only
+# device concepts (docs/aos8-migration-contract-matrix.md §4/§6). Mirrors the
+# substring convention `_map_role` already used for its GATEWAY/SWITCH
+# `target` field.
+_AP_PERSONAS = {"CAMPUS_AP", "MICROBRANCH_AP"}
+_GATEWAY_PERSONA_EXACT = {"VPNC", "EC_VPNC"}
+
+
+def _persona_family(persona: str) -> str:
+    upper = str(persona or "").strip().upper()
+    if upper in _AP_PERSONAS:
+        return "ap"
+    if "SWITCH" in upper:
+        return "switch"
+    if upper.endswith("_GW") or upper in _GATEWAY_PERSONA_EXACT:
+        return "gateway"
+    return "other"
+
+
+def _require_persona_family(
+    candidate_key: str,
+    persona: str,
+    allowed: set[str],
+    *,
+    concept: str,
+) -> None:
+    family = _persona_family(persona)
+    if family not in allowed:
+        raise AdapterError(
+            f"{candidate_key}: {concept} requires a target device-function in the "
+            f"{sorted(allowed)} persona family; {persona!r} resolves to {family!r} "
+            "and is not a verified target for this object type."
+        )
 
 
 def _contains_identifier(value: Any, identifier: str) -> bool:
@@ -424,6 +473,22 @@ class BaseCentralTargetAdapter:
             "operations": [
                 operation.with_dry_run(True).preview_dict() for operation in action.operations
             ],
+            "read_operation": (
+                action.read_operation.with_dry_run(True).preview_dict()
+                if action.read_operation is not None
+                else None
+            ),
+            "update_operations": (
+                [op.with_dry_run(True).preview_dict() for op in action.update_operations]
+                if action.update_operations is not None
+                else None
+            ),
+            "delete_operations": (
+                [op.with_dry_run(True).preview_dict() for op in action.delete_operations]
+                if action.delete_operations is not None
+                else None
+            ),
+            "verified_rollback_available": action.delete_operations is not None,
             "warnings": sorted(set(candidate.get("warnings", []))),
             "unsupported_warnings": sorted(action.compatibility_errors),
             "blockers": sorted(action.blockers),
@@ -550,6 +615,66 @@ class BaseCentralTargetAdapter:
         return self._map_candidate(candidate)
 
 
+# Per auth-server `type`, the allow-listed AOS8 source fields with a proven
+# New Central mapping, and the device-function persona families each type is
+# valid for on New Central (auth-server.json `x-supportedDeviceType`,
+# docs/aos8-migration-contract-matrix.md §4/§6.7). RADIUS and TACACS are
+# valid everywhere; LDAP is AP+Gateway only (no CX/AOS-S LDAP support
+# evidenced). RadSec and all other auth-server `type` values stay
+# unimplemented/fail-closed.
+_AUTH_SERVER_ALLOWED_UNSUPPORTED: dict[str, set[str]] = {
+    "radius": {
+        "rad_authport",
+        "rad_acctport",
+        "rad_key",
+        "radius_key",
+        "radius_secret",
+        "shared_secret",
+    },
+    "ldap": {
+        "ldap_admindn",
+        "ldap_adminpasswd",
+        "ldap_authport",
+        "ldap_keyattribute",
+    },
+    "tacacs": {
+        "tacacs_key",
+        "tacacs_tcpport",
+        "tacacs_timeout",
+    },
+}
+_AUTH_SERVER_PERSONA_FAMILIES: dict[str, set[str]] = {
+    "radius": {"ap", "gateway", "switch"},
+    "ldap": {"ap", "gateway"},
+    "tacacs": {"ap", "gateway", "switch"},
+}
+# Device AAA/dot1x/macauth profiles are Gateway/Switch device concepts only;
+# they must never be applied to an AP persona (docs/aos8-migration-contract-
+# matrix.md §4: "AP WLANs must never receive a device AAA/dot1x/macauth
+# profile").
+_DEVICE_PROFILE_PERSONA_FAMILIES: set[str] = {"gateway", "switch"}
+
+# Verified `payload.security.mode` -> New Central WLAN `opmode` enum values
+# (wlan.json `ArubaWlanSecurity_WlanSecurityConfig.opmode`; there is no
+# `WPA2_PSK` member -- the correct value is `WPA2_PERSONAL`, see
+# docs/aos8-migration-contract-matrix.md §4).
+_WLAN_MODE_TO_OPMODE: dict[str, str] = {
+    "open": "OPEN",
+    "wpa2_personal": "WPA2_PERSONAL",
+    "wpa3_sae": "WPA3_SAE",
+    "enhanced_open": "ENHANCED_OPEN",
+}
+_WLAN_PASSPHRASE_MODES: set[str] = {"wpa2_personal", "wpa3_sae"}
+# Modes that require an authentication-server chain (802.1X or MAC-auth) with
+# no verified New Central mapping today; kept unsupported (AdapterError),
+# never optimistically written.
+_WLAN_AAA_GATED_MODES: set[str] = {
+    "enterprise_dot1x",
+    "mac_auth_only",
+    "mac_auth_psk",
+}
+
+
 class NewCentralAdapter(BaseCentralTargetAdapter):
     target_type = TargetType.NEW_CENTRAL
 
@@ -605,6 +730,56 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                 f"{_candidate_key(candidate)}: unmapped source fields prevent safe apply: "
                 f"{sorted(remaining)}"
             )
+
+    def _spec_endpoint_operation(
+        self,
+        method: str,
+        endpoint: str,
+        payload: Mapping[str, Any],
+        *,
+        provenance: str,
+        sensitive_fields: tuple[str, ...] = (),
+    ) -> Operation:
+        """Build a raw generated-spec WRITE endpoint Operation (POST/PATCH/DELETE).
+
+        Used whenever the generated New Central OpenAPI manifest is
+        authoritative but either no curated `mcp_servers` tool exists for the
+        resource, or the curated tool's path diverges from the generated
+        spec (docs/aos8-migration-contract-matrix.md §2). Never routes
+        through a curated tool's own (possibly stale) path assumptions.
+
+        `dry_run` is left at its default `arguments["dry_run"]`-driven
+        behaviour (mirrors `_map_role`'s hand-built config-assignment
+        Operation): `_aos8_migration_write_invoker` reads
+        `arguments.get("dry_run", False)` directly, so every write endpoint
+        Operation MUST carry an explicit `dry_run` argument key and keep the
+        default `dry_run_field="dry_run"` so `with_dry_run(...)` can flip it.
+        """
+        arguments = {"method": method, "endpoint": endpoint, "data": dict(payload), "dry_run": True}
+        return Operation(
+            invocation="endpoint",
+            name="central_api_request",
+            arguments=arguments,
+            method=method,
+            endpoint=endpoint,
+            payload=payload,
+            provenance=provenance,
+            sensitive_argument_fields=sensitive_fields,
+        )
+
+    def _spec_endpoint_read(
+        self, endpoint: str, *, provenance: str, match_identifier: str
+    ) -> Operation:
+        return Operation(
+            invocation="endpoint",
+            name="central_api_read",
+            arguments={},
+            method="GET",
+            endpoint=endpoint,
+            provenance=provenance,
+            dry_run_field=None,
+            match_identifier=match_identifier,
+        )
 
     def _map_vlan(self, candidate: Mapping[str, Any]) -> CandidateAction:
         self._reject_unmapped(candidate)
@@ -710,11 +885,33 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             name="update_role",
             provenance="mcp_servers.config.update_role: PUT /network-config/v1/roles/{name}",
         )
+        delete_assignment = Operation(
+            invocation="tool",
+            name="delete_config_assignment",
+            arguments={
+                "scope_id": self.context.scope_id,
+                "device_function": self.context.persona,
+                "profile_type": "roles",
+                "profile_instance": candidate["identifier"],
+                "dry_run": True,
+            },
+            provenance="mcp_servers.config.delete_config_assignment",
+        )
+        delete_role = Operation(
+            invocation="tool",
+            name="delete_role",
+            arguments={"name": candidate["identifier"], "dry_run": True},
+            provenance=(
+                "mcp_servers.config.delete_role; pre-reqs per its own docstring: "
+                "delete_role_acl then delete_config_assignment for all scopes"
+            ),
+        )
         return CandidateAction(
             key=_candidate_key(candidate),
             candidate=candidate,
             operations=[create, assignment],
             update_operations=[update, assignment],
+            delete_operations=[delete_assignment, delete_role],
             read_operation=Operation(
                 invocation="tool",
                 name="list_roles",
@@ -725,60 +922,158 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             ),
         )
 
+    def _auth_server_body(
+        self,
+        server_type: str,
+        name: str,
+        host: str,
+        unsupported: Mapping[str, Any],
+        secret: str,
+    ) -> dict[str, Any]:
+        if server_type == "radius":
+            return {
+                "name": name,
+                "type": "RADIUS",
+                "auth-server-address": host,
+                "auth-port": int(unsupported.get("rad_authport", 1812)),
+                "acct-port": int(unsupported.get("rad_acctport", 1813)),
+                "shared-secret-config": {
+                    "secret-type": "PLAIN_TEXT",
+                    "plaintext-value": secret,
+                },
+            }
+        if server_type == "tacacs":
+            body: dict[str, Any] = {
+                "name": name,
+                "type": "TACACS",
+                "auth-server-address": host,
+                "shared-secret-config": {
+                    "secret-type": "PLAIN_TEXT",
+                    "plaintext-value": secret,
+                },
+            }
+            if _nonempty(unsupported.get("tacacs_tcpport")):
+                body["tcp-port"] = int(unsupported["tacacs_tcpport"])
+            if _nonempty(unsupported.get("tacacs_timeout")):
+                body["timeout"] = int(unsupported["tacacs_timeout"])
+            return body
+        if server_type == "ldap":
+            body = {
+                "name": name,
+                "type": "LDAP",
+                "auth-server-address": host,
+                # `admin-password` (flat) is the LDAP-specific bind-password
+                # field on auth-server.json; distinct from the nested
+                # `shared-secret-config` object reserved for RADIUS/TACACS.
+                "admin-password": secret,
+            }
+            if _nonempty(unsupported.get("ldap_admindn")):
+                body["admin-dn"] = unsupported["ldap_admindn"]
+            if _nonempty(unsupported.get("ldap_authport")):
+                body["auth-port"] = int(unsupported["ldap_authport"])
+            if _nonempty(unsupported.get("ldap_keyattribute")):
+                body["key-attribute"] = unsupported["ldap_keyattribute"]
+            return body
+        raise AssertionError(f"unreachable server_type {server_type!r}")
+
     def _map_auth_server(self, candidate: Mapping[str, Any]) -> CandidateAction:
         payload = dict(candidate.get("payload", {}))
-        if payload.get("server_type") != "radius":
+        server_type = payload.get("server_type")
+        key = _candidate_key(candidate)
+        if server_type not in _AUTH_SERVER_ALLOWED_UNSUPPORTED:
             raise AdapterError(
-                f"{_candidate_key(candidate)}: verified New Central auth-server tool "
-                "supports RADIUS only; LDAP and TACACS are unsupported"
+                f"{key}: New Central auth-server mapping only supports RADIUS, "
+                "LDAP, and TACACS today; RadSec and other auth-server types "
+                f"remain unimplemented/fail-closed (received {server_type!r})"
             )
-        allowed = {
-            "rad_authport",
-            "rad_acctport",
-            "rad_key",
-            "radius_key",
-            "radius_secret",
-            "shared_secret",
-        }
+        _require_persona_family(
+            key,
+            str(self.context.persona),
+            _AUTH_SERVER_PERSONA_FAMILIES[server_type],
+            concept=f"a {server_type.upper()} auth-server",
+        )
+        allowed = _AUTH_SERVER_ALLOWED_UNSUPPORTED[server_type]
         self._reject_unmapped(candidate, allowed=allowed)
         unsupported = _unsupported_values(candidate)
-        secret = _secret_value(self.context, _candidate_key(candidate), "shared_secret")
-        arguments = {
-            "name": payload.get("name") or str(candidate["identifier"]).split(":", 1)[-1],
-            "auth_server_address": payload.get("host"),
-            "shared_secret": secret,
-            "auth_port": int(unsupported.get("rad_authport", 1812)),
-            "acct_port": int(unsupported.get("rad_acctport", 1813)),
-            "dry_run": True,
-        }
-        if not arguments["auth_server_address"]:
-            raise AdapterError(f"{_candidate_key(candidate)}: RADIUS host is required")
-        return CandidateAction(
-            key=_candidate_key(candidate),
-            candidate=candidate,
-            operations=[
-                Operation(
-                    invocation="tool",
-                    name="create_auth_server",
-                    arguments=arguments,
-                    provenance=(
-                        "mcp_servers.nac.create_auth_server: "
-                        "/network-config/v1alpha1/auth-servers/{name}; RADIUS only"
-                    ),
-                    sensitive_argument_fields=("shared_secret",),
-                )
-            ],
-            read_operation=Operation(
+        name = payload.get("name") or str(candidate["identifier"]).split(":", 1)[-1]
+        host = payload.get("host")
+        if not host:
+            raise AdapterError(f"{key}: {server_type.upper()} host is required")
+
+        secret_name = "admin_password" if server_type == "ldap" else "shared_secret"
+        secret = _secret_value(self.context, key, secret_name)
+        body = self._auth_server_body(server_type, name, host, unsupported, secret)
+        sensitive_field = "admin-password" if server_type == "ldap" else "shared-secret-config"
+        endpoint = f"/network-config/v1alpha1/auth-servers/{quote(name, safe='')}"
+
+        if server_type == "radius":
+            create_operation = Operation(
                 invocation="tool",
-                name="get_auth_server",
-                arguments={"name": arguments["name"]},
-                provenance="mcp_servers.nac.get_auth_server",
-                dry_run_field=None,
-                match_identifier=str(arguments["name"]),
-            ),
+                name="create_auth_server",
+                arguments={
+                    "name": name,
+                    "auth_server_address": host,
+                    "shared_secret": secret,
+                    "auth_port": body["auth-port"],
+                    "acct_port": body["acct-port"],
+                    "dry_run": True,
+                },
+                provenance=(
+                    "mcp_servers.nac.create_auth_server: "
+                    "/network-config/v1alpha1/auth-servers/{name}; RADIUS only"
+                ),
+                sensitive_argument_fields=("shared_secret",),
+            )
+        else:
+            create_operation = self._spec_endpoint_operation(
+                "POST",
+                endpoint,
+                body,
+                provenance=(
+                    f"auth-server.json POST {endpoint}; no curated {server_type.upper()} "
+                    "tool exists, spec-correct endpoint used directly per "
+                    "docs/aos8-migration-contract-matrix.md §2"
+                ),
+                sensitive_fields=(sensitive_field,),
+            )
+        update_operation = self._spec_endpoint_operation(
+            "PATCH",
+            endpoint,
+            body,
+            provenance=f"auth-server.json PATCH {endpoint}",
+            sensitive_fields=(sensitive_field,),
+        )
+        delete_operation = Operation(
+            invocation="tool",
+            name="delete_auth_server",
+            arguments={"name": name, "dry_run": True},
+            provenance="mcp_servers.nac.delete_auth_server (type-agnostic)",
+        )
+        read_operation = Operation(
+            invocation="tool",
+            name="get_auth_server",
+            arguments={"name": name},
+            provenance="mcp_servers.nac.get_auth_server (type-agnostic)",
+            dry_run_field=None,
+            match_identifier=name,
+        )
+        return CandidateAction(
+            key=key,
+            candidate=candidate,
+            operations=[create_operation],
+            update_operations=[update_operation],
+            delete_operations=[delete_operation],
+            read_operation=read_operation,
         )
 
     def _map_aaa_profile(self, candidate: Mapping[str, Any]) -> CandidateAction:
+        key = _candidate_key(candidate)
+        _require_persona_family(
+            key,
+            str(self.context.persona),
+            _DEVICE_PROFILE_PERSONA_FAMILIES,
+            concept="an AAA profile (Gateway/Switch device concept)",
+        )
         self._reject_unmapped(candidate)
         payload = dict(candidate.get("payload", {}))
         unsupported_fields = [
@@ -795,39 +1090,285 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
         ]
         if unsupported_fields:
             raise AdapterError(
-                f"{_candidate_key(candidate)}: create_aaa_profile cannot preserve "
-                f"{unsupported_fields}"
+                f"{key}: create_aaa_profile cannot preserve {unsupported_fields}"
             )
+        name = str(candidate["identifier"])
         arguments = {
-            "name": candidate["identifier"],
+            "name": name,
             "auth_role": payload.get("default_user_role"),
             "fallback_role": None,
             "acct_server_group": payload.get("accounting_server_group"),
             "description": None,
             "dry_run": True,
         }
+        create_operation = Operation(
+            invocation="tool",
+            name="create_aaa_profile",
+            arguments=arguments,
+            provenance=(
+                "mcp_servers.nac.create_aaa_profile: "
+                "/network-config/v1alpha1/aaa-profile/{name}"
+            ),
+        )
+        # Mirror mcp_servers.nac.create_aaa_profile's proven body shape
+        # exactly (auth-server.json/aaa-profile.json only exposes a nested
+        # `authorization.auth-role`/`authorization.fallback-role` object, not
+        # a flat `auth-role` top-level property).
+        update_body: dict[str, Any] = {"name": name}
+        if arguments["auth_role"]:
+            update_body["authorization"] = {"auth-role": arguments["auth_role"]}
+        if arguments["acct_server_group"]:
+            update_body["acct-server-group"] = arguments["acct_server_group"]
+        update_operation = self._spec_endpoint_operation(
+            "PATCH",
+            f"/network-config/v1alpha1/aaa-profile/{quote(name, safe='')}",
+            update_body,
+            provenance=(
+                "aaa-profile.json PATCH /network-config/v1alpha1/aaa-profile/{name}; "
+                "body shape mirrors mcp_servers.nac.create_aaa_profile"
+            ),
+        )
+        delete_operation = Operation(
+            invocation="tool",
+            name="delete_aaa_profile",
+            arguments={"name": name, "dry_run": True},
+            provenance="mcp_servers.nac.delete_aaa_profile",
+        )
         return CandidateAction(
-            key=_candidate_key(candidate),
+            key=key,
             candidate=candidate,
-            operations=[
-                Operation(
-                    invocation="tool",
-                    name="create_aaa_profile",
-                    arguments=arguments,
-                    provenance=(
-                        "mcp_servers.nac.create_aaa_profile: "
-                        "/network-config/v1alpha1/aaa-profile/{name}"
-                    ),
-                )
-            ],
+            operations=[create_operation],
+            update_operations=[update_operation],
+            delete_operations=[delete_operation],
             read_operation=Operation(
                 invocation="tool",
                 name="get_aaa_profile",
-                arguments={"name": candidate["identifier"]},
+                arguments={"name": name},
                 provenance="mcp_servers.nac.get_aaa_profile",
                 dry_run_field=None,
-                match_identifier=str(candidate["identifier"]),
+                match_identifier=name,
             ),
+        )
+
+    def _map_device_auth_profile(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        resource: str,
+        concept: str,
+    ) -> CandidateAction:
+        key = _candidate_key(candidate)
+        _require_persona_family(
+            key,
+            str(self.context.persona),
+            _DEVICE_PROFILE_PERSONA_FAMILIES,
+            concept=concept,
+        )
+        unsupported = _unsupported_values(candidate)
+        remaining = {k: v for k, v in unsupported.items() if _nonempty(v)}
+        if remaining:
+            raise AdapterError(
+                f"{key}: {concept} has no verified 1:1 New Central field mapping "
+                f"for {sorted(remaining)}; only a bare name-only profile (no "
+                "additional settings) is a verified mapping today"
+            )
+        name = str(candidate["identifier"])
+        endpoint = f"/network-config/v1alpha1/{resource}/{quote(name, safe='')}"
+        body = {"name": name}
+        create_operation = self._spec_endpoint_operation(
+            "POST",
+            endpoint,
+            body,
+            provenance=(
+                f"{resource}.json POST {endpoint}; curated mcp_servers.config "
+                "create_aaa_{dot1xauth,macauth}_profile tools use a stale "
+                "/network-config/v1 path -- the spec-correct v1alpha1 endpoint "
+                "is used directly per docs/aos8-migration-contract-matrix.md §2"
+            ),
+        )
+        update_operation = self._spec_endpoint_operation(
+            "PATCH", endpoint, body, provenance=f"{resource}.json PATCH {endpoint}"
+        )
+        delete_operation = self._spec_endpoint_operation(
+            "DELETE", endpoint, {}, provenance=f"{resource}.json DELETE {endpoint}"
+        )
+        read_operation = self._spec_endpoint_read(
+            endpoint, provenance=f"{resource}.json GET {endpoint}", match_identifier=name
+        )
+        return CandidateAction(
+            key=key,
+            candidate=candidate,
+            operations=[create_operation],
+            update_operations=[update_operation],
+            delete_operations=[delete_operation],
+            read_operation=read_operation,
+        )
+
+    def _map_dot1x_auth_profile(self, candidate: Mapping[str, Any]) -> CandidateAction:
+        return self._map_device_auth_profile(
+            candidate,
+            resource="dot1xauth",
+            concept="an 802.1X device authentication profile (Gateway/Switch concept)",
+        )
+
+    def _map_mac_auth_profile(self, candidate: Mapping[str, Any]) -> CandidateAction:
+        return self._map_device_auth_profile(
+            candidate,
+            resource="macauth",
+            concept="a MAC-auth device authentication profile (Gateway/Switch concept)",
+        )
+
+    def _map_server_group(self, candidate: Mapping[str, Any]) -> CandidateAction:
+        key = _candidate_key(candidate)
+        payload = dict(candidate.get("payload", {}))
+        unsupported = _unsupported_values(candidate)
+        if _nonempty(unsupported.get("auth_server_type_collisions")):
+            raise AdapterError(
+                f"{key}: one or more referenced auth-server names are ambiguous "
+                "across server types (auth_server_type_collisions); refusing to "
+                "guess an ordered servers list"
+            )
+        if _nonempty(payload.get("derivation_rules")):
+            raise AdapterError(
+                f"{key}: AOS8 derivation-rules (vlan/role) have no verified "
+                "New Central server-groups mapping; recreate manually"
+            )
+        self._reject_unmapped(candidate)
+
+        dependency_types: set[str] = set()
+        for dependency in candidate.get("dependencies", []):
+            parts = str(dependency).split(":", 2)
+            if len(parts) == 3 and parts[0] == "auth_server":
+                dependency_types.add(parts[1])
+        if not dependency_types:
+            raise AdapterError(
+                f"{key}: server-group has no resolved auth-server dependency; "
+                "nothing safe to build"
+            )
+        if len(dependency_types) > 1:
+            raise AdapterError(
+                f"{key}: server-group mixes auth-server types "
+                f"{sorted(dependency_types)}; only a single homogeneous type is "
+                "a verified New Central server-groups mapping"
+            )
+        server_type = next(iter(dependency_types))
+        _require_persona_family(
+            key,
+            str(self.context.persona),
+            _AUTH_SERVER_PERSONA_FAMILIES[server_type],
+            concept=(
+                f"a {server_type.upper()} server-group (inherits its member "
+                "auth-server type's persona restriction)"
+            ),
+        )
+
+        resolved_names = {
+            str(dependency).split(":", 2)[-1]
+            for dependency in candidate.get("dependencies", [])
+            if str(dependency).startswith("auth_server:")
+        }
+        entries_raw = payload.get("auth_server_entries") or []
+        servers: list[dict[str, Any]] = []
+        for index, entry in enumerate(entries_raw):
+            name = None
+            position = None
+            if isinstance(entry, Mapping):
+                for field_name in (
+                    "name",
+                    "server",
+                    "auth_server",
+                    "rad_server_name",
+                    "ldap_server_name",
+                    "tacacs_server_name",
+                ):
+                    if _nonempty(entry.get(field_name)):
+                        name = str(entry[field_name])
+                        break
+                position = entry.get("position")
+            elif _nonempty(entry):
+                name = str(entry)
+            if name is None or name not in resolved_names:
+                raise AdapterError(
+                    f"{key}: server-group entry {entry!r} does not resolve to a "
+                    "verified auth-server dependency; refusing to guess ordering"
+                )
+            servers.append(
+                {
+                    "server-name": name,
+                    "position": int(position) if _nonempty(position) else index + 1,
+                }
+            )
+        if not servers:
+            raise AdapterError(f"{key}: server-group has no orderable server entries")
+        servers.sort(key=lambda item: item["position"])
+
+        name = str(candidate["identifier"])
+        body: dict[str, Any] = {"name": name, "type": server_type.upper(), "servers": servers}
+        if payload.get("fail_through") is not None:
+            body["fail-through"] = bool(payload["fail_through"])
+        if payload.get("load_balance") is not None:
+            body["load-balance"] = bool(payload["load_balance"])
+
+        endpoint = f"/network-config/v1alpha1/server-groups/{quote(name, safe='')}"
+        create_operation = self._spec_endpoint_operation(
+            "POST",
+            endpoint,
+            body,
+            provenance=(
+                f"auth-server-group.json POST {endpoint}; no curated server-group "
+                "tool exists in mcp_servers"
+            ),
+        )
+        update_operation = self._spec_endpoint_operation(
+            "PATCH", endpoint, body, provenance=f"auth-server-group.json PATCH {endpoint}"
+        )
+        delete_operation = self._spec_endpoint_operation(
+            "DELETE", endpoint, {}, provenance=f"auth-server-group.json DELETE {endpoint}"
+        )
+        read_operation = self._spec_endpoint_read(
+            endpoint,
+            provenance=f"auth-server-group.json GET {endpoint}",
+            match_identifier=name,
+        )
+        assignment_payload = {
+            "config-assignment": [
+                {
+                    "scope-id": self.context.scope_id,
+                    "device-function": self.context.persona,
+                    "profile-type": "server-groups",
+                    "profile-instance": name,
+                }
+            ]
+        }
+        assignment_operation = self._spec_endpoint_operation(
+            "POST",
+            "/network-config/v1alpha1/config-assignments",
+            assignment_payload,
+            provenance=(
+                "Official New Central Working with Library Profiles: POST "
+                "/network-config/v1alpha1/config-assignments with "
+                "scope-id/device-function/profile-type=server-groups/profile-instance"
+            ),
+        )
+        delete_assignment_operation = Operation(
+            invocation="tool",
+            name="delete_config_assignment",
+            arguments={
+                "scope_id": self.context.scope_id,
+                "device_function": self.context.persona,
+                "profile_type": "server-groups",
+                "profile_instance": name,
+                "dry_run": True,
+            },
+            provenance="mcp_servers.config.delete_config_assignment",
+        )
+        return CandidateAction(
+            key=key,
+            candidate=candidate,
+            operations=[create_operation, assignment_operation],
+            update_operations=[update_operation, assignment_operation],
+            delete_operations=[delete_assignment_operation, delete_operation],
+            read_operation=read_operation,
         )
 
     def _map_wlan(self, candidate: Mapping[str, Any]) -> CandidateAction:
@@ -836,26 +1377,70 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
         self._reject_unmapped(candidate, allowed=consumed)
         payload = dict(candidate.get("payload", {}))
         name = str(candidate["identifier"])
+        key = _candidate_key(candidate)
         if payload.get("essid", name) != name:
             raise AdapterError(
-                f"{_candidate_key(candidate)}: build SSID tools require profile name "
-                "and ESSID to match"
+                f"{key}: build SSID tools require profile name and ESSID to match"
             )
-        if _nonempty(payload.get("aaa_profile")):
+
+        security = payload.get("security")
+        if not isinstance(security, Mapping):
             raise AdapterError(
-                f"{_candidate_key(candidate)}: verified build SSID tools cannot attach "
-                "an arbitrary migrated AOS8 AAA profile"
+                f"{key}: candidate has no `payload.security` intent summary; "
+                "refusing to guess a target security mode (see "
+                "pipeline.aos8_migration._wlan_security_intent)"
             )
-        opmode = str(unsupported.get("ssid_profile.opmode", "open")).lower()
-        if opmode not in {"open", "opensystem"}:
+        mode = str(security.get("mode", "unknown"))
+        ambiguous = bool(security.get("ambiguous", True))
+
+        if mode in _WLAN_AAA_GATED_MODES:
             raise AdapterError(
-                f"{_candidate_key(candidate)}: only open AOS8 WLANs have a verified "
-                "lossless security mapping; received opmode "
-                f"{unsupported.get('ssid_profile.opmode')!r}"
+                f"{key}: {mode!r} requires an attached AOS8 AAA-profile "
+                "authentication chain (802.1X or MAC-auth server-group) with "
+                "no verified New Central WLAN mapping; MAC-auth and enterprise "
+                "802.1X WLANs remain unsupported "
+                "(docs/aos8-migration-contract-matrix.md §6.2)"
             )
+
+        if mode == "wpa3_transition_personal":
+            return CandidateAction(
+                key=key,
+                candidate=candidate,
+                blockers=[
+                    f"{key}: WPA3 Personal transition maps only to the "
+                    "unvalidated `wpa3-transition-mode-enable` flag "
+                    "(wlan.json); live validation against a real "
+                    "WPA3-transition-mode SSID is required before this "
+                    "candidate can be applied "
+                    "(docs/aos8-migration-contract-matrix.md §6.2)."
+                ],
+            )
+
+        if mode == "unknown" or ambiguous:
+            raise AdapterError(
+                f"{key}: WLAN security intent is unverified (opmode="
+                f"{security.get('opmode')!r}, ambiguous={ambiguous}); refusing "
+                "to guess a target security mode"
+            )
+        if mode not in _WLAN_MODE_TO_OPMODE:
+            raise AdapterError(
+                f"{key}: security mode {mode!r} has no verified New Central mapping"
+            )
+
         vlan = payload.get("vlan")
         if not _nonempty(vlan):
-            raise AdapterError(f"{_candidate_key(candidate)}: VLAN is required")
+            raise AdapterError(f"{key}: VLAN is required")
+
+        target_opmode = _WLAN_MODE_TO_OPMODE[mode]
+        passphrase = None
+        sensitive_fields: tuple[str, ...] = ()
+        if mode in _WLAN_PASSPHRASE_MODES:
+            # Never recovered from source state -- always an explicit,
+            # caller-supplied transient secret (docs/aos8-migration-
+            # contract-matrix.md instructions item 5).
+            passphrase = _secret_value(self.context, key, "wpa_passphrase")
+            sensitive_fields = ("passphrase",)
+
         forward_mode = str(unsupported.get("virtual_ap.forward_mode", "bridge")).lower()
         if forward_mode in {"bridge", "bridged"}:
             operation = Operation(
@@ -865,8 +1450,8 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                     "ssid_name": name,
                     "scope_id": self.context.scope_id,
                     "persona": self.context.persona,
-                    "opmode": "OPEN",
-                    "passphrase": None,
+                    "opmode": target_opmode,
+                    "passphrase": passphrase,
                     "vlan_ids": [int(vlan)],
                     "mac_auth_server_group": None,
                     "default_role": None,
@@ -876,12 +1461,24 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                     "mcp_servers.config.build_underlay_ssid and pipeline.create_ssid: "
                     "POST /network-config/v1/wlan-ssids/{name} plus scope-map"
                 ),
+                sensitive_argument_fields=sensitive_fields,
             )
+            delete_operations = [
+                Operation(
+                    invocation="tool",
+                    name="delete_underlay_ssid",
+                    arguments={
+                        "ssid_name": name,
+                        "scope_id": self.context.scope_id,
+                        "dry_run": True,
+                    },
+                    provenance="mcp_servers.config.delete_underlay_ssid",
+                )
+            ]
         elif forward_mode in {"tunnel", "tunneled"}:
             if not self.context.cluster_name or not self.context.cluster_scope_id:
                 raise AdapterError(
-                    f"{_candidate_key(candidate)}: tunneled WLAN requires cluster_name "
-                    "and cluster_scope_id"
+                    f"{key}: tunneled WLAN requires cluster_name and cluster_scope_id"
                 )
             operation = Operation(
                 invocation="tool",
@@ -892,8 +1489,8 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                     "cluster_name": self.context.cluster_name,
                     "cluster_scope_id": self.context.cluster_scope_id,
                     "vlan_ids": [int(vlan)],
-                    "opmode": "OPEN",
-                    "passphrase": None,
+                    "opmode": target_opmode,
+                    "passphrase": passphrase,
                     "mac_auth_server_group": None,
                     "policy_name": None,
                     "dry_run": True,
@@ -902,15 +1499,24 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                     "mcp_servers.config.build_overlay_ssid and pipeline.create_ssid "
                     "verified New Central tunneled-SSID workflow"
                 ),
+                sensitive_argument_fields=sensitive_fields,
             )
+            delete_operations = [
+                Operation(
+                    invocation="tool",
+                    name="delete_overlay_ssid",
+                    arguments={"profile_name": name, "dry_run": True},
+                    provenance="mcp_servers.config.delete_overlay_ssid",
+                )
+            ]
         else:
-            raise AdapterError(
-                f"{_candidate_key(candidate)}: unsupported forward mode {forward_mode!r}"
-            )
+            raise AdapterError(f"{key}: unsupported forward mode {forward_mode!r}")
+
         return CandidateAction(
-            key=_candidate_key(candidate),
+            key=key,
             candidate=candidate,
             operations=[operation],
+            delete_operations=delete_operations,
             read_operation=Operation(
                 invocation="tool",
                 name="get_ssid",

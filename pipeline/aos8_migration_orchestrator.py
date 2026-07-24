@@ -249,6 +249,13 @@ def _required_secret_names(candidate: Mapping[str, Any]) -> list[str]:
     if not candidate.get("requires_secret_input"):
         return []
     if candidate.get("object_type") == "auth_server":
+        # Type-aware: LDAP's New Central secret is the flat `admin-password`
+        # bind-password field (`admin_password`); RADIUS/TACACS both use the
+        # nested `shared-secret-config` object (`shared_secret`). See
+        # pipeline/aos8_target_adapters.py `_map_auth_server`/`_auth_server_body`.
+        server_type = str((candidate.get("payload") or {}).get("server_type") or "").lower()
+        if server_type == "ldap":
+            return ["admin_password"]
         return ["shared_secret"]
     names = {
         _normalized_key(str(path).split(".")[-1].split("[", 1)[0])
