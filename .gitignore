@@ -66,3 +66,6 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local vendored GreenLake OpenAPI specs (proprietary; fetch via scripts/generate_glp_tools.py --fetch)
+ingestion/greenlake_specs/

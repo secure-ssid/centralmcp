@@ -1,5 +1,5 @@
 """MCP server — GreenLake Platform (GLP): inventory, licensing, users, and
-service catalog (41 tools).
+service catalog (41 curated + 918 generated OpenAPI tools).
 
 Covers: GLP device lifecycle (v1 + v2beta1), device groups (v2beta1, best-effort),
 subscription assignment/bulk-add, audit logs (v1 + v2beta1), users, workspaces
@@ -8,6 +8,8 @@ read-only GLP GET covering RBAC/authorization, events, webhooks, tags, location,
 and SCIM families pending dedicated typed wrappers (see list_glp_api_families).
 Uses the target_account (glp_account) credentials.
 """
+import asyncio
+import os
 from typing import Any
 from urllib.parse import quote
 
@@ -20,6 +22,8 @@ from mcp_servers.shared import (
     bound_collection_response,
     clamp_limit,
     get_glp_client,
+    platform_write_blocked,
+    platform_writes_allowed,
     redact_sensitive,
     safe_api_path,
 )
@@ -776,6 +780,140 @@ def list_glp_api_families() -> dict[str, Any]:
             "resource shape on your tenant, then request a typed wrapper once confirmed."
         ),
     }
+
+
+
+# ---------------------------------------------------------------------------
+# Generated GreenLake (GLP) tools (see mcp_servers/openapi_gen). The committed
+# manifest at mcp_servers/openapi_gen/manifests/glp.json is derived from the
+# MIT-licensed nowireless4u/hpe-networking-mcp project's vendored HPE GreenLake
+# OpenAPI specs (raw specs are proprietary and NOT committed — see the manifest
+# "provenance" block and scripts/generate_glp_tools.py). Every unique documented
+# GLP operation becomes a directly-callable, typed FastMCP tool that reuses the
+# target-account GLPClient auth/workspace/retry behavior. Registration is guarded
+# by CENTRALMCP_GLP_GENERATED_TOOLS and defaults ON when the manifest exists.
+#
+# The 41 curated GLP tools above are the confirmed-working, hand-tuned surface;
+# the generated glp_* tools broaden coverage to the full workspace/inventory/
+# licensing/service-catalog/storage/compute surface. Generated writes stay
+# fail-closed behind the same CENTRALMCP_GLP_V2BETA1_WRITES gate and default to
+# dry_run=True.
+# ---------------------------------------------------------------------------
+
+# Auth header/cookie names never forwarded from model-supplied header params;
+# trusted GLP auth is injected last by _glp_generated_auth_headers.
+_GLP_AUTH_HEADER_NAMES = {"authorization", "cookie"}
+
+# Populated at registration time from the committed manifest (defense-in-depth
+# path allow-list). The shared runtime already URL-escapes path values and
+# rejects traversal segments, so this is belt-and-suspenders.
+_GLP_GENERATED_PREFIXES: tuple[str, ...] = ("/devices/", "/subscriptions/", "/workspaces/")
+
+_GLP_GENERATED_EXECUTE_HINT = (
+    "Re-run with dry_run=False and confirm=True to execute this GLP write "
+    f"(requires {_V2BETA1_WRITES_FLAG}=1)."
+)
+
+
+def _glp_generated_prefixes() -> tuple[str, ...]:
+    return _GLP_GENERATED_PREFIXES
+
+
+async def _glp_generated_auth_headers(extra: dict[str, str] | None) -> tuple[str, dict[str, str]]:
+    """Return ``(base_url, headers)`` with trusted GLP auth injected last.
+
+    Reuses the target-account GLPClient's underlying token manager (its
+    workspace-scoped bearer token) and GLP base URL, injecting the
+    Authorization header last. Non-auth header params are preserved; the
+    client's httpx session is never touched here.
+    """
+    client = get_glp_client()._client
+    # Acquire the workspace-scoped GLP bearer token off the event loop via the
+    # GLPClient's underlying token manager; never touch the client's httpx
+    # session (that boundary is owned exclusively by CentralClient).
+    token = await asyncio.to_thread(client.token_manager.get_access_token)
+    headers: dict[str, str] = {"Accept": "application/json"}
+    for key, value in (extra or {}).items():
+        if key.strip().lower() in _GLP_AUTH_HEADER_NAMES:
+            continue
+        headers[key] = str(value)
+    headers["Authorization"] = f"Bearer {token}"  # trusted auth injected last
+    return client.base_url, headers
+
+
+def _glp_generated_enabled() -> bool:
+    """Whether the generated GLP tools should register.
+
+    Opt-in and **default OFF**: unlike the optional-product starter backends,
+    the ~918 generated GLP tools are a very large surface, so we keep the
+    default ``aruba-glp`` catalog to the 41 curated tools and only expand when
+    an operator sets ``CENTRALMCP_GLP_GENERATED_TOOLS`` truthy. (Central's
+    generated tools live on a separate ``aruba-central-generated`` server, so
+    they can default on without inflating a shared catalog; the GLP generated
+    tools share the curated ``aruba-glp`` server, hence the opt-in default.)
+    """
+    raw = os.environ.get("CENTRALMCP_GLP_GENERATED_TOOLS")
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _register_generated_glp_tools() -> list[str]:
+    """Register generated GLP tools (idempotent).
+
+    No-op (returns ``[]``) when the opt-in flag is off or the manifest is
+    missing, so a stripped checkout never breaks import. Safe to call again
+    after enabling the flag (e.g. from tests); already-registered tools are
+    returned as-is.
+    """
+    global GENERATED_GLP_TOOLS
+    if GENERATED_GLP_TOOLS:
+        return GENERATED_GLP_TOOLS
+    from mcp_servers.openapi_gen.http_exec import make_read_executor, make_write_executor
+    from mcp_servers.openapi_gen.manifest import load_manifest, manifest_exists
+    from mcp_servers.openapi_gen.runtime import register_generated_tools
+
+    if not _glp_generated_enabled() or not manifest_exists("glp"):
+        return []
+    manifest = load_manifest("glp")
+    global _GLP_GENERATED_PREFIXES
+    prefixes = sorted(
+        {
+            "/" + op["path"].split("/", 2)[1] + "/"
+            for op in manifest.get("operations", [])
+            if isinstance(op.get("path"), str) and op["path"].startswith("/")
+        }
+    )
+    if prefixes:
+        _GLP_GENERATED_PREFIXES = tuple(prefixes)
+
+    read_executor = make_read_executor(
+        resolve=_glp_generated_auth_headers,
+        allowed_prefixes=_glp_generated_prefixes,
+        not_configured="GLP not configured",
+    )
+    write_executor = make_write_executor(
+        resolve=_glp_generated_auth_headers,
+        allowed_prefixes=_glp_generated_prefixes,
+        writes_allowed=lambda: platform_writes_allowed("glp"),
+        blocked_response=lambda name: platform_write_blocked("glp", name),
+        execute_hint=_GLP_GENERATED_EXECUTE_HINT,
+        not_configured="GLP not configured",
+    )
+    GENERATED_GLP_TOOLS = register_generated_tools(
+        mcp,
+        "glp",
+        read_executor=read_executor,
+        write_executor=write_executor,
+        manifest=manifest,
+    )
+    return GENERATED_GLP_TOOLS
+
+
+# Module global, populated by _register_generated_glp_tools(). Declared before
+# the (opt-in) registration call so the idempotency guard has a value to read.
+GENERATED_GLP_TOOLS: list[str] = []
+GENERATED_GLP_TOOLS = _register_generated_glp_tools()
 
 
 if __name__ == "__main__":

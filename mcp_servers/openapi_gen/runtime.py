@@ -59,6 +59,13 @@ _AUTH_PARAM_NAMES = {
     "x-auth-token",
 }
 
+# Argument names the write-tool signature injects (body/dry_run/confirm). A
+# spec parameter that snake-cases to one of these (e.g. a real ``dry-run`` query
+# param on some GreenLake writes) must be renamed to avoid a duplicate-parameter
+# signature error while still preserving its original API name for the request.
+_WRITE_RESERVED_ARG_NAMES = frozenset({"body", "dry_run", "confirm"})
+
+
 _PY_TYPES: dict[str, Any] = {
     "string": str,
     "integer": int,
@@ -124,9 +131,11 @@ def _py_type(schema_type: str, item_type: str | None = None) -> Any:
     return _PY_TYPES.get(schema_type, Any)
 
 
-def _param_specs(op: dict[str, Any]) -> list[_ParamSpec]:
+def _param_specs(op: dict[str, Any], reserved: frozenset[str] = frozenset()) -> list[_ParamSpec]:
     specs: list[_ParamSpec] = []
-    taken: set[str] = set()
+    # Pre-seed reserved names (write control args) so a colliding spec param is
+    # deterministically renamed; its original API name is preserved via .api.
+    taken: set[str] = set(reserved)
     for raw in op.get("parameters", []):
         location = raw.get("in")
         if location not in ("path", "query", "header", "cookie"):
@@ -295,7 +304,7 @@ def _make_read_tool(op: dict[str, Any], read_executor: ReadExecutor) -> Callable
 
 
 def _make_write_tool(op: dict[str, Any], write_executor: WriteExecutor) -> Callable[..., Any]:
-    specs = _param_specs(op)
+    specs = _param_specs(op, reserved=_WRITE_RESERVED_ARG_NAMES)
     method = op["method"]
     template = op["path"]
     rb = op.get("request_body") or {}
