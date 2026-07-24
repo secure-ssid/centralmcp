@@ -39,6 +39,23 @@ def candidate(
     }
 
 
+def security(mode: str, **overrides) -> dict:
+    base = {
+        "mode": mode,
+        "opmode": overrides.pop("opmode", mode),
+        "ambiguous": False,
+        "aaa_profile": None,
+        "dot1x_auth_profile": None,
+        "mac_auth_profile": None,
+        "passphrase_present": False,
+        "psk_hexkey_present": False,
+        "wpa3_transition": False,
+        "evidence": [],
+    }
+    base.update(overrides)
+    return base
+
+
 class FakeBackend:
     def __init__(self, reads=None, failures=None):
         self.reads = reads or {}
@@ -100,20 +117,34 @@ def new_adapter(
     )
 
 
-def classic_adapter(backend, *, policy=ConflictPolicy.FAIL):
+def classic_adapter(
+    backend,
+    *,
+    policy=ConflictPolicy.FAIL,
+    scope_name="Branch Group",
+    secrets=None,
+    external_object_references=None,
+    ap_group_target_map=None,
+    ap_group_device_serials=None,
+    writes=True,
+):
     return ClassicCentralAdapter(
         TargetContext(
             target_type=TargetType.CLASSIC_CENTRAL,
             scope_id="classic-id",
-            scope_name="Branch Group",
+            scope_name=scope_name,
             persona="CAMPUS_AP",
             conflict_policy=policy,
+            secret_inputs=secrets or {},
+            external_object_references=external_object_references or {},
+            ap_group_target_map=ap_group_target_map or {},
+            ap_group_device_serials=ap_group_device_serials or {},
         ),
         scope_resolver=resolve_scope,
         persona_validator=validate_persona,
         read_invoker=backend.read,
         write_invoker=backend.write,
-        writes_enabled=lambda target: True,
+        writes_enabled=lambda target: writes,
     )
 
 
@@ -374,21 +405,73 @@ def test_classic_maps_only_verified_open_bridged_full_wlan():
     wlan = candidate(
         "wlan",
         "Guest",
-        payload={"name": "Guest", "essid": "Guest", "vlan": 20, "aaa_profile": None},
+        payload={
+            "name": "Guest",
+            "essid": "Guest",
+            "vlan": 20,
+            "aaa_profile": None,
+            "security": security("open"),
+        },
         unsupported_fields={
             "ssid_profile.opmode": "open",
             "virtual_ap.forward_mode": "bridge",
         },
     )
     preview = adapter.preview([wlan])
-    operation = preview["operations"][0]["operations"][0]
+    action = preview["operations"][0]
+    operation = action["operations"][0]
     assert operation["method"] == "POST"
     assert operation["tool_or_endpoint"] == ("/configuration/full_wlan/Branch%20Group/Guest")
     assert operation["payload"]["wlan"]["opmode"] == "opensystem"
+    assert operation["payload"]["wlan"]["type"] == "guest"
     assert preview["checkpoint_and_rollback"]["automatic_rollback_supported"] is False
+
+    # Preflight/update/read-back/rollback metadata is present for every
+    # executable Classic mapping (contract requirement).
+    assert action["read_back"]["tool_or_endpoint"] == (
+        "/configuration/full_wlan/Branch%20Group/Guest"
+    )
+    assert action["read_back"]["method"] == "GET"
+    assert len(action["rollback"]) == 1
+    assert action["rollback"][0]["method"] == "DELETE"
+    assert action["rollback"][0]["tool_or_endpoint"] == (
+        "/configuration/full_wlan/Branch%20Group/Guest"
+    )
+    assert action["dry_run_only"] is False
 
     unsupported = adapter.preview([candidate("vlan", "20")])
     assert unsupported["operations"][0]["status"] == "unsupported"
+
+
+def test_classic_open_wlan_update_uses_full_body_put_on_conflict():
+    existing_wlan = {"name": "Guest", "essid": "Guest"}
+    backend = FakeBackend(reads={"central_api_read": existing_wlan})
+    adapter = classic_adapter(backend, policy=ConflictPolicy.UPDATE)
+    wlan = candidate(
+        "wlan",
+        "Guest",
+        payload={
+            "name": "Guest",
+            "essid": "Guest",
+            "vlan": 20,
+            "aaa_profile": None,
+            "security": security("open"),
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "open",
+            "virtual_ap.forward_mode": "bridge",
+        },
+    )
+    preview = adapter.preview([wlan])
+    action = preview["operations"][0]
+    assert action["conflict"] == "update"
+    operation = action["operations"][0]
+    assert operation["method"] == "PUT"
+    assert operation["tool_or_endpoint"] == ("/configuration/full_wlan/Branch%20Group/Guest")
+    # PUT is a complete-body replace of the same shape as create, never a
+    # partial patch.
+    assert operation["payload"]["wlan"]["opmode"] == "opensystem"
+    assert operation["payload"]["access_rule"]["name"] == "Guest"
 
 
 def test_classic_wlan_embeds_vlan_dependency_while_vlan_candidate_stays_unapplied():
@@ -398,7 +481,13 @@ def test_classic_wlan_embeds_vlan_dependency_while_vlan_candidate_stays_unapplie
     wlan = candidate(
         "wlan",
         "Guest",
-        payload={"name": "Guest", "essid": "Guest", "vlan": 20, "aaa_profile": None},
+        payload={
+            "name": "Guest",
+            "essid": "Guest",
+            "vlan": 20,
+            "aaa_profile": None,
+            "security": security("open"),
+        },
         dependencies=["vlan:20"],
         apply_order=50,
         unsupported_fields={
@@ -469,3 +558,408 @@ def test_preflight_errors_are_reported_without_writes():
     assert result["results"][0]["status"] == "blocked"
     assert result["results"][0]["errors"] == ["preflight read failed: read timeout"]
     assert backend.write_calls == []
+
+
+# --------------------------------------------------------------------------
+# Classic Central: context validation (group/GUID/serial, never a New
+# Central scope_id)
+# --------------------------------------------------------------------------
+
+
+def test_classic_context_rejects_numeric_scope_name_as_likely_new_central_scope_id():
+    with pytest.raises(ContextValidationError, match="scope_id"):
+        classic_adapter(FakeBackend(), scope_name="12345")
+
+
+def test_classic_context_accepts_group_name_guid_or_serial():
+    for scope_name in ("Branch Group", "550e8400-e29b-41d4-a716-446655440000", "CN12345678"):
+        adapter = classic_adapter(FakeBackend(), scope_name=scope_name)
+        assert adapter.context.scope_name == scope_name
+
+
+# --------------------------------------------------------------------------
+# Classic Central: full_wlan account/group unavailability is never confused
+# with "this specific item is absent"
+# --------------------------------------------------------------------------
+
+
+def test_classic_detects_full_wlan_unavailable_and_reports_unsupported_not_absent():
+    backend = FakeBackend(
+        reads={
+            "central_api_read": {
+                "error": "full_wlan API is not supported for this account"
+            }
+        }
+    )
+    adapter = classic_adapter(backend)
+    wlan = candidate(
+        "wlan",
+        "Guest",
+        payload={
+            "name": "Guest",
+            "essid": "Guest",
+            "vlan": 20,
+            "aaa_profile": None,
+            "security": security("open"),
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "open",
+            "virtual_ap.forward_mode": "bridge",
+        },
+    )
+    preview = adapter.preview([wlan])
+    action = preview["operations"][0]
+    assert action["status"] == "unsupported"
+    assert action["conflict"] == "not-checked"
+    assert "unavailable" in action["unsupported_warnings"][0].lower()
+
+
+# --------------------------------------------------------------------------
+# Classic Central: WPA3-Personal (official-sample-backed)
+# --------------------------------------------------------------------------
+
+
+def _wpa3_personal_wlan(name="Secure", vlan=30, **security_overrides):
+    security_overrides.setdefault("passphrase_present", True)
+    sec = security("wpa3_sae", opmode="wpa3-sae-aes", **security_overrides)
+    return candidate(
+        "wlan",
+        name,
+        payload={
+            "name": name,
+            "essid": name,
+            "vlan": vlan,
+            "aaa_profile": None,
+            "security": sec,
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "wpa3-sae-aes",
+            "virtual_ap.forward_mode": "bridge",
+            "ssid_profile.wpa_passphrase": "<redacted:present>",
+        },
+    )
+
+
+def test_classic_wpa3_personal_requires_caller_secret_and_masks_preview():
+    wlan = _wpa3_personal_wlan()
+
+    missing = classic_adapter(FakeBackend()).preview([wlan])
+    assert missing["operations"][0]["status"] == "unsupported"
+    assert "wpa_passphrase" in missing["operations"][0]["unsupported_warnings"][0]
+
+    valid_preview = classic_adapter(
+        FakeBackend(), secrets={"wlan:Secure": {"wpa_passphrase": "actual-secret"}}
+    ).preview([wlan])
+    action = valid_preview["operations"][0]
+    assert action["status"] == "ready"
+    assert action["dry_run_only"] is False
+    operation = action["operations"][0]
+    assert operation["method"] == "POST"
+    assert operation["payload"]["wlan"]["opmode"] == "wpa3-sae-aes"
+    assert operation["payload"]["wlan"]["opmode_transition_disable"] is True
+    assert operation["payload"]["wlan"]["wpa_passphrase"] == "***"
+    assert "data" not in operation["arguments"]
+    assert "actual-secret" not in str(valid_preview)
+    assert action["read_back"]["method"] == "GET"
+    assert action["rollback"][0]["method"] == "DELETE"
+
+
+def test_classic_wpa3_personal_requires_transition_disabled():
+    wlan = _wpa3_personal_wlan(name="Mixed", wpa3_transition=True)
+    result = classic_adapter(
+        FakeBackend(), secrets={"wlan:Mixed": {"wpa_passphrase": "actual-secret"}}
+    ).preview([wlan])
+    action = result["operations"][0]
+    assert action["status"] == "unsupported"
+    assert "transition" in action["unsupported_warnings"][0].lower()
+
+
+def test_classic_wpa3_personal_requires_passphrase_presence_signal():
+    wlan = _wpa3_personal_wlan(name="NoPass", passphrase_present=False)
+    result = classic_adapter(
+        FakeBackend(), secrets={"wlan:NoPass": {"wpa_passphrase": "actual-secret"}}
+    ).preview([wlan])
+    action = result["operations"][0]
+    assert action["status"] == "unsupported"
+    assert "wpa_passphrase" in action["unsupported_warnings"][0]
+
+
+# --------------------------------------------------------------------------
+# Classic Central: WPA3-Enterprise (conditional/dry-run-only, requires an
+# explicit already-existing auth-server reference)
+# --------------------------------------------------------------------------
+
+
+def _wpa3_enterprise_wlan(name="Enterprise-Test", vlan=40):
+    sec = security(
+        "enterprise_dot1x",
+        opmode="wpa3-aes-ccm-128",
+        dot1x_auth_profile="corp-dot1x",
+    )
+    return candidate(
+        "wlan",
+        name,
+        payload={
+            "name": name,
+            "essid": name,
+            "vlan": vlan,
+            "aaa_profile": "corp-aaa",
+            "security": sec,
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "wpa3-aes-ccm-128",
+            "virtual_ap.forward_mode": "bridge",
+        },
+    )
+
+
+def test_classic_wpa3_enterprise_requires_explicit_auth_server_reference():
+    wlan = _wpa3_enterprise_wlan()
+    missing = classic_adapter(FakeBackend()).preview([wlan])
+    action = missing["operations"][0]
+    assert action["status"] == "unsupported"
+    assert "auth_server1" in action["unsupported_warnings"][0]
+    assert "never auto-provisioned" in action["unsupported_warnings"][0]
+
+
+def test_classic_wpa3_enterprise_is_ready_for_preview_but_dry_run_only():
+    wlan = _wpa3_enterprise_wlan()
+    backend = FakeBackend()
+    adapter = classic_adapter(
+        backend,
+        external_object_references={"wlan:Enterprise-Test": {"auth_server1": "InternalServer"}},
+    )
+    preview = adapter.preview([wlan])
+    action = preview["operations"][0]
+    assert action["status"] == "ready"
+    assert action["dry_run_only"] is True
+    assert "conditional/dry-run-only" in action["dry_run_only_reason"]
+    operation = action["operations"][0]
+    assert operation["payload"]["wlan"]["opmode"] == "wpa3-aes-ccm-128"
+    assert operation["payload"]["wlan"]["auth_server1"] == "InternalServer"
+    assert operation["payload"]["wlan"]["access_type"] == "network_based"
+
+    dry_result = adapter.dry_run([wlan])
+    assert dry_result["results"][0]["status"] == "dry-run"
+
+    # A real (non-dry-run) execute is refused even with confirmation and
+    # writes enabled -- no additional (real) write call ever reaches the
+    # backend beyond the dry-run one above.
+    write_calls_before_real_execute = len(backend.write_calls)
+    real_result = adapter.execute([wlan], dry_run=False, confirmation=True)
+    assert real_result["results"][0]["status"] == "blocked"
+    assert "dry-run-only" in real_result["results"][0]["errors"][0]
+    assert len(backend.write_calls) == write_calls_before_real_execute
+    assert all(call[0].arguments.get("dry_run") is True for call in backend.write_calls)
+
+
+def test_classic_wpa2_enterprise_remains_unsupported_distinct_from_wpa3():
+    sec = security("enterprise_dot1x", opmode="wpa2-aes", dot1x_auth_profile="corp-dot1x")
+    wlan = candidate(
+        "wlan",
+        "Corp",
+        payload={
+            "name": "Corp",
+            "essid": "Corp",
+            "vlan": 60,
+            "aaa_profile": "corp-aaa",
+            "security": sec,
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "wpa2-aes",
+            "virtual_ap.forward_mode": "bridge",
+        },
+    )
+    adapter = classic_adapter(
+        FakeBackend(),
+        external_object_references={"wlan:Corp": {"auth_server1": "InternalServer"}},
+    )
+    preview = adapter.preview([wlan])
+    action = preview["operations"][0]
+    assert action["status"] == "unsupported"
+    assert "wpa2-enterprise" in action["unsupported_warnings"][0].lower()
+
+
+# --------------------------------------------------------------------------
+# Classic Central: every other secured-WLAN mode stays blocked with
+# actionable, mode-specific guidance
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mode,expected_snippet",
+    [
+        ("wpa2_personal", "v2 wlan contract"),
+        ("wpa3_transition_personal", "transition"),
+        ("enhanced_open", "enhanced open"),
+        ("mac_auth_only", "mac-auth"),
+        ("mac_auth_psk", "mac-auth"),
+        ("unknown", "could not be classified"),
+    ],
+)
+def test_classic_blocked_wlan_security_modes_report_actionable_guidance(mode, expected_snippet):
+    wlan = candidate(
+        "wlan",
+        "Blocked",
+        payload={
+            "name": "Blocked",
+            "essid": "Blocked",
+            "vlan": 50,
+            "aaa_profile": None,
+            "security": security(mode),
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": mode,
+            "virtual_ap.forward_mode": "bridge",
+        },
+    )
+    preview = classic_adapter(FakeBackend()).preview([wlan])
+    action = preview["operations"][0]
+    assert action["status"] == "unsupported"
+    assert expected_snippet.lower() in action["unsupported_warnings"][0].lower()
+
+
+def test_classic_open_and_wpa3_personal_reject_attached_aaa_profile():
+    open_wlan = candidate(
+        "wlan",
+        "Guest",
+        payload={
+            "name": "Guest",
+            "essid": "Guest",
+            "vlan": 20,
+            "aaa_profile": "some-aaa",
+            "security": security("open"),
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "open",
+            "virtual_ap.forward_mode": "bridge",
+        },
+    )
+    result = classic_adapter(FakeBackend()).preview([open_wlan])
+    action = result["operations"][0]
+    assert action["status"] == "unsupported"
+    assert "does not translate aos8 aaa profiles" in action["unsupported_warnings"][0].lower()
+
+
+def test_classic_wlan_rejects_unmapped_wep_key_material():
+    wlan = candidate(
+        "wlan",
+        "Legacy",
+        payload={
+            "name": "Legacy",
+            "essid": "Legacy",
+            "vlan": 20,
+            "aaa_profile": None,
+            "security": security("unknown"),
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "static-wep",
+            "virtual_ap.forward_mode": "bridge",
+            "ssid_profile.wepkey1": "<redacted:present>",
+        },
+    )
+    result = classic_adapter(FakeBackend()).preview([wlan])
+    action = result["operations"][0]
+    assert action["status"] == "unsupported"
+    assert "unmapped source fields" in action["unsupported_warnings"][0].lower()
+
+
+def test_classic_wlan_rejects_non_bridged_forward_mode():
+    wlan = candidate(
+        "wlan",
+        "Tunnel",
+        payload={
+            "name": "Tunnel",
+            "essid": "Tunnel",
+            "vlan": 20,
+            "aaa_profile": None,
+            "security": security("open"),
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "open",
+            "virtual_ap.forward_mode": "tunnel",
+        },
+    )
+    result = classic_adapter(FakeBackend()).preview([wlan])
+    action = result["operations"][0]
+    assert action["status"] == "unsupported"
+    assert "bridged" in action["unsupported_warnings"][0].lower()
+
+
+# --------------------------------------------------------------------------
+# Classic Central: AP groups/device moves stay manual/unsupported unless an
+# explicit operator mapping *and* explicit device serials are supplied — and
+# even then, no verified device-move endpoint is ever fabricated.
+# --------------------------------------------------------------------------
+
+
+def test_classic_ap_group_requires_explicit_group_then_serials_then_stays_manual():
+    apg = candidate("ap_group", "aos8-lobby-ap-group", payload={"name": "aos8-lobby-ap-group"})
+
+    no_mapping = classic_adapter(FakeBackend()).preview([apg])
+    action = no_mapping["operations"][0]
+    assert action["status"] == "unsupported"
+    assert "ap_group_target_map" in action["unsupported_warnings"][0]
+
+    mapped_no_serials = classic_adapter(
+        FakeBackend(),
+        ap_group_target_map={"aos8-lobby-ap-group": "Lobby-Classic-Group"},
+    ).preview([apg])
+    action = mapped_no_serials["operations"][0]
+    assert action["status"] == "unsupported"
+    assert "device serial" in action["unsupported_warnings"][0].lower()
+
+    mapped_with_serials = classic_adapter(
+        FakeBackend(),
+        ap_group_target_map={"aos8-lobby-ap-group": "Lobby-Classic-Group"},
+        ap_group_device_serials={"aos8-lobby-ap-group": ("CNXXXX0001", "CNXXXX0002")},
+    ).preview([apg])
+    action = mapped_with_serials["operations"][0]
+    assert action["status"] == "unsupported"
+    message = action["unsupported_warnings"][0].lower()
+    assert "no verified classic central device-move" in message
+    assert "never fabricated" in message
+
+
+# --------------------------------------------------------------------------
+# Classic Central: precise manual/AP-CLI/template guidance per unverified
+# family (AAA/auth servers/server groups, roles/policies/ACLs, routes, VRRP,
+# controllers) — never presented as a safe idempotent per-object write.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "object_type",
+    [
+        "aaa_profile",
+        "dot1x_auth_profile",
+        "mac_auth_profile",
+        "server_group",
+        "auth_server",
+        "role",
+        "policy",
+        "route",
+        "vrrp",
+        "controller",
+    ],
+)
+def test_classic_manual_family_guidance_never_looks_like_a_safe_write(object_type):
+    result = classic_adapter(FakeBackend()).preview([candidate(object_type, "thing")])
+    action = result["operations"][0]
+    assert action["status"] == "unsupported"
+    message = action["unsupported_warnings"][0]
+    assert "AP-CLI" in message
+    assert "never" in message.lower()
+    assert action["operations"] == []
+
+
+def test_classic_manual_family_guidance_is_specific_per_family():
+    aaa_message = classic_adapter(FakeBackend()).preview(
+        [candidate("aaa_profile", "corp-aaa")]
+    )["operations"][0]["unsupported_warnings"][0]
+    role_message = classic_adapter(FakeBackend()).preview(
+        [candidate("role", "employee")]
+    )["operations"][0]["unsupported_warnings"][0]
+    assert aaa_message != role_message
+    assert "AAA profiles" in aaa_message
+    assert "roles" in role_message
