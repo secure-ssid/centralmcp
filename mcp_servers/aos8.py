@@ -1,4 +1,4 @@
-"""MCP server — optional ArubaOS 8 / Mobility Conductor backend starter tools.
+"""MCP server — optional ArubaOS 8 / Mobility Conductor backend (43 curated + 258 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=aos8
@@ -38,6 +38,8 @@ from mcp_servers.shared import (
     DIAGNOSTIC,
     READ_ONLY,
     bound_collection_response,
+    bounded_response_payload,
+    clamp_limit,
     platform_write_blocked as _platform_write_blocked,
     platform_writes_allowed as _platform_writes_allowed,
     redact_sensitive,
@@ -1899,6 +1901,133 @@ async def aos8_write_memory(
     if out.get("dry_run") or "error" not in out:
         out["config_path"] = config_path
     return out
+
+
+# ---------------------------------------------------------------------------
+# Generated OpenAPI tools (see mcp_servers/openapi_gen). The committed manifest
+# at mcp_servers/openapi_gen/manifests/aos8.json is a derived operation manifest
+# built from the current ArubaOS 8 JSON API OpenAPI document published on the
+# Aruba developer portal (ReadMe). Every generated call flows through
+# `_aos8_send`, which preserves the UIDARUBA session query param and the
+# X-CSRF-Token header on non-GET requests (session auth is injected server-side
+# and is NOT a model-visible argument — the manifest strips UIDARUBA). Reads are
+# direct; POST configuration/action tools stay behind the write gate +
+# dry-run/confirm, and disruptive actions are annotated DESTRUCTIVE via the
+# committed capability overrides. Registration is guarded by
+# CENTRALMCP_AOS8_GENERATED_TOOLS (defaults ON when the manifest exists).
+# ---------------------------------------------------------------------------
+
+# Committed manifest paths are the bare `/object/...` spec paths; the ArubaOS
+# JSON API server base is `/v1/configuration`.
+_AOS8_API_BASE = "/v1/configuration"
+
+
+def _aos8_generated_prepare(path: str) -> tuple[str | None, str | None, str | None]:
+    """Return (base_url, full_path, error) for a generated ArubaOS 8 request."""
+    base_url, _ = _aos8_config()
+    if not base_url or _aos8_auth_mode() == "unconfigured":
+        return None, None, (
+            "AOS8 not configured. Set AOS8_USERNAME/AOS8_PASSWORD (preferred) "
+            "or AOS8_BASE_URL and AOS8_API_TOKEN."
+        )
+    full_path = f"{_AOS8_API_BASE}{path}"
+    try:
+        full_path = safe_api_path(full_path, ("/v1/",))
+    except ValueError as exc:
+        return None, None, f"Invalid path. {exc}"
+    try:
+        base_url = validate_product_base_url(base_url, product="AOS8")
+    except ValueError as exc:
+        return None, None, str(exc)
+    return base_url, full_path, None
+
+
+async def _aos8_generated_read(
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    """Read executor for generated AOS8 tools (GET, bounded, session-authed)."""
+    base_url, full_path, error = _aos8_generated_prepare(path)
+    if error:
+        return {"error": error}
+    url = f"{base_url}{full_path}"
+    clean_params = {k: v for k, v in query.items() if v is not None}
+    result = await _aos8_send(method, base_url, full_path, clean_params, None)
+    if isinstance(result, dict):
+        return {**result, "url": url}
+    resp = result
+    payload = bound_collection_response(
+        bounded_response_payload(resp), limit=clamp_limit(None), offset=0
+    )
+    return {"status_code": resp.status_code, "data": payload, "url": url}
+
+
+async def _aos8_generated_write(
+    name: str,
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+    body: Any,
+    content_type: str,
+    dry_run: bool,
+    confirm: bool,
+) -> dict[str, Any]:
+    """Write executor for generated AOS8 tools (gate + dry-run/confirm).
+
+    The ArubaOS JSON API models every mutation as a POST whose body carries the
+    object payload (config-set operations also need an `_action` field). Session
+    auth (UIDARUBA + X-CSRF-Token) is injected by `_aos8_send`, not the model.
+    """
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked(name)
+    base_url, full_path, error = _aos8_generated_prepare(path)
+    if error:
+        return {"error": error}
+    url = f"{base_url}{full_path}"
+    clean_params = {k: v for k, v in query.items() if v is not None}
+    preview: dict[str, Any] = {
+        "method": method,
+        "path": full_path,
+        "url": url,
+        "params": redact_sensitive(clean_params),
+        "json": redact_sensitive(body),
+        "content_type": content_type,
+    }
+    if dry_run:
+        return {"dry_run": True, **preview, "execute_hint": _EXECUTE_HINT}
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True,
+            **preview,
+        }
+    result = await _aos8_send(method, base_url, full_path, clean_params, body)
+    if isinstance(result, dict):
+        return {**result, "url": url}
+    resp = result
+    return {
+        "status_code": resp.status_code,
+        "data": redact_sensitive(bounded_response_payload(resp)),
+        "url": url,
+    }
+
+
+def _register_generated_aos8_tools() -> list[str]:
+    """Register generated AOS8 tools at import time, failing on manifest errors."""
+    from mcp_servers.openapi_gen.runtime import register_generated_tools
+
+    return register_generated_tools(
+        mcp,
+        "aos8",
+        read_executor=_aos8_generated_read,
+        write_executor=_aos8_generated_write,
+    )
+
+
+GENERATED_AOS8_TOOLS = _register_generated_aos8_tools()
 
 
 if __name__ == "__main__":

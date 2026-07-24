@@ -1,4 +1,4 @@
-"""MCP server — optional ClearPass backend (low-surface starter tools).
+"""MCP server — optional ClearPass backend (15 curated + 816 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=clearpass
@@ -30,6 +30,7 @@ from mcp_servers.shared import (
     IDEMPOTENT_WRITE,
     READ_ONLY,
     bound_collection_response,
+    bounded_response_payload,
     clamp_limit,
     platform_write_blocked as _platform_write_blocked,
     platform_writes_allowed as _platform_writes_allowed,
@@ -769,6 +770,146 @@ async def clearpass_trigger_onguard_revalidation(
     )
     out["normalized_mac"] = normalized
     return out
+
+
+# ---------------------------------------------------------------------------
+# Generated OpenAPI tools (see mcp_servers/openapi_gen). The committed manifest
+# at mcp_servers/openapi_gen/manifests/clearpass.json is a derived operation
+# manifest built from the current ClearPass 6.12.x OpenAPI definitions published
+# on the Aruba developer portal (ReadMe api-registry). It exposes every
+# documented CPPM operation as a directly-callable, typed FastMCP tool. Reads
+# reuse the static-bearer auth; writes/destructive ops stay behind the product
+# write gate + dry-run/confirm. Registration is guarded by
+# CENTRALMCP_CLEARPASS_GENERATED_TOOLS (defaults ON when the manifest exists).
+# ---------------------------------------------------------------------------
+
+# ClearPass REST is served under /api; committed manifest paths omit that prefix.
+_CLEARPASS_API_PREFIX = "/api"
+
+
+def _clearpass_generated_prepare(path: str) -> tuple[str | None, str | None, str | None]:
+    """Return (base_url, token, error) for a generated ClearPass request path."""
+    base_url, token = _clearpass_config()
+    if not base_url or not token:
+        return None, None, "ClearPass not configured. Set CLEARPASS_BASE_URL and CLEARPASS_API_TOKEN."
+    if not path.startswith("/"):
+        return None, None, "Generated path must be absolute."
+    try:
+        base_url = validate_product_base_url(base_url, product="ClearPass")
+    except ValueError as exc:
+        return None, None, str(exc)
+    return base_url, token, None
+
+
+def _clearpass_generated_headers(token: str, extra: dict[str, str] | None = None) -> dict[str, str]:
+    headers: dict[str, str] = {"Accept": "application/json"}
+    for key, value in (extra or {}).items():
+        if key.strip().lower() in {"authorization", "cookie"}:
+            continue
+        headers[key] = value
+    headers["Authorization"] = _auth_header(token)
+    return headers
+
+
+async def _clearpass_generated_read(
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    """Read executor for generated ClearPass tools (GET/HEAD, bounded, direct)."""
+    base_url, token, error = _clearpass_generated_prepare(path)
+    if error:
+        return {"error": error}
+    url = f"{base_url}{_CLEARPASS_API_PREFIX}{path}"
+    req_headers = _clearpass_generated_headers(token, headers)
+    clean_params = {k: v for k, v in query.items() if v is not None}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(method, url, headers=req_headers, params=clean_params)
+        payload = bound_collection_response(
+            bounded_response_payload(resp), limit=clamp_limit(None), offset=0
+        )
+        return {"status_code": resp.status_code, "data": payload, "url": url}
+    except httpx.HTTPError as exc:
+        return {"error": str(exc), "url": url}
+
+
+async def _clearpass_generated_write(
+    name: str,
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+    body: Any,
+    content_type: str,
+    dry_run: bool,
+    confirm: bool,
+) -> dict[str, Any]:
+    """Write executor for generated ClearPass tools (gate + dry-run/confirm)."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked(name)
+    base_url, token, error = _clearpass_generated_prepare(path)
+    if error:
+        return {"error": error}
+    url = f"{base_url}{_CLEARPASS_API_PREFIX}{path}"
+    clean_params = {k: v for k, v in query.items() if v is not None}
+    preview: dict[str, Any] = {
+        "method": method,
+        "path": f"{_CLEARPASS_API_PREFIX}{path}",
+        "url": url,
+        "params": redact_sensitive(clean_params),
+        "json": redact_sensitive(body),
+        "content_type": content_type,
+    }
+    if dry_run:
+        return {"dry_run": True, **preview, "execute_hint": _EXECUTE_HINT}
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True,
+            **preview,
+        }
+    req_headers = _clearpass_generated_headers(token, headers)
+    kwargs: dict[str, Any] = {"headers": req_headers, "params": clean_params}
+    if body is not None:
+        if content_type == "application/json":
+            kwargs["json"] = body
+        elif content_type.endswith("json"):
+            kwargs["content"] = json.dumps(body)
+            req_headers["Content-Type"] = content_type
+        elif content_type == "application/x-www-form-urlencoded":
+            if not isinstance(body, dict):
+                return {"error": "form-urlencoded body must be an object of form fields"}
+            kwargs["data"] = body
+        else:
+            kwargs["content"] = body if isinstance(body, (bytes, str)) else str(body)
+            req_headers.setdefault("Content-Type", content_type)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(method, url, **kwargs)
+        return {
+            "status_code": resp.status_code,
+            "data": redact_sensitive(bounded_response_payload(resp)),
+            "url": url,
+        }
+    except httpx.HTTPError as exc:
+        return {"error": str(exc), "url": url}
+
+
+def _register_generated_clearpass_tools() -> list[str]:
+    """Register generated ClearPass tools at import time, failing on manifest errors."""
+    from mcp_servers.openapi_gen.runtime import register_generated_tools
+
+    return register_generated_tools(
+        mcp,
+        "clearpass",
+        read_executor=_clearpass_generated_read,
+        write_executor=_clearpass_generated_write,
+    )
+
+
+GENERATED_CLEARPASS_TOOLS = _register_generated_clearpass_tools()
 
 
 if __name__ == "__main__":

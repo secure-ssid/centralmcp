@@ -1,0 +1,430 @@
+{
+  "schema_version": 1,
+  "platform": "apstra",
+  "source": {
+    "file": "apstra-derived-operations.json",
+    "sha256": "9ccfb922798c7f3d1f9969ae5686de2af87d7c7659fa772255dad272b8860c8e",
+    "openapi": "3.1.0",
+    "title": "HPE Juniper Apstra (derived operation set)",
+    "version": "reviewed-2026-07",
+    "license": "MIT (derived from upstream Apstra MCP backend operation metadata)",
+    "operation_count": 19
+  },
+  "override_keys_applied": [
+    "POST /api/blueprints/{blueprint_id}/obj-policy-application-points"
+  ],
+  "override_keys_unmatched": [],
+  "operations": [
+    {
+      "name": "apstra_apstra_login_legacy",
+      "key": "POST /api/aaa/login",
+      "method": "POST",
+      "path": "/api/aaa/login",
+      "capability": "write",
+      "operation_id": "apstraLoginLegacy",
+      "summary": "Legacy session login (returns AuthToken).",
+      "tags": [
+        "Auth"
+      ],
+      "parameters": [],
+      "request_body": {
+        "required": true,
+        "content_type": "application/json",
+        "schema_type": "object"
+      }
+    },
+    {
+      "name": "apstra_list_blueprints",
+      "key": "GET /api/blueprints",
+      "method": "GET",
+      "path": "/api/blueprints",
+      "capability": "read",
+      "operation_id": "listBlueprints",
+      "summary": "List Apstra blueprints (ID/name/status).",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": []
+    },
+    {
+      "name": "apstra_list_blueprint_anomalies",
+      "key": "GET /api/blueprints/{blueprint_id}/anomalies",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/anomalies",
+      "capability": "read",
+      "operation_id": "listBlueprintAnomalies",
+      "summary": "List anomalies for one blueprint.",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_list_connectivity_templates",
+      "key": "GET /api/blueprints/{blueprint_id}/connectivity-templates",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/connectivity-templates",
+      "capability": "read",
+      "operation_id": "listConnectivityTemplates",
+      "summary": "List connectivity templates in one blueprint.",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_create_connectivity_template",
+      "key": "PUT /api/blueprints/{blueprint_id}/connectivity-templates",
+      "method": "PUT",
+      "path": "/api/blueprints/{blueprint_id}/connectivity-templates",
+      "capability": "write",
+      "operation_id": "createConnectivityTemplate",
+      "summary": "Create or update a connectivity template.",
+      "tags": [
+        "Connectivity"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ],
+      "request_body": {
+        "required": true,
+        "content_type": "application/json",
+        "schema_type": "object"
+      }
+    },
+    {
+      "name": "apstra_get_connectivity_template",
+      "key": "GET /api/blueprints/{blueprint_id}/connectivity-templates/{ct_id}",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/connectivity-templates/{ct_id}",
+      "capability": "read",
+      "operation_id": "getConnectivityTemplate",
+      "summary": "Get one connectivity template by ID.",
+      "tags": [
+        "Connectivity"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        },
+        {
+          "name": "ct_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Connectivity template ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_delete_connectivity_template",
+      "key": "DELETE /api/blueprints/{blueprint_id}/connectivity-templates/{ct_id}",
+      "method": "DELETE",
+      "path": "/api/blueprints/{blueprint_id}/connectivity-templates/{ct_id}",
+      "capability": "destructive",
+      "operation_id": "deleteConnectivityTemplate",
+      "summary": "Delete one connectivity template by ID.",
+      "tags": [
+        "Connectivity"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        },
+        {
+          "name": "ct_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Connectivity template ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_get_blueprint_diff_status",
+      "key": "GET /api/blueprints/{blueprint_id}/diff-status",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/diff-status",
+      "capability": "read",
+      "operation_id": "getBlueprintDiffStatus",
+      "summary": "Get staged-vs-committed diff status for one blueprint.",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_get_blueprint_system_info",
+      "key": "GET /api/blueprints/{blueprint_id}/experience/web/system-info",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/experience/web/system-info",
+      "capability": "read",
+      "operation_id": "getBlueprintSystemInfo",
+      "summary": "Get managed system info for one blueprint.",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_list_application_endpoints",
+      "key": "POST /api/blueprints/{blueprint_id}/obj-policy-application-points",
+      "method": "POST",
+      "path": "/api/blueprints/{blueprint_id}/obj-policy-application-points",
+      "capability": "read",
+      "operation_id": "listApplicationEndpoints",
+      "summary": "List application endpoints (policy application points) - read-only query POST.",
+      "tags": [
+        "Connectivity"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_set_application_point_assignment",
+      "key": "PATCH /api/blueprints/{blueprint_id}/obj-policy-application-points/batch-apply",
+      "method": "PATCH",
+      "path": "/api/blueprints/{blueprint_id}/obj-policy-application-points/batch-apply",
+      "capability": "write",
+      "operation_id": "setApplicationPointAssignment",
+      "summary": "Batch-apply connectivity-template application point assignments.",
+      "tags": [
+        "Connectivity"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ],
+      "request_body": {
+        "required": true,
+        "content_type": "application/json",
+        "schema_type": "object"
+      }
+    },
+    {
+      "name": "apstra_export_obj_policy",
+      "key": "GET /api/blueprints/{blueprint_id}/obj-policy-export",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/obj-policy-export",
+      "capability": "read",
+      "operation_id": "exportObjPolicy",
+      "summary": "Legacy connectivity-template catalog export (obj-policy-export).",
+      "tags": [
+        "Connectivity"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_list_protocol_sessions",
+      "key": "GET /api/blueprints/{blueprint_id}/protocol-sessions",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/protocol-sessions",
+      "capability": "read",
+      "operation_id": "listProtocolSessions",
+      "summary": "List protocol (BGP) sessions in one blueprint.",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_list_blueprint_racks",
+      "key": "GET /api/blueprints/{blueprint_id}/racks",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/racks",
+      "capability": "read",
+      "operation_id": "listBlueprintRacks",
+      "summary": "List racks in one blueprint.",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_list_remote_gateways",
+      "key": "GET /api/blueprints/{blueprint_id}/remote_gateways",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/remote_gateways",
+      "capability": "read",
+      "operation_id": "listRemoteGateways",
+      "summary": "List remote gateways in one blueprint.",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_list_routing_zones",
+      "key": "GET /api/blueprints/{blueprint_id}/security-zones",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/security-zones",
+      "capability": "read",
+      "operation_id": "listRoutingZones",
+      "summary": "List routing zones (security-zones) in one blueprint.",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_list_virtual_networks",
+      "key": "GET /api/blueprints/{blueprint_id}/virtual-networks",
+      "method": "GET",
+      "path": "/api/blueprints/{blueprint_id}/virtual-networks",
+      "capability": "read",
+      "operation_id": "listVirtualNetworks",
+      "summary": "List virtual networks in one blueprint.",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": [
+        {
+          "name": "blueprint_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Apstra blueprint ID."
+        }
+      ]
+    },
+    {
+      "name": "apstra_list_design_templates",
+      "key": "GET /api/design/templates",
+      "method": "GET",
+      "path": "/api/design/templates",
+      "capability": "read",
+      "operation_id": "listDesignTemplates",
+      "summary": "List Apstra design templates.",
+      "tags": [
+        "Apstra"
+      ],
+      "parameters": []
+    },
+    {
+      "name": "apstra_apstra_login",
+      "key": "POST /api/user/login",
+      "method": "POST",
+      "path": "/api/user/login",
+      "capability": "write",
+      "operation_id": "apstraLogin",
+      "summary": "Session login (returns AuthToken).",
+      "tags": [
+        "Auth"
+      ],
+      "parameters": [],
+      "request_body": {
+        "required": true,
+        "content_type": "application/json",
+        "schema_type": "object"
+      }
+    }
+  ],
+  "provenance": {
+    "acquired_from": "Reviewed operation metadata from the MIT-licensed upstream Apstra MCP backend (mcp_servers/apstra.py curated tools).",
+    "note": "No authoritative distributable full Apstra OpenAPI spec is available; this is the current maximum reviewed operation set (NOT full OpenAPI coverage).",
+    "reviewed_operation_count": 19,
+    "auth_endpoints_not_registered": [
+      "POST /api/user/login",
+      "POST /api/aaa/login"
+    ],
+    "auth_model": "AuthToken header session (see mcp_servers/apstra.py _get_apstra_token)."
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "platform": "apstra",
+    "purpose": "Reclassify Apstra query-style POST(s) that read data rather than mutate it.",
+    "rules": [
+      "POST /api/blueprints/{blueprint_id}/obj-policy-application-points is a read-only listing query (no mutation) and is classified read so it executes directly."
+    ]
+  },
+  "capabilities": {
+    "POST /api/blueprints/{blueprint_id}/obj-policy-application-points": "read"
+  }
+}

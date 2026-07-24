@@ -1,4 +1,10 @@
-"""MCP server — optional HPE Juniper Apstra backend (low-surface starter tools, 20 tools).
+"""MCP server — optional HPE Juniper Apstra backend (20 curated + 19 generated OpenAPI tools).
+
+No authoritative distributable full Apstra OpenAPI spec is available, so the
+committed manifest is a *derived operation manifest* capturing the current
+maximum reviewed operation set (NOT full OpenAPI coverage). Of its 19 reviewed
+operations, 17 register as tools; the 2 `Auth` login endpoints are documented
+for provenance only and are never exposed as tools (session auth is injected).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=apstra
@@ -36,6 +42,7 @@ from mcp_servers.shared import (
     IDEMPOTENT_WRITE,
     READ_ONLY,
     bound_collection_response,
+    clamp_limit,
     compact_http_error,
     platform_write_blocked as _platform_write_blocked,
     platform_writes_allowed as _platform_writes_allowed,
@@ -960,6 +967,125 @@ async def apstra_set_application_point_assignment(
         dry_run=dry_run,
         confirm=confirm,
     )
+
+
+# ---------------------------------------------------------------------------
+# Generated operation tools (see mcp_servers/openapi_gen). No authoritative
+# distributable full Apstra OpenAPI spec is available, so the committed manifest
+# at mcp_servers/openapi_gen/manifests/apstra.json is a *derived operation
+# manifest* capturing the current maximum reviewed operation set from the
+# MIT-licensed upstream Apstra backend (this module's curated tools) — NOT full
+# OpenAPI coverage. Every generated call reuses the AuthToken session layer
+# (`_apstra_authenticated_request`, with 401 re-login) and preserves the curated
+# connectivity-template workflow endpoints. The two documented login endpoints
+# are auth-only and are skipped at registration (session auth is injected, never
+# a model argument). Registration is guarded by CENTRALMCP_APSTRA_GENERATED_TOOLS
+# (defaults ON when the manifest exists).
+# ---------------------------------------------------------------------------
+
+
+def _apstra_generated_prepare(path: str) -> tuple[str | None, str | None]:
+    """Return (base_url, error) for a generated Apstra request path."""
+    base_url, username, password, static_token = _apstra_credentials()
+    if not base_url:
+        return None, "Apstra not configured. Set APSTRA_BASE_URL."
+    if not path.startswith("/api/"):
+        return None, "Generated path must begin with /api/."
+    try:
+        base_url = validate_product_base_url(base_url, product="Apstra")
+    except ValueError as exc:
+        return None, str(exc)
+    return base_url, None
+
+
+async def _apstra_generated_read(
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    """Read executor for generated Apstra tools (AuthToken session, bounded)."""
+    base_url, error = _apstra_generated_prepare(path)
+    if error:
+        return {"error": error}
+    url = f"{base_url}{path}"
+    clean_params = {k: v for k, v in query.items() if v is not None}
+    out = await _apstra_authenticated_request(method, url, params=clean_params)
+    if isinstance(out, dict) and "data" in out:
+        out["data"] = bound_collection_response(out["data"], limit=clamp_limit(None), offset=0)
+    return out
+
+
+async def _apstra_generated_write(
+    name: str,
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+    body: Any,
+    content_type: str,
+    dry_run: bool,
+    confirm: bool,
+) -> dict[str, Any]:
+    """Write executor for generated Apstra tools (gate + dry-run/confirm)."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked(name)
+    base_url, error = _apstra_generated_prepare(path)
+    if error:
+        return {"error": error}
+    url = f"{base_url}{path}"
+    clean_params = {k: v for k, v in query.items() if v is not None}
+    preview: dict[str, Any] = {
+        "method": method,
+        "path": path,
+        "url": url,
+        "params": redact_sensitive(clean_params),
+        "json": redact_sensitive(body),
+        "content_type": content_type,
+    }
+    if dry_run:
+        return {"dry_run": True, **preview, "execute_hint": _EXECUTE_HINT}
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True,
+            **preview,
+        }
+    out = await _apstra_authenticated_request(method, url, params=clean_params, json_body=body)
+    if isinstance(out, dict) and "data" in out:
+        out["data"] = redact_sensitive(out["data"])
+    return out
+
+
+def _register_generated_apstra_tools() -> list[str]:
+    """Register generated Apstra tools at import time.
+
+    The login endpoints (tagged ``Auth`` in the derived manifest) are filtered
+    out so the AuthToken session layer stays the sole credential path — they are
+    never exposed as model-visible tools.
+    """
+    from mcp_servers.openapi_gen.manifest import load_manifest, manifest_exists
+    from mcp_servers.openapi_gen.runtime import generated_tools_enabled, register_generated_tools
+
+    if not generated_tools_enabled("apstra") or not manifest_exists("apstra"):
+        return []
+    manifest = load_manifest("apstra")
+    filtered = {
+        **manifest,
+        "operations": [
+            op for op in manifest.get("operations", []) if "Auth" not in (op.get("tags") or [])
+        ],
+    }
+    return register_generated_tools(
+        mcp,
+        "apstra",
+        read_executor=_apstra_generated_read,
+        write_executor=_apstra_generated_write,
+        manifest=filtered,
+    )
+
+
+GENERATED_APSTRA_TOOLS = _register_generated_apstra_tools()
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""MCP server - optional HPE Aruba UXI backend.
+"""MCP server - optional HPE Aruba UXI backend (25 curated + 25 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=uxi
@@ -28,6 +28,7 @@ relying on them for anything beyond a lab.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 from urllib.parse import quote
@@ -41,6 +42,7 @@ from mcp_servers.shared import (
     IDEMPOTENT_WRITE,
     READ_ONLY,
     bound_collection_response,
+    bounded_response_payload,
     clamp_limit,
     platform_write_blocked as _platform_write_blocked,
     platform_writes_allowed as _platform_writes_allowed,
@@ -767,6 +769,153 @@ async def uxi_assign_service_test_to_group(
         confirm=confirm,
         tool_name="uxi_assign_service_test_to_group",
     )
+
+
+# ---------------------------------------------------------------------------
+# Generated OpenAPI tools (see mcp_servers/openapi_gen). The committed manifest
+# at mcp_servers/openapi_gen/manifests/uxi.json is derived from the current UXI
+# v6.7 OpenAPI document published on the Aruba developer portal (ReadMe) and
+# exposes every documented operation as a directly-callable, typed FastMCP tool.
+# Every outbound call still flows through the OAuth token layer and the shared
+# 5 req/s throttle; writes stay behind the product write gate + dry-run/confirm.
+# Registration is guarded by CENTRALMCP_UXI_GENERATED_TOOLS (defaults ON when
+# the manifest exists).
+# ---------------------------------------------------------------------------
+
+# The committed manifest paths carry the full API prefix; the configured base
+# URL usually already includes it, so strip it once to avoid double-prefixing.
+_UXI_API_PREFIX = "/networking-uxi/v1alpha1"
+
+
+def _uxi_generated_prepare(path: str) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    """Return (host, client_id, client_secret, token_url, error) for a generated path."""
+    client_id, client_secret, base_url, token_url = _uxi_config()
+    if not client_id or not client_secret:
+        return None, None, None, None, "UXI not configured. Set UXI_CLIENT_ID and UXI_CLIENT_SECRET."
+    if not path.startswith(_UXI_API_PREFIX + "/"):
+        return None, None, None, None, f"Generated path must begin with {_UXI_API_PREFIX}/."
+    try:
+        base_url = validate_product_base_url(base_url, product="UXI")
+    except ValueError as exc:
+        return None, None, None, None, str(exc)
+    # Manifest paths already include the API prefix; drop a duplicate suffix.
+    host = base_url[: -len(_UXI_API_PREFIX)] if base_url.endswith(_UXI_API_PREFIX) else base_url
+    return host, client_id, client_secret, token_url, None
+
+
+async def _uxi_generated_read(
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    """Read executor for generated UXI tools (throttled, bounded, direct)."""
+    host, client_id, client_secret, token_url, error = _uxi_generated_prepare(path)
+    if error:
+        return {"error": error}
+    url = f"{host}{path}"
+    clean_params = {k: v for k, v in query.items() if v is not None}
+    try:
+        token = await _uxi_access_token(client_id, client_secret, token_url)
+        req_headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+        for key, value in (headers or {}).items():
+            if key.strip().lower() not in {"authorization", "cookie"}:
+                req_headers[key] = value
+        await _uxi_throttle()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(method, url, headers=req_headers, params=clean_params)
+        payload = bound_collection_response(
+            bounded_response_payload(resp), limit=clamp_limit(None), offset=0
+        )
+        return {"status_code": resp.status_code, "data": payload, "url": url}
+    except httpx.HTTPError:
+        return {"error": "connection or protocol error", "url": url}
+    except Exception as exc:
+        return {"error": str(exc), "url": url}
+
+
+async def _uxi_generated_write(
+    name: str,
+    method: str,
+    path: str,
+    query: dict[str, Any],
+    headers: dict[str, str],
+    body: Any,
+    content_type: str,
+    dry_run: bool,
+    confirm: bool,
+) -> dict[str, Any]:
+    """Write executor for generated UXI tools (gate + dry-run/confirm, throttled)."""
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked(name)
+    host, client_id, client_secret, token_url, error = _uxi_generated_prepare(path)
+    if error:
+        return {"error": error}
+    url = f"{host}{path}"
+    clean_params = {k: v for k, v in query.items() if v is not None}
+    preview: dict[str, Any] = {
+        "method": method,
+        "path": path,
+        "url": url,
+        "params": redact_sensitive(clean_params),
+        "json": redact_sensitive(body),
+        "content_type": content_type,
+    }
+    if dry_run:
+        return {"dry_run": True, **preview, "execute_hint": _EXECUTE_HINT}
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True,
+            **preview,
+        }
+    try:
+        token = await _uxi_access_token(client_id, client_secret, token_url)
+        req_headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+        for key, value in (headers or {}).items():
+            if key.strip().lower() not in {"authorization", "cookie"}:
+                req_headers[key] = value
+        kwargs: dict[str, Any] = {"headers": req_headers, "params": clean_params}
+        if body is not None:
+            if content_type == "application/x-www-form-urlencoded":
+                if not isinstance(body, dict):
+                    return {"error": "form-urlencoded body must be an object of form fields"}
+                kwargs["data"] = body
+            elif content_type == "application/json":
+                kwargs["json"] = body
+            elif content_type.endswith("json"):
+                # e.g. application/merge-patch+json — preserve the exact type.
+                kwargs["content"] = json.dumps(body)
+                req_headers["Content-Type"] = content_type
+            else:
+                kwargs["json"] = body
+        await _uxi_throttle()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(method, url, **kwargs)
+        return {
+            "status_code": resp.status_code,
+            "data": redact_sensitive(bounded_response_payload(resp)),
+            "url": url,
+        }
+    except httpx.HTTPError:
+        return {"error": "connection or protocol error", "url": url}
+    except Exception as exc:
+        return {"error": str(exc), "url": url}
+
+
+def _register_generated_uxi_tools() -> list[str]:
+    """Register generated UXI tools at import time, failing on manifest errors."""
+    from mcp_servers.openapi_gen.runtime import register_generated_tools
+
+    return register_generated_tools(
+        mcp,
+        "uxi",
+        read_executor=_uxi_generated_read,
+        write_executor=_uxi_generated_write,
+    )
+
+
+GENERATED_UXI_TOOLS = _register_generated_uxi_tools()
 
 
 if __name__ == "__main__":
