@@ -524,6 +524,7 @@ _VIRTUAL_AP_FIELDS = (
     "name",
     "ssid-profile",
     "ssid_prof",
+    "ssid-prof",
     "aaa-profile",
     "aaa_prof",
     "vlan",
@@ -1620,13 +1621,31 @@ async def aos8_list_virtual_aps(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """List virtual AP profile objects at an AOS8 hierarchy node."""
+    """List virtual AP profile objects at an AOS8 hierarchy node.
+
+    Some AOS8 builds do not expose the canonical `virtual_ap` config object
+    and answer only its legacy `wlan_virtual_ap` name instead (secondary,
+    same-owner prior art, not an authoritative API contract:
+    https://github.com/secure-ssid/aos8-migration-tool/blob/7bfa884d8e8f1c7e97a7bfa42f15596aa42fcf79/lib/aos8_client.py#L315-L399).
+    When the primary lookup fails, this falls back to the legacy name before
+    giving up; a failure on both names is reported the same way a single
+    failed lookup always has been.
+    """
     out = await aos8_get(
         "/v1/configuration/object/virtual_ap",
         {"config_path": config_path},
         limit=limit,
         offset=offset,
     )
+    if _aos8_read_failed(out):
+        fallback = await aos8_get(
+            "/v1/configuration/object/wlan_virtual_ap",
+            {"config_path": config_path},
+            limit=limit,
+            offset=offset,
+        )
+        if not _aos8_read_failed(fallback):
+            out = fallback
     if "data" in out:
         out["virtual_aps"] = _compact_primary_list(
             out.pop("data"),

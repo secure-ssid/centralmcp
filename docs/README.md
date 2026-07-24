@@ -14,6 +14,7 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | [mcp-client-recipes.md](mcp-client-recipes.md) | Copy/paste stdio and streamable HTTP MCP client setup recipes |
 | [optional-products.md](optional-products.md) | Optional product matrix, wizard behavior, env vars, and safety surface |
 | [product-workflows.md](product-workflows.md) | Typed ClearPass/Mist/Apstra/AOS8/EdgeConnect/UXI workflow roadmap |
+| [aos8-migration-contract-matrix.md](aos8-migration-contract-matrix.md) | Authoritative AOS8-to-Classic/New Central migration contract matrix gating 0.5.0 implementation |
 | [release-indexes.md](release-indexes.md) | Download, package, and release prebuilt RAG/OpenAPI indexes |
 | [release-notes-0.4.0.md](release-notes-0.4.0.md) | Complete 0.4.0 migration execution, Mist diagnostics, EdgeConnect compatibility, GLP, and Axis changes |
 | [release-notes-0.3.0.md](release-notes-0.3.0.md) | Prior 0.3.0 platform, migration, safety, and API-source changes (historical) |

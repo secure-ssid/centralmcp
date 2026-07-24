@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 
 import mcp_servers.aos8 as aos8
+from pipeline.aos8_parsers import parse_wlans
 
 
 class _Resp:
@@ -104,6 +105,140 @@ def test_aos8_export_wlans_collects_warnings_on_partial_failure(monkeypatch):
     assert out["ssid_profiles"] == [{"profile-name": "Corp"}]
     assert out["virtual_aps"] == []
     assert any("virtual_aps" in w for w in out["warnings"])
+
+
+def test_aos8_list_virtual_aps_falls_back_to_legacy_wlan_virtual_ap_object(monkeypatch):
+    """Regression: some AOS8 builds don't expose the canonical `virtual_ap`
+    config object and answer only its legacy `wlan_virtual_ap` name instead
+    (secondary, same-owner prior art, not an authoritative API contract):
+    https://github.com/secure-ssid/aos8-migration-tool/blob/7bfa884d8e8f1c7e97a7bfa42f15596aa42fcf79/lib/aos8_client.py#L315-L399
+    """
+    fake_cls = _fake_client_for_paths(
+        {
+            "/v1/configuration/object/wlan_virtual_ap": {
+                "wlan_virtual_ap": [
+                    {"profile-name": "Legacy-VAP", "ssid-profile": "Legacy", "vlan": 30}
+                ]
+            }
+        }
+    )
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", fake_cls)
+
+    out = asyncio.run(aos8.aos8_list_virtual_aps(config_path="/md/lab"))
+
+    list_key = next(key for key in out["virtual_aps"] if key != "_pagination")
+    assert list_key == "wlan_virtual_ap"
+    assert out["virtual_aps"][list_key] == [
+        {"profile-name": "Legacy-VAP", "ssid-profile": "Legacy", "vlan": 30}
+    ]
+
+
+def test_aos8_list_virtual_aps_reports_failure_when_both_object_names_fail(monkeypatch):
+    """A build lacking both the canonical and legacy virtual-AP object names
+    must fail the same way a single failed lookup always has -- no new
+    silent-success path is introduced by the fallback."""
+    fake_cls = _fake_client_for_paths({})
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", fake_cls)
+
+    out = asyncio.run(aos8.aos8_list_virtual_aps(config_path="/md/lab"))
+
+    assert out["status_code"] == 404
+
+
+def test_aos8_export_wlans_still_warns_when_both_virtual_ap_object_names_fail(monkeypatch):
+    """End-to-end: `aos8_export_wlans` must still surface the same
+    "virtual_aps" failure warning (and empty list) it always has when neither
+    the canonical nor the legacy virtual-AP object name resolves -- the added
+    fallback call must not mask a genuine failure."""
+    fake_cls = _fake_client_for_paths(
+        {"/v1/configuration/object/ssid_prof": {"ssid_prof": [{"profile-name": "Corp"}]}}
+    )
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", fake_cls)
+
+    out = asyncio.run(aos8.aos8_export_wlans(config_path="/md/lab"))
+
+    assert out["virtual_aps"] == []
+    assert any("virtual_aps" in w for w in out["warnings"])
+
+
+def test_aos8_list_virtual_aps_retains_ssid_prof_hyphenated_alias(monkeypatch):
+    """Regression: bounded compaction in `aos8_list_virtual_aps` must not
+    strip the "ssid-prof" (all-hyphen) alias some AOS8 builds use to
+    reference the SSID profile, or `parse_wlans` can never join the VAP back
+    to its SSID profile (secondary, same-owner prior art, not an
+    authoritative API contract):
+    https://github.com/secure-ssid/aos8-migration-tool/blob/7bfa884d8e8f1c7e97a7bfa42f15596aa42fcf79/lib/aos8_client.py#L315-L399
+    """
+    fake_cls = _fake_client_for_paths(
+        {
+            "/v1/configuration/object/virtual_ap": {
+                "virtual_ap": [
+                    {
+                        "profile-name": "HyphenProf-VAP",
+                        "ssid-prof": "HyphenProf",
+                        "vlan": 90,
+                        # Extra live-shaped noise field that is not in the
+                        # bounded field set and must still be stripped.
+                        "unrelated-live-field": "should-be-dropped",
+                    }
+                ]
+            }
+        }
+    )
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", fake_cls)
+
+    out = asyncio.run(aos8.aos8_list_virtual_aps(config_path="/md/lab"))
+
+    record = out["virtual_aps"]["virtual_ap"][0]
+    assert record["ssid-prof"] == "HyphenProf"
+    assert "unrelated-live-field" not in record
+
+
+def test_aos8_export_wlans_links_ssid_prof_alias_vap_to_one_wlan(monkeypatch):
+    """End-to-end: a live-shaped `{profile-name, ssid-prof, vlan}`
+    virtual-AP record must survive the `aos8_export_wlans` bounded-export
+    round trip and still let `parse_wlans` join it to exactly one WLAN,
+    instead of producing an unlinked SSID profile and an unlinked
+    virtual-AP-only WLAN record."""
+    fake_cls = _fake_client_for_paths(
+        {
+            "/v1/configuration/object/ssid_prof": {
+                "ssid_prof": [
+                    {"profile-name": "HyphenProf", "essid": "HyphenProf", "opmode": "opensystem"}
+                ]
+            },
+            "/v1/configuration/object/virtual_ap": {
+                "virtual_ap": [
+                    {
+                        "profile-name": "HyphenProf-VAP",
+                        "ssid-prof": "HyphenProf",
+                        "vlan": 90,
+                    }
+                ]
+            },
+        }
+    )
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", fake_cls)
+
+    out = asyncio.run(aos8.aos8_export_wlans(config_path="/md/lab"))
+    assert "warnings" not in out
+
+    wlans = parse_wlans({"wlans": out})
+    assert len(wlans) == 1
+    wlan = wlans[0]
+    assert wlan.profile_name == "HyphenProf"
+    assert wlan.virtual_ap_profile == "HyphenProf-VAP"
+    assert wlan.vlan == 90
 
 
 def test_aos8_export_page_collector_exhausts_local_pages():

@@ -128,8 +128,8 @@ GAPS = (
         "still needs broadening against live estates, plus AAA/auth-profile, "
         "server-group, and policy-rule target mappings beyond the verified "
         "subset, and end-to-end evaluation against real source exports.",
-        "`pipeline/aos8_migration_orchestrator.py`, `pipeline/aos8_target_adapters.py`, "
-        "`mcp_servers/aos8.py`, `docs/product-workflows.md`",
+        "`docs/aos8-migration-contract-matrix.md`, `pipeline/aos8_migration_orchestrator.py`, "
+        "`pipeline/aos8_target_adapters.py`, `mcp_servers/aos8.py`, `docs/product-workflows.md`",
     ),
     (
         2,

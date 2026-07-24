@@ -38,6 +38,18 @@ _SAFE_SECRET_METADATA_KEYS = {
     "secret_fields",
     "secrets_persisted",
 }
+# Presence-only boolean flags emitted by `pipeline/aos8_migration.py`
+# (`_wlan_security_intent`'s `security.passphrase_present` /
+# `security.psk_hexkey_present`). They never carry secret material -- only
+# whether a credential field was populated in the AOS8 source -- but their
+# names trip `_SENSITIVE_KEY_RE`'s "passphrase"/"psk" tokens. They are
+# allowlisted by exact name *and* gated on an actual `bool` value in
+# `_is_presence_metadata` below, so a same-named field holding a real secret
+# string would still be redacted.
+_PRESENCE_ONLY_BOOLEAN_METADATA_KEYS = {
+    "passphrase_present",
+    "psk_hexkey_present",
+}
 _TERMINAL_SUCCESS = {"applied", "skipped"}
 _TERMINAL = {*_TERMINAL_SUCCESS, "unsupported"}
 
@@ -117,6 +129,21 @@ def _is_sensitive_key(key: Any) -> bool:
     )
 
 
+def _is_presence_metadata(key: Any, value: Any) -> bool:
+    """Return True only for a known presence-only boolean metadata field.
+
+    Narrow by design: both the exact (normalized) key name must be
+    allowlisted *and* the value must actually be a `bool`. This is
+    intentionally not a suffix/prefix exception -- a field sharing one of
+    these names but holding a non-bool (e.g. an actual secret string) is
+    still redacted by `_is_sensitive_key`.
+    """
+    return (
+        isinstance(value, bool)
+        and _normalized_key(key) in _PRESENCE_ONLY_BOOLEAN_METADATA_KEYS
+    )
+
+
 def _sanitize(
     value: Any,
     *,
@@ -132,7 +159,9 @@ def _sanitize(
         for raw_key, item in list(value.items())[:MAX_RESULT_ITEMS]:
             key = str(raw_key)
             out[key] = (
-                "******"
+                item
+                if _is_presence_metadata(key, item)
+                else "******"
                 if _is_sensitive_key(key)
                 else _sanitize(
                     item,
@@ -184,7 +213,9 @@ def _redact_full(value: Any, *, _depth: int = 0) -> Any:
     if isinstance(value, Mapping):
         return {
             str(key): (
-                "******"
+                item
+                if _is_presence_metadata(key, item)
+                else "******"
                 if _is_sensitive_key(key)
                 else _redact_full(item, _depth=_depth + 1)
             )

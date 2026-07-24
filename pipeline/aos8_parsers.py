@@ -78,6 +78,65 @@ def _identifier(
     return generated
 
 
+_TRUE_FLAG_TOKENS = {"true", "1", "yes", "enable", "enabled"}
+_FALSE_FLAG_TOKENS = {"false", "0", "no", "disable", "disabled"}
+_MAX_FLAG_UNWRAP_DEPTH = 4
+
+
+def _normalize_optional_bool(value: Any, *, _depth: int = 0) -> bool | None:
+    """Defensively coerce a loosely-typed AOS8 boolean/flag value to ``bool | None``.
+
+    AOS8 config exports do not guarantee that boolean-ish fields (like
+    ``wpa3_transition``) arrive as JSON booleans: some builds emit integer
+    ``0``/``1``, an explicit true/false-ish string, or wrap the scalar in a
+    single-key dict — the same "double-wrapped" ``{key: {key: val}}`` quirk
+    documented for other AOS8 config fields (secondary, same-owner prior art,
+    not an authoritative API contract):
+    https://github.com/secure-ssid/aos8-migration-tool/blob/7bfa884d8e8f1c7e97a7bfa42f15596aa42fcf79/docs/API-NOTES.md#L57-L64
+
+    Any other shape — a multi-key dict, a list, or an unrecognized string —
+    is ambiguous and returns ``None`` rather than guessing. An *empty* dict is
+    ambiguous too, not automatically ``True``/``False``.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        # Only literal 0/1 are a documented AOS8 boolean encoding; any other
+        # integer (e.g. an enum ordinal) is not a verified flag value.
+        return bool(value) if value in (0, 1) else None
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in _TRUE_FLAG_TOKENS:
+            return True
+        if token in _FALSE_FLAG_TOKENS:
+            return False
+        return None
+    if isinstance(value, dict):
+        if len(value) != 1 or _depth >= _MAX_FLAG_UNWRAP_DEPTH:
+            return None
+        (only_value,) = value.values()
+        return _normalize_optional_bool(only_value, _depth=_depth + 1)
+    return None
+
+
+def _wlan_security_signals(profile: dict[str, Any]) -> tuple[bool | None, bool, bool]:
+    """Return (wpa3_transition, passphrase_present, psk_hexkey_present) from an ssid_prof.
+
+    These are the only AOS8 ``ssid_prof`` fields with in-repo evidence for
+    security-mode disambiguation beyond ``opmode``
+    (``mcp_servers/openapi_gen/manifests/aos8.json``
+    `aos8_post_object_ssid_prof` request-body properties: ``wpa3_transition``,
+    ``wpa_passphrase``, ``wpa_hexkey``). Only presence is recorded; the raw
+    passphrase/hex-key values are never read here and remain redacted wherever
+    the full ssid_prof is otherwise retained (`pipeline/aos8_migration.py`
+    `_wlan_payload`'s `unsupported_fields` pass).
+    """
+    wpa3_transition = _normalize_optional_bool(profile.get("wpa3_transition"))
+    passphrase_present = bool(profile.get("wpa_passphrase"))
+    psk_hexkey_present = bool(profile.get("wpa_hexkey"))
+    return wpa3_transition, passphrase_present, psk_hexkey_present
+
+
 def parse_wlans(
     export: dict[str, Any],
     warnings: list[str] | None = None,
@@ -96,7 +155,12 @@ def parse_wlans(
 
     vap_by_ssid: dict[str, dict[str, Any]] = {}
     for index, vap in enumerate(virtual_aps):
-        ssid_ref = _first(vap, ("ssid-profile", "ssid_prof"))
+        # AOS8 returns the SSID-profile reference under different keys
+        # depending on firmware build — "ssid_prof", "ssid-profile", or
+        # "ssid-prof" have all been observed (secondary, same-owner prior
+        # art, not an authoritative API contract):
+        # https://github.com/secure-ssid/aos8-migration-tool/blob/7bfa884d8e8f1c7e97a7bfa42f15596aa42fcf79/lib/aos8_client.py#L315-L399
+        ssid_ref = _first(vap, ("ssid-profile", "ssid_prof", "ssid-prof"))
         if ssid_ref:
             vap_by_ssid[str(ssid_ref)] = vap
         else:
@@ -115,6 +179,7 @@ def parse_wlans(
             warnings,
         )
         vap = vap_by_ssid.get(name, {})
+        wpa3_transition, passphrase_present, psk_hexkey_present = _wlan_security_signals(profile)
         out.append(
             AOS8Wlan(
                 profile_name=name,
@@ -124,6 +189,9 @@ def parse_wlans(
                 forward_mode=_first(vap, ("forward-mode", "forward_mode")),
                 aaa_profile=_first(vap, ("aaa-profile", "aaa_prof")),
                 virtual_ap_profile=_first(vap, ("profile-name", "name")),
+                wpa3_transition=wpa3_transition,
+                passphrase_present=passphrase_present,
+                psk_hexkey_present=psk_hexkey_present,
                 raw={"ssid_profile": profile, "virtual_ap": vap},
             )
         )
@@ -371,7 +439,11 @@ def parse_aaa_profiles(
         "dot1x_server_group": ("dot1x_server_group", "dot1x-server-group"),
         "mac_auth_profile": ("mac_auth_profile", "mac-auth-profile"),
         "mac_default_role": ("mac_default_role", "mac-default-role"),
-        "mac_server_group": ("mba_server_group", "mac-server-group"),
+        "mac_server_group": (
+            "mac_server_group",
+            "mba_server_group",
+            "mac-server-group",
+        ),
         "accounting_server_group": ("rad_acct_sg", "radius-accounting-server-group"),
     }
     consumed = {key for values in aliases.values() for key in values}

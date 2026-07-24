@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pipeline.aos8_parsers import (
+    _normalize_optional_bool,
     parse_aaa_profiles,
     parse_ap_groups,
     parse_auth_profiles,
@@ -231,6 +232,196 @@ def test_parse_aaa_and_auth_objects_preserves_source_settings():
         ("tacacs", "tac1"),
     }
     assert parse_server_groups(_EXPORT)[0].auth_servers == ["rad1"]
+
+
+def test_parse_aaa_profiles_recognizes_literal_mac_server_group_alias():
+    """Regression for docs/aos8-migration-contract-matrix.md §3 item 1."""
+    export = {
+        "aaa": {
+            "aaa_profiles": [
+                {
+                    "profile-name": "literal-key-aaa",
+                    "mac_server_group": "literal-mac-sg",
+                }
+            ],
+        },
+    }
+    profile = parse_aaa_profiles(export)[0]
+    assert profile.mac_server_group == "literal-mac-sg"
+    assert "mac_server_group" not in profile.settings
+
+
+def test_parse_aaa_profiles_still_recognizes_legacy_mba_server_group_alias():
+    export = {
+        "aaa": {
+            "aaa_profiles": [
+                {"profile-name": "legacy-aaa", "mba_server_group": "legacy-mac-sg"}
+            ],
+        },
+    }
+    profile = parse_aaa_profiles(export)[0]
+    assert profile.mac_server_group == "legacy-mac-sg"
+
+
+def test_parse_wlans_extracts_bounded_security_signals_from_ssid_profile():
+    export = {
+        "wlans": {
+            "ssid_profiles": [
+                {
+                    "profile-name": "Secure",
+                    "essid": "Secure",
+                    "opmode": "wpa3-aes-ccm-128-psk",
+                    "wpa3_transition": True,
+                    "wpa_passphrase": "super-secret-passphrase",
+                    "wpa_hexkey": "deadbeef",
+                }
+            ],
+            "virtual_aps": [],
+        }
+    }
+    wlan = parse_wlans(export)[0]
+    assert wlan.passphrase_present is True
+    assert wlan.psk_hexkey_present is True
+    assert wlan.wpa3_transition is True
+    # These are presence-only booleans, never the secret value itself.
+    assert isinstance(wlan.passphrase_present, bool)
+    assert isinstance(wlan.psk_hexkey_present, bool)
+    # The actual secret value still lives in `raw` for forward compatibility
+    # (as with every other AOS8 field) and is redacted downstream by
+    # `pipeline.aos8_migration` when candidates are built — never by the
+    # parser layer.
+    assert wlan.raw["ssid_profile"]["wpa_passphrase"] == "super-secret-passphrase"
+
+
+def test_parse_wlans_defaults_security_signals_when_absent():
+    export = {
+        "wlans": {
+            "ssid_profiles": [{"profile-name": "Plain", "essid": "Plain"}],
+            "virtual_aps": [],
+        }
+    }
+    wlan = parse_wlans(export)[0]
+    assert wlan.wpa3_transition is None
+    assert wlan.passphrase_present is False
+    assert wlan.psk_hexkey_present is False
+
+
+def test_normalize_optional_bool_accepts_actual_booleans():
+    assert _normalize_optional_bool(True) is True
+    assert _normalize_optional_bool(False) is False
+
+
+def test_normalize_optional_bool_accepts_integer_zero_or_one():
+    assert _normalize_optional_bool(1) is True
+    assert _normalize_optional_bool(0) is False
+
+
+def test_normalize_optional_bool_rejects_other_integers_as_ambiguous():
+    # e.g. an unrelated enum ordinal is not a documented AOS8 boolean shape.
+    assert _normalize_optional_bool(2) is None
+    assert _normalize_optional_bool(-1) is None
+
+
+def test_normalize_optional_bool_accepts_explicit_true_false_strings():
+    for token in ("true", "TRUE", " True ", "1", "yes", "enable", "enabled"):
+        assert _normalize_optional_bool(token) is True, token
+    for token in ("false", "FALSE", " False ", "0", "no", "disable", "disabled"):
+        assert _normalize_optional_bool(token) is False, token
+
+
+def test_normalize_optional_bool_rejects_ambiguous_strings():
+    assert _normalize_optional_bool("") is None
+    assert _normalize_optional_bool("maybe") is None
+    assert _normalize_optional_bool("wpa2-psk-aes") is None
+
+
+def test_normalize_optional_bool_unwraps_single_key_and_double_wrapped_dicts():
+    """AOS8 sometimes double-wraps a scalar as ``{key: {key: val}}`` (secondary,
+    same-owner prior art, not an authoritative API contract):
+    https://github.com/secure-ssid/aos8-migration-tool/blob/7bfa884d8e8f1c7e97a7bfa42f15596aa42fcf79/docs/API-NOTES.md#L57-L64
+    """
+    assert _normalize_optional_bool({"wpa3_transition": True}) is True
+    assert _normalize_optional_bool({"wpa3_transition": {"wpa3_transition": True}}) is True
+    assert _normalize_optional_bool({"enabled": "false"}) is False
+
+
+def test_normalize_optional_bool_treats_empty_or_multi_key_dicts_as_ambiguous():
+    # An empty dict is ambiguous, not automatically True/False.
+    assert _normalize_optional_bool({}) is None
+    assert _normalize_optional_bool({"a": True, "b": False}) is None
+
+
+def test_normalize_optional_bool_treats_lists_and_none_as_ambiguous():
+    assert _normalize_optional_bool([True]) is None
+    assert _normalize_optional_bool([]) is None
+    assert _normalize_optional_bool(None) is None
+
+
+def test_parse_wlans_wpa3_transition_accepts_documented_flag_variants():
+    def _wlan_with_transition(name: str, raw_transition) -> dict:
+        return {
+            "profile-name": name,
+            "essid": name,
+            "opmode": "wpa2-psk-aes",
+            "wpa3_transition": raw_transition,
+            "wpa_passphrase": "flag-variant-passphrase",
+        }
+
+    export = {
+        "wlans": {
+            "ssid_profiles": [
+                _wlan_with_transition("BoolTrue", True),
+                _wlan_with_transition("BoolFalse", False),
+                _wlan_with_transition("IntOne", 1),
+                _wlan_with_transition("StringYes", "yes"),
+                _wlan_with_transition("StringNo", "no"),
+                _wlan_with_transition("Nested", {"wpa3_transition": True}),
+                _wlan_with_transition("AmbiguousDict", {"a": True, "b": False}),
+                _wlan_with_transition("AmbiguousEmptyDict", {}),
+                _wlan_with_transition("AmbiguousList", [True]),
+                _wlan_with_transition("AmbiguousString", "unspecified"),
+            ],
+            "virtual_aps": [],
+        }
+    }
+    wlans = {w.profile_name: w for w in parse_wlans(export)}
+    assert wlans["BoolTrue"].wpa3_transition is True
+    assert wlans["BoolFalse"].wpa3_transition is False
+    assert wlans["IntOne"].wpa3_transition is True
+    assert wlans["StringYes"].wpa3_transition is True
+    assert wlans["StringNo"].wpa3_transition is False
+    assert wlans["Nested"].wpa3_transition is True
+    # Ambiguous shapes must never be guessed as True -- they stay None, same
+    # as a genuinely absent field.
+    assert wlans["AmbiguousDict"].wpa3_transition is None
+    assert wlans["AmbiguousEmptyDict"].wpa3_transition is None
+    assert wlans["AmbiguousList"].wpa3_transition is None
+    assert wlans["AmbiguousString"].wpa3_transition is None
+
+
+def test_parse_wlans_recognizes_ssid_prof_hyphenated_alias():
+    """Regression: some AOS8 builds reference the SSID profile under
+    "ssid-prof" (all-hyphen) rather than "ssid_prof"/"ssid-profile"
+    (secondary, same-owner prior art, not an authoritative API contract):
+    https://github.com/secure-ssid/aos8-migration-tool/blob/7bfa884d8e8f1c7e97a7bfa42f15596aa42fcf79/lib/aos8_client.py#L315-L399
+    """
+    export = {
+        "wlans": {
+            "ssid_profiles": [
+                {"profile-name": "HyphenProf", "essid": "HyphenProf", "opmode": "opensystem"}
+            ],
+            "virtual_aps": [
+                {
+                    "profile-name": "HyphenProf-VAP",
+                    "ssid-prof": "HyphenProf",
+                    "vlan": 90,
+                }
+            ],
+        }
+    }
+    wlan = next(w for w in parse_wlans(export) if w.profile_name == "HyphenProf")
+    assert wlan.vlan == 90
+    assert wlan.virtual_ap_profile == "HyphenProf-VAP"
 
 
 def test_parse_routes_and_vrrp_capture_ipv4_and_ipv6_fields():

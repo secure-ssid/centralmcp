@@ -303,11 +303,15 @@ def test_build_migration_plan_never_serializes_auth_secrets():
         "dot1x-profile-secret",
         "radius-shared-secret",
         "cppm-combined-secret",
-        "cn=bind-user,dc=example,dc=com",
         "ldap-bind-secret",
         "tacacs-shared-secret",
     }
     assert all(secret not in serialized for secret in secret_values)
+    # The LDAP admin/bind DN is a non-secret identifier (not a credential) and
+    # must remain visible/usable in the candidate payload — only the
+    # accompanying bind *password* is redacted. See
+    # docs/aos8-migration-contract-matrix.md §3 item 6.
+    assert "cn=bind-user,dc=example,dc=com" in serialized
 
     candidates = plan["candidates"]["classic_central"]
     radius = next(
@@ -339,8 +343,13 @@ def test_build_migration_plan_never_serializes_auth_secrets():
         "unsupported_fields.cppm_username_password",
         "unsupported_fields.rad_key",
     ]
-    assert ldap["unsupported_fields"]["ldap_admindn"] == "<redacted:present>"
+    assert (
+        ldap["unsupported_fields"]["ldap_admindn"] == "cn=bind-user,dc=example,dc=com"
+    )
+    assert ldap["unsupported_fields"]["ldap_adminpasswd"] == "<redacted:present>"
     assert ldap["unsupported_fields"]["ldap_keyattribute"] == "sAMAccountName"
+    assert ldap["requires_secret_input"] is True
+    assert ldap["secret_fields"] == ["unsupported_fields.ldap_adminpasswd"]
     assert tacacs["unsupported_fields"]["tacacs_key"] == "<redacted:present>"
     assert tacacs["unsupported_fields"]["tacacs_timeout"] == 5
     assert dot1x["unsupported_fields"]["password"] == "<redacted:present>"
@@ -350,18 +359,49 @@ def test_build_migration_plan_never_serializes_auth_secrets():
     assert any("re-enter this credential" in warning for warning in plan["warnings"])
 
 
+def test_ldap_admin_dn_stays_visible_while_bind_password_is_redacted():
+    """Regression for docs/aos8-migration-contract-matrix.md §3 item 6."""
+    export = {
+        "config_path": "/md",
+        "aaa": {
+            "ldap_servers": [
+                {
+                    "ldap_server_name": "ldap1",
+                    "ldap_host": "10.0.0.11",
+                    "ldap_admindn": "cn=svc-bind,dc=example,dc=com",
+                    "ldap_adminpasswd": "super-secret",
+                }
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+    ldap = next(
+        candidate
+        for candidate in plan["candidates"]["new_central"]
+        if candidate["object_type"] == "auth_server"
+    )
+    assert ldap["unsupported_fields"]["ldap_admindn"] == "cn=svc-bind,dc=example,dc=com"
+    assert ldap["unsupported_fields"]["ldap_adminpasswd"] == "<redacted:present>"
+    assert ldap["requires_secret_input"] is True
+    assert ldap["secret_fields"] == ["unsupported_fields.ldap_adminpasswd"]
+    serialized = json.dumps(plan, sort_keys=True)
+    assert "cn=svc-bind,dc=example,dc=com" in serialized
+    assert "super-secret" not in serialized
+
+
 def test_sensitive_key_detection_covers_credentials_without_false_positives():
     for key in (
         "rad_key",
         "radius-shared-secret",
         "ldap_adminpasswd",
-        "ldap-admin-dn",
         "bind_password",
         "tacacsKey",
         "sharedSecret",
         "client_secret",
         "api-token",
         "pwd",
+        "wpa_hexkey",
+        "wepkey1",
     ):
         assert _is_sensitive_key(key)
 
@@ -372,8 +412,92 @@ def test_sensitive_key_detection_covers_credentials_without_false_positives():
         "token_caching_period",
         "use_session_key",
         "wpa_key_retries",
+        "ldap-admin-dn",
+        "ldap_admindn",
     ):
         assert not _is_sensitive_key(key)
+
+
+def test_sensitive_key_detection_evaluates_flattened_path_like_keys_by_leaf():
+    """Regression: `_wlan_payload` flattens nested ssid_profile/virtual_ap
+    dict keys into path-like strings (e.g. `f"ssid_profile.{key}"`). The
+    leading, non-secret path segment must not dilute an otherwise-sensitive
+    leaf token out of `_SENSITIVE_EXACT_KEYS`/prefix+suffix matching."""
+    for key in (
+        "ssid_profile.wpa_hexkey",
+        "ssid_profile.wepkey1",
+        "ssid_profile.wepkey2",
+        "ssid_profile.wepkey3",
+        "ssid_profile.wepkey4",
+        "ssid_profile.wpa_passphrase",
+        "ssid_profile.psk",
+        "ssid_profile.key",
+        "auth_server.rad_key",
+        "auth_server.radius_key",
+        "auth_server.tacacs_key",
+        "auth_server.ldap_adminpasswd",
+        "auth_server.ldap_adminpwd",
+        "auth_server.shared_secret",
+        # Nested more than one level deep, and using "/" as a separator.
+        "ssid_profile/nested/wepkey1",
+    ):
+        assert _is_sensitive_key(key), f"expected {key!r} to be treated as sensitive"
+
+    # Non-secret path-like keys (including the exact fields this flattening
+    # emits today for unmapped, non-secret ssid_profile/virtual_ap settings)
+    # must not be masked.
+    for key in (
+        "ssid_profile.opmode",
+        "virtual_ap.forward_mode",
+        "ssid_profile.wpa3_transition",
+        "auth_server.ldap_admindn",
+    ):
+        assert not _is_sensitive_key(key), f"expected {key!r} to stay unredacted"
+
+
+def test_wlan_secret_material_never_appears_in_plan_json():
+    """End-to-end regression for the flattened-key secret leak: an AOS8
+    ssid_profile carrying WPA passphrase/hex-key and WEP key 1-4 material
+    (fields with no dedicated mapping, so they flow through the flattened
+    `ssid_profile.*` `unsupported_fields` path) must never surface the actual
+    secret values anywhere in the serialized migration plan."""
+    wpa_passphrase = "correct-horse-battery-staple"
+    wpa_hexkey = "deadbeefcafebabe0011223344556677"
+    wep_keys = {
+        "wepkey1": "1111111111",
+        "wepkey2": "2222222222",
+        "wepkey3": "3333333333",
+        "wepkey4": "4444444444",
+    }
+    export = _wlan_export(
+        {
+            "profile-name": "Legacy",
+            "essid": "Legacy",
+            "opmode": "wpa2-psk-aes",
+            "wpa_passphrase": wpa_passphrase,
+            "wpa_hexkey": wpa_hexkey,
+            **wep_keys,
+        }
+    )
+    plan = build_migration_plan(export)
+    serialized = json.dumps(plan)
+
+    for secret in (wpa_passphrase, wpa_hexkey, *wep_keys.values()):
+        assert secret not in serialized
+
+    candidate = next(
+        c
+        for c in plan["candidates"]["new_central"]
+        if c["object_type"] == "wlan" and c["identifier"] == "Legacy"
+    )
+    unsupported = candidate["unsupported_fields"]
+    assert unsupported["ssid_profile.wpa_passphrase"] == "<redacted:present>"
+    assert unsupported["ssid_profile.wpa_hexkey"] == "<redacted:present>"
+    for key in wep_keys:
+        assert unsupported[f"ssid_profile.{key}"] == "<redacted:present>"
+    assert candidate["requires_secret_input"] is True
+    for key in ("wpa_passphrase", "wpa_hexkey", *wep_keys):
+        assert f"unsupported_fields.ssid_profile.{key}" in candidate["secret_fields"]
 
 
 def test_build_migration_plan_handles_empty_export():
@@ -397,3 +521,630 @@ def test_build_migration_plan_handles_empty_export():
         "vrrp": 0,
         "wlans": 0,
     }
+
+
+def _wlan_export(ssid_profile: dict, virtual_ap: dict | None = None) -> dict:
+    return {
+        "config_path": "/md",
+        "wlans": {
+            "ssid_profiles": [ssid_profile],
+            "virtual_aps": [virtual_ap] if virtual_ap else [],
+        },
+    }
+
+
+def _wlan_security(plan: dict, name: str) -> dict:
+    candidate = next(
+        c
+        for c in plan["candidates"]["new_central"]
+        if c["object_type"] == "wlan" and c["identifier"] == name
+    )
+    return candidate["payload"]["security"]
+
+
+def test_wlan_security_intent_uses_aaa_profile_chain_for_enterprise_dot1x():
+    """Regression: existing Corp fixture pairs opmode text with a resolved
+    dot1x aaa_profile chain; the source signal must classify enterprise/dot1x
+    rather than guessing from the raw opmode string alone."""
+    plan = build_migration_plan(_EXPORT)
+    security = _wlan_security(plan, "Corp")
+    assert security["mode"] == "enterprise_dot1x"
+    assert security["ambiguous"] is False
+    assert security["dot1x_auth_profile"] == "corp-dot1x"
+    assert security["mac_auth_profile"] is None
+    assert security["opmode"] == "wpa2-aes"
+
+
+def test_wlan_security_intent_classifies_open():
+    export = _wlan_export({"profile-name": "Open", "essid": "Open", "opmode": "opensystem"})
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "Open")
+    assert security["mode"] == "open"
+    assert security["ambiguous"] is False
+
+
+def test_wlan_security_intent_classifies_wpa2_personal():
+    export = _wlan_export(
+        {
+            "profile-name": "Personal",
+            "essid": "Personal",
+            "opmode": "wpa2-psk-aes",
+            "wpa_passphrase": "correct-horse-battery-staple",
+        }
+    )
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "Personal")
+    assert security["mode"] == "wpa2_personal"
+    assert security["ambiguous"] is False
+    assert security["passphrase_present"] is True
+    # The passphrase value itself must never appear anywhere in the plan.
+    assert "correct-horse-battery-staple" not in json.dumps(plan)
+
+
+def test_wlan_security_intent_classifies_wpa3_sae():
+    export = _wlan_export(
+        {
+            "profile-name": "SAE",
+            "essid": "SAE",
+            "opmode": "wpa3-aes-ccm-128-psk",
+            "wpa_passphrase": "another-sae-passphrase",
+        }
+    )
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "SAE")
+    assert security["mode"] == "wpa3_sae"
+    assert security["ambiguous"] is False
+
+
+def test_wlan_security_intent_classifies_wpa3_transition_from_flag():
+    export = _wlan_export(
+        {
+            "profile-name": "Transition",
+            "essid": "Transition",
+            "opmode": "wpa2-psk-aes",
+            "wpa3_transition": True,
+            "wpa_passphrase": "transition-mode-passphrase",
+        }
+    )
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "Transition")
+    assert security["mode"] == "wpa3_transition_personal"
+    assert security["ambiguous"] is False
+    assert security["wpa3_transition"] is True
+
+
+def test_wlan_security_intent_classifies_enhanced_open():
+    export = _wlan_export(
+        {"profile-name": "OWE", "essid": "OWE", "opmode": "enhanced-open"}
+    )
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "OWE")
+    assert security["mode"] == "enhanced_open"
+    assert security["ambiguous"] is False
+
+
+def test_wlan_security_intent_classifies_mac_auth_only():
+    export = {
+        "config_path": "/md",
+        "wlans": {
+            "ssid_profiles": [
+                {"profile-name": "MacOnly", "essid": "MacOnly", "opmode": "opensystem"}
+            ],
+            "virtual_aps": [
+                {
+                    "profile-name": "MacOnly-VAP",
+                    "ssid-profile": "MacOnly",
+                    "aaa-profile": "mac-aaa",
+                    "vlan": 40,
+                }
+            ],
+        },
+        "aaa": {
+            "aaa_profiles": [
+                {"profile-name": "mac-aaa", "mac_auth_profile": "corp-mac"},
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "MacOnly")
+    assert security["mode"] == "mac_auth_only"
+    assert security["ambiguous"] is False
+    assert security["mac_auth_profile"] == "corp-mac"
+
+
+def test_wlan_security_intent_classifies_mac_auth_psk():
+    export = {
+        "config_path": "/md",
+        "wlans": {
+            "ssid_profiles": [
+                {
+                    "profile-name": "MacPsk",
+                    "essid": "MacPsk",
+                    "opmode": "wpa2-psk-aes",
+                    "wpa_passphrase": "mac-psk-passphrase",
+                }
+            ],
+            "virtual_aps": [
+                {
+                    "profile-name": "MacPsk-VAP",
+                    "ssid-profile": "MacPsk",
+                    "aaa-profile": "mac-psk-aaa",
+                    "vlan": 41,
+                }
+            ],
+        },
+        "aaa": {
+            "aaa_profiles": [
+                {"profile-name": "mac-psk-aaa", "mac_auth_profile": "corp-mac"},
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "MacPsk")
+    assert security["mode"] == "mac_auth_psk"
+    assert security["ambiguous"] is False
+
+
+def test_wlan_security_intent_role_only_aaa_profile_falls_through_to_opmode_classification():
+    """Regression for the companion aos8-migration-tool's role-only AAA +
+    WPA2-PSK fixture (secondary, same-owner prior art, not an authoritative
+    API contract):
+    https://github.com/secure-ssid/aos8-migration-tool/blob/7bfa884d8e8f1c7e97a7bfa42f15596aa42fcf79/tests/test_aos8_parser.py#L15-L34
+
+    A *resolved* aaa_profile that configures neither a dot1x nor a MAC-auth
+    profile (e.g. `initial-role` only, used purely for post-auth role
+    assignment) must not block opmode/passphrase classification -- unlike an
+    aaa_profile reference that cannot be resolved in the export at all, which
+    must still stay unknown.
+    """
+    export = {
+        "config_path": "/md",
+        "wlans": {
+            "ssid_profiles": [
+                {
+                    "profile-name": "GuestPsk",
+                    "essid": "GuestPsk",
+                    "opmode": "wpa2-psk-aes",
+                    "wpa_passphrase": "guest-psk-passphrase",
+                },
+                {
+                    "profile-name": "Dangling",
+                    "essid": "Dangling",
+                    "opmode": "wpa2-psk-aes",
+                    "wpa_passphrase": "dangling-passphrase",
+                },
+            ],
+            "virtual_aps": [
+                {
+                    "profile-name": "GuestPsk-VAP",
+                    "ssid-profile": "GuestPsk",
+                    "aaa-profile": "guest-aaa",
+                    "vlan": 60,
+                },
+                {
+                    "profile-name": "Dangling-VAP",
+                    "ssid-profile": "Dangling",
+                    "aaa-profile": "missing-aaa",
+                    "vlan": 61,
+                },
+            ],
+        },
+        "aaa": {
+            "aaa_profiles": [
+                {"profile-name": "guest-aaa", "initial-role": "guest-logon"},
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+
+    guest_security = _wlan_security(plan, "GuestPsk")
+    assert guest_security["mode"] == "wpa2_personal"
+    assert guest_security["ambiguous"] is False
+    assert guest_security["dot1x_auth_profile"] is None
+    assert guest_security["mac_auth_profile"] is None
+    assert guest_security["aaa_profile"] == "guest-aaa"
+    assert any(
+        "guest-aaa" in evidence and "role-only" in evidence
+        for evidence in guest_security["evidence"]
+    )
+    # No security-intent-specific warning (aaa_profile resolution issue or
+    # "cannot be verified"/"does not match a verified" fallback text) should
+    # be raised for a cleanly classified role-only-AAA + verified-WPA2-PSK
+    # WLAN -- only the pre-existing, unrelated opmode/passphrase
+    # unsupported-field warnings.
+    assert not any(
+        "aaa_profile" in warning or "does not match a verified" in warning
+        for warning in plan["warnings"]
+        if warning.startswith("wlan:GuestPsk")
+    )
+
+    # An unresolved aaa_profile reference is a genuinely different case and
+    # must still be reported unknown rather than falling through to opmode.
+    dangling_security = _wlan_security(plan, "Dangling")
+    assert dangling_security["mode"] == "unknown"
+    assert dangling_security["ambiguous"] is True
+    assert any(
+        "aaa_profile 'missing-aaa' was not present" in warning
+        for warning in plan["warnings"]
+    )
+
+
+def test_wlan_security_intent_stays_unknown_for_dot1x_server_group_without_auth_profile():
+    """Regression: an aaa_profile that configures a dot1x_server_group but no
+    explicit dot1x_auth_profile still carries authentication intent -- it
+    must NOT fall through to opmode classification, even for an `opensystem`
+    WLAN that would otherwise look like unambiguous open/no-auth."""
+    export = {
+        "config_path": "/md",
+        "wlans": {
+            "ssid_profiles": [
+                {"profile-name": "SgOnly", "essid": "SgOnly", "opmode": "opensystem"}
+            ],
+            "virtual_aps": [
+                {
+                    "profile-name": "SgOnly-VAP",
+                    "ssid-profile": "SgOnly",
+                    "aaa-profile": "sg-only-aaa",
+                    "vlan": 80,
+                }
+            ],
+        },
+        "aaa": {
+            "aaa_profiles": [
+                {"profile-name": "sg-only-aaa", "dot1x_server_group": "corp-sg"},
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "SgOnly")
+    assert security["mode"] == "unknown"
+    assert security["ambiguous"] is True
+    assert security["dot1x_auth_profile"] is None
+    assert security["mac_auth_profile"] is None
+    assert any(
+        "sg-only-aaa" in warning
+        and "dot1x_server_group" in warning
+        and "without an explicit dot1x_auth_profile/mac_auth_profile mapping" in warning
+        for warning in plan["warnings"]
+    )
+
+
+def test_wlan_security_intent_stays_unknown_for_mac_server_group_without_auth_profile():
+    """Same as the dot1x_server_group case, but for a mac_server_group
+    reference with no explicit mac_auth_profile mapping."""
+    export = {
+        "config_path": "/md",
+        "wlans": {
+            "ssid_profiles": [
+                {"profile-name": "MacSgOnly", "essid": "MacSgOnly", "opmode": "opensystem"}
+            ],
+            "virtual_aps": [
+                {
+                    "profile-name": "MacSgOnly-VAP",
+                    "ssid-profile": "MacSgOnly",
+                    "aaa-profile": "mac-sg-only-aaa",
+                    "vlan": 81,
+                }
+            ],
+        },
+        "aaa": {
+            "aaa_profiles": [
+                {"profile-name": "mac-sg-only-aaa", "mac_server_group": "guest-sg"},
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "MacSgOnly")
+    assert security["mode"] == "unknown"
+    assert security["ambiguous"] is True
+    assert any(
+        "mac-sg-only-aaa" in warning
+        and "mac_server_group" in warning
+        and "without an explicit dot1x_auth_profile/mac_auth_profile mapping" in warning
+        for warning in plan["warnings"]
+    )
+
+
+def test_wlan_security_intent_stays_unknown_for_accounting_server_group_without_auth_profile():
+    """An accounting-only server-group reference on the aaa_profile still
+    indicates external server-group involvement without a verified
+    auth-profile mapping, so it must fail closed to unknown rather than
+    falling through to opmode classification."""
+    export = {
+        "config_path": "/md",
+        "wlans": {
+            "ssid_profiles": [
+                {
+                    "profile-name": "AcctSgOnly",
+                    "essid": "AcctSgOnly",
+                    "opmode": "opensystem",
+                }
+            ],
+            "virtual_aps": [
+                {
+                    "profile-name": "AcctSgOnly-VAP",
+                    "ssid-profile": "AcctSgOnly",
+                    "aaa-profile": "acct-sg-only-aaa",
+                    "vlan": 82,
+                }
+            ],
+        },
+        "aaa": {
+            "aaa_profiles": [
+                {
+                    "profile-name": "acct-sg-only-aaa",
+                    "rad_acct_sg": "acct-sg",
+                },
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "AcctSgOnly")
+    assert security["mode"] == "unknown"
+    assert security["ambiguous"] is True
+    assert any(
+        "acct-sg-only-aaa" in warning and "accounting_server_group" in warning
+        for warning in plan["warnings"]
+    )
+
+
+def test_wlan_security_intent_stays_unknown_when_aaa_profile_has_both_dot1x_and_mac_auth():
+    """An aaa_profile configuring both a dot1x and a MAC-auth profile is an
+    unverified combination; it must stay unknown and must NOT fall through to
+    opmode-based PSK classification even though the WLAN itself carries a
+    passphrase."""
+    export = {
+        "config_path": "/md",
+        "wlans": {
+            "ssid_profiles": [
+                {
+                    "profile-name": "Mixed",
+                    "essid": "Mixed",
+                    "opmode": "wpa2-psk-aes",
+                    "wpa_passphrase": "mixed-passphrase",
+                }
+            ],
+            "virtual_aps": [
+                {
+                    "profile-name": "Mixed-VAP",
+                    "ssid-profile": "Mixed",
+                    "aaa-profile": "mixed-aaa",
+                    "vlan": 70,
+                }
+            ],
+        },
+        "aaa": {
+            "aaa_profiles": [
+                {
+                    "profile-name": "mixed-aaa",
+                    "dot1x_auth_profile": "corp-dot1x",
+                    "mac_auth_profile": "corp-mac",
+                },
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "Mixed")
+    assert security["mode"] == "unknown"
+    assert security["ambiguous"] is True
+    assert any(
+        "configures both a dot1x and a MAC-auth profile" in warning
+        for warning in plan["warnings"]
+    )
+
+
+def test_wlan_security_intent_reports_unknown_when_aaa_profile_unresolved():
+    export = {
+        "config_path": "/md",
+        "wlans": {
+            "ssid_profiles": [
+                {"profile-name": "Dangling", "essid": "Dangling", "opmode": "opensystem"}
+            ],
+            "virtual_aps": [
+                {
+                    "profile-name": "Dangling-VAP",
+                    "ssid-profile": "Dangling",
+                    "aaa-profile": "missing-aaa",
+                    "vlan": 50,
+                }
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "Dangling")
+    assert security["mode"] == "unknown"
+    assert security["ambiguous"] is True
+    assert any(
+        "aaa_profile 'missing-aaa' was not present" in warning
+        for warning in plan["warnings"]
+    )
+
+
+def test_wlan_security_intent_reports_unknown_for_ambiguous_opmode_without_fabricating():
+    export = _wlan_export(
+        {"profile-name": "Legacy", "essid": "Legacy", "opmode": "static-wep"}
+    )
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "Legacy")
+    assert security["mode"] == "unknown"
+    assert security["ambiguous"] is True
+    assert any(
+        "does not match a verified AOS8 security pattern" in warning
+        for warning in plan["warnings"]
+    )
+
+
+def test_wlan_security_intent_does_not_classify_legacy_wpa_tkip_psk_as_wpa2():
+    """Regression: a legacy WPA1/TKIP opmode carrying a PSK token must not be
+    misclassified as verified WPA2-personal -- the opmode itself never says
+    "wpa2"."""
+    export = _wlan_export(
+        {
+            "profile-name": "LegacyTkip",
+            "essid": "LegacyTkip",
+            "opmode": "wpa-psk-tkip",
+            "wpa_passphrase": "legacy-tkip-passphrase",
+        }
+    )
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "LegacyTkip")
+    assert security["mode"] == "unknown"
+    assert security["ambiguous"] is True
+    assert security["passphrase_present"] is True
+    assert any(
+        "does not match a verified AOS8 security pattern" in warning
+        for warning in plan["warnings"]
+    )
+
+
+def test_wlan_security_intent_does_not_classify_wpa_tkip_with_passphrase_present_as_wpa2():
+    """Regression: `passphrase_present=True` alone (without an explicit
+    "wpa2" opmode token) must not be enough evidence for wpa2_personal."""
+    export = _wlan_export(
+        {
+            "profile-name": "LegacyTkipNoPsk",
+            "essid": "LegacyTkipNoPsk",
+            "opmode": "wpa-tkip",
+            "wpa_passphrase": "another-legacy-passphrase",
+        }
+    )
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "LegacyTkipNoPsk")
+    assert security["mode"] == "unknown"
+    assert security["ambiguous"] is True
+    assert security["passphrase_present"] is True
+
+
+def test_wlan_security_intent_does_not_classify_unrecognized_psk_opmode_as_wpa2():
+    """Regression: an opmode token containing "psk" but not "wpa2" (and no
+    aaa_profile/wpa3/enhanced-open match) must remain unknown."""
+    export = _wlan_export(
+        {
+            "profile-name": "MysteryPsk",
+            "essid": "MysteryPsk",
+            "opmode": "some-vendor-psk-mode",
+            "wpa_hexkey": "abcdef0123456789",
+        }
+    )
+    plan = build_migration_plan(export)
+    security = _wlan_security(plan, "MysteryPsk")
+    assert security["mode"] == "unknown"
+    assert security["ambiguous"] is True
+    assert security["psk_hexkey_present"] is True
+
+
+def test_server_group_dependency_resolution_is_type_aware_across_radius_and_ldap():
+    export = {
+        "config_path": "/md",
+        "aaa": {
+            "server_groups": [
+                {"sg_name": "mixed-sg", "auth_server": [{"name": "shared-name"}]}
+            ],
+            "radius_servers": [
+                {"rad_server_name": "shared-name", "rad_host": "10.0.0.1"}
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+    server_group = next(
+        c
+        for c in plan["candidates"]["new_central"]
+        if c["object_type"] == "server_group"
+    )
+    assert server_group["dependencies"] == ["auth_server:radius:shared-name"]
+
+
+def test_server_group_dependency_collision_fails_closed_with_warning():
+    """Regression for docs/aos8-migration-contract-matrix.md §3 item 4."""
+    export = {
+        "config_path": "/md",
+        "aaa": {
+            "server_groups": [
+                {"sg_name": "collide-sg", "auth_server": [{"name": "shared-name"}]}
+            ],
+            "radius_servers": [
+                {"rad_server_name": "shared-name", "rad_host": "10.0.0.1"}
+            ],
+            "ldap_servers": [
+                {"ldap_server_name": "shared-name", "ldap_host": "10.0.0.2"}
+            ],
+        },
+    }
+    plan = build_migration_plan(export)
+    server_group = next(
+        c
+        for c in plan["candidates"]["new_central"]
+        if c["object_type"] == "server_group"
+    )
+    # Fail-closed: neither the RADIUS nor the LDAP candidate is guessed.
+    assert server_group["dependencies"] == []
+    assert any(
+        "matches multiple server types" in warning
+        and "ldap" in warning
+        and "radius" in warning
+        for warning in server_group["warnings"]
+    )
+    assert server_group["unsupported_fields"]["auth_server_type_collisions"] == {
+        "shared-name": ["ldap", "radius"]
+    }
+
+
+def test_server_group_dependencies_remain_deterministic_across_runs():
+    export = {
+        "config_path": "/md",
+        "aaa": {
+            "server_groups": [
+                {
+                    "sg_name": "multi-sg",
+                    "auth_server": [{"name": "rad-a"}, {"name": "tac-a"}],
+                }
+            ],
+            "radius_servers": [{"rad_server_name": "rad-a", "rad_host": "10.0.0.1"}],
+            "tacacs_servers": [{"tacacs_server_name": "tac-a", "tacacs_host": "10.0.0.2"}],
+        },
+    }
+    first = build_migration_plan(export)
+    second = build_migration_plan(export)
+    assert first == second
+    server_group = next(
+        c
+        for c in first["candidates"]["new_central"]
+        if c["object_type"] == "server_group"
+    )
+    assert server_group["dependencies"] == [
+        "auth_server:radius:rad-a",
+        "auth_server:tacacs:tac-a",
+    ]
+
+
+def test_ap_group_warns_explicitly_on_unresolved_vap_to_wlan_dependency():
+    """Regression for docs/aos8-migration-contract-matrix.md §3 item 5."""
+    export = {
+        "config_path": "/md",
+        "ap_groups": [
+            {"profile-name": "Lab-Group", "virtual-ap": ["Missing-VAP"]}
+        ],
+    }
+    plan = build_migration_plan(export)
+    ap_group = next(
+        c for c in plan["candidates"]["new_central"] if c["object_type"] == "ap_group"
+    )
+    assert any(
+        "virtual AP 'Missing-VAP' does not match any parsed WLAN profile" in warning
+        for warning in ap_group["warnings"]
+    )
+    assert ap_group["dependencies"] == ["wlan:Missing-VAP"]
+
+
+def test_role_warns_explicitly_on_missing_policy_dependency():
+    """Regression for docs/aos8-migration-contract-matrix.md §3 item 5."""
+    export = {
+        "config_path": "/md",
+        "roles": [{"role": "orphan", "acl": "missing-policy", "vlan": 10}],
+    }
+    plan = build_migration_plan(export)
+    role = next(c for c in plan["candidates"]["new_central"] if c["object_type"] == "role")
+    assert any(
+        "referenced policy 'missing-policy' was not present" in warning
+        for warning in role["warnings"]
+    )

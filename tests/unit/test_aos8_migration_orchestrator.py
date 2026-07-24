@@ -402,6 +402,81 @@ def test_exact_new_and_classic_rollback_claims_are_preserved(tmp_path):
     ]
 
 
+def test_safe_candidate_redaction_preserves_presence_booleans_and_redacts_secrets(
+    tmp_path,
+):
+    """Regression: `_safe_candidate`/`_sanitize` redaction must keep
+    presence-only booleans (`passphrase_present`, `psk_hexkey_present`) as
+    real JSON booleans -- not mask them to the literal string "******" --
+    while still redacting any actual secret string reachable from the same
+    candidate, in both the returned preview/get_run views and the
+    on-disk persisted state file."""
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    wlan = candidate(
+        "vlan",
+        "20",
+        payload={
+            "description": "Corp",
+            "security": {
+                "mode": "wpa2_personal",
+                "passphrase_present": True,
+                "psk_hexkey_present": False,
+                # A real secret value nested alongside the presence flags;
+                # it must still be redacted even though the flags beside it
+                # are preserved.
+                "shared_secret": "actual-secret-value",
+            },
+        },
+    )
+
+    created = service.create_run([wlan], target(), run_id="presence-bools")
+    detail = service.get_run("presence-bools", include_details=True)
+    security = detail["candidates"][0]["source_candidate"]["payload"]["security"]
+    assert security["passphrase_present"] is True
+    assert security["psk_hexkey_present"] is False
+    assert security["shared_secret"] == "******"
+
+    preview = service.preview([wlan], target())
+    assert "secrets_persisted" in preview  # sanity: preview still redacts via _sanitize
+
+    # The persisted JSON state file on disk must also carry real booleans,
+    # not the string "******", and must never contain the actual secret.
+    state_path = store.path_for("presence-bools")
+    raw_state = json.loads(state_path.read_text())
+    persisted_security = raw_state["candidates"][0]["candidate"]["payload"]["security"]
+    assert persisted_security["passphrase_present"] is True
+    assert persisted_security["psk_hexkey_present"] is False
+    assert persisted_security["shared_secret"] == "******"
+    assert "actual-secret-value" not in state_path.read_text()
+    assert created["candidates"][0]["status"] in {"pending", "blocked", "unsupported"}
+
+
+def test_safe_candidate_redaction_only_bypasses_boolean_presence_values(tmp_path):
+    """Regression: the presence-only allowlist must be a narrow key+type
+    check, not a broad suffix exception -- a field sharing one of the
+    allowlisted names but holding a non-bool (e.g. an actual secret string)
+    must still be redacted."""
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    wlan = candidate(
+        "vlan",
+        "21",
+        payload={
+            "description": "Corp2",
+            "security": {
+                # Same key name as the allowlisted presence flag, but a
+                # non-bool value -- must NOT bypass redaction.
+                "passphrase_present": "yes-it-is-present-and-also-a-leaked-secret",
+            },
+        },
+    )
+    service.create_run([wlan], target(), run_id="presence-bools-narrow")
+    detail = service.get_run("presence-bools-narrow", include_details=True)
+    security = detail["candidates"][0]["source_candidate"]["payload"]["security"]
+    assert security["passphrase_present"] == "******"
+
+
 def test_mcp_run_wrappers_use_injected_orchestrator_without_credentials(
     tmp_path, monkeypatch
 ):

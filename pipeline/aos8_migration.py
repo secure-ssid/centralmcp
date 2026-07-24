@@ -48,6 +48,12 @@ APPLY_ORDER = {
 
 _SECRET_MARKER = "<redacted:present>"
 _EMPTY_SECRET_MARKER = "<redacted:empty>"
+# `ldap_admindn`/`ldap_admin_dn` (the LDAP bind/admin distinguished name, e.g.
+# `cn=admin,dc=example,dc=com`) is intentionally *not* listed here. It is a
+# non-secret identifier needed to reconstruct an LDAP auth-server object, not a
+# credential — only the accompanying bind password
+# (`ldap_adminpasswd`/`ldap_adminpwd`, still listed below) is a secret. See
+# docs/aos8-migration-contract-matrix.md §3 item 6.
 _SENSITIVE_EXACT_KEYS = {
     "access_token",
     "admin_dn",
@@ -68,8 +74,6 @@ _SENSITIVE_EXACT_KEYS = {
     "credential",
     "credentials",
     "key",
-    "ldap_admindn",
-    "ldap_admin_dn",
     "ldap_adminpasswd",
     "ldap_adminpwd",
     "password",
@@ -93,6 +97,15 @@ _SENSITIVE_EXACT_KEYS = {
     "tacacskey",
     "tacacs_secret",
     "token",
+    # AOS8 `ssid_prof` PSK/WEP key material
+    # (`mcp_servers/openapi_gen/manifests/aos8.json`
+    # `aos8_post_object_ssid_prof` request-body properties) — shared secrets,
+    # never persisted or returned in candidate payloads.
+    "wpa_hexkey",
+    "wepkey1",
+    "wepkey2",
+    "wepkey3",
+    "wepkey4",
 }
 _SENSITIVE_KEY_PREFIXES = (
     "api_",
@@ -115,8 +128,17 @@ def _normalized_key(key: Any) -> str:
     return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", str(key).lower())).strip("_")
 
 
-def _is_sensitive_key(key: Any) -> bool:
-    normalized = _normalized_key(key)
+# Splits on the literal path separators this module uses to flatten nested
+# source objects into single dict keys (e.g. `_wlan_payload` building
+# `f"ssid_profile.{key}"` / `f"virtual_ap.{key}"` entries in
+# `unsupported_fields`). Deliberately narrower than `_normalized_key`'s
+# character class so a non-secret prefix segment (like `ssid_profile`) can't
+# fuse with a secret leaf token (like `wpa_hexkey`) into a combined string
+# that no longer matches `_SENSITIVE_EXACT_KEYS`/suffix checks.
+_PATH_SEPARATOR_RE = re.compile(r"[./]")
+
+
+def _is_sensitive_token(normalized: str) -> bool:
     if normalized in _SENSITIVE_EXACT_KEYS:
         return True
     if normalized.endswith(
@@ -124,6 +146,22 @@ def _is_sensitive_key(key: Any) -> bool:
     ):
         return True
     return normalized.endswith("_key") and normalized.startswith(_SENSITIVE_KEY_PREFIXES)
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    text = str(key)
+    if _is_sensitive_token(_normalized_key(text)):
+        return True
+    # Flattened/path-like keys (e.g. "ssid_profile.wpa_hexkey") retain their
+    # original "." / "/" separators before generic normalization would
+    # collapse them into underscores indistinguishable from a compound word.
+    # Evaluate the final path component alone against the same rules.
+    segments = _PATH_SEPARATOR_RE.split(text)
+    if len(segments) > 1:
+        leaf = _normalized_key(segments[-1])
+        if leaf:
+            return _is_sensitive_token(leaf)
+    return False
 
 
 def _redact_sensitive_values(
@@ -302,6 +340,189 @@ def _append_for_both(
     return [*classic_candidate["warnings"], *new_candidate["warnings"]]
 
 
+_OPEN_OPMODES = {"open", "opensystem"}
+
+# Bounded, fail-closed WLAN security-intent classification. Only literal
+# tokens/fields with in-repo evidence are used:
+#   - `opmode` exact match {"open", "opensystem"} mirrors the same check
+#     already used by `pipeline/aos8_target_adapters.py` (`_map_wlan`, both
+#     adapters) for OPEN.
+#   - `wpa3_transition`, `wpa_passphrase`/`wpa_hexkey` presence come from the
+#     AOS8 `ssid_prof` object (`mcp_servers/openapi_gen/manifests/aos8.json`
+#     `aos8_post_object_ssid_prof` request-body properties).
+#   - dot1x/MAC-auth chain comes from cross-referencing the WLAN's attached
+#     `aaa_profile` name against parsed `AOS8AAAProfile` objects
+#     (`pipeline/aos8_schema.py`).
+# Anything not covered by this evidence is reported as `"unknown"` with an
+# explicit warning rather than guessed — never a default/optimistic mapping.
+_WLAN_SECURITY_MODES = {
+    "open",
+    "wpa2_personal",
+    "wpa3_sae",
+    "wpa3_transition_personal",
+    "enhanced_open",
+    "enterprise_dot1x",
+    "mac_auth_only",
+    "mac_auth_psk",
+    "unknown",
+}
+
+
+def _wlan_security_intent(
+    wlan: AOS8Wlan,
+    aaa_profiles_by_name: dict[str, AOS8AAAProfile],
+) -> tuple[dict[str, Any], list[str]]:
+    """Derive a bounded, JSON-safe security-intent summary for one AOS8 WLAN.
+
+    Never includes a passphrase/PSK value — only presence booleans and
+    non-secret profile/role names already visible elsewhere in the candidate.
+    Ambiguous or unverifiable combinations are reported as `mode="unknown"`
+    with an explicit warning; they are never defaulted to a specific mode.
+    """
+    warnings: list[str] = []
+    evidence: list[str] = []
+    opmode_raw = wlan.opmode
+    opmode_lower = str(opmode_raw).strip().lower() if opmode_raw not in (None, "") else ""
+    aaa_profile_name = wlan.aaa_profile
+    dot1x_auth_profile: str | None = None
+    mac_auth_profile: str | None = None
+    mode = "unknown"
+    ambiguous = True
+    # Set when the attached aaa_profile itself is unverifiable (missing from
+    # the export), configures an unverified dot1x+MAC-auth combination, or
+    # configures a dot1x/MAC server-group or accounting/auth server-group
+    # reference without a corresponding explicit dot1x_auth_profile/
+    # mac_auth_profile mapping. In all of those cases source authentication
+    # intent genuinely cannot be determined, so the WLAN must stay "unknown"
+    # rather than falling through to opmode/passphrase heuristics. A
+    # *resolved* aaa_profile that is truly role-only (no dot1x/MAC-auth
+    # profile AND no dot1x/MAC/accounting server-group reference — the common
+    # "PSK WLAN with an attached role-assignment-only aaa_profile" AOS8
+    # pattern) is NOT blocking: see the role-only + WPA2-PSK fixture at
+    # https://github.com/secure-ssid/aos8-migration-tool/blob/7bfa884d8e8f1c7e97a7bfa42f15596aa42fcf79/tests/test_aos8_parser.py#L15-L34
+    # (secondary, same-owner prior art — not an authoritative API contract).
+    aaa_blocks_classification = False
+
+    if aaa_profile_name:
+        profile = aaa_profiles_by_name.get(aaa_profile_name)
+        if profile is None:
+            warnings.append(
+                f"wlan:{wlan.profile_name}: aaa_profile {aaa_profile_name!r} was not "
+                "present in the export; WLAN authentication intent (enterprise/MAC-auth) "
+                "cannot be verified and is reported as unknown."
+            )
+            aaa_blocks_classification = True
+        else:
+            evidence.append(f"aaa_profile:{aaa_profile_name} resolved in export")
+            dot1x_auth_profile = profile.dot1x_auth_profile
+            mac_auth_profile = profile.mac_auth_profile
+            if dot1x_auth_profile and mac_auth_profile:
+                warnings.append(
+                    f"wlan:{wlan.profile_name}: aaa_profile {aaa_profile_name!r} "
+                    "configures both a dot1x and a MAC-auth profile; this combination "
+                    "is not a verified AOS8 source pattern in this repository and is "
+                    "reported as unknown."
+                )
+                aaa_blocks_classification = True
+            elif dot1x_auth_profile:
+                mode = "enterprise_dot1x"
+                ambiguous = False
+            elif mac_auth_profile:
+                if wlan.passphrase_present or wlan.psk_hexkey_present or "psk" in opmode_lower:
+                    mode = "mac_auth_psk"
+                else:
+                    mode = "mac_auth_only"
+                ambiguous = False
+            else:
+                # A resolved aaa_profile with neither a dot1x nor a MAC-auth
+                # *profile* mapping can still carry external-authentication
+                # intent via a server-group reference (dot1x/MAC server group
+                # or an accounting/auth server group) with no corresponding
+                # auth-profile mapping to verify how it is applied. That is a
+                # genuinely ambiguous/unverifiable source pattern -- distinct
+                # from a true role-only aaa_profile (e.g. `initial-role` only)
+                # -- and must not fall through to the opmode/passphrase
+                # heuristics below.
+                server_group_fields = {
+                    "dot1x_server_group": profile.dot1x_server_group,
+                    "mac_server_group": profile.mac_server_group,
+                    "accounting_server_group": profile.accounting_server_group,
+                }
+                configured_server_groups = sorted(
+                    name for name, value in server_group_fields.items() if value
+                )
+                if configured_server_groups:
+                    warnings.append(
+                        f"wlan:{wlan.profile_name}: aaa_profile {aaa_profile_name!r} "
+                        f"configures {', '.join(configured_server_groups)} without an "
+                        "explicit dot1x_auth_profile/mac_auth_profile mapping; this "
+                        "indicates external server-group authentication intent that "
+                        "cannot be safely mapped from opmode/passphrase alone, so "
+                        "security intent is reported as unknown rather than guessed."
+                    )
+                    aaa_blocks_classification = True
+                else:
+                    # Role-only aaa_profile: it resolves in the export but
+                    # sets neither a dot1x/MAC-auth profile nor any
+                    # server-group reference, so it carries no explicit
+                    # authentication intent of its own (it is typically only
+                    # used for post-auth role assignment). It must not block
+                    # the opmode/passphrase classification below.
+                    evidence.append(
+                        f"aaa_profile:{aaa_profile_name} is role-only (no dot1x or "
+                        "mac-auth profile); falling through to opmode classification"
+                    )
+
+    if mode == "unknown" and not aaa_blocks_classification:
+        if opmode_lower in _OPEN_OPMODES:
+            mode = "open"
+            ambiguous = False
+        elif wlan.wpa3_transition:
+            mode = "wpa3_transition_personal"
+            ambiguous = False
+            evidence.append("wpa3_transition flag present")
+        elif "enhanced" in opmode_lower and "open" in opmode_lower:
+            mode = "enhanced_open"
+            ambiguous = False
+        elif "wpa3" in opmode_lower:
+            if "psk" in opmode_lower or wlan.passphrase_present or wlan.psk_hexkey_present:
+                mode = "wpa3_sae"
+                ambiguous = False
+        elif "wpa2" in opmode_lower and (
+            "psk" in opmode_lower or wlan.passphrase_present or wlan.psk_hexkey_present
+        ):
+            # Require the opmode to explicitly say "wpa2" before classifying
+            # personal/PSK intent. Legacy WPA1/TKIP modes (e.g. "wpa-psk-tkip",
+            # "wpa-tkip") or any other opmode that merely happens to carry a
+            # passphrase/PSK key are not verified WPA2 evidence and must fall
+            # through to the "unknown" warning below rather than being guessed.
+            mode = "wpa2_personal"
+            ambiguous = False
+            evidence.append(f"opmode:{opmode_raw} matched verified wpa2-personal pattern")
+
+    if ambiguous and not warnings:
+        warnings.append(
+            f"wlan:{wlan.profile_name}: source opmode {opmode_raw!r} does not match a "
+            "verified AOS8 security pattern in this repository; security intent is "
+            "reported as unknown rather than guessed."
+        )
+
+    assert mode in _WLAN_SECURITY_MODES
+    security = {
+        "mode": mode,
+        "opmode": opmode_raw,
+        "ambiguous": ambiguous,
+        "aaa_profile": aaa_profile_name,
+        "dot1x_auth_profile": dot1x_auth_profile,
+        "mac_auth_profile": mac_auth_profile,
+        "passphrase_present": wlan.passphrase_present,
+        "psk_hexkey_present": wlan.psk_hexkey_present,
+        "wpa3_transition": wlan.wpa3_transition,
+        "evidence": sorted(evidence),
+    }
+    return security, warnings
+
+
 def _wlan_payload(
     wlan: AOS8Wlan,
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
@@ -345,6 +566,7 @@ def _wlan_payload(
                         "name",
                         "ssid-profile",
                         "ssid_prof",
+                        "ssid-prof",
                         "vlan",
                         "aaa-profile",
                         "aaa_prof",
@@ -467,6 +689,29 @@ def _policy_dependencies(acl: Any) -> list[str]:
     return _dependencies(*(_dependency("policy", value) for value in values))
 
 
+def _acl_reference_values(acl: Any) -> list[Any]:
+    if isinstance(acl, list):
+        return list(acl)
+    if acl in (None, ""):
+        return []
+    return [acl]
+
+
+def _missing_policy_warnings(
+    rolename: str,
+    acl: Any,
+    policy_names: set[str],
+) -> list[str]:
+    return [
+        (
+            f"role:{rolename}: referenced policy {value!r} was not present in the "
+            "export; dependency cannot be resolved."
+        )
+        for value in _acl_reference_values(acl)
+        if value not in policy_names
+    ]
+
+
 def _default_verification_plan(config_path: str) -> list[dict[str, Any]]:
     return [
         {
@@ -514,7 +759,14 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
             warnings.append("export: warnings field was malformed and could not be parsed.")
     diff: dict[str, Any] = {}
 
-    server_ids_by_name: dict[str, list[str]] = {}
+    # Keyed by server name -> {server_type: candidate identifier}. AOS8 keeps
+    # RADIUS/LDAP/TACACS servers in separate sections
+    # (`radius_servers`/`ldap_servers`/`tacacs_servers`), so the same literal
+    # name can legitimately exist for more than one server *type*. Keying by
+    # type as well as name lets server-group dependency resolution stay
+    # type-aware instead of guessing from name alone (see §3 item 4 of
+    # docs/aos8-migration-contract-matrix.md).
+    server_ids_by_name: dict[str, dict[str, str]] = {}
     for server in parsed["auth_servers"]:
         assert isinstance(server, AOS8AuthServer)
         identifier = f"{server.server_type}:{server.name}"
@@ -533,7 +785,7 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
                 unsupported_fields=server.settings,
             )
         )
-        server_ids_by_name.setdefault(server.name, []).append(
+        server_ids_by_name.setdefault(server.name, {})[server.server_type] = (
             f"auth_server:{identifier}"
         )
         diff[f"auth_server:{identifier}"] = _diff_entry(server.to_dict(), payload)
@@ -578,16 +830,19 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
 
     for group in parsed["server_groups"]:
         assert isinstance(group, AOS8ServerGroup)
-        dependencies = sorted(
-            {
-                dependency
-                for server_name in group.auth_servers
-                for dependency in server_ids_by_name.get(server_name, [])
-            }
-        )
-        unresolved = sorted(
-            name for name in group.auth_servers if name not in server_ids_by_name
-        )
+        dependencies_set: set[str] = set()
+        unresolved: list[str] = []
+        collisions: dict[str, list[str]] = {}
+        for server_name in group.auth_servers:
+            matches = server_ids_by_name.get(server_name, {})
+            if not matches:
+                unresolved.append(server_name)
+            elif len(matches) == 1:
+                dependencies_set.update(matches.values())
+            else:
+                collisions[server_name] = sorted(matches)
+        dependencies = sorted(dependencies_set)
+        unresolved = sorted(unresolved)
         local_warnings = [
             (
                 f"server_group:{group.name}: referenced auth server {name!r} was "
@@ -595,6 +850,18 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
             )
             for name in unresolved
         ]
+        local_warnings.extend(
+            (
+                f"server_group:{group.name}: referenced auth server {name!r} matches "
+                f"multiple server types ({', '.join(types)}) in this export and cannot "
+                "be resolved unambiguously without type information; this dependency "
+                "is left unresolved (fail-closed) rather than guessed."
+            )
+            for name, types in sorted(collisions.items())
+        )
+        group_unsupported = dict(group.settings)
+        if collisions:
+            group_unsupported["auth_server_type_collisions"] = collisions
         payload = {
             "name": group.name,
             "auth_servers": sorted(group.auth_servers),
@@ -612,7 +879,7 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
                 payload,
                 warnings=local_warnings,
                 dependencies=dependencies,
-                unsupported_fields=group.settings,
+                unsupported_fields=group_unsupported,
             )
         )
         diff[f"server_group:{group.name}"] = _diff_entry(group.to_dict(), payload)
@@ -633,17 +900,23 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
         )
         diff[f"policy:{policy.name}"] = _diff_entry(policy.to_dict(), payload)
 
+    policy_names = {
+        policy.name for policy in parsed["policies"] if isinstance(policy, AOS8Policy)
+    }
     for role in parsed["roles"]:
         assert isinstance(role, AOS8Role)
         dependencies = _dependencies(
             _dependency("vlan", role.vlan), *_policy_dependencies(role.acl)
         )
+        policy_warnings = _missing_policy_warnings(role.rolename, role.acl, policy_names)
         classic_payload, classic_warnings, classic_unsupported = _role_payload(
             role, new_central=False
         )
         new_payload, new_warnings, new_unsupported = _role_payload(
             role, new_central=True
         )
+        classic_warnings = [*classic_warnings, *policy_warnings]
+        new_warnings = [*new_warnings, *policy_warnings]
         classic_candidate = _candidate(
             ClassicCentralCandidate,
             "role",
@@ -696,14 +969,24 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
             profile.to_dict(), payload
         )
 
+    aaa_profiles_by_name = {
+        profile.profile_name: profile
+        for profile in parsed["aaa_profiles"]
+        if isinstance(profile, AOS8AAAProfile)
+    }
     for wlan in parsed["wlans"]:
         assert isinstance(wlan, AOS8Wlan)
         dependencies = _dependencies(
             _dependency("vlan", wlan.vlan),
             _dependency("aaa_profile", wlan.aaa_profile),
         )
+        security, security_warnings = _wlan_security_intent(wlan, aaa_profiles_by_name)
         classic_payload, classic_warnings, classic_unsupported = _wlan_payload(wlan)
         new_payload, new_warnings, new_unsupported = _wlan_payload(wlan)
+        classic_payload["security"] = security
+        new_payload["security"] = security
+        classic_warnings = [*classic_warnings, *security_warnings]
+        new_warnings = [*new_warnings, *security_warnings]
         classic_candidate = _candidate(
             ClassicCentralCandidate,
             "wlan",
@@ -745,6 +1028,17 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
                 for vap in group.virtual_ap_profiles
             )
         )
+        unresolved_vaps = sorted(
+            vap for vap in group.virtual_ap_profiles if vap not in vap_to_wlan
+        )
+        local_warnings = [
+            (
+                f"ap_group:{group.profile_name}: virtual AP {vap!r} does not match any "
+                "parsed WLAN profile in this export; its WLAN dependency cannot be "
+                "resolved and is left unapplied rather than invented."
+            )
+            for vap in unresolved_vaps
+        ]
         unsupported = _remaining(
             group.raw,
             {"profile-name", "name", "virtual-ap", "virtual_ap"},
@@ -756,6 +1050,7 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
                 "ap_group",
                 group.profile_name,
                 payload,
+                warnings=local_warnings,
                 dependencies=dependencies,
                 unsupported_fields=unsupported,
             )

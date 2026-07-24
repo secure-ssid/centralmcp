@@ -8,6 +8,8 @@ catalog out of client context until `find_tool` selects a workflow.
 Use this page as the implementation roadmap for typed tools that should graduate
 from generic GET exploration into named MCP workflows.
 
+The ArubaOS 8-to-Classic/New Central migration rows below are gated by the authoritative source-to-target contract in [`aos8-migration-contract-matrix.md`](aos8-migration-contract-matrix.md). Any family that matrix classifies `manual`/`unsupported` remains blocked for automatic writes regardless of what appears here.
+
 ## Catalog snapshot
 
 | Surface | Tool count |

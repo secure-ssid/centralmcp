@@ -18,7 +18,16 @@ from typing import Any, Literal
 
 @dataclass
 class AOS8Wlan:
-    """A merged AOS8 WLAN: one SSID profile plus its linked virtual AP, if any."""
+    """A merged AOS8 WLAN: one SSID profile plus its linked virtual AP, if any.
+
+    ``wpa3_transition``, ``passphrase_present``, and ``psk_hexkey_present`` are bounded,
+    evidenced signals extracted directly from the AOS8 ``ssid_prof`` object
+    (``wpa3_transition``, ``wpa_passphrase``, ``wpa_hexkey`` — see
+    ``mcp_servers/openapi_gen/manifests/aos8.json`` `aos8_post_object_ssid_prof`
+    request-body properties). Only *presence* of a passphrase/PSK hex key is
+    recorded here, never the secret value itself, so this dataclass is always
+    safe to serialize and never needs redaction on its own.
+    """
 
     profile_name: str
     essid: str | None = None
@@ -27,6 +36,9 @@ class AOS8Wlan:
     forward_mode: str | None = None
     aaa_profile: str | None = None
     virtual_ap_profile: str | None = None
+    wpa3_transition: bool | None = None
+    passphrase_present: bool = False
+    psk_hexkey_present: bool = False
     raw: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
