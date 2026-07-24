@@ -185,6 +185,7 @@ def test_merge_json_env_adds_product_access(tmp_path):
         target,
         "aruba-tool-router",
         {
+            "CENTRALMCP_ROUTER_MODE": "direct",
             "CENTRALMCP_PRODUCTS": "clearpass,mist",
             "CENTRALMCP_PRODUCT_ACCESS": "read-write",
         },
@@ -193,9 +194,38 @@ def test_merge_json_env_adds_product_access(tmp_path):
     data = json.loads(target.read_text())
     env = data["mcpServers"]["aruba-tool-router"]["env"]
     assert step.status == "OK"
-    assert env["CENTRALMCP_ROUTER_MODE"] == "minimal"
+    assert env["CENTRALMCP_ROUTER_MODE"] == "direct"
     assert env["CENTRALMCP_PRODUCTS"] == "clearpass,mist"
     assert env["CENTRALMCP_PRODUCT_ACCESS"] == "read-write"
+
+
+def test_merge_json_env_can_set_direct_mode_without_products(tmp_path):
+    target = tmp_path / ".mcp.json"
+    target.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "aruba-tool-router": {
+                        "command": "uv",
+                        "env": {"CENTRALMCP_ROUTER_MODE": "minimal"},
+                    }
+                }
+            }
+        )
+    )
+
+    step = setup_wizard._merge_json_env(
+        target,
+        "aruba-tool-router",
+        {"CENTRALMCP_ROUTER_MODE": "direct"},
+    )
+
+    data = json.loads(target.read_text())
+    assert step.status == "OK"
+    assert (
+        data["mcpServers"]["aruba-tool-router"]["env"]["CENTRALMCP_ROUTER_MODE"]
+        == "direct"
+    )
 
 
 def test_catalog_build_receives_product_access_env(monkeypatch):

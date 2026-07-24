@@ -4,6 +4,9 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from mcp.server.fastmcp import FastMCP
+
 import mcp_servers.tool_router as router
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -93,6 +96,56 @@ def test_load_all_backends_exposes_optional_writes_when_read_write(monkeypatch):
     assert "clearpass_status" in router._tool_index
     assert "clearpass_write" in router._tool_index
     assert "clearpass_delete_guest" in router._tool_index
+
+
+def test_load_all_backends_rejects_cross_backend_name_collisions(monkeypatch):
+    first = FastMCP("first")
+    second = FastMCP("second")
+
+    @first.tool()
+    def duplicate_name() -> str:
+        return "first"
+
+    @second.tool()
+    def duplicate_name() -> str:
+        return "second"
+
+    modules = {
+        "demo.first": SimpleNamespace(mcp=first),
+        "demo.second": SimpleNamespace(mcp=second),
+    }
+    monkeypatch.setattr(router, "_BACKENDS", {"first": "demo.first", "second": "demo.second"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_tool_servers", {})
+    monkeypatch.setattr(router, "_tool_backend_names", {})
+    monkeypatch.setattr(router.importlib, "import_module", modules.__getitem__)
+
+    with pytest.raises(RuntimeError, match="duplicate backend tool name"):
+        router._load_all_backends()
+
+
+def test_direct_mode_registers_enabled_backend_tools(monkeypatch):
+    backend = FastMCP("backend")
+    target = FastMCP("router-direct")
+
+    @backend.tool()
+    def direct_example(value: str) -> str:
+        return value
+
+    monkeypatch.setattr(router, "_BACKENDS", {"demo": "demo.backend"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_tool_servers", {})
+    monkeypatch.setattr(router, "_tool_backend_names", {})
+    monkeypatch.setattr(
+        router.importlib,
+        "import_module",
+        lambda module_path: SimpleNamespace(mcp=backend),
+    )
+
+    registered = router._register_direct_backend_tools(target)
+
+    assert registered == ["direct_example"]
+    assert "direct_example" in target._tool_manager._tools
 
 
 def test_public_docs_list_router_products_and_toolsets():

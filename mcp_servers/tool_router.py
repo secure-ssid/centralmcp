@@ -1,8 +1,11 @@
 """MCP server — Aruba tool router (lazy loading via semantic tool RAG).
 
-Exposes a lean surface (find_tool + invoke_read_tool + invoke_tool + optional
-discovery wrappers) and retrieves the full tool catalog on demand. Backend
-servers are imported in-process and dispatched by name — no subprocess overhead.
+Supports three exposure modes:
+  minimal  — find_tool + invoke_read_tool + invoke_tool only
+  default  — minimal plus convenience wrappers
+  direct   — default plus every enabled backend tool registered directly
+
+Backend servers are imported in-process — no subprocess overhead.
 
 Optional product backends can be enabled with:
   CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
@@ -172,9 +175,36 @@ def _load_all_backends() -> None:
                 and not _is_read_only_tool(tool)
             ):
                 continue
+            previous = _tool_backend_names.get(name)
+            if previous is not None and previous != server_name:
+                raise RuntimeError(
+                    f"duplicate backend tool name {name!r}: {previous!r} and {server_name!r}"
+                )
             _tool_index[name] = tool
             _tool_servers[name] = mod.mcp
             _tool_backend_names[name] = server_name
+
+
+def _register_direct_backend_tools(target: FastMCP | None = None) -> list[str]:
+    """Register every enabled backend tool directly on the router server."""
+    target = target or mcp
+    _load_all_backends()
+    existing = set(target._tool_manager._tools)
+    registered: list[str] = []
+    for name, tool in _tool_index.items():
+        if name in existing:
+            # Router wrappers intentionally retain their compact forwarding
+            # signatures when a backend exposes the same public tool name.
+            continue
+        target.add_tool(
+            tool.fn,
+            name=name,
+            description=tool.description,
+            annotations=tool.annotations,
+        )
+        existing.add(name)
+        registered.append(name)
+    return registered
 
 
 # ── find_tool ────────────────────────────────────────────────────────────────
@@ -484,6 +514,10 @@ if _ROUTER_MODE != "minimal" and "aruba-rag" in _BACKENDS:
         search_docs in that case.
         """
         return await invoke_tool(ctx, "lookup_api", {"query": query, "top_k": top_k})
+
+
+if _ROUTER_MODE == "direct":
+    _register_direct_backend_tools()
 
 
 if __name__ == "__main__":

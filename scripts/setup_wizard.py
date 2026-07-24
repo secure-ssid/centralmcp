@@ -411,12 +411,18 @@ def _write_env_file(target: Path, env: dict[str, str], *, force: bool) -> Step:
 
 def _merge_json_env(target: Path, server_name: str, env: dict[str, str]) -> Step:
     if not env:
-        return Step(_rel(target), "SKIP", "no optional products selected")
+        return Step(_rel(target), "SKIP", "no MCP environment updates requested")
     mcp_env = {
-        "CENTRALMCP_PRODUCTS": env["CENTRALMCP_PRODUCTS"],
+        name: env[name]
+        for name in (
+            "CENTRALMCP_ROUTER_MODE",
+            "CENTRALMCP_PRODUCTS",
+            "CENTRALMCP_PRODUCT_ACCESS",
+        )
+        if name in env
     }
-    if "CENTRALMCP_PRODUCT_ACCESS" in env:
-        mcp_env["CENTRALMCP_PRODUCT_ACCESS"] = env["CENTRALMCP_PRODUCT_ACCESS"]
+    if not mcp_env:
+        return Step(_rel(target), "SKIP", "no MCP environment updates requested")
     try:
         data = json.loads(target.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -503,6 +509,15 @@ def main() -> int:
             "(default: read-only; use read-write for lab write workflows)"
         ),
     )
+    parser.add_argument(
+        "--router-mode",
+        choices=("minimal", "default", "direct"),
+        default="minimal",
+        help=(
+            "router exposure mode: minimal discovery, default convenience wrappers, "
+            "or direct registration of every enabled backend tool"
+        ),
+    )
     parser.add_argument("--skip-install", action="store_true", help="do not run uv sync")
     parser.add_argument(
         "--skip-credentials",
@@ -540,6 +555,7 @@ def main() -> int:
         assume_yes=args.yes,
         product_access=product_access,
     )
+    runtime_env = {"CENTRALMCP_ROUTER_MODE": args.router_mode, **product_env}
 
     if not args.skip_install and _ask(
         "Install dependencies with uv sync?",
@@ -559,8 +575,8 @@ def main() -> int:
             )
         )
 
-    if selected_products:
-        steps.append(_write_env_file(ROOT / ".env", product_env, force=args.force))
+    if selected_products or args.router_mode != "minimal":
+        steps.append(_write_env_file(ROOT / ".env", runtime_env, force=args.force))
 
     if not args.skip_stdio and _ask(
         "Create .mcp.json for stdio MCP clients?", True, assume_yes=args.yes
@@ -573,7 +589,7 @@ def main() -> int:
                 replacements={"/path/to/centralmcp": str(ROOT)},
             )
         )
-        steps.append(_merge_json_env(ROOT / ".mcp.json", "aruba-tool-router", product_env))
+        steps.append(_merge_json_env(ROOT / ".mcp.json", "aruba-tool-router", runtime_env))
 
     if not args.skip_http and _ask(
         "Create .mcp.http.json for streamable HTTP MCP clients?", True, assume_yes=args.yes
@@ -600,7 +616,7 @@ def main() -> int:
             _merge_json_env(
                 ROOT / ".vscode" / "mcp.json",
                 "aruba-tool-router",
-                product_env,
+                runtime_env,
             )
         )
 
@@ -628,12 +644,13 @@ def main() -> int:
         "2. For HTTP MCP clients, run: "
         f"MCP_HOST={args.host} MCP_PORT={args.port} bash scripts/run_http_router.sh"
     )
+    print(f"3. Router exposure mode: {args.router_mode}.")
     if selected_products:
-        print(f"3. Optional products enabled locally: {', '.join(selected_products)}.")
-        print(f"4. Optional product access mode: {product_access}.")
+        print(f"4. Optional products enabled locally: {', '.join(selected_products)}.")
+        print(f"5. Optional product access mode: {product_access}.")
     else:
         print(
-            "3. Optional products stayed disabled; enable them later with "
+            "4. Optional products stayed disabled; enable them later with "
             "--products or --with-products."
         )
 
