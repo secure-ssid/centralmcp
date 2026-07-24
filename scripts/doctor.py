@@ -580,6 +580,99 @@ def _runtime_checks() -> list[Check]:
     return checks
 
 
+_PLATFORM_WRITE_ENV_VARS = (
+    "CENTRALMCP_CENTRAL_WRITES",
+    "CENTRALMCP_GLP_V2BETA1_WRITES",
+    "CENTRALMCP_AOS8_WRITES",
+    "CENTRALMCP_EDGECONNECT_WRITES",
+    "CENTRALMCP_APSTRA_WRITES",
+    "CENTRALMCP_MIST_WRITES",
+    "CENTRALMCP_CLEARPASS_WRITES",
+    "CENTRALMCP_UXI_WRITES",
+)
+_LOOPBACK_HOST_VALUES = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def _http_security_checks() -> list[Check]:
+    """Env-only checks for the streamable-HTTP hardening in mcp_servers.shared
+    (host/origin allow-lists, optional bearer token, per-platform write
+    gates). No network or API calls -- this only inspects environment
+    variables, mirroring (not calling) the enforcement in
+    mcp_servers.shared.run_server / _configure_http_transport."""
+    host = os.getenv("MCP_HOST", "127.0.0.1").strip()
+    allowed_hosts = os.getenv("MCP_ALLOWED_HOSTS", "").strip()
+    allowed_origins = os.getenv("MCP_ALLOWED_ORIGINS", "").strip()
+    bearer_token = os.getenv("MCP_HTTP_BEARER_TOKEN", "").strip()
+    is_loopback = host in _LOOPBACK_HOST_VALUES
+
+    checks: list[Check] = []
+
+    if is_loopback:
+        checks.append(Check("OK", "HTTP bind host", f"MCP_HOST={host!r} is loopback-only"))
+    else:
+        if allowed_hosts and allowed_origins:
+            checks.append(
+                Check(
+                    "OK",
+                    "HTTP allow-list",
+                    f"MCP_HOST={host!r} is non-loopback; MCP_ALLOWED_HOSTS/"
+                    "MCP_ALLOWED_ORIGINS are both set",
+                )
+            )
+        else:
+            missing = [
+                name
+                for name, value in (
+                    ("MCP_ALLOWED_HOSTS", allowed_hosts),
+                    ("MCP_ALLOWED_ORIGINS", allowed_origins),
+                )
+                if not value
+            ]
+            checks.append(
+                Check(
+                    "FAIL",
+                    "HTTP allow-list",
+                    f"MCP_HOST={host!r} is non-loopback but missing {', '.join(missing)}; "
+                    "the server will refuse to start (see UnsafeHttpBindingError)",
+                )
+            )
+        if "*" in (allowed_hosts, allowed_origins):
+            checks.append(
+                Check(
+                    "WARN",
+                    "HTTP allow-list wildcard",
+                    "a wildcard '*' allow-list requires "
+                    "CENTRALMCP_ALLOW_WILDCARD_HTTP_ALLOWLIST=1 to start -- "
+                    "acceptable only for a controlled lab environment",
+                )
+            )
+        checks.append(
+            Check(
+                "OK" if bearer_token else "WARN",
+                "HTTP bearer token",
+                "MCP_HTTP_BEARER_TOKEN is set"
+                if bearer_token
+                else "MCP_HTTP_BEARER_TOKEN is unset on a non-loopback bind; "
+                "anything that can reach this host:port can call every tool",
+            )
+        )
+
+    set_platform_gates = sorted(
+        name for name in _PLATFORM_WRITE_ENV_VARS if os.getenv(name, "").strip()
+    )
+    checks.append(
+        Check(
+            "OK",
+            "Per-platform write gates",
+            "none overridden (Central/optional-product defaults apply)"
+            if not set_platform_gates
+            else f"overridden: {', '.join(set_platform_gates)}",
+        )
+    )
+
+    return checks
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -596,6 +689,7 @@ def main() -> int:
         *_index_checks(),
         *_source_manifest_checks(),
         *_runtime_checks(),
+        *_http_security_checks(),
     ]
 
     print("centralmcp local doctor\n")

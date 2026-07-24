@@ -235,7 +235,7 @@ Optional product backends are disabled by default.
 
 ```env
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
-CENTRALMCP_PRODUCT_ACCESS=read-write
+CENTRALMCP_PRODUCT_ACCESS=read-only
 ```
 
 The wizard can prompt for the selected product URL/token settings, merge them
@@ -251,14 +251,23 @@ python3 scripts/setup_wizard.py --products clearpass
 |---|---|
 | ClearPass | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` |
 | Juniper Mist | `MIST_HOST`, `MIST_API_TOKEN` |
-| Apstra | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` |
-| ArubaOS 8 | `AOS8_BASE_URL`, `AOS8_API_TOKEN` |
+| Apstra | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional pre-issued `APSTRA_API_TOKEN` |
+| ArubaOS 8 | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` |
 | EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` |
 | HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
+
+Set `CENTRALMCP_PRODUCT_ACCESS=read-write` only for trusted lab writes, or
+enable a single platform with `CENTRALMCP_<PLATFORM>_WRITES=1`.
 
 ## Safety defaults
 
 - GLP writes are disabled unless `CENTRALMCP_GLP_V2BETA1_WRITES=1`.
+- Central and optional writes can be independently disabled/enabled with the
+  per-platform `CENTRALMCP_<PLATFORM>_WRITES` variables.
 - Token caches are stored in `~/.cache/centralmcp/` by default with `0600` permissions.
+- Non-loopback HTTP binds require explicit `MCP_ALLOWED_HOSTS` and
+  `MCP_ALLOWED_ORIGINS`; set `MCP_HTTP_BEARER_TOKEN` to protect HTTP routes.
+- `/livez`, `/readyz`, and `/healthz` report local server health without
+  contacting Central, GreenLake, or optional products.
 - Use `invoke_read_tool` for read-only router dispatch.
 - Use `invoke_tool` only for intentional writes/destructive actions.

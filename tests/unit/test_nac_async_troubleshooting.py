@@ -5,9 +5,8 @@ import pytest
 from mcp_servers import nac
 
 
-@pytest.mark.parametrize(
-    ("kwargs", "expected_endpoint", "expected_payload"),
-    [
+def _aaa_cases():
+    return [
         (
             {
                 "serial_number": "AP1",
@@ -16,7 +15,7 @@ from mcp_servers import nac
                 "device_type": "AP",
                 "server_name": "radius-primary",
             },
-            "/network-troubleshooting/v1alpha1/aps/AP1/aaa",
+            nac.troubleshooting_endpoint_candidates("aps", "AP1", "aaa"),
             {
                 "serverName": "radius-primary",
                 "username": "user",
@@ -32,7 +31,7 @@ from mcp_servers import nac
                 "radius_server_ip": "192.0.2.10",
                 "auth_method": "pap",
             },
-            "/network-troubleshooting/v1alpha1/cx/CX1/aaa",
+            nac.troubleshooting_endpoint_candidates("cx", "CX1", "aaa"),
             {
                 "authMethodType": "pap",
                 "radiusServerIp": "192.0.2.10",
@@ -40,8 +39,10 @@ from mcp_servers import nac
                 "password": "pass",
             },
         ),
-    ],
-)
+    ]
+
+
+@pytest.mark.parametrize(("kwargs", "expected_endpoint", "expected_payload"), _aaa_cases())
 def test_aaa_uses_async_troubleshooting_helper(monkeypatch, kwargs, expected_endpoint, expected_payload):
     calls = []
     client = object()

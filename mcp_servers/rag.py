@@ -136,15 +136,15 @@ def search_docs(
 ) -> list[dict[str, Any]]:
     """Search Aruba/HPE network documentation.
 
-    Hybrid (vector + keyword) search over developer guides, tech docs, NAC/VSG
-    guides, and OpenAPI specs. Call this before searching the web for any Aruba
-    Central config, API, or feature question.
+    Hybrid (vector + keyword) search over developer guides, tech docs, and
+    NAC/VSG guides. OpenAPI records stay in the exact SQLite `lookup_api`
+    index rather than being embedded.
 
     Args:
         query:    Natural language question or keywords.
         top_k:    Results to return (default 5, range 1-20).
         source:   Filter by source folder — developer_docs, tech_docs, nac_docs,
-                  vsg_docs, techdocs_html, aos_techdocs, or openapi_specs.
+                  vsg_docs, techdocs_html, or aos_techdocs.
         doc_type: DEPRECATED — use source instead.
     """
     top_k = _clamp_top_k(top_k, 20)
@@ -161,7 +161,7 @@ def search_docs(
 
 @mcp.tool(annotations=READ_ONLY)
 def lookup_api(query: str, top_k: int = 10) -> list[dict[str, Any]]:
-    """Exact Aruba Central API lookup — endpoints, schemas, fields, enum values.
+    """Exact Aruba/Mist API lookup — endpoints, schemas, fields, enum values.
 
     Authoritative, lossless answers from the parsed OpenAPI specs (SQLite, no
     server needed). Use this INSTEAD of search_docs for questions like "what
@@ -247,9 +247,17 @@ if __name__ == "__main__":
     from mcp_servers._middleware import (
         NullStripMiddleware,
         RateLimitMiddleware,
+        SecretTokenizeMiddleware,
         install_middleware,
     )
     stable_list_tools(mcp)
-    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    install_middleware(
+        mcp,
+        [
+            NullStripMiddleware(),
+            RateLimitMiddleware(rate=8.0),
+            SecretTokenizeMiddleware(),
+        ],
+    )
     from mcp_servers.shared import run_server
     run_server(mcp)

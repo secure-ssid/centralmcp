@@ -493,6 +493,7 @@ if __name__ == "__main__":
         NullStripMiddleware,
         RateLimitMiddleware,
         ResponseEnvelopeMiddleware,
+        SecretTokenizeMiddleware,
         UnknownToolSuggestMiddleware,
         install_middleware,
     )
@@ -516,6 +517,7 @@ if __name__ == "__main__":
             suggestion_provider=_suggest_router_tool,
         ),
         ResponseEnvelopeMiddleware(),
+        SecretTokenizeMiddleware(),
     ]
     if os.getenv("CENTRALMCP_NORMALIZE_MACS", "").strip().lower() in {"1", "true", "yes"}:
         middlewares.append(MacNormalizeMiddleware())

@@ -76,10 +76,11 @@
     "doc_type": "openapi",
     "purpose": "Authoritative OpenAPI specs for exact endpoint, schema, field, and enum lookup.",
     "seed_urls": [
-      "https://developer.arubanetworks.com/new-central-config/reference/"
+      "https://developer.arubanetworks.com/new-central-config/reference/",
+      "https://github.com/mistsys/mist_openapi"
     ],
     "output_dir": "ingestion/sources/openapi_specs",
-    "notes": "JSON specs are parsed into docs chunks and data/specs.sqlite; include CNAC via ingestion/scrape_cnac_spec.py."
+    "notes": "JSON specs are parsed into docs chunks and data/specs.sqlite; include CNAC via ingestion/scrape_cnac_spec.py and the pinned official Mist snapshot via ingestion/fetch_mist_openapi.py."
   },
   {
     "source": "aos_techdocs",

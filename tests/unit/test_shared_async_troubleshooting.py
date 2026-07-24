@@ -58,7 +58,11 @@ def test_atroubleshoot_async_uses_async_client_methods(monkeypatch):
         )
     )
 
-    assert result == {"status": "COMPLETED", "errors": []}
+    assert result == {
+        "status": "COMPLETED",
+        "errors": [],
+        "endpoint_used": "/network-troubleshooting/v1alpha1/cx/CX1/ping",
+    }
     assert client.post_calls == [
         (
             "POST",
@@ -92,7 +96,7 @@ def test_atroubleshoot_async_accepts_location_from_json_body(monkeypatch):
     client = FakeClient()
     result = asyncio.run(shared.atroubleshoot_async(client, "/x", {}, []))
 
-    assert result == {"status": "COMPLETED", "errors": []}
+    assert result == {"status": "COMPLETED", "errors": [], "endpoint_used": "/x"}
     assert client.get_calls == ["/x/async-operations/task-2"]
 
 

@@ -1,9 +1,11 @@
 """Shared clients, helpers, and constants for all MCP servers."""
 import asyncio
+import hmac
 import ipaddress
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -129,7 +131,149 @@ def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
         "status": "blocked",
     }
 
+
+# ---------------------------------------------------------------------------
+# Per-platform write gates
+# ---------------------------------------------------------------------------
+#
+# Central and GLP are the two primary managed products and keep their
+# existing, independently-audited gates as the *default* behavior:
+#   - Central (ops/config tools): writes have always been enabled with no
+#     gate. That default is preserved; CENTRALMCP_CENTRAL_WRITES=0 is a new,
+#     opt-*out* safety valve for anyone who wants a read-only Central MCP
+#     server without touching CENTRALMCP_PRODUCT_ACCESS (which also governs
+#     the six optional-product backends below).
+#   - GLP writes stay fail-closed behind CENTRALMCP_GLP_V2BETA1_WRITES=1,
+#     enforced at the GLPClient layer (pipeline.clients.glp_client). The gate
+#     below just gives that platform a name in the same lookup table so
+#     tooling/docs can treat every platform uniformly.
+#
+# The six optional-product starter backends (AOS8, EdgeConnect, Apstra,
+# Mist, ClearPass, UXI) continue to share CENTRALMCP_PRODUCT_ACCESS by
+# default -- unchanged behavior for anyone who already sets it. Each also
+# gets its own override env var so an operator can diverge a single
+# platform (e.g. allow Mist writes without opening every optional product).
+_TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
+_FALSY_ENV_VALUES = ("0", "false", "no", "off")
+
+
+@dataclass(frozen=True)
+class PlatformWriteGate:
+    """One platform's write-enable resolution rule.
+
+    Attributes:
+        platform: canonical lowercase platform key (e.g. "mist").
+        env_var: the platform-specific override env var name.
+        default_enabled: write-enabled state used when ``env_var`` is unset
+            and there is no shared fallback -- True (Central's historical
+            "no gate" behavior), False (GLP's historical fail-closed
+            behavior), or None to fall back to
+            :func:`optional_product_writes_allowed` (unchanged legacy
+            behavior for the six optional-product backends).
+    """
+
+    platform: str
+    env_var: str
+    default_enabled: bool | None
+
+
+_PLATFORM_WRITE_GATES: dict[str, PlatformWriteGate] = {
+    "central": PlatformWriteGate("central", "CENTRALMCP_CENTRAL_WRITES", True),
+    "glp": PlatformWriteGate("glp", "CENTRALMCP_GLP_V2BETA1_WRITES", False),
+    "aos8": PlatformWriteGate("aos8", "CENTRALMCP_AOS8_WRITES", None),
+    "edgeconnect": PlatformWriteGate("edgeconnect", "CENTRALMCP_EDGECONNECT_WRITES", None),
+    "apstra": PlatformWriteGate("apstra", "CENTRALMCP_APSTRA_WRITES", None),
+    "mist": PlatformWriteGate("mist", "CENTRALMCP_MIST_WRITES", None),
+    "clearpass": PlatformWriteGate("clearpass", "CENTRALMCP_CLEARPASS_WRITES", None),
+    "uxi": PlatformWriteGate("uxi", "CENTRALMCP_UXI_WRITES", None),
+}
+
+PLATFORM_WRITE_GATE_NAMES: tuple[str, ...] = tuple(sorted(_PLATFORM_WRITE_GATES))
+
+
+def _platform_gate(platform: str) -> PlatformWriteGate:
+    key = platform.strip().lower()
+    gate = _PLATFORM_WRITE_GATES.get(key)
+    if gate is None:
+        raise ValueError(
+            f"unknown platform {platform!r}; expected one of {PLATFORM_WRITE_GATE_NAMES}"
+        )
+    return gate
+
+
+def platform_writes_allowed(platform: str) -> bool:
+    """Return whether write tools are enabled for ``platform``.
+
+    Resolution order (highest priority first):
+
+    1. The platform's own override env var (e.g. ``CENTRALMCP_MIST_WRITES=1``),
+       read as an explicit opt-in truthy/falsy value if set at all.
+    2. The platform's built-in default when there is no shared fallback
+       (Central defaults enabled; GLP defaults disabled -- both preserve
+       pre-existing behavior).
+    3. :func:`optional_product_writes_allowed` (the shared
+       ``CENTRALMCP_PRODUCT_ACCESS`` toggle) for the six optional-product
+       backends -- unchanged legacy behavior.
+
+    Raises:
+        ValueError: ``platform`` is not one of the known platform keys.
+    """
+    gate = _platform_gate(platform)
+    raw = os.environ.get(gate.env_var)
+    if raw is not None:
+        value = raw.strip().lower()
+        if value in _TRUTHY_ENV_VALUES:
+            return True
+        if value in _FALSY_ENV_VALUES:
+            return False
+        # Ambiguous explicit value: fail closed rather than guess.
+        return False
+    if gate.default_enabled is not None:
+        return gate.default_enabled
+    return optional_product_writes_allowed()
+
+
+def platform_write_blocked(platform: str, tool_name: str) -> dict[str, str]:
+    """Build the standard blocked-write response for ``tool_name`` on ``platform``."""
+    gate = _platform_gate(platform)
+    shared_hint = (
+        " The shared fallback also blocks writes when "
+        "CENTRALMCP_PRODUCT_ACCESS=read-only or invalid."
+        if gate.default_enabled is None
+        else ""
+    )
+    return {
+        "error": (
+            f"Tool '{tool_name}' is disabled because {platform} writes are not enabled. "
+            f"Set {gate.env_var}=1 to allow {platform} write workflows."
+            f"{shared_hint}"
+        ),
+        "tool": tool_name,
+        "status": "blocked",
+        "platform": platform,
+    }
+
+
+def enforce_platform_write(platform: str, tool_name: str) -> dict[str, str] | None:
+    """Return a blocked-response dict if ``platform`` write access is disabled,
+    or ``None`` if the caller should proceed with the write.
+
+    Minimal integration for a domain tool module::
+
+        from mcp_servers.shared import enforce_platform_write
+
+        blocked = enforce_platform_write("mist", "mist_set_site")
+        if blocked:
+            return blocked
+        ...  # perform the write
+    """
+    if platform_writes_allowed(platform):
+        return None
+    return platform_write_blocked(platform, tool_name)
+
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 # ---------------------------------------------------------------------------
@@ -192,8 +336,45 @@ def validate_product_base_url(value: str, *, product: str) -> str:
     return base_url
 
 
+_LOOPBACK_HOST_NAMES = {"localhost", "localhost.localdomain"}
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True if ``host`` is loopback-only (127.0.0.1 / ::1 / localhost)."""
+    candidate = host.strip().lower().strip("[]")
+    if candidate in _LOOPBACK_HOST_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+class UnsafeHttpBindingError(RuntimeError):
+    """Raised when MCP_HOST binds beyond loopback without an explicit,
+    reviewed allow-list -- refuses to start rather than silently exposing
+    (or silently breaking, via the SDK's loopback-only allow-list default)
+    the streamable-HTTP transport."""
+
+
 def _configure_http_transport(mcp_instance: Any, host: str, port: int) -> None:
-    """Apply HTTP transport settings on SDK versions whose run() reads settings."""
+    """Apply HTTP transport settings on SDK versions whose run() reads settings.
+
+    Also hardens host/origin allow-list behavior when ``MCP_HOST`` changes:
+    the SDK's ``transport_security`` allow-lists default to loopback-only
+    values, so binding to a non-loopback ``MCP_HOST`` without an explicit
+    ``MCP_ALLOWED_HOSTS``/``MCP_ALLOWED_ORIGINS`` would otherwise either
+    silently reject every real request (allow-list still loopback-only) or,
+    if an operator "fixes" that with a bare wildcard, silently accept
+    request from any Host header (DNS rebinding exposure). Both failure
+    modes are refused loudly instead: see ``UnsafeHttpBindingError``.
+
+    Raises:
+        UnsafeHttpBindingError: ``host`` is non-loopback and the allow-list
+            configuration is missing, wildcarded, or DNS-rebinding
+            protection is disabled -- without the matching acknowledgement
+            env var set.
+    """
     settings = getattr(mcp_instance, "settings", None)
     if settings is None:
         return
@@ -203,16 +384,170 @@ def _configure_http_transport(mcp_instance: Any, host: str, port: int) -> None:
     transport_security = getattr(settings, "transport_security", None)
     if transport_security is None:
         return
-    transport_security.enable_dns_rebinding_protection = _env_bool(
+
+    dns_rebinding_protection = _env_bool(
         "MCP_DNS_REBINDING_PROTECTION",
         transport_security.enable_dns_rebinding_protection,
     )
+    transport_security.enable_dns_rebinding_protection = dns_rebinding_protection
+
     allowed_hosts = _csv_env("MCP_ALLOWED_HOSTS")
+    allowed_origins = _csv_env("MCP_ALLOWED_ORIGINS")
+
+    if not _is_loopback_host(host):
+        if not allowed_hosts or not allowed_origins:
+            raise UnsafeHttpBindingError(
+                f"MCP_HOST={host!r} binds beyond loopback; MCP_ALLOWED_HOSTS and "
+                "MCP_ALLOWED_ORIGINS must both be set explicitly (comma-separated "
+                "host:port / origin values, e.g. 'central-mcp.example.com:*') before "
+                "the server will start. Refusing to start with an ambiguous "
+                "allow-list rather than binding publicly without one."
+            )
+        if ("*" in allowed_hosts or "*" in allowed_origins) and not _env_bool(
+            "CENTRALMCP_ALLOW_WILDCARD_HTTP_ALLOWLIST", False
+        ):
+            raise UnsafeHttpBindingError(
+                "MCP_ALLOWED_HOSTS/MCP_ALLOWED_ORIGINS contain a wildcard '*' while "
+                f"MCP_HOST={host!r} binds beyond loopback. Set explicit host:port / "
+                "origin values, or set CENTRALMCP_ALLOW_WILDCARD_HTTP_ALLOWLIST=1 to "
+                "acknowledge the risk for a controlled lab environment."
+            )
+        if not dns_rebinding_protection and not _env_bool(
+            "CENTRALMCP_ALLOW_INSECURE_HTTP_BINDING", False
+        ):
+            raise UnsafeHttpBindingError(
+                f"MCP_HOST={host!r} binds beyond loopback with DNS-rebinding "
+                "protection disabled (MCP_DNS_REBINDING_PROTECTION=0). Set "
+                "CENTRALMCP_ALLOW_INSECURE_HTTP_BINDING=1 to acknowledge the risk."
+            )
+
     if allowed_hosts:
         transport_security.allowed_hosts = allowed_hosts
-    allowed_origins = _csv_env("MCP_ALLOWED_ORIGINS")
     if allowed_origins:
         transport_security.allowed_origins = allowed_origins
+
+
+_HEALTH_PATHS = ("/livez", "/readyz", "/healthz")
+_HEALTH_ROUTES_ATTR = "_centralmcp_health_routes_installed"
+
+
+def _readiness_detail() -> dict[str, Any]:
+    """Process-local readiness signal -- config is loadable, no network calls.
+
+    Deliberately does not call Central/GLP/any external API: readiness here
+    means "this process is configured well enough to attempt work", not
+    "upstream APIs are reachable" (that belongs in a tool call, not a probe
+    an orchestrator polls every few seconds).
+    """
+    creds_path = os.environ.get("CREDS_PATH", "config/credentials.yaml")
+    exists = Path(creds_path).exists()
+    return {
+        "creds_path": creds_path,
+        "creds_path_exists": exists,
+    }
+
+
+def _register_health_routes(mcp_instance: Any) -> None:
+    """Register unauthenticated /livez, /readyz, /healthz routes.
+
+    Uses FastMCP's ``custom_route`` (current SDK API) so these bypass MCP
+    protocol negotiation entirely and never touch an external API -- safe
+    for a container orchestrator or load balancer to poll every few
+    seconds. Idempotent: safe to call multiple times on the same instance.
+    """
+    if getattr(mcp_instance, _HEALTH_ROUTES_ATTR, False):
+        return
+
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    async def livez(_request: Request) -> JSONResponse:
+        # Process is up and able to answer HTTP at all.
+        return JSONResponse({"status": "ok"})
+
+    async def healthz(_request: Request) -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    async def readyz(_request: Request) -> JSONResponse:
+        detail = _readiness_detail()
+        ready = detail["creds_path_exists"]
+        body = {"status": "ok" if ready else "not_ready", "detail": detail}
+        return JSONResponse(body, status_code=200 if ready else 503)
+
+    mcp_instance.custom_route("/livez", methods=["GET"], include_in_schema=False)(livez)
+    mcp_instance.custom_route("/readyz", methods=["GET"], include_in_schema=False)(readyz)
+    mcp_instance.custom_route("/healthz", methods=["GET"], include_in_schema=False)(healthz)
+    setattr(mcp_instance, _HEALTH_ROUTES_ATTR, True)
+
+
+def _http_bearer_token() -> str | None:
+    """Optional static bearer token protecting the MCP HTTP endpoint.
+
+    Unset by default -- localhost stdio/HTTP stay frictionless. Health
+    endpoints (_HEALTH_PATHS) are always exempt: they must work for an
+    orchestrator before any client authenticates, and must not require MCP
+    negotiation or a shared secret.
+    """
+    token = os.environ.get("MCP_HTTP_BEARER_TOKEN", "").strip()
+    return token or None
+
+
+class BearerAuthASGIMiddleware:
+    """Narrow ASGI middleware enforcing a static bearer token on every HTTP
+    path except the exempt health-check paths.
+
+    This deliberately does not use the SDK's OAuth resource-server flow
+    (``TokenVerifier`` / ``AuthSettings``): that machinery expects a real
+    issuer, scopes, and protected-resource metadata, which is the wrong
+    shape for "one shared secret protects the local/lab HTTP endpoint".
+    A narrow ASGI middleware keeps that simple case simple and auditable.
+    """
+
+    def __init__(self, app: Any, token: str, exempt_paths: tuple[str, ...] = _HEALTH_PATHS):
+        self.app = app
+        self._token = token
+        self.exempt_paths = exempt_paths
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http" or scope.get("path") in self.exempt_paths:
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers") or [])
+        raw_auth = headers.get(b"authorization", b"").decode("latin-1")
+        scheme, _, presented = raw_auth.partition(" ")
+        authorized = scheme.lower() == "bearer" and hmac.compare_digest(presented, self._token)
+
+        if not authorized:
+            from starlette.responses import JSONResponse
+
+            response = JSONResponse({"error": "unauthorized"}, status_code=401)
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+
+async def _serve_streamable_http_with_bearer(mcp_instance: Any, token: str) -> None:
+    """Serve ``mcp_instance``'s streamable-HTTP app behind a bearer check.
+
+    Mirrors ``FastMCP.run_streamable_http_async`` (current SDK) but wraps
+    the built ASGI app with :class:`BearerAuthASGIMiddleware` first, since
+    the SDK has no first-class hook to inject an arbitrary ASGI middleware
+    around the app it builds internally.
+    """
+    import uvicorn
+
+    app = mcp_instance.streamable_http_app()
+    protected = BearerAuthASGIMiddleware(app, token=token)
+    config = uvicorn.Config(
+        protected,
+        host=mcp_instance.settings.host,
+        port=mcp_instance.settings.port,
+        log_level=mcp_instance.settings.log_level.lower(),
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
 
 
 def run_server(mcp_instance, default_port: int | None = None) -> None:
@@ -222,16 +557,40 @@ def run_server(mcp_instance, default_port: int | None = None) -> None:
     MCP_HOST: bind address (default 127.0.0.1)
     MCP_PORT: port (default 8010, or default_port if provided)
     MCP_ALLOWED_HOSTS / MCP_ALLOWED_ORIGINS: comma-separated DNS rebinding allowlists
+      -- required (non-wildcard) once MCP_HOST is not loopback; see
+      ``_configure_http_transport``.
+    MCP_HTTP_BEARER_TOKEN: optional shared secret; when set, every HTTP path
+      except /livez, /readyz, /healthz requires ``Authorization: Bearer <token>``.
+
+    Always registers /livez, /readyz, /healthz on HTTP transports -- see
+    ``_register_health_routes``.
     """
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport == "stdio":
         mcp_instance.run()
-    else:
-        host = os.environ.get("MCP_HOST", "127.0.0.1")
-        fallback_port = default_port if default_port is not None else DEFAULT_HTTP_PORT
-        port = int(os.environ.get("MCP_PORT", str(fallback_port)))
-        _configure_http_transport(mcp_instance, host, port)
+        return
+
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
+    fallback_port = default_port if default_port is not None else DEFAULT_HTTP_PORT
+    port = int(os.environ.get("MCP_PORT", str(fallback_port)))
+    _configure_http_transport(mcp_instance, host, port)
+    _register_health_routes(mcp_instance)
+
+    bearer_token = _http_bearer_token()
+    if bearer_token is not None and transport != "streamable-http":
+        raise UnsafeHttpBindingError(
+            f"MCP_HTTP_BEARER_TOKEN is set but MCP_TRANSPORT={transport!r} cannot "
+            "enforce the bearer-auth wrapper. Use MCP_TRANSPORT=streamable-http "
+            "or unset MCP_HTTP_BEARER_TOKEN; refusing to start an HTTP listener "
+            "that appears protected but is not."
+        )
+    if bearer_token is None:
         mcp_instance.run(transport=transport)
+        return
+
+    import anyio
+
+    anyio.run(_serve_streamable_http_with_bearer, mcp_instance, bearer_token)
 
 
 # ---------------------------------------------------------------------------
@@ -294,9 +653,88 @@ def get_glp_client() -> GLPClient:
 # Async troubleshooting helpers
 # ---------------------------------------------------------------------------
 
-_CX_TROUBLESHOOTING_BASE = "/network-troubleshooting/v1alpha1/cx"
-_AOS_S_BASE = "/network-troubleshooting/v1alpha1/aos-s"
-_GATEWAY_BASE = "/network-troubleshooting/v1alpha1/gateways"
+# ---------------------------------------------------------------------------
+# Network-troubleshooting API version selection
+# ---------------------------------------------------------------------------
+#
+# Central's network-troubleshooting API moved its stable surface to
+# ``/network-troubleshooting/v1``; ``v1alpha1`` is the legacy path some
+# tenants (older Central instances, or ones pinned during a staged rollout)
+# still require. Module-level constants below resolve to v1 by default so
+# existing imports (``ops.py`` etc.) upgrade automatically, while
+# ``CENTRALMCP_TROUBLESHOOTING_API_VERSION`` lets an operator pin back to
+# v1alpha1 for tenants that need it -- no shared.py edit required.
+#
+# ``troubleshooting_endpoint_candidates()`` is the reusable helper: it
+# returns an ordered list of endpoint paths (preferred version first) for a
+# device-type segment/serial/action. Pass that list -- instead of a single
+# hardcoded path -- to ``atroubleshoot_async()`` and it will automatically
+# fall back to the next candidate on a 404 (this Central tenant doesn't
+# serve that version), collapsing "try v1, fall back to v1alpha1" into one
+# call for any domain tool module that adopts it.
+_TROUBLESHOOTING_API_VERSION_ENV = "CENTRALMCP_TROUBLESHOOTING_API_VERSION"
+_TROUBLESHOOTING_DEFAULT_ORDER: tuple[str, ...] = ("v1", "v1alpha1")
+_TROUBLESHOOTING_KNOWN_VERSIONS = {"v1", "v1alpha1"}
+
+
+def troubleshooting_version_order() -> tuple[str, ...]:
+    """Ordered (preferred-first) network-troubleshooting API versions.
+
+    Honors ``CENTRALMCP_TROUBLESHOOTING_API_VERSION``:
+    - unset / "v1" / "current": v1 first, v1alpha1 fallback (default).
+    - "v1alpha1" / "legacy": v1alpha1 first, v1 fallback -- for tenants
+      still pinned to the legacy API during a staged rollout.
+    """
+    override = os.environ.get(_TROUBLESHOOTING_API_VERSION_ENV, "").strip().lower()
+    if override in ("v1alpha1", "legacy"):
+        return ("v1alpha1", "v1")
+    if override in ("v1", "current", ""):
+        return _TROUBLESHOOTING_DEFAULT_ORDER
+    logging.getLogger(__name__).warning(
+        "Unrecognized %s=%r; using default order %r",
+        _TROUBLESHOOTING_API_VERSION_ENV,
+        override,
+        _TROUBLESHOOTING_DEFAULT_ORDER,
+    )
+    return _TROUBLESHOOTING_DEFAULT_ORDER
+
+
+def troubleshooting_base(segment: str) -> str:
+    """Preferred-version troubleshooting base path for a device-type segment
+    (e.g. ``"cx"``, ``"aos-s"``, ``"gateways"``, ``"aps"``)."""
+    return f"/network-troubleshooting/{troubleshooting_version_order()[0]}/{segment}"
+
+
+def troubleshooting_endpoint_candidates(
+    segment: str, serial_number: str, action: str
+) -> list[str]:
+    """Ordered candidate troubleshooting endpoints -- preferred version
+    first, explicit fallback version(s) after -- for a device-type segment,
+    serial number, and action.
+
+    Domain tool modules should build endpoints with this instead of
+    hardcoding ``/network-troubleshooting/v1alpha1/...`` (or ``v1``)
+    directly, then pass the returned list to ``atroubleshoot_async`` so a
+    404 on the preferred version automatically retries the fallback
+    version -- no further shared.py changes needed to adopt it.
+    """
+    seen: list[str] = []
+    for version in troubleshooting_version_order():
+        path = f"/network-troubleshooting/{version}/{segment}/{serial_number}/{action}"
+        if path not in seen:
+            seen.append(path)
+    return seen
+
+
+_CX_TROUBLESHOOTING_BASE = troubleshooting_base("cx")
+_AOS_S_BASE = troubleshooting_base("aos-s")
+_GATEWAY_BASE = troubleshooting_base("gateways")
+# Explicit legacy-version bases, for domain code that wants v1alpha1
+# specifically (e.g. building a manual fallback list without the
+# candidates helper above).
+_CX_TROUBLESHOOTING_BASE_V1ALPHA1 = "/network-troubleshooting/v1alpha1/cx"
+_AOS_S_BASE_V1ALPHA1 = "/network-troubleshooting/v1alpha1/aos-s"
+_GATEWAY_BASE_V1ALPHA1 = "/network-troubleshooting/v1alpha1/gateways"
 _POLL_INTERVAL = 5
 _POLL_MAX = 12
 DEFAULT_LIST_LIMIT = 50
@@ -477,13 +915,39 @@ def _async_response_location(resp: Any) -> str:
 
 async def atroubleshoot_async(
     client: CentralClient,
-    endpoint: str,
+    endpoint: str | list[str],
     payload: dict[str, Any],
     errors: list[str],
 ) -> dict[str, Any]:
-    """Start and poll a Central troubleshooting task without blocking the event loop."""
-    try:
-        resp = await client._arequest("POST", endpoint, json=payload)
+    """Start and poll a Central troubleshooting task without blocking the event loop.
+
+    Args:
+        endpoint: a single endpoint path, or an ordered list of candidate
+            paths (see ``troubleshooting_endpoint_candidates``). When a
+            list is given, a 404 on any candidate except the last is
+            treated as "this tenant doesn't serve that API version" and
+            the next candidate is tried; a non-404 failure or the last
+            candidate's failure is returned immediately.
+    """
+    candidates = [endpoint] if isinstance(endpoint, str) else list(endpoint)
+    if not candidates:
+        errors.append("no troubleshooting endpoint candidates provided")
+        return {"status": None, "errors": errors}
+
+    poll_url: str | None = None
+    for index, candidate in enumerate(candidates):
+        is_last = index == len(candidates) - 1
+        try:
+            resp = await client._arequest("POST", candidate, json=payload)
+        except Exception as exc:
+            errors.append(str(exc))
+            return {"status": None, "errors": errors}
+        if resp.status_code == 404 and not is_last:
+            logger.info(
+                "troubleshooting endpoint %s returned 404; trying fallback candidate",
+                candidate,
+            )
+            continue
         if resp.status_code not in (200, 201, 202):
             errors.append(compact_http_error(resp))
             return {"status": None, "errors": errors}
@@ -492,12 +956,16 @@ async def atroubleshoot_async(
             errors.append("no Location header in async response")
             return {"status": None, "errors": errors}
         task_id = location.rstrip("/").split("/")[-1]
-        poll_url = f"{endpoint}/async-operations/{task_id}"
-    except Exception as exc:
-        errors.append(str(exc))
+        poll_url = f"{candidate}/async-operations/{task_id}"
+        break
+
+    if poll_url is None:
+        errors.append("no working troubleshooting endpoint among candidates")
         return {"status": None, "errors": errors}
+
     result = await atroubleshoot_poll(client, poll_url)
     result["errors"] = errors
+    result["endpoint_used"] = candidate
     return result
 
 

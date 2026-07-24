@@ -36,8 +36,13 @@ checksum.
 Build or refresh local indexes first:
 
 ```bash
+uv run python ingestion/scrape_openapi.py
+uv run python ingestion/scrape_cnac_spec.py
+uv run python ingestion/fetch_mist_openapi.py
+uv run python scripts/check_openapi_drift.py
+uv run python scripts/check_mist_openapi_drift.py
 uv run python ingestion/ingest_docs.py
-uv run python scripts/ingest_tools.py --products all
+CENTRALMCP_PRODUCT_ACCESS=read-write uv run python scripts/ingest_tools.py --products all
 ```
 
 Package them:
@@ -100,10 +105,26 @@ New Central, techdocs, Feature Navigator, and OpenAPI lookup.
 | Validated Solution Guides | `https://arubanetworking.hpe.com/techdocs/VSG/docs/` | `ingestion/sources/vsg_docs` |
 | New Central techdocs | `https://arubanetworking.hpe.com/techdocs/new-central/content/home.htm` plus `ingestion/techdocs_paths.json` | `ingestion/sources/techdocs_html` |
 | Switching Feature Navigator | `https://feature-navigator.arubanetworking.hpe.com/wired?mode=explore` | `ingestion/sources/feature_navigator` |
-| OpenAPI specs | `https://developer.arubanetworks.com/new-central-config/reference/` plus CNAC extraction with `ingestion/scrape_cnac_spec.py` | `ingestion/sources/openapi_specs` |
+| OpenAPI specs | Aruba reference pages resolved through ReadMe plus the pinned official `mistsys/mist_openapi` snapshot; refreshed by `scrape_openapi.py`, `scrape_cnac_spec.py`, and `fetch_mist_openapi.py` | `ingestion/sources/openapi_specs` |
 | AOS techdocs | `https://arubanetworking.hpe.com/techdocs/aos/` | `ingestion/sources/aos_techdocs` |
 
 The New Central techdocs host can block plain HTTP clients, so use the paced
 Playwright scraper (`ingestion/scrape_techdocs_pw.py`) when refreshing that
 source. Do not commit scraped content; rebuild `data/docs.lance` and package the
 index archive instead.
+
+Aruba's July 2026 ReadMe SuperHub migration retired the former internal-UI JSON
+spec source and the embedded `oasDefinition` page blob. The current scrapers
+resolve `oasPublicUrl` through
+`https://dash.readme.com/api/v1/api-registry/{id}` and generate
+`ingestion/openapi_registry_manifest.json` with the source page, project,
+portal/spec version, path count, hash, and fetch timestamp. Run
+`scripts/check_openapi_drift.py` on a schedule; exit code 1 means refresh and
+rebuild before publishing indexes, while exit code 2 means no registry manifest
+has been generated yet.
+
+`ingestion/fetch_mist_openapi.py` pins the official Mist 2606.1.1 spec to
+commit `f374cffdd5a275c7954645a306fcab7f1227e7a3` and verifies its SHA-256
+before writing the git-ignored RAG source. `scripts/check_mist_openapi_drift.py`
+reports when that upstream file advances. Both Aruba and Mist checks run in the
+scheduled `api-drift` GitHub Actions job.

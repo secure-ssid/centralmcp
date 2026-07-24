@@ -1,11 +1,18 @@
-"""MCP server — Aruba Central monitoring and operational health tools (61 tools).
+"""MCP server — Aruba Central monitoring and operational health tools (77 tools).
 
 Covers: sites, devices, clients, alerts, events, scopes, inventory,
 audit logs, device health/trends, switch ports/VLANs/PoE, AP radios/ports,
 SLE metrics, WLANs, gateway clusters, anomaly detection (client flapping,
 SSH brute force), site health summary, client roaming history, switch stacking,
 rogue APs, AP neighbors, channel utilization, client signal history, air quality,
-SSID clients, client location.
+SSID clients, client location, topology, swarm inventory, AP tunnel telemetry,
+application visibility, reporting (reports/report-runs/metadata/health),
+client onboarding events, and best-effort notification-rule CRUD.
+
+Cursor pagination note: clients/radios/gateways/WLANs/alerts/device-inventory
+paginate with a `next` cursor (not offset) per the v1 reference docs — list
+tools accept both `next_cursor` (preferred) and a legacy `offset` that is
+translated to an approximate starting cursor.
 """
 import time
 from typing import Any
@@ -113,37 +120,41 @@ def list_devices(
     site_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    next_cursor: str | None = None,
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """List devices, optionally filtered by device_type (SWITCH/AP) or site_id. Server-side paginated."""
+    """List devices, optionally filtered by device_type (SWITCH/AP) or site_id.
+
+    device-inventory paginates with a `next` cursor, not offset — pass
+    next_cursor from a prior response's _pagination.next_cursor to page
+    forward. offset is accepted for backward compatibility and translated
+    to an approximate starting cursor when next_cursor is omitted.
+    """
     filters: dict[str, Any] = {}
     if device_type:
         filters["deviceType"] = device_type
     if site_id:
         filters["siteId"] = site_id
     off = max(0, offset)
-    devices = get_mcp_client().get_devices(
-        filters or None, limit=clamp_limit(limit), offset=off
+    cursor = next_cursor or (str(off + 1) if off > 0 else None)
+    devices, returned_cursor = get_mcp_client().get_devices_page(
+        filters or None, limit=clamp_limit(limit), next_cursor=cursor
     )
-    # Client already returned the paginated slice — pass offset=0 to
-    # maybe_bound so it doesn't try to re-slice the already-trimmed
-    # result (which would produce misleading pagination metadata).
-    # The true offset is reflected in the _pagination block we attach
-    # manually when the flag is on.
     # deviceType query param is ignored server-side; apply client-side post-filter.
-    if device_type and isinstance(devices, list):
+    if device_type:
         want = device_type.upper()
         if want == "AP":
             want = "ACCESS_POINT"
         devices = [d for d in devices if want in (d.get("deviceType") or "").upper()]
     # Translate AP reboot reason codes
-    if isinstance(devices, list):
-        for d in devices:
-            if d.get("deviceType", "").upper() in ("AP", "ACCESS_POINT") or "AP" in d.get("deviceType", "").upper():
-                _translate_reboot_reason(d)
+    for d in devices:
+        dtype_upper = (d.get("deviceType") or "").upper()
+        if dtype_upper in ("AP", "ACCESS_POINT") or "AP" in dtype_upper:
+            _translate_reboot_reason(d)
 
     wrapped = maybe_bound(devices, limit=limit, offset=0)
     if isinstance(wrapped, dict) and "_pagination" in wrapped:
         wrapped["_pagination"]["offset"] = off
+        wrapped["_pagination"]["next_cursor"] = returned_cursor
     return wrapped
 
 
@@ -173,22 +184,29 @@ def list_clients(
     site_contains: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    next_cursor: str | None = None,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """List connected clients. ALWAYS filter — unfiltered returns all clients.
 
     Server-side: site_id, serial_number, ssid, connection_type (Wireless/Wired).
     Client-side substring (case-insensitive, prefer for natural-language queries):
     hostname_contains, os_contains, device_type_contains, ssid_contains, site_contains.
-    Server-side limit/offset pagination is used before client-side substring filters.
+
+    /network-monitoring/v1/clients paginates with a `next` cursor, not
+    offset. Pass next_cursor from a prior response's _pagination.next_cursor
+    to page forward; offset is accepted for backward compatibility and
+    translated to an approximate starting cursor when next_cursor is omitted.
+    Cursor pagination is applied before client-side substring filters.
     """
     off = max(0, offset)
-    clients = get_mcp_client().get_clients(
+    cursor = next_cursor or (str(off + 1) if off > 0 else None)
+    clients, returned_cursor = get_mcp_client().get_clients_page(
         site_id=site_id,
         serial_number=serial_number,
         ssid=ssid,
         connection_type=connection_type,
         limit=clamp_limit(limit),
-        offset=off,
+        next_cursor=cursor,
     )
 
     # Client-side substring filters. Each filter checks multiple possible field
@@ -219,6 +237,7 @@ def list_clients(
     wrapped = maybe_bound(clients, limit=limit, offset=0)
     if isinstance(wrapped, dict) and "_pagination" in wrapped:
         wrapped["_pagination"]["offset"] = off
+        wrapped["_pagination"]["next_cursor"] = returned_cursor
     return wrapped
 
 
@@ -347,11 +366,19 @@ def list_alerts(
     severity: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    next_cursor: str | None = None,
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """List active alerts. severity: CRITICAL/MAJOR/MINOR. Server-side limit/offset pagination."""
+    """List active alerts. severity: CRITICAL/MAJOR/MINOR.
+
+    /network-notifications/v1/alerts paginates with a `next` cursor, not
+    offset. Pass next_cursor from a prior response's _pagination.next_cursor
+    to page forward; offset is translated to an approximate starting cursor
+    when next_cursor is omitted.
+    """
     off = max(0, offset)
     alerts = get_mcp_client().get_alerts(
-        site_id=site_id, severity=severity, limit=clamp_limit(limit), offset=off
+        site_id=site_id, severity=severity, limit=clamp_limit(limit),
+        offset=off, next_cursor=next_cursor,
     )
     wrapped = maybe_bound(alerts, limit=limit, offset=0)
     if isinstance(wrapped, dict) and "_pagination" in wrapped:
@@ -365,8 +392,15 @@ def list_active_alerts(
     severity: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    next_cursor: str | None = None,
 ) -> dict[str, Any]:
-    """List active alerts from network-notifications/v1/alerts using OData status filter."""
+    """List active alerts from network-notifications/v1/alerts using OData status filter.
+
+    Paginates with a `next` cursor (getalertlistv1), not offset. Pass
+    next_cursor from a prior response's `next` field to page forward;
+    offset is translated to an approximate starting cursor when
+    next_cursor is omitted.
+    """
     client = get_client()
     filters = ["status eq 'Active'"]
     if site_id:
@@ -375,10 +409,13 @@ def list_active_alerts(
         filters.append(f"severity eq '{_odata_string(severity)}'")
     params: dict[str, Any] = {
         "limit": clamp_limit(limit),
-        "offset": max(0, offset),
         "filter": " and ".join(filters),
         "sort": "severity desc",
     }
+    off = max(0, offset)
+    cursor = next_cursor or (str(off + 1) if off > 0 else None)
+    if cursor:
+        params["next"] = cursor
     try:
         return client.get("/network-notifications/v1/alerts", params=params)
     except Exception as exc:
@@ -588,10 +625,21 @@ def list_radios(
     serial_number: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    next_cursor: str | None = None,
 ) -> dict[str, Any]:
-    """List radios from network-monitoring/v1/radios with optional site/device filters."""
+    """List radios from network-monitoring/v1/radios with optional site/device filters.
+
+    Paginates with a `next` cursor (getradiolistv1), not offset. Pass
+    next_cursor from a prior response's `next` field to page forward;
+    offset is translated to an approximate starting cursor when
+    next_cursor is omitted.
+    """
     client = get_client()
-    params: dict[str, Any] = {"limit": clamp_limit(limit), "offset": max(0, offset)}
+    params: dict[str, Any] = {"limit": clamp_limit(limit)}
+    off = max(0, offset)
+    cursor = next_cursor or (str(off + 1) if off > 0 else None)
+    if cursor:
+        params["next"] = cursor
     if site_id:
         params["siteId"] = site_id
     if serial_number:
@@ -607,10 +655,21 @@ def list_gateways(
     site_id: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    next_cursor: str | None = None,
 ) -> dict[str, Any]:
-    """List gateway inventory from network-monitoring/v1/gateways."""
+    """List gateway inventory from network-monitoring/v1/gateways.
+
+    Paginates with a `next` cursor (getgatewaylistv1), not offset. Pass
+    next_cursor from a prior response's `next` field to page forward;
+    offset is translated to an approximate starting cursor when
+    next_cursor is omitted.
+    """
     client = get_client()
-    params: dict[str, Any] = {"limit": clamp_limit(limit), "offset": max(0, offset)}
+    params: dict[str, Any] = {"limit": clamp_limit(limit)}
+    off = max(0, offset)
+    cursor = next_cursor or (str(off + 1) if off > 0 else None)
+    if cursor:
+        params["next"] = cursor
     if site_id:
         params["siteId"] = site_id
     try:
@@ -815,18 +874,23 @@ def list_scope_devices(
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """List devices associated with a site/scope ID using known Central scope fields."""
+    """List devices associated with a site/scope ID using known Central scope fields.
+
+    Sweeps device-inventory pages using the server-issued `next` cursor
+    (device-inventory does not support offset-based paging) and filters
+    client-side; the returned limit/offset only bound the final result page.
+    """
     scope = scope_id.strip()
     if not scope:
         raise ValueError("scope_id must be a non-empty string")
     page_size = 200
     found: list[dict[str, Any]] = []
-    off = 0
+    cursor: str | None = None
     for _ in range(50):
-        page = get_mcp_client().get_devices(
+        page, cursor_next = get_mcp_client().get_devices_page(
             {"siteId": scope},
             limit=page_size,
-            offset=off,
+            next_cursor=cursor,
         )
         if not page:
             break
@@ -849,9 +913,9 @@ def list_scope_devices(
                 if want not in raw:
                     continue
             found.append(device)
-        if len(page) < page_size:
+        if not cursor_next:
             break
-        off += page_size
+        cursor = cursor_next
     return bound_collection_response(found, limit=limit, offset=offset)
 
 
@@ -863,33 +927,47 @@ def list_inventory(
     device_type: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    next_cursor: str | None = None,
 ) -> dict[str, Any]:
-    """List claimed/unprovisioned devices. status: "Yes"=provisioned, "No"=claimed-only. device_type e.g. ACCESS_POINT/SWITCH/GATEWAY."""
-    client = get_client()
+    """List claimed/unprovisioned devices. status: "Yes"=provisioned, "No"=claimed-only.
+    device_type e.g. ACCESS_POINT/SWITCH/GATEWAY.
+
+    Uses device-inventory v1 (getdeviceinventoryv1), falling back to
+    v1alpha1 automatically if v1 is unavailable on this tenant. Both
+    versions paginate with a `next` cursor, not offset — pass next_cursor
+    from a prior response's _pagination.next_cursor to page forward;
+    offset is translated to an approximate starting cursor when
+    next_cursor is omitted.
+    """
     errors: list[str] = []
-    params: dict[str, Any] = {
-        "limit": clamp_limit(limit),
-        "offset": max(0, offset),
-    }
+    off = max(0, offset)
+    cursor = next_cursor or (str(off + 1) if off > 0 else None)
+    filters: dict[str, Any] = {}
     if device_type:
-        params["deviceType"] = device_type
+        filters["deviceType"] = device_type
     try:
-        result = client.get("/network-monitoring/v1alpha1/device-inventory", params=params)
-        items = result.get("items", result.get("devices", []))
-        if not isinstance(items, list):
-            items = []
-        # deviceType query param is ignored server-side; apply client-side post-filter.
-        if device_type:
-            want = device_type.upper()
-            if want == "AP":
-                want = "ACCESS_POINT"
-            items = [d for d in items if want in (d.get("deviceType") or "").upper()]
-        if status:
-            items = [d for d in items if d.get("isProvisioned") == status]
-        return {"items": items, "total": len(items), "errors": errors}
+        items, returned_cursor = get_mcp_client().get_devices_page(
+            filters or None, limit=clamp_limit(limit), next_cursor=cursor
+        )
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "total": 0, "errors": errors}
+    if not isinstance(items, list):
+        items = []
+    # deviceType query param is ignored server-side; apply client-side post-filter.
+    if device_type:
+        want = device_type.upper()
+        if want == "AP":
+            want = "ACCESS_POINT"
+        items = [d for d in items if want in (d.get("deviceType") or "").upper()]
+    if status:
+        items = [d for d in items if d.get("isProvisioned") == status]
+    return {
+        "items": items,
+        "total": len(items),
+        "next_cursor": returned_cursor,
+        "errors": errors,
+    }
 
 
 # ── Audit Logs ────────────────────────────────────────────────────────────────
@@ -1381,13 +1459,23 @@ def get_ap_ports(serial_number: str) -> dict[str, Any]:
 # ── WLANs ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool(annotations=READ_ONLY)
-def list_wlans(limit: int = 100, offset: int = 0) -> dict[str, Any]:
-    """List all WLANs visible in New Central monitoring."""
+def list_wlans(limit: int = 100, offset: int = 0, next_cursor: str | None = None) -> dict[str, Any]:
+    """List all WLANs visible in New Central monitoring.
+
+    Paginates with a `next` cursor (getwlanlistv1), not offset. Pass
+    next_cursor from a prior response's `next` field to page forward;
+    offset is translated to an approximate starting cursor when
+    next_cursor is omitted.
+    """
     client = get_client()
     lim = clamp_limit(limit)
     off = max(0, offset)
+    cursor = next_cursor or (str(off + 1) if off > 0 else None)
+    params: dict[str, Any] = {"limit": lim}
+    if cursor:
+        params["next"] = cursor
     try:
-        return client.get(f"/network-monitoring/v1/wlans?limit={lim}&offset={off}")
+        return client.get("/network-monitoring/v1/wlans", params=params)
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -1965,14 +2053,421 @@ def get_site_health_summary(
     }
 
 
+# ── Topology ──────────────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def get_topology(site_id: str) -> dict[str, Any]:
+    """Fetch the network topology (nodes + links) for a site.
+
+    GET /network-monitoring/v1/topology/{site-id}.
+    """
+    site = site_id.strip()
+    if not site:
+        raise ValueError("site_id must be a non-empty string")
+    endpoint = f"/network-monitoring/v1/topology/{quote(site, safe='')}"
+    try:
+        return get_client().get(endpoint)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": endpoint}
+
+
+# ── Swarm Inventory ───────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_swarms(
+    filter: str | None = None,
+    sort: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    next_cursor: str | None = None,
+) -> dict[str, Any]:
+    """List AP swarms/clusters (conductor + members) from network-monitoring/v1/swarms.
+
+    Paginates with a `next` cursor (getswarmsv1), not offset. Pass
+    next_cursor from a prior response's `next` field to page forward;
+    offset is translated to an approximate starting cursor when
+    next_cursor is omitted.
+    """
+    params: dict[str, Any] = {"limit": clamp_limit(limit, default=20)}
+    off = max(0, offset)
+    cursor = next_cursor or (str(off + 1) if off > 0 else None)
+    if cursor:
+        params["next"] = cursor
+    if filter:
+        params["filter"] = filter
+    if sort:
+        params["sort"] = sort
+    try:
+        return get_client().get("/network-monitoring/v1/swarms", params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": "/network-monitoring/v1/swarms"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_swarm(cluster_id: str) -> dict[str, Any]:
+    """Fetch a single AP swarm/cluster by ID from network-monitoring/v1/swarms/{cluster-id}."""
+    cluster = cluster_id.strip()
+    if not cluster:
+        raise ValueError("cluster_id must be a non-empty string")
+    endpoint = f"/network-monitoring/v1/swarms/{quote(cluster, safe='')}"
+    try:
+        return get_client().get(endpoint)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": endpoint}
+
+
+# ── AP Tunnel Telemetry ───────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_ap_tunnels(
+    serial_number: str,
+    site_id: str | None = None,
+    filter: str | None = None,
+    sort: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    next_cursor: str | None = None,
+) -> dict[str, Any]:
+    """List GRE/IPsec tunnels reported by an AP (network-monitoring/v1/aps/{serial}/tunnels).
+
+    Paginates with a `next` cursor (getaccesspointtunnellistv1), not offset.
+    Pass next_cursor from a prior response's `next` field to page forward;
+    offset is translated to an approximate starting cursor when
+    next_cursor is omitted.
+    """
+    params: dict[str, Any] = {"limit": clamp_limit(limit, default=20)}
+    off = max(0, offset)
+    cursor = next_cursor or (str(off + 1) if off > 0 else None)
+    if cursor:
+        params["next"] = cursor
+    if site_id:
+        params["site-id"] = site_id
+    if filter:
+        params["filter"] = filter
+    if sort:
+        params["sort"] = sort
+    endpoint = f"/network-monitoring/v1/aps/{quote(serial_number, safe='')}/tunnels"
+    try:
+        return get_client().get(endpoint, params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": endpoint}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_ap_tunnel(serial_number: str, tunnel_id: str) -> dict[str, Any]:
+    """Fetch detail for a single AP tunnel by ID.
+
+    GET /network-monitoring/v1/aps/{serial}/tunnels/{tunnel-id}.
+    """
+    endpoint = (
+        f"/network-monitoring/v1/aps/{quote(serial_number, safe='')}"
+        f"/tunnels/{quote(tunnel_id, safe='')}"
+    )
+    try:
+        return get_client().get(endpoint)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": endpoint}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_ap_tunnel_throughput(
+    serial_number: str,
+    tunnel_id: str,
+    start_time: str,
+    end_time: str,
+) -> dict[str, Any]:
+    """Time-series throughput for a single AP tunnel over a time window.
+
+    start_time/end_time: ISO 8601, applied as an OData `timestamp` filter
+    (matches get_device_trends convention elsewhere in this module).
+    """
+    endpoint = (
+        f"/network-monitoring/v1/aps/{quote(serial_number, safe='')}"
+        f"/tunnels/{quote(tunnel_id, safe='')}/throughput"
+    )
+    params = {"filter": f"timestamp gt {start_time} and timestamp lt {end_time}"}
+    try:
+        return get_client().get(endpoint, params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": endpoint}
+
+
+# ── Application Visibility ────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_applications(
+    site_id: str,
+    start_time: str,
+    end_time: str,
+    client_id: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List application-visibility records for a site over a time window.
+
+    GET /network-monitoring/v1/applications. start_time/end_time must be
+    RFC 3339 timestamps within 7 days of each other. Unlike most other
+    network-monitoring v1 list endpoints, this one uses true limit/offset
+    pagination (applicationsv1), not a `next` cursor.
+    """
+    params: dict[str, Any] = {
+        "site-id": site_id,
+        "start-at": start_time,
+        "end-at": end_time,
+        "limit": clamp_limit(limit),
+        "offset": max(0, offset),
+    }
+    if client_id:
+        params["client-id"] = client_id
+    try:
+        return get_client().get("/network-monitoring/v1/applications", params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": "/network-monitoring/v1/applications"}
+
+
+# ── Reporting ─────────────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_reports(
+    search: str | None = None,
+    filter: str | None = None,
+    sort: str | None = None,
+    limit: int = 10,
+    next_cursor: str | None = None,
+) -> dict[str, Any]:
+    """List saved Central reports from network-reporting/v1/reports.
+
+    Cursor-paginated (`next`, per the reporting v1 reference) — pass
+    next_cursor from a prior response's `next` field to page forward.
+    """
+    params: dict[str, Any] = {"limit": max(1, min(limit, 100))}
+    if next_cursor:
+        params["next"] = next_cursor
+    if search:
+        params["search"] = search
+    if filter:
+        params["filter"] = filter
+    if sort:
+        params["sort"] = sort
+    try:
+        return get_client().get("/network-reporting/v1/reports", params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": "/network-reporting/v1/reports"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_report_runs(
+    report_id: str,
+    sort: str | None = None,
+    limit: int = 10,
+    next_cursor: str | None = None,
+) -> dict[str, Any]:
+    """List report-run history for a saved report.
+
+    GET /network-reporting/v1alpha1/reports/{report_id}/report-runs.
+    """
+    params: dict[str, Any] = {"limit": max(1, min(limit, 100))}
+    if next_cursor:
+        params["next"] = next_cursor
+    if sort:
+        params["sort"] = sort
+    endpoint = f"/network-reporting/v1alpha1/reports/{quote(str(report_id), safe='')}/report-runs"
+    try:
+        return get_client().get(endpoint, params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": endpoint}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_reports_metadata() -> dict[str, Any]:
+    """Fetch reporting metadata (available report types/fields).
+
+    GET /network-reporting/v1alpha1/reports-metadata.
+    """
+    try:
+        return get_client().get("/network-reporting/v1alpha1/reports-metadata")
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": "/network-reporting/v1alpha1/reports-metadata"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_reporting_service_health() -> dict[str, Any]:
+    """Fetch reporting-service health status from network-reporting/v1alpha1/reports/health."""
+    try:
+        return get_client().get("/network-reporting/v1alpha1/reports/health")
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": "/network-reporting/v1alpha1/reports/health"}
+
+
+# ── Client Onboarding ─────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_client_onboarding_events(
+    serial_number: str,
+    hours: int = 24,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List 'Client Onboarding' events for a device over the past N hours (bounded by default).
+
+    Filters get_events() to eventName == "Client Onboarding" — the same
+    event name already relied on by detect_client_flapping and
+    get_client_roaming_history elsewhere in this module.
+    """
+    events = get_mcp_client().get_events(serial_number, hours=hours, api_limit=1000)
+    onboarding = [e for e in events if e.get("eventName") == "Client Onboarding"]
+    return bound_collection_response(onboarding, limit=limit, offset=offset)
+
+
+# ── Notification Rule CRUD (alert-config) ────────────────────────────────────
+#
+# GOTCHA: the New Central developer-docs corpus documents only GET for
+# alert-config (backing list_alert_configs above) — no POST/PATCH/DELETE
+# reference page was found for this resource. The Central UI's
+# "Notification Rules" page does support create/edit/delete/enable/disable
+# (see techdocs notify-dash-brd.htm), so a REST counterpart plausibly
+# exists at the same base path, but its exact shape is NOT independently
+# confirmed. These tools follow the same defensive "try the documented
+# REST convention, surface a clear 404 instead of guessing again" pattern
+# already used by acknowledge_alert (ops.py) and list_config_templates
+# (config.py) for endpoints in the same state.
+
+_ALERT_CONFIG_BASE = "/network-notifications/v1/alert-config"
+
+
+async def _confirm_notification_rule_action(
+    ctx: Context, action: str, rule_id: str | None
+) -> dict[str, Any] | None:
+    try:
+        result = await ctx.elicit(
+            message=f"Confirm notification-rule {action}{f' for {rule_id}' if rule_id else ''}?",
+            schema=_ConfirmAction,
+        )
+    except Exception as exc:
+        return {
+            "status": "CONFIRMATION_UNAVAILABLE",
+            "error": f"client does not support elicitation; operation NOT performed: {exc}",
+        }
+    if result.action != "accept" or not result.data.confirm:
+        return {"status": "CANCELLED", "detail": "user declined confirmation"}
+    return None
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def create_notification_rule(
+    ctx: Context,
+    body: dict[str, Any],
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a notification rule (alert-config).
+
+    UNCONFIRMED endpoint shape — see module note above.
+
+    body must match the alert-config schema returned by list_alert_configs
+    (scopeId, scopeType, category, destination, etc.). dry_run returns the
+    payload without sending; otherwise requires elicited confirmation.
+    """
+    if dry_run:
+        return {"dry_run": True, "endpoint": _ALERT_CONFIG_BASE, "payload": body}
+    cancelled = await _confirm_notification_rule_action(ctx, "create", None)
+    if cancelled:
+        return cancelled
+    response = await get_client()._arequest("POST", _ALERT_CONFIG_BASE, json=body)
+    if response.status_code not in (200, 201, 202):
+        return {
+            "error": compact_http_error(response, _ALERT_CONFIG_BASE),
+            "endpoint_used": _ALERT_CONFIG_BASE,
+        }
+    return _json_response(response) | {"endpoint_used": _ALERT_CONFIG_BASE}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def update_notification_rule(
+    ctx: Context,
+    rule_id: str,
+    updates: dict[str, Any],
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Update a notification rule by ID (alert-config).
+
+    UNCONFIRMED endpoint shape — see module note above.
+    """
+    endpoint = f"{_ALERT_CONFIG_BASE}/{quote(rule_id, safe='')}"
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": updates}
+    cancelled = await _confirm_notification_rule_action(ctx, "update", rule_id)
+    if cancelled:
+        return cancelled
+    response = await get_client()._arequest("PATCH", endpoint, json=updates)
+    if response.status_code not in (200, 201, 202, 204):
+        return {"error": compact_http_error(response, endpoint), "endpoint_used": endpoint}
+    return _json_response(response) | {"endpoint_used": endpoint}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def set_notification_rule_enabled(
+    ctx: Context,
+    rule_id: str,
+    enabled: bool,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Enable or disable a notification rule by ID.
+
+    UNCONFIRMED endpoint shape — see module note above.
+
+    Central UI disallows enabling a rule with no destination configured;
+    the API is expected to enforce the same constraint (surfaced as a 400).
+    """
+    endpoint = f"{_ALERT_CONFIG_BASE}/{quote(rule_id, safe='')}"
+    payload = {"enable": enabled}
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": payload}
+    cancelled = await _confirm_notification_rule_action(
+        ctx, "enable" if enabled else "disable", rule_id
+    )
+    if cancelled:
+        return cancelled
+    response = await get_client()._arequest("PATCH", endpoint, json=payload)
+    if response.status_code not in (200, 201, 202, 204):
+        return {"error": compact_http_error(response, endpoint), "endpoint_used": endpoint}
+    return _json_response(response) | {"endpoint_used": endpoint}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def delete_notification_rule(
+    ctx: Context,
+    rule_id: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete a notification rule by ID. UNCONFIRMED endpoint shape — see module note above."""
+    endpoint = f"{_ALERT_CONFIG_BASE}/{quote(rule_id, safe='')}"
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint}
+    cancelled = await _confirm_notification_rule_action(ctx, "delete", rule_id)
+    if cancelled:
+        return cancelled
+    response = await get_client()._arequest("DELETE", endpoint)
+    if response.status_code not in (200, 202, 204):
+        return {"error": compact_http_error(response, endpoint), "endpoint_used": endpoint}
+    return _json_response(response) | {"endpoint_used": endpoint, "deleted": True}
+
+
 if __name__ == "__main__":
     from mcp_servers._cache_hygiene import stable_list_tools
     from mcp_servers._middleware import (
         NullStripMiddleware,
         RateLimitMiddleware,
+        SecretTokenizeMiddleware,
         install_middleware,
     )
     stable_list_tools(mcp)
-    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    install_middleware(
+        mcp,
+        [
+            NullStripMiddleware(),
+            RateLimitMiddleware(rate=8.0),
+            SecretTokenizeMiddleware(),
+        ],
+    )
     from mcp_servers.shared import run_server
     run_server(mcp)

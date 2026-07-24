@@ -1,4 +1,4 @@
-"""MCP server - optional HPE Aruba UXI backend (read-only starter tools).
+"""MCP server - optional HPE Aruba UXI backend.
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=uxi
@@ -8,6 +8,22 @@ Auth/env:
   UXI_CLIENT_SECRET  GreenLake OAuth2 client secret
   UXI_BASE_URL       optional, defaults to HPE UXI v1alpha1 API
   UXI_TOKEN_URL      optional, defaults to HPE GreenLake SSO token URL
+
+Rate limiting: the UXI v1alpha1 API is documented as a 5 requests/second
+ceiling per tenant. Every outbound HTTP call this module makes (token fetch,
+reads, and writes) is throttled through a dedicated 5 req/s token-bucket
+limiter (`_UXI_RATE_LIMITER`), independent of whatever MCP-tool-call rate
+limit the hosting server (direct stdio run or the shared tool router) also
+applies — so this cap holds even when the router's own limiter is looser.
+
+Writes: create/update/delete for groups, sensors, and agents, plus group
+assignment/unassignment for sensors, agents, networks, and service tests, are
+all gated behind `CENTRALMCP_PRODUCT_ACCESS=read-write` and a `dry_run`
+(default `True`) + `confirm` (required for execution) preview-first contract,
+matching every other optional product backend in this repo. Write path/ID
+shapes extend the already-confirmed read collection paths with the standard
+REST `{collection}/{id}` convention; verify against a live UXI tenant before
+relying on them for anything beyond a lab.
 """
 
 from __future__ import annotations
@@ -19,10 +35,15 @@ from urllib.parse import quote
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from mcp_servers._middleware import RateLimitMiddleware
 from mcp_servers.shared import (
+    DESTRUCTIVE,
+    IDEMPOTENT_WRITE,
     READ_ONLY,
     bound_collection_response,
     clamp_limit,
+    platform_write_blocked as _platform_write_blocked,
+    platform_writes_allowed as _platform_writes_allowed,
     redact_sensitive,
     response_payload,
     safe_api_path,
@@ -30,6 +51,15 @@ from mcp_servers.shared import (
 )
 
 mcp = FastMCP("uxi-core")
+
+
+def optional_product_writes_allowed() -> bool:
+    return _platform_writes_allowed("uxi")
+
+
+def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
+    return _platform_write_blocked("uxi", tool_name)
+
 
 _DEFAULT_UXI_BASE_URL = "https://api.capenetworks.com/networking-uxi/v1alpha1"
 _DEFAULT_TOKEN_URL = "https://sso.common.cloud.hpe.com/as/token.oauth2"
@@ -45,7 +75,25 @@ _LIST_PATHS = {
     "/wired-networks",
     "/wireless-networks",
 }
+_WRITABLE_COLLECTIONS = {
+    "/groups",
+    "/sensors",
+    "/agents",
+    "/agent-group-assignments",
+    "/sensor-group-assignments",
+    "/network-group-assignments",
+    "/service-test-group-assignments",
+}
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_EXECUTE_HINT = "Review the request, then call again with dry_run=False and confirm=True."
 _TOKEN_CACHE: dict[str, Any] = {}
+# Documented UXI API ceiling: 5 requests/second per tenant.
+_UXI_RATE_LIMITER = RateLimitMiddleware(rate=5.0)
+
+
+async def _uxi_throttle() -> None:
+    """Block until the shared 5 req/s UXI token bucket has capacity."""
+    await _UXI_RATE_LIMITER.before_call("uxi_http", {})
 
 
 def _uxi_config() -> tuple[str | None, str | None, str, str]:
@@ -87,6 +135,18 @@ def _safe_uxi_path(path: str) -> str:
     raise ValueError(f"path must be one of: {allowed}, or /sensors/{{id}}/status")
 
 
+def _safe_uxi_write_path(path: str) -> str:
+    """Validate a write path: a writable collection, or `{collection}/{id}`."""
+    safe_path = safe_api_path(path, ("/",))
+    if safe_path in _WRITABLE_COLLECTIONS:
+        return quote(safe_path, safe="/")
+    parts = safe_path.strip("/").split("/")
+    if len(parts) == 2 and f"/{parts[0]}" in _WRITABLE_COLLECTIONS:
+        return f"/{parts[0]}/{_path_segment(parts[1])}"
+    allowed = ", ".join(sorted(_WRITABLE_COLLECTIONS))
+    raise ValueError(f"path must be one of: {allowed}, or one of those collections plus /{{id}}")
+
+
 def _pick(record: Any, fields: tuple[str, ...]) -> Any:
     if not isinstance(record, dict):
         return record
@@ -116,6 +176,7 @@ async def _uxi_access_token(client_id: str, client_secret: str, token_url: str) 
     ):
         return str(_TOKEN_CACHE["token"])
 
+    await _uxi_throttle()
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             token_url,
@@ -164,6 +225,7 @@ async def _uxi_get_request(
         token = await _uxi_access_token(client_id, client_secret, token_url)
         url = f"{base_url}{safe_path}"
         clean_params = {key: value for key, value in (params or {}).items() if value is not None}
+        await _uxi_throttle()
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
                 url,
@@ -181,6 +243,75 @@ async def _uxi_get_request(
         return {"error": str(exc), "url": f"{base_url}{path}"}
 
 
+async def _uxi_write_request(
+    method: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | list[Any] | None = None,
+    *,
+    dry_run: bool = True,
+    confirm: bool = False,
+    tool_name: str = "uxi_write",
+) -> dict[str, Any]:
+    if not optional_product_writes_allowed():
+        return optional_product_write_blocked(tool_name)
+
+    method = method.upper()
+    if method not in _WRITE_METHODS:
+        return {"error": f"method must be one of: {', '.join(sorted(_WRITE_METHODS))}"}
+
+    client_id, client_secret, base_url, token_url = _uxi_config()
+    if not client_id or not client_secret:
+        return {"error": "UXI not configured. Set UXI_CLIENT_ID and UXI_CLIENT_SECRET."}
+    try:
+        base_url = validate_product_base_url(base_url, product="UXI")
+        safe_path = _safe_uxi_write_path(path)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    url = f"{base_url}{safe_path}"
+    preview = {
+        "method": method,
+        "path": safe_path,
+        "url": url,
+        "params": redact_sensitive(params or {}),
+        "json": redact_sensitive(body),
+    }
+    if dry_run:
+        return {
+            "dry_run": True,
+            **preview,
+            "execute_hint": _EXECUTE_HINT,
+        }
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True,
+            **preview,
+        }
+
+    try:
+        token = await _uxi_access_token(client_id, client_secret, token_url)
+        await _uxi_throttle()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(
+                method,
+                url,
+                headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+                params=params or {},
+                json=body,
+            )
+        return {
+            "status_code": resp.status_code,
+            "data": redact_sensitive(response_payload(resp)),
+            "url": url,
+        }
+    except httpx.HTTPError as exc:
+        return {"error": f"{type(exc).__name__}: connection or protocol error", "url": url}
+    except Exception as exc:
+        return {"error": str(exc), "url": url}
+
+
 @mcp.tool(annotations=READ_ONLY)
 def uxi_status() -> dict[str, Any]:
     """Report whether the optional UXI backend has OAuth credentials configured."""
@@ -191,6 +322,8 @@ def uxi_status() -> dict[str, Any]:
         "has_client_secret": bool(client_secret),
         "base_url": base_url,
         "token_url": token_url,
+        "writes_allowed": optional_product_writes_allowed(),
+        "rate_limit_per_second": _UXI_RATE_LIMITER.rate,
         "tools": [
             "uxi_get",
             "uxi_list_sensors",
@@ -204,6 +337,18 @@ def uxi_status() -> dict[str, Any]:
             "uxi_list_sensor_group_assignments",
             "uxi_list_network_group_assignments",
             "uxi_list_service_test_group_assignments",
+            "uxi_write",
+            "uxi_create_group",
+            "uxi_update_group",
+            "uxi_delete_group",
+            "uxi_update_sensor",
+            "uxi_delete_sensor",
+            "uxi_update_agent",
+            "uxi_delete_agent",
+            "uxi_assign_sensor_to_group",
+            "uxi_assign_agent_to_group",
+            "uxi_assign_network_to_group",
+            "uxi_assign_service_test_to_group",
         ],
     }
 
@@ -397,14 +542,253 @@ async def uxi_list_service_test_group_assignments(
     return await _uxi_list_assignments("/service-test-group-assignments", next_cursor, page_size)
 
 
+@mcp.tool(annotations=DESTRUCTIVE)
+async def uxi_write(
+    method: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | list[Any] | None = None,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Perform a guarded write request against a writable UXI v1alpha1 path.
+
+    Allows `POST`, `PUT`, `PATCH`, and `DELETE` against a writable collection
+    (`/groups`, `/sensors`, `/agents`, or any of the `*-group-assignments`
+    collections) or one of their `{id}` sub-resources. Defaults to
+    `dry_run=True`; execution requires `dry_run=False` and `confirm=True`,
+    and is throttled to the documented 5 req/s UXI API ceiling.
+    """
+    return await _uxi_write_request(
+        method,
+        path,
+        params,
+        body,
+        dry_run=dry_run,
+        confirm=confirm,
+        tool_name="uxi_write",
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def uxi_create_group(
+    name: str,
+    parent: str | None = None,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create a UXI group; requires `CENTRALMCP_PRODUCT_ACCESS=read-write`."""
+    body: dict[str, Any] = {"name": name}
+    if parent is not None:
+        body["parent"] = parent
+    return await _uxi_write_request(
+        "POST", "/groups", body=body, dry_run=dry_run, confirm=confirm, tool_name="uxi_create_group"
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def uxi_update_group(
+    group_id: str,
+    name: str | None = None,
+    parent: str | None = None,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Update a UXI group's name/parent by ID; requires read-write access."""
+    try:
+        path = f"/groups/{_path_segment(group_id)}"
+    except ValueError as exc:
+        return {"error": str(exc)}
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if parent is not None:
+        body["parent"] = parent
+    if not body:
+        return {"error": "Provide at least one of name or parent to update."}
+    return await _uxi_write_request(
+        "PATCH", path, body=body, dry_run=dry_run, confirm=confirm, tool_name="uxi_update_group"
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def uxi_delete_group(
+    group_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Delete a UXI group by ID; requires read-write access."""
+    try:
+        path = f"/groups/{_path_segment(group_id)}"
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return await _uxi_write_request(
+        "DELETE", path, dry_run=dry_run, confirm=confirm, tool_name="uxi_delete_group"
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def uxi_update_sensor(
+    sensor_id: str,
+    patch: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Patch a UXI sensor's editable fields (e.g. notes, addressNote) by ID."""
+    try:
+        path = f"/sensors/{_path_segment(sensor_id)}"
+    except ValueError as exc:
+        return {"error": str(exc)}
+    if not isinstance(patch, dict) or not patch:
+        return {"error": "patch must be a non-empty object"}
+    return await _uxi_write_request(
+        "PATCH", path, body=patch, dry_run=dry_run, confirm=confirm, tool_name="uxi_update_sensor"
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def uxi_delete_sensor(
+    sensor_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Delete/decommission a UXI sensor by ID; requires read-write access."""
+    try:
+        path = f"/sensors/{_path_segment(sensor_id)}"
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return await _uxi_write_request(
+        "DELETE", path, dry_run=dry_run, confirm=confirm, tool_name="uxi_delete_sensor"
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def uxi_update_agent(
+    agent_id: str,
+    patch: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Patch a UXI agent's editable fields (e.g. notes) by ID."""
+    try:
+        path = f"/agents/{_path_segment(agent_id)}"
+    except ValueError as exc:
+        return {"error": str(exc)}
+    if not isinstance(patch, dict) or not patch:
+        return {"error": "patch must be a non-empty object"}
+    return await _uxi_write_request(
+        "PATCH", path, body=patch, dry_run=dry_run, confirm=confirm, tool_name="uxi_update_agent"
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def uxi_delete_agent(
+    agent_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Delete/decommission a UXI agent by ID; requires read-write access."""
+    try:
+        path = f"/agents/{_path_segment(agent_id)}"
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return await _uxi_write_request(
+        "DELETE", path, dry_run=dry_run, confirm=confirm, tool_name="uxi_delete_agent"
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def uxi_assign_sensor_to_group(
+    sensor_id: str,
+    group_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Assign a UXI sensor to a group; requires read-write access."""
+    return await _uxi_write_request(
+        "POST",
+        "/sensor-group-assignments",
+        body={"sensor": sensor_id, "group": group_id},
+        dry_run=dry_run,
+        confirm=confirm,
+        tool_name="uxi_assign_sensor_to_group",
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def uxi_assign_agent_to_group(
+    agent_id: str,
+    group_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Assign a UXI agent to a group; requires read-write access."""
+    return await _uxi_write_request(
+        "POST",
+        "/agent-group-assignments",
+        body={"agent": agent_id, "group": group_id},
+        dry_run=dry_run,
+        confirm=confirm,
+        tool_name="uxi_assign_agent_to_group",
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def uxi_assign_network_to_group(
+    network_id: str,
+    group_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Assign a UXI wired/wireless network to a group; requires read-write access."""
+    return await _uxi_write_request(
+        "POST",
+        "/network-group-assignments",
+        body={"network": network_id, "group": group_id},
+        dry_run=dry_run,
+        confirm=confirm,
+        tool_name="uxi_assign_network_to_group",
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def uxi_assign_service_test_to_group(
+    service_test_id: str,
+    group_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Assign a UXI service test to a group; requires read-write access."""
+    return await _uxi_write_request(
+        "POST",
+        "/service-test-group-assignments",
+        body={"serviceTest": service_test_id, "group": group_id},
+        dry_run=dry_run,
+        confirm=confirm,
+        tool_name="uxi_assign_service_test_to_group",
+    )
+
+
 if __name__ == "__main__":
     from mcp_servers._cache_hygiene import stable_list_tools
     from mcp_servers._middleware import (
         NullStripMiddleware,
-        RateLimitMiddleware,
+        SecretTokenizeMiddleware,
         install_middleware,
     )
+
     stable_list_tools(mcp)
-    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    # Tool-call-rate guard for the direct stdio server; the 5 req/s outbound
+    # HTTP throttle in `_uxi_throttle()` is the real UXI API ceiling and
+    # applies regardless of how this server is invoked (direct or router).
+    install_middleware(
+        mcp,
+        [
+            NullStripMiddleware(),
+            RateLimitMiddleware(rate=5.0),
+            SecretTokenizeMiddleware(),
+        ],
+    )
     from mcp_servers.shared import run_server
+
     run_server(mcp)

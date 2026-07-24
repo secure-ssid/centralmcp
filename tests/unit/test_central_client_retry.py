@@ -16,6 +16,7 @@ import time
 from unittest.mock import MagicMock
 
 import httpx
+import pytest
 
 from pipeline.clients import central_client
 from pipeline.clients.central_client import (
@@ -78,10 +79,18 @@ def _make_httpx_response(status_code, headers=None, text="{}"):
     )
 
 
-def _make_client(responses):
-    """Build a CentralClient whose session yields ``responses`` in sequence."""
+def _make_token_manager(token: str = "fake-token", generation: int = 0):
+    """A MagicMock TokenManager wired for both the sync and async 401 paths."""
     tm = MagicMock()
-    tm.get_access_token.return_value = "fake-token"
+    tm.get_access_token.return_value = token
+    tm.generation = generation
+    tm.get_access_token_with_generation.return_value = (token, generation)
+    return tm
+
+
+def _make_client(responses, token_manager=None):
+    """Build a CentralClient whose session yields ``responses`` in sequence."""
+    tm = token_manager if token_manager is not None else _make_token_manager()
     client = CentralClient(base_url="https://test.example.com", token_manager=tm)
     # Replace session with one that returns our scripted responses.
     client.session = MagicMock()
@@ -160,8 +169,7 @@ class TestRetryBehavior:
 
     def test_401_forces_token_refresh_and_retries(self, monkeypatch):
         monkeypatch.setattr(time, "sleep", lambda s: None)
-        tm = MagicMock()
-        tm.get_access_token.return_value = "fake-token"
+        tm = _make_token_manager(generation=3)
         client = CentralClient(base_url="https://test.example.com", token_manager=tm)
         client.session = MagicMock()
         client.session.headers = {}
@@ -173,7 +181,9 @@ class TestRetryBehavior:
         resp = client._request("GET", "/x")
 
         assert resp.status_code == 200
-        tm.get_access_token.assert_any_call(force_refresh=True)
+        # The generation observed when the (now-rejected) token was set is
+        # threaded through so concurrent 401s can collapse into one refresh.
+        tm.get_access_token.assert_any_call(force_refresh=True, observed_generation=3)
         assert client.session.request.call_count == 2
 
     def test_max_retries_cap_enforced(self, monkeypatch):
@@ -213,6 +223,28 @@ class TestRetryBehavior:
         ])
 
         assert client.post_async("/x") == "/task/1"
+
+
+class TestCentralWriteGate:
+    def test_sync_write_is_blocked_before_network_call(self, monkeypatch):
+        monkeypatch.setenv("CENTRALMCP_CENTRAL_WRITES", "0")
+        client = _make_client([_make_response(200)])
+
+        with pytest.raises(PermissionError, match="Central write requests are disabled"):
+            client._request("POST", "/x")
+
+        client.session.request.assert_not_called()
+
+    def test_async_write_is_blocked_before_client_creation(self, monkeypatch):
+        monkeypatch.setenv("CENTRALMCP_CENTRAL_WRITES", "0")
+        client = _make_client([])
+        async_client = MagicMock(side_effect=AssertionError("network client should not open"))
+        monkeypatch.setattr(central_client.httpx, "AsyncClient", async_client)
+
+        with pytest.raises(PermissionError, match="Central write requests are disabled"):
+            asyncio.run(client._arequest("PATCH", "/x"))
+
+        async_client.assert_not_called()
 
 
 class TestAsyncRetryBehavior:

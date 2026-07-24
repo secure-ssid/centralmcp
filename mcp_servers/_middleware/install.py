@@ -53,12 +53,30 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
-async def _run_before(middlewares, name, args):
+def _accepts_context(fn: Any) -> bool:
+    """True if ``fn`` declares a ``context`` parameter.
+
+    Checked once per hook call (cheap: ``inspect.signature`` on a bound
+    method is not on any hot network path) rather than baked into the
+    ``Middleware`` protocol, so existing middlewares with the original
+    2/3-arg ``before_call``/``after_call``/``on_error`` signatures keep
+    working unmodified -- only middlewares that explicitly opt in by
+    declaring ``context`` receive it.
+    """
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    return "context" in sig.parameters
+
+
+async def _run_before(middlewares, name, args, context=None):
     for mw in middlewares:
         try:
             before = getattr(mw, "before_call", None)
             if before is not None:
-                new_args = await _maybe_await(before(name, args))
+                kwargs = {"context": context} if _accepts_context(before) else {}
+                new_args = await _maybe_await(before(name, args, **kwargs))
                 if new_args is not None:
                     args = new_args
         except Exception as exc:
@@ -66,12 +84,13 @@ async def _run_before(middlewares, name, args):
     return args
 
 
-async def _run_after(middlewares, name, args, result):
+async def _run_after(middlewares, name, args, result, context=None):
     for mw in middlewares:
         try:
             after = getattr(mw, "after_call", None)
             if after is not None:
-                new_result = await _maybe_await(after(name, args, result))
+                kwargs = {"context": context} if _accepts_context(after) else {}
+                new_result = await _maybe_await(after(name, args, result, **kwargs))
                 if new_result is not None:
                     result = new_result
         except Exception as exc:
@@ -79,13 +98,14 @@ async def _run_after(middlewares, name, args, result):
     return result
 
 
-async def _run_on_error(middlewares, name, args, exc):
+async def _run_on_error(middlewares, name, args, exc, context=None):
     for mw in middlewares:
         try:
             handler = getattr(mw, "on_error", None)
             if handler is None:
                 continue
-            substitute = await _maybe_await(handler(name, args, exc))
+            kwargs = {"context": context} if _accepts_context(handler) else {}
+            substitute = await _maybe_await(handler(name, args, exc, **kwargs))
             if substitute is not None:
                 return substitute
         except Exception as handler_exc:
@@ -110,12 +130,12 @@ def install_middleware(server: FastMCP, middlewares: list[Middleware]) -> None:
 
     async def wrapped_call_tool(name, arguments, context=None, convert_result=False):  # noqa: ANN001,ANN202
         args = dict(arguments) if arguments else {}
-        args = await _run_before(middlewares, name, args)
+        args = await _run_before(middlewares, name, args, context=context)
 
         try:
             raw_result = await original(name, args, context=context, convert_result=False)
         except BaseException as exc:
-            substitute = await _run_on_error(middlewares, name, args, exc)
+            substitute = await _run_on_error(middlewares, name, args, exc, context=context)
             if substitute is not None:
                 if convert_result:
                     tool = tm.get_tool(name)
@@ -127,7 +147,7 @@ def install_middleware(server: FastMCP, middlewares: list[Middleware]) -> None:
                 return substitute
             raise
 
-        result = await _run_after(middlewares, name, args, raw_result)
+        result = await _run_after(middlewares, name, args, raw_result, context=context)
         if convert_result:
             tool = tm.get_tool(name)
             if tool is not None:

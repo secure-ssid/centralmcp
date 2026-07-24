@@ -22,105 +22,129 @@ class _Response:
 
 def test_reboot_device_uses_async_request_when_type_is_provided(monkeypatch):
     calls = []
+    client = object()
 
-    class FakeClient:
-        async def _arequest(self, method, endpoint, **kwargs):
-            calls.append((method, endpoint, kwargs))
-            return _Response()
+    async def fake_atroubleshoot(received_client, endpoints, payload, errors):
+        calls.append((received_client, endpoints, payload, errors))
+        return {
+            "status": "COMPLETED",
+            "endpoint_used": endpoints[0],
+            "errors": errors,
+        }
 
-        def _request(self, *args, **kwargs):
-            raise AssertionError("sync _request should not be used")
-
-    monkeypatch.setattr(ops, "get_client", lambda: FakeClient())
+    monkeypatch.setattr(ops, "get_client", lambda: client)
+    monkeypatch.setattr(ops, "atroubleshoot_async", fake_atroubleshoot)
 
     result = asyncio.run(ops.reboot_device(_AcceptedContext(), "CX1", device_type="CX"))
 
     assert result == {
         "serial_number": "CX1",
         "device_type": "CX",
-        "response": {"accepted": True},
+        "response": {
+            "status": "COMPLETED",
+            "endpoint_used": "/network-troubleshooting/v1/cx/CX1/reboot",
+            "errors": [],
+        },
         "errors": [],
     }
-    assert calls == [("POST", "/network-troubleshooting/v1alpha1/cx/CX1/reboot", {"json": {}})]
+    assert calls == [
+        (
+            client,
+            ops.troubleshooting_endpoint_candidates("cx", "CX1", "reboot"),
+            {},
+            [],
+        )
+    ]
 
 
 def test_reboot_device_uses_async_request_after_auto_detection(monkeypatch):
     calls = []
+    client = object()
 
-    class FakeClient:
-        async def _arequest(self, method, endpoint, **kwargs):
-            calls.append((method, endpoint, kwargs))
-            return _Response()
-
-        def _request(self, *args, **kwargs):
-            raise AssertionError("sync _request should not be used")
+    async def fake_atroubleshoot(received_client, endpoints, payload, errors):
+        calls.append((received_client, endpoints, payload, errors))
+        return {"status": "COMPLETED", "endpoint_used": endpoints[0], "errors": errors}
 
     mcp_client = SimpleNamespace(get_device_by_serial=lambda serial: {"deviceType": "ACCESS_POINT"})
-    monkeypatch.setattr(ops, "get_client", lambda: FakeClient())
+    monkeypatch.setattr(ops, "get_client", lambda: client)
     monkeypatch.setattr(ops, "get_mcp_client", lambda: mcp_client)
+    monkeypatch.setattr(ops, "atroubleshoot_async", fake_atroubleshoot)
 
     result = asyncio.run(ops.reboot_device(_AcceptedContext(), "AP1"))
 
     assert result["device_type"] == "AP"
-    assert calls == [("POST", "/network-troubleshooting/v1alpha1/aps/AP1/reboot", {"json": {}})]
+    assert calls == [
+        (
+            client,
+            ops.troubleshooting_endpoint_candidates("aps", "AP1", "reboot"),
+            {},
+            [],
+        )
+    ]
 
 
 def test_disconnect_client_uses_async_request_when_ap_serial_is_provided(monkeypatch):
     calls = []
+    client = object()
 
-    class FakeClient:
-        async def _arequest(self, method, endpoint, **kwargs):
-            calls.append((method, endpoint, kwargs))
-            return _Response()
+    async def fake_atroubleshoot(received_client, endpoints, payload, errors):
+        calls.append((received_client, endpoints, payload, errors))
+        return {"status": "COMPLETED", "endpoint_used": endpoints[0], "errors": errors}
 
-        def _request(self, *args, **kwargs):
-            raise AssertionError("sync _request should not be used")
-
-    monkeypatch.setattr(ops, "get_client", lambda: FakeClient())
+    monkeypatch.setattr(ops, "get_client", lambda: client)
+    monkeypatch.setattr(ops, "atroubleshoot_async", fake_atroubleshoot)
 
     result = asyncio.run(ops.disconnect_client(_AcceptedContext(), "aa:bb:cc:dd:ee:ff", ap_serial="AP1"))
 
     assert result == {
         "mac_address": "aa:bb:cc:dd:ee:ff",
         "ap_serial": "AP1",
-        "endpoint_used": "/network-troubleshooting/v1alpha1/aps/AP1/disconnectUserByMacAddress",
-        "response": {"accepted": True},
+        "endpoint_used": "/network-troubleshooting/v1/aps/AP1/disconnectUserByMacAddress",
+        "response": {
+            "status": "COMPLETED",
+            "endpoint_used": "/network-troubleshooting/v1/aps/AP1/disconnectUserByMacAddress",
+            "errors": [],
+        },
         "errors": [],
     }
     assert calls == [
         (
-            "POST",
-            "/network-troubleshooting/v1alpha1/aps/AP1/disconnectUserByMacAddress",
-            {"json": {"userMacAddress": "aa:bb:cc:dd:ee:ff"}},
+            client,
+            ops.troubleshooting_endpoint_candidates(
+                "aps", "AP1", "disconnectUserByMacAddress"
+            ),
+            {"userMacAddress": "aa:bb:cc:dd:ee:ff"},
+            [],
         )
     ]
 
 
 def test_disconnect_client_uses_async_request_after_auto_lookup(monkeypatch):
     calls = []
+    client = object()
 
-    class FakeClient:
-        async def _arequest(self, method, endpoint, **kwargs):
-            calls.append((method, endpoint, kwargs))
-            return _Response()
-
-        def _request(self, *args, **kwargs):
-            raise AssertionError("sync _request should not be used")
+    async def fake_atroubleshoot(received_client, endpoints, payload, errors):
+        calls.append((received_client, endpoints, payload, errors))
+        return {"status": "COMPLETED", "endpoint_used": endpoints[0], "errors": errors}
 
     mcp_client = SimpleNamespace(
         find_client=lambda mac: {"connectedDeviceSerial": "AP2"},
     )
-    monkeypatch.setattr(ops, "get_client", lambda: FakeClient())
+    monkeypatch.setattr(ops, "get_client", lambda: client)
     monkeypatch.setattr(ops, "get_mcp_client", lambda: mcp_client)
+    monkeypatch.setattr(ops, "atroubleshoot_async", fake_atroubleshoot)
 
     result = asyncio.run(ops.disconnect_client(_AcceptedContext(), "aa:bb:cc:dd:ee:ff"))
 
     assert result["ap_serial"] == "AP2"
     assert calls == [
         (
-            "POST",
-            "/network-troubleshooting/v1alpha1/aps/AP2/disconnectUserByMacAddress",
-            {"json": {"userMacAddress": "aa:bb:cc:dd:ee:ff"}},
+            client,
+            ops.troubleshooting_endpoint_candidates(
+                "aps", "AP2", "disconnectUserByMacAddress"
+            ),
+            {"userMacAddress": "aa:bb:cc:dd:ee:ff"},
+            [],
         )
     ]
 

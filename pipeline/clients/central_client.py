@@ -12,6 +12,7 @@ import email.utils
 import logging
 import random
 import time
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -74,6 +75,61 @@ def _parse_retry_after(value: str) -> Optional[float]:
     return max(0.0, target_ts - now)
 
 
+@dataclass(frozen=True)
+class RateLimitStatus:
+    """Parsed rate-limit response metadata (RateLimit-* / X-RateLimit-*)."""
+
+    limit: Optional[int]
+    remaining: Optional[int]
+    reset_seconds: Optional[float]
+    raw_reset: Optional[str]
+
+
+@dataclass(frozen=True)
+class DeprecationStatus:
+    """Parsed API-deprecation response metadata (Deprecation / Sunset / Link)."""
+
+    deprecation: Optional[str]
+    sunset: Optional[str]
+    link: Optional[str]
+
+
+def _parse_int_header(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
+def _extract_rate_limit(headers: Any) -> Optional[RateLimitStatus]:
+    """Parse rate-limit headers, preferring the IETF draft names with a
+    fallback to the older ``X-RateLimit-*`` convention some gateways use."""
+    limit = headers.get("RateLimit-Limit") or headers.get("X-RateLimit-Limit")
+    remaining = headers.get("RateLimit-Remaining") or headers.get("X-RateLimit-Remaining")
+    reset = headers.get("RateLimit-Reset") or headers.get("X-RateLimit-Reset")
+    if limit is None and remaining is None and reset is None:
+        return None
+    return RateLimitStatus(
+        limit=_parse_int_header(limit),
+        remaining=_parse_int_header(remaining),
+        reset_seconds=_parse_retry_after(reset) if reset else None,
+        raw_reset=reset,
+    )
+
+
+def _extract_deprecation(headers: Any) -> Optional[DeprecationStatus]:
+    """Parse RFC 8594 ``Deprecation``/``Sunset`` headers plus a ``Link``
+    header carrying a deprecation-notice URL, if Central sends one."""
+    deprecation = headers.get("Deprecation")
+    sunset = headers.get("Sunset")
+    link = headers.get("Link")
+    if not deprecation and not sunset:
+        return None
+    return DeprecationStatus(deprecation=deprecation, sunset=sunset, link=link)
+
+
 class CentralClient:
     """HTTP client for Aruba Central REST APIs with token refresh and retry."""
 
@@ -87,14 +143,67 @@ class CentralClient:
         self.timeout = 30.0
         self.session = httpx.Client(timeout=self.timeout)
         self.session.headers.update({"Content-Type": "application/json"})
+        # Generation observed at the moment the current Authorization header
+        # was set — passed back to TokenManager on a 401 retry so concurrent
+        # 401s against the same stale token collapse into one real refresh
+        # instead of one per request. See TokenManager.get_access_token().
+        self._token_generation = 0
+        # Most recent rate-limit / deprecation response metadata, updated on
+        # every response (success or failure). Side-channel only — never
+        # merged into a tool's returned JSON, so existing callers' response
+        # shapes are unaffected. Domain tools may read these opportunistically.
+        self.last_rate_limit: Optional[RateLimitStatus] = None
+        self.last_deprecation: Optional[DeprecationStatus] = None
         self._refresh_auth_header()
 
     def _refresh_auth_header(self) -> None:
         token = self.token_manager.get_access_token()
+        self._token_generation = self.token_manager.generation
         self.session.headers.update({"Authorization": f"Bearer {token}"})
 
     def _ensure_valid_token(self) -> None:
         self._refresh_auth_header()
+
+    def _record_response_metadata(self, response: httpx.Response, endpoint: str) -> None:
+        """Capture rate-limit / deprecation metadata from ``response`` and
+        log a warning the first time a deprecated endpoint is hit in a
+        given process (avoids per-call log spam on hot paths)."""
+        rate_limit = _extract_rate_limit(response.headers)
+        if rate_limit is not None:
+            self.last_rate_limit = rate_limit
+        deprecation = _extract_deprecation(response.headers)
+        if deprecation is not None:
+            self.last_deprecation = deprecation
+            logger.warning(
+                "Deprecated endpoint called: %s (Deprecation=%r Sunset=%r Link=%r)",
+                endpoint,
+                deprecation.deprecation,
+                deprecation.sunset,
+                deprecation.link,
+            )
+
+    def rate_limit_status(self) -> Optional[dict[str, Any]]:
+        """Most recent rate-limit metadata as a plain dict, or ``None`` if
+        no response has carried rate-limit headers yet."""
+        if self.last_rate_limit is None:
+            return None
+        return {
+            "limit": self.last_rate_limit.limit,
+            "remaining": self.last_rate_limit.remaining,
+            "reset_seconds": self.last_rate_limit.reset_seconds,
+            "raw_reset": self.last_rate_limit.raw_reset,
+        }
+
+    def deprecation_status(self) -> Optional[dict[str, Any]]:
+        """Most recent API-deprecation metadata as a plain dict, or ``None``
+        if no response has carried deprecation headers yet."""
+        if self.last_deprecation is None:
+            return None
+        return {
+            "deprecation": self.last_deprecation.deprecation,
+            "sunset": self.last_deprecation.sunset,
+            "link": self.last_deprecation.link,
+        }
 
     def _request(
         self,
@@ -118,6 +227,15 @@ class CentralClient:
         Central gateway rejects before the handler runs) and on 5xx the
         caller opts in with ``retry_5xx=True``.
         """
+        if method.upper() not in ("GET", "HEAD", "OPTIONS"):
+            from mcp_servers.shared import platform_writes_allowed
+
+            if not platform_writes_allowed("central"):
+                raise PermissionError(
+                    "Central write requests are disabled. "
+                    "Set CENTRALMCP_CENTRAL_WRITES=1 to enable them."
+                )
+
         # Caller opt-in to retry 5xx on non-GET verbs. GET/HEAD retry 5xx
         # unconditionally because they're safe.
         retry_5xx = kwargs.pop("retry_5xx", None)
@@ -131,6 +249,7 @@ class CentralClient:
         for attempt in range(max_retries + 1):
             self._ensure_valid_token()
             response = self.session.request(method, url, **kwargs)
+            self._record_response_metadata(response, endpoint)
 
             if response.status_code == 401 and attempt < max_retries:
                 logger.warning(
@@ -140,7 +259,12 @@ class CentralClient:
                     attempt + 1,
                     max_retries,
                 )
-                self.token_manager.get_access_token(force_refresh=True)
+                # Pass the generation observed when this request's token was
+                # set — if another thread already refreshed since then, this
+                # collapses into a no-op check instead of a redundant fetch.
+                self.token_manager.get_access_token(
+                    force_refresh=True, observed_generation=self._token_generation
+                )
                 self._refresh_auth_header()
                 continue
 
@@ -197,6 +321,15 @@ class CentralClient:
         **kwargs: Any,
     ) -> httpx.Response:
         """Async counterpart to ``_request`` for MCP tools running on an event loop."""
+        if method.upper() not in ("GET", "HEAD", "OPTIONS"):
+            from mcp_servers.shared import platform_writes_allowed
+
+            if not platform_writes_allowed("central"):
+                raise PermissionError(
+                    "Central write requests are disabled. "
+                    "Set CENTRALMCP_CENTRAL_WRITES=1 to enable them."
+                )
+
         retry_5xx = kwargs.pop("retry_5xx", None)
         if retry_5xx is None:
             retry_5xx = method.upper() in ("GET", "HEAD")
@@ -208,12 +341,15 @@ class CentralClient:
 
         async with httpx.AsyncClient(timeout=self.timeout) as session:
             for attempt in range(max_retries + 1):
-                token = await asyncio.to_thread(self.token_manager.get_access_token)
+                token, generation = await asyncio.to_thread(
+                    self.token_manager.get_access_token_with_generation
+                )
                 headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
                 if extra_headers:
                     headers.update(extra_headers)
 
                 response = await session.request(method, url, headers=headers, **kwargs)
+                self._record_response_metadata(response, endpoint)
 
                 if response.status_code == 401 and attempt < max_retries:
                     logger.warning(
@@ -223,7 +359,13 @@ class CentralClient:
                         attempt + 1,
                         max_retries,
                     )
-                    await asyncio.to_thread(self.token_manager.get_access_token, True)
+                    # Same generation-aware collapse as the sync path — see
+                    # TokenManager.get_access_token()'s observed_generation.
+                    await asyncio.to_thread(
+                        self.token_manager.get_access_token,
+                        True,
+                        observed_generation=generation,
+                    )
                     continue
 
                 if response.status_code == 429 and attempt < max_retries:

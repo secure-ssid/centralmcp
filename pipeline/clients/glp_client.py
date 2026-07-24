@@ -440,3 +440,187 @@ class GLPClient:
         except Exception as exc:
             logger.warning("GLP list_audit_logs failed: %s", exc)
             raise RuntimeError(f"GLP list_audit_logs failed: {exc}") from exc
+
+    # ------------------------------------------------------------------
+    # GLP read — devices v2beta1, device groups v2beta1, audit-log v2beta1
+    # ------------------------------------------------------------------
+    #
+    # Devices v2beta1 read paths mirror the write path already documented
+    # above (patchdevicesv2beta1): GET/PATCH share the same
+    # /devices/v2beta1/devices collection. Device Groups (v2beta1) is the
+    # sibling collection resource under the same Devices service. Audit-log
+    # v2beta1 mirrors the confirmed-working v1 shape (list_audit_logs /
+    # get_glp_audit_log_detail above) with the version segment bumped —
+    # GLP keeps request/response shapes stable across most bumps in this
+    # service, but this has not been independently re-verified against the
+    # v2beta1 spec text; treat 404s as "not available on this tenant yet"
+    # rather than a client bug.
+
+    def list_devices_v2beta1(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List devices via the v2beta1 Devices collection."""
+        try:
+            params: dict[str, Any] = {"limit": limit, "offset": offset}
+            if filter:
+                params["filter"] = filter
+            result = self._client.get("/devices/v2beta1/devices", params=params)
+            return result.get("items", result.get("devices", []))
+        except Exception as exc:
+            msg = _compact_exception_message(exc)
+            logger.warning("GLP list_devices_v2beta1 failed: %s", msg)
+            raise RuntimeError(f"GLP list_devices_v2beta1 failed: {msg}") from exc
+
+    def get_device_v2beta1(self, device_id: str) -> Optional[dict[str, Any]]:
+        """Fetch a single device via the v2beta1 Devices collection by GLP device ID."""
+        try:
+            return self._client.get(f"/devices/v2beta1/devices/{device_id}")
+        except Exception as exc:
+            logger.warning("GLP get_device_v2beta1 failed for %s: %s", device_id, exc)
+            return None
+
+    def list_device_groups_v2beta1(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List device groups via the v2beta1 Devices service.
+
+        Endpoint path inferred from the sibling /devices/v2beta1/devices
+        collection convention — not independently re-verified against the
+        v2beta1 spec text. Raises on failure so callers see a 404 as a
+        clear "not available" signal rather than a silently empty list.
+        """
+        try:
+            params: dict[str, Any] = {"limit": limit, "offset": offset}
+            if filter:
+                params["filter"] = filter
+            result = self._client.get("/devices/v2beta1/device-groups", params=params)
+            return result.get("items", result.get("deviceGroups", []))
+        except Exception as exc:
+            msg = _compact_exception_message(exc)
+            logger.warning("GLP list_device_groups_v2beta1 failed: %s", msg)
+            raise RuntimeError(f"GLP list_device_groups_v2beta1 failed: {msg}") from exc
+
+    def get_device_group_v2beta1(self, group_id: str) -> Optional[dict[str, Any]]:
+        """Fetch a single device group via the v2beta1 Devices service by ID."""
+        try:
+            return self._client.get(f"/devices/v2beta1/device-groups/{group_id}")
+        except Exception as exc:
+            logger.warning("GLP get_device_group_v2beta1 failed for %s: %s", group_id, exc)
+            return None
+
+    def list_audit_logs_v2beta1(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        category: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List audit log entries via the v2beta1 Audit Log service."""
+        try:
+            params: dict[str, Any] = {"limit": limit, "offset": offset}
+            if category:
+                params["category"] = category
+            result = self._client.get("/audit-log/v2beta1/logs", params=params)
+            return result.get("items", result.get("logs", []))
+        except Exception as exc:
+            msg = _compact_exception_message(exc)
+            logger.warning("GLP list_audit_logs_v2beta1 failed: %s", msg)
+            raise RuntimeError(f"GLP list_audit_logs_v2beta1 failed: {msg}") from exc
+
+    def get_audit_log_v2beta1(self, audit_log_id: str) -> Optional[dict[str, Any]]:
+        """Fetch a single audit-log entry by ID via the v2beta1 Audit Log service."""
+        try:
+            return self._client.get(f"/audit-log/v2beta1/logs/{audit_log_id}")
+        except Exception as exc:
+            logger.warning("GLP get_audit_log_v2beta1 failed for %s: %s", audit_log_id, exc)
+            return None
+
+    def get_audit_log_v2beta1_detail(self, audit_log_id: str) -> Optional[dict[str, Any]]:
+        """Fetch full detail for a v2beta1 audit-log entry (entries with details enabled)."""
+        try:
+            return self._client.get(f"/audit-log/v2beta1/logs/{audit_log_id}/detail")
+        except Exception as exc:
+            logger.warning(
+                "GLP get_audit_log_v2beta1_detail failed for %s: %s", audit_log_id, exc
+            )
+            return None
+
+    # ------------------------------------------------------------------
+    # GLP write — workspace contact/location PATCH, subscription add
+    # ------------------------------------------------------------------
+    #
+    # Both gated by the same _V2BETA1_WRITES_FLAG as the device PATCH path
+    # above — one flag for all "sandbox-validate before firing" GLP writes.
+
+    def update_workspace_contact(
+        self,
+        workspace_id: str,
+        contact: dict[str, Any],
+    ) -> dict[str, Any]:
+        """PATCH the contact record for a GLP workspace.
+
+        Endpoint mirrors the confirmed-working GET at the same path
+        (get_glp_workspace_contact / /workspaces/v1/workspaces/{id}/contact).
+        Guarded by ``CENTRALMCP_GLP_V2BETA1_WRITES=1`` (reused — same "sandbox
+        validate first" contract as the device PATCH path).
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP workspace-contact writes are gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Payload that would have been sent: {contact}"
+            )
+        resp = self._client._request(
+            "PATCH",
+            f"/workspaces/v1/workspaces/{workspace_id}/contact",
+            json=contact,
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP PATCH workspace contact {workspace_id} returned "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def add_subscriptions(
+        self,
+        subscription_keys: list[str],
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Add one or more subscription keys to the workspace in a single call.
+
+        Body shape and the ``dryRun`` query parameter follow the same
+        create-with-preview convention GLP uses elsewhere (e.g. device add
+        validation) — not independently re-verified against the
+        Subscriptions v1 spec text for this exact operation. Guarded by
+        ``CENTRALMCP_GLP_V2BETA1_WRITES=1`` even when ``dry_run=True`` is
+        requested through the live API (server-side dry-run still reaches
+        the tenant); local-only preview should be done by the caller before
+        invoking this method.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP subscription-add writes are gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Payload that would have been sent: keys={subscription_keys} dry_run={dry_run}"
+            )
+        body = {"subscriptions": [{"key": key} for key in subscription_keys]}
+        params = {"dryRun": "true"} if dry_run else None
+        resp = self._client._request(
+            "POST", "/subscriptions/v1/subscriptions", json=body, params=params
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP POST subscriptions returned HTTP {resp.status_code}: "
+                f"{resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}

@@ -1,7 +1,11 @@
-"""MCP server — GreenLake Platform (GLP): inventory, licensing, users, and service catalog (31 tools).
+"""MCP server — GreenLake Platform (GLP): inventory, licensing, users, and
+service catalog (41 tools).
 
-Covers: GLP device lifecycle, subscription assignment, bulk onboarding, audit logs, users,
-workspaces, reporting statuses, and service-catalog reads.
+Covers: GLP device lifecycle (v1 + v2beta1), device groups (v2beta1, best-effort),
+subscription assignment/bulk-add, audit logs (v1 + v2beta1), users, workspaces
+(incl. contact PATCH), reporting statuses, service-catalog reads, and a guarded
+read-only GLP GET covering RBAC/authorization, events, webhooks, tags, location,
+and SCIM families pending dedicated typed wrappers (see list_glp_api_families).
 Uses the target_account (glp_account) credentials.
 """
 from typing import Any
@@ -32,6 +36,20 @@ _GLP_GET_PREFIXES = (
     "/service-catalog/",
     "/workspaces/",
     "/reporting/",
+    # Added for RBAC/authorization, events/webhooks, tags, location, and
+    # SCIM reads. Exact resource shapes for these families have not been
+    # independently re-verified against live spec text (unlike the
+    # devices/subscriptions/audit-log/workspaces families above, which back
+    # confirmed-working typed tools) — use glp_get to explore before adding
+    # dedicated typed wrappers. See glp_write_status / list_glp_api_families
+    # for what remains unconfirmed.
+    "/authorization/",
+    "/events/",
+    "/webhooks/",
+    "/notifications/",
+    "/tags/",
+    "/locations/",
+    "/scim/",
 )
 _SENSITIVE_QUERY_PARAMS = {"unredacted"}
 
@@ -533,14 +551,249 @@ def glp_archive_device(serial_number: str) -> dict[str, Any]:
         return {"result": None, "errors": errors}
 
 
+# ── Devices v2beta1 / Device Groups v2beta1 ──────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_devices_v2(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List devices via the GLP Devices v2beta1 collection.
+
+    Prefer this over list_glp_devices when you need v2beta1-only fields
+    (e.g. the fields exposed by the v2beta1 PATCH path used for archive /
+    subscription-assign). Falls back with a clear error if v2beta1 isn't
+    available on this tenant yet — use list_glp_devices (v1) instead.
+    """
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        items = glp.list_devices_v2beta1(
+            limit=clamp_limit(limit), offset=max(0, offset), filter=filter
+        )
+        return {"items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_device_v2(device_id: str) -> dict[str, Any]:
+    """Fetch a single device via the GLP Devices v2beta1 collection by GLP device ID."""
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        device = glp.get_device_v2beta1(device_id)
+        return {"device": device, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"device": None, "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_device_groups(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List device groups via the GLP Devices v2beta1 service.
+
+    Endpoint path is inferred from the sibling /devices/v2beta1/devices
+    collection convention and has not been independently re-verified
+    against live spec text — a 404 here means "not confirmed on this
+    tenant," not a client bug. Use glp_get("/devices/...") to probe
+    alternate paths if this 404s.
+    """
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        items = glp.list_device_groups_v2beta1(
+            limit=clamp_limit(limit), offset=max(0, offset), filter=filter
+        )
+        return {"items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_device_group(group_id: str) -> dict[str, Any]:
+    """Fetch a single device group via the GLP Devices v2beta1 service by ID."""
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        group = glp.get_device_group_v2beta1(group_id)
+        return {"device_group": group, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"device_group": None, "errors": errors}
+
+
+# ── Audit Logs v2beta1 ────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_audit_logs_v2(
+    limit: int = 100,
+    offset: int = 0,
+    category: str | None = None,
+) -> dict[str, Any]:
+    """List GLP audit log entries via the v2beta1 Audit Log service."""
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        items = glp.list_audit_logs_v2beta1(
+            limit=clamp_limit(limit), offset=max(0, offset), category=category
+        )
+        return {"items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_audit_log_v2(audit_log_id: str) -> dict[str, Any]:
+    """Fetch a single GLP audit-log entry by ID via the v2beta1 Audit Log service."""
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        entry = glp.get_audit_log_v2beta1(audit_log_id)
+        return {"audit_log": entry, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"audit_log": None, "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_audit_log_v2_detail(audit_log_id: str) -> dict[str, Any]:
+    """Fetch full detail for a v2beta1 GLP audit-log entry (entries with details enabled)."""
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        detail = glp.get_audit_log_v2beta1_detail(audit_log_id)
+        return {"audit_log_detail": detail, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"audit_log_detail": None, "errors": errors}
+
+
+# ── Workspace contact/location PATCH, subscription bulk-add ─────────────────
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def update_glp_workspace_contact(workspace_id: str, contact: dict[str, Any]) -> dict[str, Any]:
+    """PATCH the contact record for a GLP workspace.
+
+    Endpoint mirrors the confirmed-working GET at the same path
+    (get_glp_workspace_contact). Gated behind the same guardrail as the
+    device v2beta1 writes — see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "update_glp_workspace_contact",
+        {"workspace_id": workspace_id, "contact": redact_sensitive(contact)},
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.update_workspace_contact(workspace_id, contact)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def glp_add_subscriptions(subscription_keys: list[str], dry_run: bool = False) -> dict[str, Any]:
+    """Add one or more subscription keys to the GLP workspace, with an optional dry-run preview.
+
+    dry_run=True sends the request with a server-side dryRun flag when the
+    tenant supports it (validation only — no subscriptions are actually
+    added), rather than a purely local no-op. Body/param shape has not been
+    independently re-verified against live spec text — treat a 400/404 here
+    as "not confirmed on this tenant" and fall back to glp_get for
+    exploration. Gated behind the same guardrail as other GLP v2beta1-style
+    writes — see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "glp_add_subscriptions",
+        {"subscription_keys": subscription_keys, "dry_run": dry_run},
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.add_subscriptions(subscription_keys, dry_run=dry_run)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+# ── API family discovery ──────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_glp_api_families() -> dict[str, Any]:
+    """List guarded GLP GET path-prefixes reachable via glp_get, and note which
+    dedicated typed tools are confirmed-working vs. best-effort/unconfirmed.
+
+    Use this before assuming a typed wrapper exists for RBAC/authorization,
+    events, webhooks, tags, locations, SCIM, or API-client credentials —
+    those families are reachable through glp_get for exploration but do not
+    yet have dedicated typed wrappers pending live-tenant/spec verification.
+    """
+    return {
+        "guarded_get_prefixes": list(_GLP_GET_PREFIXES),
+        "confirmed_typed_tools": [
+            "list_glp_devices", "get_glp_device", "get_glp_device_by_id",
+            "list_glp_devices_v2", "get_glp_device_v2",
+            "list_glp_subscriptions", "get_glp_subscription",
+            "list_glp_users", "get_glp_user",
+            "list_glp_audit_logs", "get_glp_audit_log_detail",
+            "list_glp_audit_logs_v2", "get_glp_audit_log_v2", "get_glp_audit_log_v2_detail",
+            "get_glp_workspace", "get_glp_workspace_contact", "update_glp_workspace_contact",
+            "list_glp_reporting_statuses", "get_glp_reporting_status",
+            "list_glp_service_offers", "get_glp_service_offer",
+        ],
+        "best_effort_typed_tools": [
+            "list_glp_device_groups", "get_glp_device_group",
+            "glp_add_subscriptions",
+        ],
+        "explore_only_families": {
+            "RBAC/authorization": "/authorization/...",
+            "events": "/events/...",
+            "webhooks": "/webhooks/...",
+            "notifications": "/notifications/...",
+            "tags": "/tags/...",
+            "location": "/locations/...",
+            "SCIM": "/scim/...",
+            "API client credentials": "no confirmed path — not exposed via glp_get yet",
+        },
+        "note": (
+            "explore_only_families have no dedicated typed wrapper in this pass — "
+            "call glp_get(path=...) against the listed prefix to probe the exact "
+            "resource shape on your tenant, then request a typed wrapper once confirmed."
+        ),
+    }
+
+
 if __name__ == "__main__":
     from mcp_servers._cache_hygiene import stable_list_tools
     from mcp_servers._middleware import (
         NullStripMiddleware,
         RateLimitMiddleware,
+        SecretTokenizeMiddleware,
         install_middleware,
     )
     stable_list_tools(mcp)
-    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    install_middleware(
+        mcp,
+        [
+            NullStripMiddleware(),
+            RateLimitMiddleware(rate=8.0),
+            SecretTokenizeMiddleware(),
+        ],
+    )
     from mcp_servers.shared import run_server
     run_server(mcp)

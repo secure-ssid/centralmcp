@@ -33,7 +33,7 @@ def test_cx_ping_uses_async_troubleshooting_helper(monkeypatch):
     assert calls == [
         (
             client,
-            "/network-troubleshooting/v1alpha1/cx/SERIAL1/ping",
+            ops.troubleshooting_endpoint_candidates("cx", "SERIAL1", "ping"),
             {
                 "destination": "8.8.8.8",
                 "count": 3,
@@ -70,7 +70,7 @@ def test_cx_traceroute_uses_async_troubleshooting_helper(monkeypatch):
     assert calls == [
         (
             client,
-            "/network-troubleshooting/v1alpha1/cx/SERIAL1/traceroute",
+            ops.troubleshooting_endpoint_candidates("cx", "SERIAL1", "traceroute"),
             {
                 "destination": "1.1.1.1",
                 "vrfName": "mgmt",
@@ -115,7 +115,7 @@ def test_cx_show_uses_async_troubleshooting_helper(monkeypatch):
     assert calls == [
         (
             client,
-            "/network-troubleshooting/v1alpha1/cx/SERIAL1/showCommands",
+            ops.troubleshooting_endpoint_candidates("cx", "SERIAL1", "showCommands"),
             {"commands": ["show version"]},
             [],
         )
@@ -209,47 +209,52 @@ def test_find_mac_on_switch_preserves_input_mac_metadata(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize(
-    ("func", "args", "expected_endpoint", "expected_payload"),
-    [
+def _non_cx_cases():
+    return [
         (
             ops.aos_s_ping,
             ("AOSS1", "8.8.8.8"),
-            "/network-troubleshooting/v1alpha1/aos-s/AOSS1/ping",
+            ops.troubleshooting_endpoint_candidates("aos-s", "AOSS1", "ping"),
             {"destination": "8.8.8.8"},
         ),
         (
             ops.aos_s_traceroute,
             ("AOSS1", "1.1.1.1"),
-            "/network-troubleshooting/v1alpha1/aos-s/AOSS1/traceroute",
+            ops.troubleshooting_endpoint_candidates("aos-s", "AOSS1", "traceroute"),
             {"destination": "1.1.1.1"},
         ),
         (
             ops.aos_s_show,
             ("AOSS1", ["show version"]),
-            "/network-troubleshooting/v1alpha1/aos-s/AOSS1/showCommands",
+            ops.troubleshooting_endpoint_candidates("aos-s", "AOSS1", "showCommands"),
             {"commands": ["show version"]},
         ),
         (
             ops.gateway_show,
             ("GW1", ["show datapath session"]),
-            "/network-troubleshooting/v1alpha1/gateways/GW1/showCommands",
+            ops.troubleshooting_endpoint_candidates(
+                "gateways", "GW1", "showCommands"
+            ),
             {"commands": ["show datapath session"]},
         ),
         (
             ops.aos_s_arp,
             ("AOSS1",),
-            "/network-troubleshooting/v1alpha1/aos-s/AOSS1/getArpTable",
+            ops.troubleshooting_endpoint_candidates(
+                "aos-s", "AOSS1", "getArpTable"
+            ),
             {},
         ),
         (
             ops.run_speed_test,
             ("AP1",),
-            "/network-troubleshooting/v1alpha1/aps/AP1/speedtest",
+            ops.troubleshooting_endpoint_candidates("aps", "AP1", "speedtest"),
             {},
         ),
-    ],
-)
+    ]
+
+
+@pytest.mark.parametrize(("func", "args", "expected_endpoint", "expected_payload"), _non_cx_cases())
 def test_non_cx_diagnostic_tools_use_async_troubleshooting_helper(
     monkeypatch,
     func,
@@ -325,7 +330,7 @@ def test_cable_test_uses_async_troubleshooting_helper(monkeypatch):
     assert calls == [
         (
             client,
-            "/network-troubleshooting/v1alpha1/cx/CX1/cableTest",
+            ops.troubleshooting_endpoint_candidates("cx", "CX1", "cableTest"),
             {"ports": ["1/1/1"]},
             [],
         )

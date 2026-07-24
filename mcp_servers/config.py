@@ -1,7 +1,12 @@
-"""MCP server — Aruba Central configuration and provisioning tools.
+"""MCP server — Aruba Central configuration and provisioning tools (75 tools).
 
 Covers: VLANs, SSIDs, overlay WLANs, port profiles, firmware compliance, device management,
-webhooks, device groups, gateway clusters, interface and static route config.
+webhooks, device groups, gateway clusters, interface and static route config, and
+generic bounded network-profile helpers (get/set/delete_network_profile) backing
+typed build_* workflows for routing overlays (BGP/OSPF/VRF), high availability
+(VSX+VRRP), telemetry, application experience (bandwidth contracts + ARC), and
+configuration checkpoint policy (see get_config_rollback_status for what New
+Central's checkpoint API does and does not support).
 """
 import os
 import uuid
@@ -24,10 +29,20 @@ from mcp_servers.shared import (
 from pipeline.config import build_account_contexts
 from pipeline.create_ssid import (
     build_overlay_ssid as _build_overlay,
+)
+from pipeline.create_ssid import (
     build_underlay_ssid as _build,
+)
+from pipeline.create_ssid import (
     create_allow_all_role as _create_role,
+)
+from pipeline.create_ssid import (
     delete_underlay_ssid as _delete,
+)
+from pipeline.create_ssid import (
     get_underlay_ssid as _get,
+)
+from pipeline.create_ssid import (
     list_underlay_ssids as _list,
 )
 from pipeline.stages.s6_configure import (
@@ -2095,14 +2110,475 @@ def list_named_vlans(scope_id: str | None = None) -> dict[str, Any]:
     return {"scope_id": scope_id, "vlans": [], "errors": errors, "_note": "Named VLAN endpoint not found — use get_switch_vlans for live switch VLANs"}
 
 
+# ── Network Profiles: Routing Overlays, HA, Telemetry, App Experience, ──────
+# ── Config Checkpoint (generic bounded helpers + typed build_* workflows) ───
+#
+# All of the resources below share one REST convention confirmed against the
+# network-config v1alpha1 OpenAPI specs (bgp.json, ospfv2.json, ospfv3.json,
+# vrf.json, vsx.json, vrrp.json, telemetry.json, app-bandwidth-contract.json,
+# app-recog-control.json, config-checkpoint.json — see
+# developer.arubanetworks.com/new-central-config/reference/create<name>profilebyid):
+#
+#   GET    /{base}                 list library (SHARED) or LOCAL profiles
+#   GET    /{base}/{name}          read one profile (view-type/object-type/
+#                                   scope-id/device-function/effective/detailed)
+#   POST   /{base}/{name}          create (object-type/scope-id/device-function)
+#   PATCH  /{base}/{name}          update
+#   DELETE /{base}/{name}          delete
+#
+# Rather than hand-write 5 near-identical tools per resource (35+ for the 7
+# domains below), _profile_base/_get_network_profile/_upsert_network_profile/
+# _delete_network_profile implement the convention once. Each domain then
+# gets one clear verb_noun "build_*" workflow tool that creates a
+# LOCAL-scoped, scope-bound profile in a single call (object-type=LOCAL
+# requires scope-id + device-function directly on the create call — no
+# separate config-assignment step is needed for LOCAL objects, unlike
+# SHARED library profiles such as roles/wlan-ssids).
+
+_NETWORK_PROFILE_TYPES: dict[str, str] = {
+    "bgp": "bgp",
+    "ospfv2": "ospfv2",
+    "ospfv3": "ospfv3",
+    "vrf": "vrfs",
+    "vsx": "vsx-profiles",
+    "vsx-pair": "vsx-config",
+    "vrrp": "vrrp-global",
+    "telemetry": "telemetry",
+    "app-bandwidth-contract": "app-bandwidth-contracts",
+    "app-recognition": "arc",
+    "config-checkpoint": "config-checkpoint",
+}
+
+
+def _profile_base(profile_type: str) -> str:
+    key = profile_type.strip().lower()
+    if key not in _NETWORK_PROFILE_TYPES:
+        allowed = ", ".join(sorted(_NETWORK_PROFILE_TYPES))
+        raise ValueError(f"profile_type must be one of: {allowed}")
+    return f"/network-config/v1alpha1/{_NETWORK_PROFILE_TYPES[key]}"
+
+
+def _profile_write_params(
+    object_type: str | None, scope_id: str | None, device_function: str | None
+) -> dict[str, Any]:
+    if (object_type or "").upper() == "LOCAL" and not scope_id:
+        raise ValueError("scope_id is required when object_type='LOCAL'")
+    params: dict[str, Any] = {}
+    if object_type is not None:
+        params["object-type"] = object_type
+    if scope_id is not None:
+        params["scope-id"] = scope_id
+    if device_function is not None:
+        params["device-function"] = device_function
+    return params
+
+
+def _upsert_network_profile(
+    profile_type: str,
+    name: str,
+    body: dict[str, Any],
+    *,
+    object_type: str | None,
+    scope_id: str | None,
+    device_function: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    base = _profile_base(profile_type)
+    endpoint = f"{base}/{quote(name, safe='')}"
+    params = _profile_write_params(object_type, scope_id, device_function)
+    if dry_run:
+        return {
+            "dry_run": True, "profile_type": profile_type, "name": name,
+            "endpoint": endpoint, "params": params, "payload": body,
+        }
+    client = get_client()
+    response = client._request("POST", endpoint, json=body, params=params or None)
+    action = "created"
+    if response.status_code == 412:
+        action = "updated"
+        response = client._request("PATCH", endpoint, json=body, params=params or None)
+    result = resp_json(response)
+    result["action"] = action if response.is_success else None
+    if not response.is_success:
+        result["errors"] = [compact_http_error(response, endpoint)]
+    return result
+
+
+def _delete_network_profile(
+    profile_type: str,
+    name: str,
+    *,
+    object_type: str | None,
+    scope_id: str | None,
+    device_function: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    base = _profile_base(profile_type)
+    endpoint = f"{base}/{quote(name, safe='')}"
+    params = {
+        k: v for k, v in {
+            "object-type": object_type, "scope-id": scope_id, "device-function": device_function,
+        }.items() if v is not None
+    }
+    if dry_run:
+        return {
+            "dry_run": True, "profile_type": profile_type, "name": name,
+            "endpoint": endpoint, "params": params,
+        }
+    client = get_client()
+    response = client._request("DELETE", endpoint, params=params or None)
+    result = resp_json(response)
+    if not response.is_success:
+        result["errors"] = [compact_http_error(response, endpoint)]
+    return result
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_network_profile(
+    profile_type: str,
+    name: str | None = None,
+    view_type: str | None = None,
+    object_type: str | None = None,
+    scope_id: str | None = None,
+    device_function: str | None = None,
+    effective: bool | None = None,
+    detailed: bool | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """Read a network-config library profile: list all, or fetch one by name.
+
+    profile_type: bgp | ospfv2 | ospfv3 | vrf | vsx | vsx-pair | vrrp |
+    telemetry | app-bandwidth-contract | app-recognition | config-checkpoint.
+    Backs the routing-overlay (BGP/OSPF/VRF), high-availability (vsx/vrrp),
+    telemetry, application-experience, and config-checkpoint domains.
+    Omit `name` to list (bounded by default); provide `name` to fetch one.
+    view_type/object_type/scope_id/device_function/effective/detailed mirror
+    the read query params documented for every resource in this family
+    (see list_passpoint_profiles for the same pattern).
+    """
+    base = _profile_base(profile_type)
+    if name:
+        client = get_client()
+        params = _passpoint_read_params(
+            view_type=view_type, object_type=object_type, scope_id=scope_id,
+            device_function=device_function, effective=effective, detailed=detailed,
+        )
+        response = client._request("GET", f"{base}/{quote(name, safe='')}", params=params or None)
+        return resp_json(response)
+    return _config_list_response(
+        base, list_key="profile", limit=limit, offset=offset, full_list=full_list,
+        view_type=view_type, object_type=object_type, scope_id=scope_id,
+        device_function=device_function, effective=effective, detailed=detailed,
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def set_network_profile(
+    profile_type: str,
+    name: str,
+    body: dict[str, Any],
+    object_type: str | None = None,
+    scope_id: str | None = None,
+    device_function: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create or update (upsert) a network-config library profile by name.
+
+    See get_network_profile for the profile_type enum. object_type=LOCAL
+    requires scope_id + device_function and creates a scope-bound profile
+    directly (no separate config-assignment needed); omit object_type (or
+    pass SHARED) to write to the library — SHARED library profiles need a
+    separate create_config_assignment call to bind them to a scope.
+    Prefer the domain-specific build_* workflow tools below for the common
+    "create + bind to this scope" case.
+    """
+    return _upsert_network_profile(
+        profile_type, name, body,
+        object_type=object_type, scope_id=scope_id, device_function=device_function,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def delete_network_profile(
+    profile_type: str,
+    name: str,
+    object_type: str | None = None,
+    scope_id: str | None = None,
+    device_function: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete a network-config library profile by name. See get_network_profile for profile_type."""
+    return _delete_network_profile(
+        profile_type, name,
+        object_type=object_type, scope_id=scope_id, device_function=device_function,
+        dry_run=dry_run,
+    )
+
+
+# ── Routing Overlays: BGP / OSPF / VRF ────────────────────────────────────────
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def build_bgp_overlay(
+    name: str,
+    router: list[dict[str, Any]],
+    scope_id: str,
+    device_function: str = "GATEWAY",
+    description: str | None = None,
+    platform_type: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a LOCAL-scoped BGP routing-overlay profile bound to scope_id + device_function.
+
+    router: list with exactly one BGP router-instance dict (AS number,
+    neighbors, route policies, timers, address families) — a BGP profile
+    supports only one Autonomous System per profile; pass the router-instance
+    body through as-is per the BGP profile schema. device_function:
+    GATEWAY | CX_SWITCH | PVOS_SWITCH | AP | BRIDGE.
+    """
+    body: dict[str, Any] = {"name": name, "router": router}
+    if description:
+        body["description"] = description
+    if platform_type:
+        body["platform-type"] = platform_type
+    return _upsert_network_profile(
+        "bgp", name, body,
+        object_type="LOCAL", scope_id=scope_id, device_function=device_function, dry_run=dry_run,
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def build_ospf_overlay(
+    name: str,
+    body: dict[str, Any],
+    scope_id: str,
+    device_function: str = "GATEWAY",
+    version: str = "v2",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a LOCAL-scoped OSPF routing-overlay profile bound to scope_id + device_function.
+
+    version: "v2" (OSPFv2/IPv4) or "v3" (OSPFv3/IPv6). body is the full OSPF
+    profile document (areas, interfaces, redistribution, timers) — pass
+    through as-is per the ospfv2/ospfv3 profile schema; `name` is injected.
+    """
+    if version not in ("v2", "v3"):
+        raise ValueError("version must be 'v2' or 'v3'")
+    payload = {**body, "name": name}
+    return _upsert_network_profile(
+        f"ospf{version}", name, payload,
+        object_type="LOCAL", scope_id=scope_id, device_function=device_function, dry_run=dry_run,
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def build_vrf_overlay(
+    name: str,
+    body: dict[str, Any],
+    scope_id: str,
+    device_function: str = "GATEWAY",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a LOCAL-scoped VRF bound to scope_id + device_function.
+
+    body is the full VRF profile document (route-distinguisher, route
+    targets, interfaces) — pass through as-is per the vrf profile schema;
+    `name` is injected.
+    """
+    payload = {**body, "name": name}
+    return _upsert_network_profile(
+        "vrf", name, payload,
+        object_type="LOCAL", scope_id=scope_id, device_function=device_function, dry_run=dry_run,
+    )
+
+
+# ── High Availability: VSX + VRRP ─────────────────────────────────────────────
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def configure_high_availability(
+    vsx_name: str,
+    vsx_body: dict[str, Any],
+    vrrp_name: str,
+    vrrp_body: dict[str, Any],
+    scope_id: str,
+    device_function: str = "CX_SWITCH",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Configure switch/gateway HA: a VSX profile plus a VRRP redundancy profile, both LOCAL-scoped.
+
+    vsx_body / vrrp_body are the full profile documents per the vsx-profiles
+    and vrrp-global schemas respectively — pass through as-is; `name` is
+    injected into each. Both profiles are bound to the same scope_id +
+    device_function. Either half can fail independently — check
+    result["vsx"]["errors"] / result["vrrp"]["errors"].
+    """
+    vsx_payload = {**vsx_body, "name": vsx_name}
+    vrrp_payload = {**vrrp_body, "name": vrrp_name}
+    vsx_result = _upsert_network_profile(
+        "vsx", vsx_name, vsx_payload,
+        object_type="LOCAL", scope_id=scope_id, device_function=device_function, dry_run=dry_run,
+    )
+    vrrp_result = _upsert_network_profile(
+        "vrrp", vrrp_name, vrrp_payload,
+        object_type="LOCAL", scope_id=scope_id, device_function=device_function, dry_run=dry_run,
+    )
+    return {"vsx": vsx_result, "vrrp": vrrp_result}
+
+
+# ── Telemetry ─────────────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def enable_telemetry(
+    name: str,
+    body: dict[str, Any],
+    scope_id: str,
+    device_function: str = "CAMPUS_AP",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a LOCAL-scoped telemetry profile (streaming/export destinations)
+    bound to scope_id + device_function.
+
+    body is the full telemetry profile document — pass through as-is per
+    the telemetry profile schema; `name` is injected.
+    """
+    payload = {**body, "name": name}
+    return _upsert_network_profile(
+        "telemetry", name, payload,
+        object_type="LOCAL", scope_id=scope_id, device_function=device_function, dry_run=dry_run,
+    )
+
+
+# ── Application Experience ────────────────────────────────────────────────────
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def configure_application_experience(
+    bandwidth_contract_name: str,
+    bandwidth_contract_body: dict[str, Any],
+    arc_name: str,
+    arc_body: dict[str, Any],
+    scope_id: str,
+    device_function: str = "GATEWAY",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Configure application experience: an app-bandwidth-contract profile plus an
+    Application Recognition & Control (ARC) profile, both LOCAL-scoped.
+
+    bandwidth_contract_body / arc_body are the full profile documents per
+    the app-bandwidth-contracts and arc schemas respectively — pass through
+    as-is; `name` is injected into each. Either half can fail independently
+    — check result["app_bandwidth_contract"]["errors"] /
+    result["app_recognition"]["errors"].
+    """
+    bw_payload = {**bandwidth_contract_body, "name": bandwidth_contract_name}
+    arc_payload = {**arc_body, "name": arc_name}
+    bw_result = _upsert_network_profile(
+        "app-bandwidth-contract", bandwidth_contract_name, bw_payload,
+        object_type="LOCAL", scope_id=scope_id, device_function=device_function, dry_run=dry_run,
+    )
+    arc_result = _upsert_network_profile(
+        "app-recognition", arc_name, arc_payload,
+        object_type="LOCAL", scope_id=scope_id, device_function=device_function, dry_run=dry_run,
+    )
+    return {"app_bandwidth_contract": bw_result, "app_recognition": arc_result}
+
+
+# ── Configuration Checkpoint / Rollback ───────────────────────────────────────
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def build_config_checkpoint_policy(
+    name: str,
+    scope_id: str,
+    device_function: str,
+    post_checkpoint: bool = True,
+    post_checkpoint_delay: int = 300,
+    description: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create/update a LOCAL-scoped config-checkpoint policy bound to scope_id + device_function.
+
+    post_checkpoint: when True (default), the device generates a new
+    configuration checkpoint post_checkpoint_delay seconds (5-600, default
+    300) after a config change is applied. This is the *only* checkpoint
+    control New Central exposes via API — there is no "create a checkpoint
+    now" or "roll back to checkpoint N" endpoint. See
+    get_config_rollback_status for why, and use dry_run=True to preview.
+    """
+    if not (5 <= post_checkpoint_delay <= 600):
+        raise ValueError("post_checkpoint_delay must be between 5 and 600 seconds")
+    body: dict[str, Any] = {
+        "name": name,
+        "post-checkpoint": post_checkpoint,
+        "post-checkpoint-delay": post_checkpoint_delay,
+    }
+    if description:
+        body["description"] = description
+    return _upsert_network_profile(
+        "config-checkpoint", name, body,
+        object_type="LOCAL", scope_id=scope_id, device_function=device_function, dry_run=dry_run,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_config_rollback_status() -> dict[str, Any]:
+    """Explain New Central's configuration checkpoint/rollback behavior.
+
+    New Central has NO manual "roll back to checkpoint" API. Rollback is
+    automatic and device-side: when a device fails to apply a newly pushed
+    configuration, it reverts to its last-known-good checkpoint on its own.
+    build_config_checkpoint_policy only controls whether/how quickly Central
+    asks the device to snapshot a *post*-change checkpoint — it does not let
+    you trigger a rollback, list prior checkpoints, or pick which one to
+    restore.
+
+    Sources:
+    - developer.arubanetworks.com/new-central-config/reference/config-checkpoint
+      (profile schema is limited to name/description/post-checkpoint/
+      post-checkpoint-delay — no snapshot list or restore operation).
+    - New Central tech-docs FAQ "Do access points and switches typically
+      support Rollback feature?" — confirms rollback is automatic
+      device-side behavior, not an operator-triggered action.
+
+    Use list_devices_config_health / get_device_config_issues (aruba-monitoring)
+    plus GLP audit logs to confirm whether an automatic rollback already
+    occurred on a device.
+    """
+    return {
+        "manual_rollback_supported": False,
+        "automatic_rollback_supported": True,
+        "checkpoint_profile_tool": "build_config_checkpoint_policy",
+        "citation": [
+            "developer.arubanetworks.com/new-central-config/reference/config-checkpoint",
+            "New Central tech-docs FAQ: 'Do access points and switches typically support "
+            "Rollback feature?'",
+        ],
+        "guidance": (
+            "There is no endpoint to list checkpoints, trigger a rollback, or choose which "
+            "checkpoint to restore. Rollback happens automatically on the device when a "
+            "pushed config fails to apply. Use build_config_checkpoint_policy to control "
+            "post-checkpoint generation, and list_devices_config_health / "
+            "get_device_config_issues to see current config-health state."
+        ),
+    }
+
+
 if __name__ == "__main__":
     from mcp_servers._cache_hygiene import stable_list_tools
     from mcp_servers._middleware import (
         NullStripMiddleware,
         RateLimitMiddleware,
+        SecretTokenizeMiddleware,
         install_middleware,
     )
     stable_list_tools(mcp)
-    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    install_middleware(
+        mcp,
+        [
+            NullStripMiddleware(),
+            RateLimitMiddleware(rate=8.0),
+            SecretTokenizeMiddleware(),
+        ],
+    )
     from mcp_servers.shared import run_server
     run_server(mcp)

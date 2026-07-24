@@ -241,6 +241,26 @@ def upload(records: list[dict], ollama: OllamaClient, client):
 WRITE_BATCH_LANCE = 512
 
 
+def safe_parallel_workers(requested: int | None) -> int | None:
+    """Disable fastembed multiprocessing on macOS where forkserver workers
+    can deadlock during long index rebuilds."""
+    if requested is not None and requested < 1:
+        raise ValueError("--parallel must be at least 1")
+    if sys.platform == "darwin" and requested is not None:
+        print(
+            "  macOS detected: disabling fastembed multiprocessing to avoid "
+            "forkserver deadlocks; using the in-process embedder.",
+            flush=True,
+        )
+        return None
+    return requested
+
+
+def source_uses_structured_index(folder: str, backend: str) -> bool:
+    """OpenAPI stays exact in SQLite for the embedded backend, not vectors."""
+    return backend == "lancedb" and folder == "openapi_specs"
+
+
 def upload_lancedb(records: list[dict], ingested_sources: list[str],
                    parallel: int | None = None) -> None:
     """Full rebuild of the LanceDB docs table: stream embeddings from fastembed
@@ -254,7 +274,7 @@ def upload_lancedb(records: list[dict], ingested_sources: list[str],
     db = lance_client.connect()
     embedder = EmbedClient()
     vectors = embedder.iter_embed_documents(
-        (r["text"] for r in records), parallel=parallel
+        (r["text"] for r in records), parallel=safe_parallel_workers(parallel)
     )
     table = None
     buf: list[dict] = []
@@ -295,7 +315,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Count chunks, no upload")
     parser.add_argument("--index", default=DOCS_INDEX, dest="index")
     parser.add_argument("--parallel", type=int, default=None,
-                        help="fastembed worker processes (lancedb backend)")
+                        help="fastembed worker processes (Linux; macOS safely falls back in-process)")
     args = parser.parse_args()
 
     if args.backend == "lancedb" and args.source:
@@ -311,12 +331,17 @@ def main():
 
     all_records: list[dict] = []
     ingested_sources: list[str] = []
+    openapi_specs_present = False
     for folder, doc_type in sources.items():
         source_dir = SOURCES_DIR / folder
         if not source_dir.exists():
             print(f"SKIP: {source_dir} not found")
             continue
         records = collect_points(source_dir, doc_type)
+        if source_uses_structured_index(folder, args.backend):
+            openapi_specs_present = True
+            print(f"  → {len(records)} structured API records (SQLite only)")
+            continue
         all_records.extend(records)
         ingested_sources.append(folder)
         print(f"  → {len(records)} chunks")
@@ -330,7 +355,7 @@ def main():
     if args.backend == "lancedb":
         print("\nRebuilding embedded indexes (LanceDB + specs SQLite)...")
         upload_lancedb(all_records, ingested_sources, parallel=args.parallel)
-        if "openapi_specs" in ingested_sources:
+        if openapi_specs_present:
             from pipeline.clients import specs_index
             print("  rebuilding specs.sqlite...")
             print(f"  {specs_index.build()}")

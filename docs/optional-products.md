@@ -17,12 +17,12 @@ python3 scripts/setup_wizard.py --with-products
 
 | Product | Enables | Required settings | Safety surface |
 |---|---|---|---|
-| ClearPass | status, guarded GET/write, typed endpoint/auth/NAD/guest reads and lab writes | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | Read/write starter; writes dry-run by default |
-| Juniper Mist | status, guarded GET/write, typed site/client/WLAN/alarm reads and lab writes | `MIST_HOST`, `MIST_API_TOKEN` | Read/write starter; writes dry-run by default |
-| Apstra | status, guarded GET/write, blueprint, template, anomaly, rack, routing-zone, virtual-network, remote-gateway, connectivity-template, application-endpoint, diff-status, protocol-session, and system-info reads | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` | Read/write starter; writes dry-run by default |
-| ArubaOS 8 | status, guarded GET/write, show-command, controller/version/license, AP inventory/active/client lookup/detail/history/radio/BSS, hierarchy/cluster/RF-neighbor/AP-port/IPsec reads, alarms/audit/events, system-log/ARM/monitor diagnostics, WLAN/AP-group/virtual-AP/user-role reads, and typed lab writes for SSID profiles, virtual APs, AP groups, user roles, VLANs, and write-memory | `AOS8_BASE_URL`, `AOS8_API_TOKEN` | Read/write starter; writes dry-run by default |
-| EdgeConnect | status, guarded GET/write, appliance inventory/system/alarm/interface/disk/reachability/maintenance/network-role-site/overlay/topology/tunnel, route-map/route-label, firewall-zone/zone-based firewall, interface-label, ACL IP/service object-group, overlay internet-service, bypass-mode, link-integrity diagnostics, tunnel-metadata, VRF-segment reads, and save-changes lab write | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` | Read/write starter; writes dry-run by default |
-| HPE Aruba UXI | status, guarded GET, sensor/agent/group/network/service-test inventories, sensor status, and group-assignment reads | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Read-only starter |
+| ClearPass | endpoint/auth/NAD/guest workflows plus bounded Insight alerts and OnGuard agent/posture operations | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | Read/write; writes dry-run by default |
+| Juniper Mist | wireless workflows plus NAC, Marvis clients/settings/events, org inventory/claims, Wired Assurance, and WAN Assurance | `MIST_HOST`, `MIST_API_TOKEN` | Read/write; writes dry-run by default |
+| Apstra | session-authenticated blueprint, connectivity-template, application-point, anomaly, topology, and protocol workflows | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional pre-issued `APSTRA_API_TOKEN` | Read/write; writes dry-run by default |
+| ArubaOS 8 | UIDARUBA/X-CSRF session auth, operational/config exports, typed writes, and deterministic Classic/New Central migration plans | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` | Read/write; writes dry-run by default |
+| EdgeConnect | API/Swagger compatibility diagnostics plus explicitly gated legacy workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, `EDGECONNECT_ALLOW_LEGACY_API` | Legacy operational reads/writes fail closed by default; writes also dry-run by default |
+| HPE Aruba UXI | sensor/agent/group/network/service-test inventories plus guarded CRUD and assignment workflows | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Read/write; writes dry-run by default and outbound calls respect 5 requests/second |
 
 The generic GET tools reject absolute URLs and stay bounded to the configured
 product host. List-like responses are paged with `limit` and `offset` when
@@ -31,17 +31,30 @@ possible so broad API calls do not flood the MCP context.
 Write-capable optional product tools are intended for lab and controlled
 operations. They are annotated as write/destructive, default to `dry_run=True`,
 and require `dry_run=False` plus `confirm=True` before sending API changes.
-Optional product access now defaults to `read-only`, which hides optional write
+Optional product access defaults to `read-only`, which hides optional write
 tools from router discovery and blocks direct write-tool execution. Set
 `CENTRALMCP_PRODUCT_ACCESS=read-write` or run the setup wizard with
 `--product-access read-write` only for trusted lab workflows where confirmed
-writes are expected. Unrecognized manual access-mode values fail closed as
-read-only.
+writes are expected. Per-platform overrides such as
+`CENTRALMCP_MIST_WRITES=1` and `CENTRALMCP_UXI_WRITES=1` can enable one product
+without opening every optional backend. Unrecognized values fail closed.
 
 For ArubaOS 8 typed configuration-object writes, the manage tools return
 `requires_write_memory_for` with each affected `config_path`. Run
 `aos8_write_memory` for those hierarchy nodes only after reviewing the pending
 changes and confirming the staged config should be persisted.
+
+Use `aos8_export_all` and `aos8_migration_plan` before migration work. The plan
+normalizes WLANs, roles, VLANs, AP groups, controllers, and policies into
+separate Classic Central and New Central candidates, reports lossy mappings,
+produces deterministic diffs, and returns read-only post-migration checks.
+
+EdgeConnect 9.3 changed endpoint definitions incompatibly. Run
+`edgeconnect_doctor` against the target Orchestrator before using operational
+tools. The bundled operational endpoint map predates 9.3 and is disabled
+unless `EDGECONNECT_ALLOW_LEGACY_API=1` is deliberately set for a validated
+older/lab instance. A production 9.3+ remap requires that Orchestrator's
+instance-hosted Swagger specification.
 
 Product base URLs must use HTTPS and public hostnames by default. For local lab
 testing against localhost or private IPs, set

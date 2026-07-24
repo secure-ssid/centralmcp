@@ -71,3 +71,111 @@ def test_token_manager_force_refresh_still_refreshes(tmp_path, monkeypatch):
 
     assert manager.get_access_token() == "token-1"
     assert manager.get_access_token(force_refresh=True) == "token-2"
+
+
+def test_token_manager_generation_increments_on_each_real_refresh(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOKEN_CACHE_DIR", str(tmp_path))
+    tokens = iter(["token-1", "token-2", "token-3"])
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        return _TokenResponse(next(tokens))
+
+    monkeypatch.setattr("pipeline.clients.token_manager.httpx.post", fake_post)
+
+    manager = TokenManager(
+        client_id="client-id",
+        client_secret="secret",
+        token_url="https://sso.example.com/token",
+        cache_key="generation",
+    )
+
+    assert manager.generation == 0
+    manager.get_access_token()
+    assert manager.generation == 1
+    manager.get_access_token(force_refresh=True)
+    assert manager.generation == 2
+
+
+def test_token_manager_collapses_concurrent_401_refreshes_via_generation(tmp_path, monkeypatch):
+    """Simulate N concurrent 401s that all observed the same stale
+    generation -- only ONE of them should trigger a real network refresh;
+    the rest should see the already-refreshed token via generation
+    comparison and skip the redundant call."""
+    monkeypatch.setenv("TOKEN_CACHE_DIR", str(tmp_path))
+    calls: list[str] = []
+    call_lock = threading.Lock()
+    tokens = iter([f"token-{i}" for i in range(1, 20)])
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        with call_lock:
+            token = next(tokens)
+            calls.append(token)
+        time.sleep(0.02)
+        return _TokenResponse(token)
+
+    monkeypatch.setattr("pipeline.clients.token_manager.httpx.post", fake_post)
+
+    manager = TokenManager(
+        client_id="client-id",
+        client_secret="secret",
+        token_url="https://sso.example.com/token",
+        cache_key="collapse-401",
+    )
+
+    # Establish an initial token (generation 1) as if every caller had
+    # already fetched it before their request went out and got a 401.
+    manager.get_access_token()
+    observed_generation = manager.generation
+    assert observed_generation == 1
+
+    def caller(_index: int) -> str:
+        return manager.get_access_token(force_refresh=True, observed_generation=observed_generation)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(caller, range(8)))
+
+    # Exactly one additional network refresh should have happened (the
+    # initial one + one collapsed refresh == 2 total calls), even though
+    # 8 concurrent callers all forced a refresh off the same stale
+    # generation.
+    assert len(calls) == 2, f"expected 2 total token calls, got {len(calls)}: {calls}"
+    # Every caller must observe the *same* refreshed token (the one from
+    # the single collapsed refresh), not a mix of results.
+    assert len(set(results)) == 1
+    assert manager.generation == 2
+
+
+def test_token_manager_does_not_collapse_when_generation_already_advanced(tmp_path, monkeypatch):
+    """If the caller's observed_generation is already stale relative to a
+    refresh that happened for an unrelated reason, force_refresh should be
+    downgraded to a no-op refresh check rather than firing a redundant
+    network call."""
+    monkeypatch.setenv("TOKEN_CACHE_DIR", str(tmp_path))
+    calls: list[str] = []
+    tokens = iter(["token-1", "token-2"])
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        token = next(tokens)
+        calls.append(token)
+        return _TokenResponse(token)
+
+    monkeypatch.setattr("pipeline.clients.token_manager.httpx.post", fake_post)
+
+    manager = TokenManager(
+        client_id="client-id",
+        client_secret="secret",
+        token_url="https://sso.example.com/token",
+        cache_key="stale-generation",
+    )
+
+    manager.get_access_token()  # generation -> 1, token-1
+    manager.get_access_token(force_refresh=True)  # generation -> 2, token-2
+
+    # This caller observed generation 1 (stale) before requesting a forced
+    # refresh -- generation 2 already has a fresh token, so no 3rd network
+    # call should happen.
+    token = manager.get_access_token(force_refresh=True, observed_generation=1)
+
+    assert token == "token-2"
+    assert len(calls) == 2
+    assert manager.generation == 2

@@ -1,15 +1,29 @@
-"""MCP server — optional HPE Juniper Apstra backend (low-surface starter tools).
+"""MCP server — optional HPE Juniper Apstra backend (low-surface starter tools, 20 tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=apstra
 
 Auth/env:
   APSTRA_BASE_URL   e.g. https://apstra.example.com
-  APSTRA_API_TOKEN  static bearer token
+  APSTRA_USERNAME   session login username (preferred — see apstra_login)
+  APSTRA_PASSWORD   session login password (preferred — see apstra_login)
+  APSTRA_API_TOKEN  pre-issued static AuthToken (skips session login when set)
+
+Auth model: Apstra's documented login flow is `POST /api/user/login` with a
+JSON `{"username", "password"}` body, returning a token that must be sent as
+an `AuthToken` header (not `Authorization: Bearer`) on every subsequent call.
+Older Apstra releases only expose the legacy `/api/aaa/login` endpoint — this
+module tries `/api/user/login` first and falls back to `/api/aaa/login` only
+when the live instance responds 404/405 on the current path. The resulting
+token is cached per base URL and refreshed proactively before its documented
+~24h expiry, or immediately on a 401 response (one retry after a fresh
+re-login). Set `APSTRA_API_TOKEN` to bypass session login entirely with a
+token you already obtained out of band.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -18,10 +32,13 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import (
     DESTRUCTIVE,
+    DIAGNOSTIC,
+    IDEMPOTENT_WRITE,
     READ_ONLY,
     bound_collection_response,
-    optional_product_write_blocked,
-    optional_product_writes_allowed,
+    compact_http_error,
+    platform_write_blocked as _platform_write_blocked,
+    platform_writes_allowed as _platform_writes_allowed,
     redact_sensitive,
     response_payload,
     safe_api_path,
@@ -29,8 +46,28 @@ from mcp_servers.shared import (
 )
 
 mcp = FastMCP("apstra-core")
+
+
+def optional_product_writes_allowed() -> bool:
+    return _platform_writes_allowed("apstra")
+
+
+def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
+    return _platform_write_blocked("apstra", tool_name)
+
+
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _EXECUTE_HINT = "Review the request, then call again with dry_run=False and confirm=True."
+
+# Documented current login endpoint first; legacy endpoint only used as a
+# fallback when a live instance answers 404/405 on the current path.
+_LOGIN_ENDPOINTS = ("/api/user/login", "/api/aaa/login")
+# Apstra documents a ~24h token lifetime; refresh a bit early so a proactive
+# call never straddles expiry mid-request.
+_TOKEN_TTL_SECONDS = 20 * 60 * 60
+
+# base_url -> {"token", "endpoint", "legacy_fallback", "obtained_at"}
+_TOKEN_CACHE: dict[str, dict[str, Any]] = {}
 _BLUEPRINT_FIELDS = (
     "id",
     "label",
@@ -197,16 +234,173 @@ _SYSTEM_FIELDS = (
 )
 
 
-def _apstra_config() -> tuple[str | None, str | None]:
+def _apstra_credentials() -> tuple[str | None, str | None, str | None, str | None]:
+    """Return (base_url, username, password, static_token) from the environment."""
     import os
 
     base_url = os.getenv("APSTRA_BASE_URL", "").strip().rstrip("/")
-    token = os.getenv("APSTRA_API_TOKEN", "").strip()
-    return (base_url or None, token or None)
+    username = os.getenv("APSTRA_USERNAME", "").strip()
+    password = os.getenv("APSTRA_PASSWORD", "").strip()
+    static_token = os.getenv("APSTRA_API_TOKEN", "").strip()
+    return (base_url or None, username or None, password or None, static_token or None)
 
 
 def _path_segment(value: str) -> str:
     return quote(value, safe="")
+
+
+def _extract_apstra_token(payload: Any) -> str | None:
+    """Pull the AuthToken value out of an Apstra login response body.
+
+    Current `/api/user/login` responses are JSON objects with a `token`
+    field; the legacy `/api/aaa/login` endpoint has historically returned a
+    bare JSON string containing the token.
+    """
+    if isinstance(payload, str):
+        text = payload.strip().strip('"')
+        return text or None
+    if isinstance(payload, dict):
+        for key in ("token", "auth_token", "authtoken", "AuthToken"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+async def _apstra_login(
+    client: httpx.AsyncClient, base_url: str, username: str, password: str
+) -> dict[str, Any]:
+    """Authenticate against Apstra, preferring the current login endpoint.
+
+    Tries `POST /api/user/login` first. Only falls back to the legacy
+    `POST /api/aaa/login` when the current instance answers 404/405 there,
+    i.e. when the live instance itself indicates the modern path is absent.
+    """
+    body = {"username": username, "password": password}
+    last_error: str | None = None
+    for index, endpoint in enumerate(_LOGIN_ENDPOINTS):
+        url = f"{base_url}{endpoint}"
+        try:
+            resp = await client.post(url, json=body, headers={"Accept": "application/json"})
+        except httpx.HTTPError as exc:
+            last_error = str(exc)
+            continue
+        if resp.status_code in (200, 201):
+            token = _extract_apstra_token(response_payload(resp))
+            if token:
+                return {"token": token, "endpoint": endpoint, "legacy_fallback": index > 0}
+            last_error = f"Login succeeded ({resp.status_code}) but no token in response at {endpoint}"
+            continue
+        is_last = index == len(_LOGIN_ENDPOINTS) - 1
+        if resp.status_code in (404, 405) and not is_last:
+            last_error = compact_http_error(resp, endpoint)
+            continue
+        return {"error": compact_http_error(resp, endpoint), "endpoint": endpoint}
+    return {"error": last_error or "Apstra login failed", "endpoint": _LOGIN_ENDPOINTS[-1]}
+
+
+async def _get_apstra_token(
+    base_url: str, username: str, password: str, *, force: bool = False
+) -> dict[str, Any]:
+    """Return a cached Apstra AuthToken, refreshing on expiry or when `force=True`."""
+    cached = _TOKEN_CACHE.get(base_url)
+    now = time.monotonic()
+    if not force and cached and (now - cached["obtained_at"]) < _TOKEN_TTL_SECONDS:
+        return {
+            "token": cached["token"],
+            "endpoint": cached["endpoint"],
+            "legacy_fallback": cached["legacy_fallback"],
+            "cached": True,
+        }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        result = await _apstra_login(client, base_url, username, password)
+    if "error" in result:
+        return result
+    _TOKEN_CACHE[base_url] = {
+        "token": result["token"],
+        "endpoint": result["endpoint"],
+        "legacy_fallback": result["legacy_fallback"],
+        "obtained_at": now,
+    }
+    return {**result, "cached": False}
+
+
+async def _apstra_authenticated_request(
+    method: str,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: Any = None,
+) -> dict[str, Any]:
+    """Perform one Apstra API call using the `AuthToken` header, with a single
+    forced re-login retry on a 401 response (expired/invalidated token)."""
+    base_url, username, password, static_token = _apstra_credentials()
+    if not base_url:
+        return {"error": "Apstra not configured. Set APSTRA_BASE_URL.", "url": url}
+    if not static_token and not (username and password):
+        return {
+            "error": (
+                "Apstra not configured. Set APSTRA_USERNAME and APSTRA_PASSWORD for "
+                "session login, or APSTRA_API_TOKEN for a pre-issued AuthToken."
+            ),
+            "url": url,
+        }
+
+    async def _resolve_token(*, force: bool) -> tuple[str | None, dict[str, Any]]:
+        if static_token:
+            return static_token, {"endpoint": None, "legacy_fallback": False, "cached": True}
+        result = await _get_apstra_token(base_url, username or "", password or "", force=force)
+        if "error" in result:
+            return None, result
+        return result["token"], result
+
+    token, meta = await _resolve_token(force=False)
+    if token is None:
+        return {"error": meta.get("error", "Apstra login failed"), "url": url}
+
+    async def _do_request(auth_token: str) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            request_kwargs = {
+                "headers": {"AuthToken": auth_token, "Accept": "application/json"},
+                "params": params or {},
+            }
+            if json_body is not None:
+                request_kwargs["json"] = json_body
+            method_handler = getattr(client, method.lower(), None)
+            if method_handler is not None:
+                return await method_handler(url, **request_kwargs)
+            return await client.request(method, url, **request_kwargs)
+
+    try:
+        resp = await _do_request(token)
+    except httpx.HTTPError as exc:
+        return {"error": str(exc), "url": url}
+
+    if resp.status_code == 401 and not static_token:
+        # Cached token expired or was invalidated server-side — force one
+        # fresh login and retry exactly once before surfacing the failure.
+        token, meta = await _resolve_token(force=True)
+        if token is None:
+            return {
+                "error": meta.get("error", "Apstra re-login failed"),
+                "url": url,
+                "status_code": 401,
+            }
+        try:
+            resp = await _do_request(token)
+        except httpx.HTTPError as exc:
+            return {"error": str(exc), "url": url}
+
+    return {
+        "status_code": resp.status_code,
+        "data": response_payload(resp),
+        "url": url,
+        "auth": {
+            "mode": "static_token" if static_token else "session",
+            "login_endpoint": meta.get("endpoint"),
+            "legacy_login_fallback": meta.get("legacy_fallback", False),
+        },
+    }
 
 
 def _compact_record(item: Any, fields: tuple[str, ...]) -> Any:
@@ -231,12 +425,71 @@ def _compact_collection(data: Any, fields: tuple[str, ...], list_keys: tuple[str
 
 @mcp.tool(annotations=READ_ONLY)
 def apstra_status() -> dict[str, Any]:
-    """Report whether Apstra backend is configured."""
-    base_url, token = _apstra_config()
+    """Report whether the Apstra backend is configured and how it authenticates.
+
+    `auth_mode` is `session` when `APSTRA_USERNAME`/`APSTRA_PASSWORD` are set
+    (documented `/api/user/login` flow, with automatic `/api/aaa/login`
+    fallback only if a live instance requires it), `static_token` when
+    `APSTRA_API_TOKEN` is set instead, or `unconfigured`. Reports cached
+    session-token age/endpoint without ever revealing the token value.
+    """
+    base_url, username, password, static_token = _apstra_credentials()
+    if static_token:
+        auth_mode = "static_token"
+    elif username and password:
+        auth_mode = "session"
+    else:
+        auth_mode = "unconfigured"
+    cached = _TOKEN_CACHE.get(base_url or "")
+    token_status: dict[str, Any] = {"cached": bool(cached)}
+    if cached:
+        token_status["age_seconds"] = round(time.monotonic() - cached["obtained_at"], 1)
+        token_status["login_endpoint"] = cached["endpoint"]
+        token_status["legacy_login_fallback"] = cached["legacy_fallback"]
     return {
-        "configured": bool(base_url and token),
+        "configured": bool(base_url) and auth_mode != "unconfigured",
         "base_url": base_url,
-        "has_token": bool(token),
+        "auth_mode": auth_mode,
+        "has_username": bool(username),
+        "has_password": bool(password),
+        "has_static_token": bool(static_token),
+        "has_token": bool(static_token),
+        "token": token_status,
+    }
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+async def apstra_login(force: bool = False) -> dict[str, Any]:
+    """Authenticate to Apstra and cache the resulting `AuthToken`.
+
+    Tries the documented `POST /api/user/login` endpoint first and falls
+    back to the legacy `POST /api/aaa/login` only if the live instance
+    responds 404/405 there. Set `force=True` to discard any cached token and
+    re-authenticate immediately (e.g. after a password rotation). Never
+    returns the token value itself — use this to diagnose login failures.
+    """
+    base_url, username, password, static_token = _apstra_credentials()
+    if not base_url:
+        return {"error": "Apstra not configured. Set APSTRA_BASE_URL."}
+    try:
+        base_url = validate_product_base_url(base_url, product="Apstra")
+    except ValueError as exc:
+        return {"error": str(exc)}
+    if static_token:
+        return {
+            "auth_mode": "static_token",
+            "note": "APSTRA_API_TOKEN is set; session login is skipped.",
+        }
+    if not (username and password):
+        return {"error": "Set APSTRA_USERNAME and APSTRA_PASSWORD to use session login."}
+    result = await _get_apstra_token(base_url, username, password, force=force)
+    if "error" in result:
+        return {"error": result["error"], "endpoint": result.get("endpoint")}
+    return {
+        "authenticated": True,
+        "login_endpoint": result["endpoint"],
+        "legacy_login_fallback": result["legacy_fallback"],
+        "cached": result.get("cached", False),
     }
 
 
@@ -249,12 +502,14 @@ async def apstra_get(
 ) -> dict[str, Any]:
     """Perform a read-only GET request to Apstra API.
 
-    Safety guard: only allows paths beginning with `/api/`.
-    List payloads are bounded with `limit` and `offset`.
+    Safety guard: only allows paths beginning with `/api/`. Authenticates
+    with a cached `AuthToken` from session login (or `APSTRA_API_TOKEN` when
+    set), retrying once on a 401 after a forced re-login. List payloads are
+    bounded with `limit` and `offset`.
     """
-    base_url, token = _apstra_config()
-    if not base_url or not token:
-        return {"error": "Apstra not configured. Set APSTRA_BASE_URL and APSTRA_API_TOKEN."}
+    base_url, username, password, static_token = _apstra_credentials()
+    if not base_url:
+        return {"error": "Apstra not configured. Set APSTRA_BASE_URL."}
     try:
         path = safe_api_path(path, ("/api/",))
     except ValueError as exc:
@@ -266,14 +521,10 @@ async def apstra_get(
     except ValueError as exc:
         return {"error": str(exc)}
     url = f"{base_url}{path}"
-    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers, params=params or {})
-        payload = bound_collection_response(response_payload(resp), limit=limit, offset=offset)
-        return {"status_code": resp.status_code, "data": payload, "url": url}
-    except httpx.HTTPError as exc:
-        return {"error": str(exc), "url": url}
+    out = await _apstra_authenticated_request("GET", url, params=params)
+    if "data" in out:
+        out["data"] = bound_collection_response(out["data"], limit=limit, offset=offset)
+    return out
 
 
 async def _apstra_read_post(
@@ -283,9 +534,9 @@ async def _apstra_read_post(
     offset: int = 0,
 ) -> dict[str, Any]:
     """POST to a read-only Apstra endpoint with a fixed, typed wrapper."""
-    base_url, token = _apstra_config()
-    if not base_url or not token:
-        return {"error": "Apstra not configured. Set APSTRA_BASE_URL and APSTRA_API_TOKEN."}
+    base_url, username, password, static_token = _apstra_credentials()
+    if not base_url:
+        return {"error": "Apstra not configured. Set APSTRA_BASE_URL."}
     try:
         path = safe_api_path(path, ("/api/",))
     except ValueError as exc:
@@ -297,14 +548,10 @@ async def _apstra_read_post(
     except ValueError as exc:
         return {"error": str(exc)}
     url = f"{base_url}{path}"
-    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, headers=headers)
-        payload = bound_collection_response(response_payload(resp), limit=limit, offset=offset)
-        return {"status_code": resp.status_code, "data": payload, "url": url}
-    except httpx.HTTPError as exc:
-        return {"error": str(exc), "url": url}
+    out = await _apstra_authenticated_request("POST", url)
+    if "data" in out:
+        out["data"] = bound_collection_response(out["data"], limit=limit, offset=offset)
+    return out
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -412,15 +659,46 @@ async def apstra_list_remote_gateways(
     return out
 
 
+async def _apstra_get_with_fallback(
+    primary_path: str,
+    legacy_path: str,
+    *,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    """GET a current-API path, falling back to a legacy path only on 404/405.
+
+    Marks the response with `legacy_path_used` so callers can see when a
+    live instance actually required the older endpoint shape, rather than
+    guessing at legacy behavior blindly.
+    """
+    out = await apstra_get(primary_path, limit=limit, offset=offset)
+    if out.get("status_code") in (404, 405):
+        legacy_out = await apstra_get(legacy_path, limit=limit, offset=offset)
+        legacy_out["legacy_path_used"] = True
+        legacy_out["primary_path"] = primary_path
+        legacy_out["primary_path_status"] = out.get("status_code")
+        return legacy_out
+    out["legacy_path_used"] = False
+    return out
+
+
 @mcp.tool(annotations=READ_ONLY)
 async def apstra_list_connectivity_templates(
     blueprint_id: str,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """List connectivity templates visible in one Apstra blueprint."""
-    path = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-export"
-    out = await apstra_get(path, limit=limit, offset=offset)
+    """List connectivity templates visible in one Apstra blueprint.
+
+    Uses the current `GET /api/blueprints/{id}/connectivity-templates`
+    catalog endpoint. Falls back to the legacy `obj-policy-export` shape
+    only if the live instance responds 404/405 on the current path (older
+    Apstra release) — check `legacy_path_used` in the response.
+    """
+    primary = f"/api/blueprints/{_path_segment(blueprint_id)}/connectivity-templates"
+    legacy = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-export"
+    out = await _apstra_get_with_fallback(primary, legacy, limit=limit, offset=offset)
     if "data" in out:
         out["connectivity_templates"] = _compact_collection(
             out.pop("data"),
@@ -432,12 +710,57 @@ async def apstra_list_connectivity_templates(
 
 
 @mcp.tool(annotations=READ_ONLY)
+async def apstra_get_connectivity_template(
+    blueprint_id: str,
+    connectivity_template_id: str,
+) -> dict[str, Any]:
+    """Get one Apstra connectivity template by ID with compact fields.
+
+    Uses `GET /api/blueprints/{id}/connectivity-templates/{ct_id}`. Falls
+    back to filtering the legacy `obj-policy-export` catalog by ID only if
+    the live instance responds 404/405 on the current per-ID path.
+    """
+    primary = (
+        f"/api/blueprints/{_path_segment(blueprint_id)}/connectivity-templates/"
+        f"{_path_segment(connectivity_template_id)}"
+    )
+    out = await apstra_get(primary)
+    if out.get("status_code") in (404, 405):
+        legacy = await apstra_list_connectivity_templates(blueprint_id, limit=200, offset=0)
+        cts = legacy.get("connectivity_templates")
+        items = cts.get("items", []) if isinstance(cts, dict) else (cts or [])
+        match = next(
+            (item for item in items if isinstance(item, dict) and item.get("id") == connectivity_template_id),
+            None,
+        )
+        return {
+            "connectivity_template": match,
+            "blueprint_id": blueprint_id,
+            "legacy_path_used": True,
+            "primary_path": primary,
+            "primary_path_status": out.get("status_code"),
+        }
+    if "data" in out:
+        out["connectivity_template"] = _compact_record(out.pop("data"), _CONNECTIVITY_TEMPLATE_FIELDS)
+        out["blueprint_id"] = blueprint_id
+        out["legacy_path_used"] = False
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
 async def apstra_list_application_endpoints(
     blueprint_id: str,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """List interfaces that can receive connectivity-template assignments."""
+    """List interfaces that can receive connectivity-template assignments.
+
+    Uses `POST /api/blueprints/{id}/obj-policy-application-points`, which
+    remains the confirmed working shape for this query-style read across
+    recent Apstra releases (unlike the connectivity-template catalog, no
+    distinct `/connectivity-templates/*` application-point path has been
+    verified — confirm against a live instance if your release differs).
+    """
     path = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-application-points"
     out = await _apstra_read_post(path, limit=limit, offset=offset)
     if "data" in out:
@@ -511,7 +834,9 @@ async def apstra_write(
     """Perform a lab write request to Apstra with a preview-first guard.
 
     Allows `POST`, `PUT`, `PATCH`, and `DELETE` against `/api/*` paths on the
-    configured Apstra host. Defaults to `dry_run=True`; execution requires
+    configured Apstra host. Authenticates with a cached `AuthToken` from
+    session login (or `APSTRA_API_TOKEN` when set), retrying once on a 401
+    after a forced re-login. Defaults to `dry_run=True`; execution requires
     `dry_run=False` and `confirm=True`.
     """
     if not optional_product_writes_allowed():
@@ -521,9 +846,16 @@ async def apstra_write(
     if method not in _WRITE_METHODS:
         return {"error": f"method must be one of: {', '.join(sorted(_WRITE_METHODS))}"}
 
-    base_url, token = _apstra_config()
-    if not base_url or not token:
-        return {"error": "Apstra not configured. Set APSTRA_BASE_URL and APSTRA_API_TOKEN."}
+    base_url, username, password, static_token = _apstra_credentials()
+    if not base_url:
+        return {"error": "Apstra not configured. Set APSTRA_BASE_URL."}
+    if not static_token and not (username and password):
+        return {
+            "error": (
+                "Apstra not configured. Set APSTRA_USERNAME and APSTRA_PASSWORD for "
+                "session login, or APSTRA_API_TOKEN for a pre-issued AuthToken."
+            )
+        }
     try:
         safe_path = safe_api_path(path, ("/api/",))
     except ValueError as exc:
@@ -556,23 +888,78 @@ async def apstra_write(
             **preview,
         }
 
-    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.request(
-                method,
-                url,
-                headers=headers,
-                params=params or {},
-                json=body,
-            )
-        return {
-            "status_code": resp.status_code,
-            "data": redact_sensitive(response_payload(resp)),
-            "url": url,
-        }
-    except httpx.HTTPError as exc:
-        return {"error": str(exc), "url": url}
+    out = await _apstra_authenticated_request(method, url, params=params, json_body=body)
+    if "data" in out:
+        out["data"] = redact_sensitive(out["data"])
+    return out
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def apstra_create_connectivity_template(
+    blueprint_id: str,
+    connectivity_template: dict[str, Any],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Guarded create/update for one Apstra connectivity template.
+
+    Uses `PUT /api/blueprints/{blueprint_id}/connectivity-templates` (current
+    catalog semantics) with `connectivity_template` as the request body. If a
+    live instance predates this endpoint (404/405), use `apstra_write`
+    directly against the legacy `obj-policy-export`/`obj-policy-import` shape
+    instead — this typed wrapper does not guess at that older payload shape.
+    Defaults to `dry_run=True`; execution requires `dry_run=False` and
+    `confirm=True`.
+    """
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/connectivity-templates"
+    return await apstra_write("PUT", path, body=connectivity_template, dry_run=dry_run, confirm=confirm)
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def apstra_delete_connectivity_template(
+    blueprint_id: str,
+    connectivity_template_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Delete one Apstra connectivity template by ID.
+
+    Uses `DELETE /api/blueprints/{blueprint_id}/connectivity-templates/{ct_id}`.
+    Defaults to `dry_run=True`; execution requires `dry_run=False` and
+    `confirm=True`.
+    """
+    path = (
+        f"/api/blueprints/{_path_segment(blueprint_id)}/connectivity-templates/"
+        f"{_path_segment(connectivity_template_id)}"
+    )
+    return await apstra_write("DELETE", path, dry_run=dry_run, confirm=confirm)
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def apstra_set_application_point_assignment(
+    blueprint_id: str,
+    application_points: list[dict[str, Any]],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Guarded batch assignment of connectivity templates to application points.
+
+    PATCHes `/api/blueprints/{blueprint_id}/obj-policy-application-points/batch-apply`
+    with a caller-supplied `application_points` batch payload. Apstra's exact
+    assignment schema for this call has changed across releases — use
+    `apstra_list_application_endpoints` (or the Apstra Swagger UI under
+    Platform > Developers) to confirm the exact shape for your instance
+    before executing. Defaults to `dry_run=True`; execution requires
+    `dry_run=False` and `confirm=True`.
+    """
+    path = f"/api/blueprints/{_path_segment(blueprint_id)}/obj-policy-application-points/batch-apply"
+    return await apstra_write(
+        "PATCH",
+        path,
+        body={"application_points": application_points},
+        dry_run=dry_run,
+        confirm=confirm,
+    )
 
 
 if __name__ == "__main__":
@@ -580,10 +967,18 @@ if __name__ == "__main__":
     from mcp_servers._middleware import (
         NullStripMiddleware,
         RateLimitMiddleware,
+        SecretTokenizeMiddleware,
         install_middleware,
     )
     from mcp_servers.shared import run_server
 
     stable_list_tools(mcp)
-    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    install_middleware(
+        mcp,
+        [
+            NullStripMiddleware(),
+            RateLimitMiddleware(rate=8.0),
+            SecretTokenizeMiddleware(),
+        ],
+    )
     run_server(mcp)

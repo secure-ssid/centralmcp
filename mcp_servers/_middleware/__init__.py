@@ -27,6 +27,9 @@ See individual modules for details:
   `{ok, status, data, message, tool}` wrapping.
 - :mod:`mcp_servers._middleware.mac_normalizer` — optional outbound MAC
   normalization for model consistency.
+- :mod:`mcp_servers._middleware.secret_tokenizer` — opt-in, reversible
+  secret/PII tokenization so a value read by one tool can round-trip into
+  a later write tool without ever putting plaintext in front of the model.
 
 Retry lives one layer down in
 :mod:`pipeline.clients.central_client` (``_request`` honors
@@ -42,6 +45,7 @@ from .mac_normalizer import MacNormalizeMiddleware
 from .null_strip import NullStripMiddleware
 from .rate_limit import RateLimitMiddleware
 from .response_envelope import ResponseEnvelopeMiddleware
+from .secret_tokenizer import SecretTokenizeMiddleware
 from .unknown_tool_suggest import UnknownToolSuggestMiddleware
 
 __all__ = [
@@ -50,6 +54,7 @@ __all__ = [
     "NullStripMiddleware",
     "RateLimitMiddleware",
     "ResponseEnvelopeMiddleware",
+    "SecretTokenizeMiddleware",
     "UnknownToolSuggestMiddleware",
     "install_middleware",
 ]

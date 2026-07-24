@@ -66,17 +66,43 @@ class MCPClient:
     # Devices
     # ------------------------------------------------------------------
 
+    # Device-inventory API versions. Both v1 and v1alpha1 use `next`/`limit`
+    # cursor pagination (NOT offset) per the official reference docs
+    # (getdeviceinventoryv1 / getdeviceinventory) — offset is not a
+    # documented query param on either version.
+    _INVENTORY_V1 = "/network-monitoring/v1/device-inventory"
+    _INVENTORY_V1ALPHA1 = "/network-monitoring/v1alpha1/device-inventory"
+
+    def _device_inventory_page(
+        self, params: dict[str, Any]
+    ) -> tuple[dict[str, Any], str]:
+        """GET one device-inventory page, preferring v1 and falling back to
+        v1alpha1 when v1 is unavailable on this tenant (404/error).
+
+        Returns ``(raw_response, endpoint_used)``.
+        """
+        try:
+            result = self._client.get(self._INVENTORY_V1, params=params)
+            return result, self._INVENTORY_V1
+        except Exception as exc:
+            logger.debug(
+                "device-inventory v1 failed (%s); falling back to v1alpha1", exc
+            )
+        result = self._client.get(self._INVENTORY_V1ALPHA1, params=params)
+        return result, self._INVENTORY_V1ALPHA1
+
     def get_device_by_serial(self, serial_number: str) -> Optional[dict[str, Any]]:
         """Return the device inventory record for a given serial, or None.
 
         Tries a server-side ``serialNumber eq '...'`` filter first (supported
-        by the device-inventory API), then falls back to paginated scan.
+        by the device-inventory API), then falls back to a cursor-paginated
+        scan using the `next` token returned by each page (not offset — the
+        API doesn't support it). Prefers v1, falls back to v1alpha1.
         """
         serial_escaped = _odata_string(serial_number)
         try:
-            result = self._client.get(
-                "/network-monitoring/v1alpha1/device-inventory",
-                params={"filter": f"serialNumber eq '{serial_escaped}'", "limit": 1},
+            result, _ = self._device_inventory_page(
+                {"filter": f"serialNumber eq '{serial_escaped}'", "limit": 1}
             )
             items = result.get("devices", result.get("items", []))
             for item in items:
@@ -92,19 +118,19 @@ class MCPClient:
 
         try:
             limit = 100
-            offset = 0
+            cursor: Optional[str] = None
             for _ in range(_MAX_SEARCH_PAGES):
-                result = self._client.get(
-                    "/network-monitoring/v1alpha1/device-inventory",
-                    params={"limit": limit, "offset": offset},
-                )
+                params: dict[str, Any] = {"limit": limit}
+                if cursor:
+                    params["next"] = cursor
+                result, _ = self._device_inventory_page(params)
                 items = result.get("devices", result.get("items", []))
                 for item in items:
                     if item.get("serialNumber", "").lower() == serial_number.lower():
                         return item
-                if len(items) < limit:
+                cursor = result.get("next")
+                if not cursor:
                     break
-                offset += limit
             else:
                 logger.warning(
                     "MCPClient.get_device_by_serial(%s): searched %d devices without "
@@ -119,25 +145,51 @@ class MCPClient:
             logger.warning("MCPClient.get_device_by_serial(%s) failed: %s", serial_number, exc)
             return None
 
+    def get_devices_page(
+        self,
+        filters: Optional[dict[str, Any]] = None,
+        limit: int = _DEFAULT_LIST_LIMIT,
+        next_cursor: Optional[str] = None,
+    ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        """Return one cursor-paginated page of device-inventory records.
+
+        Returns ``(items, next_cursor)`` — pass the returned cursor back in as
+        ``next_cursor`` to fetch the following page. ``next_cursor`` is None
+        when there is no further page.
+        """
+        try:
+            params = dict(filters or {})
+            params["limit"] = _bounded_limit(limit)
+            if next_cursor:
+                params["next"] = next_cursor
+            result, _ = self._device_inventory_page(params)
+            items = result.get("devices", result.get("items", []))
+            return items, result.get("next")
+        except Exception as exc:
+            logger.warning("MCPClient.get_devices_page failed: %s", exc)
+            return [], None
+
     def get_devices(
         self,
         filters: Optional[dict[str, Any]] = None,
         limit: int = _DEFAULT_LIST_LIMIT,
         offset: int = 0,
+        next_cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Return a list of device inventory records matching optional filters."""
-        try:
-            params = dict(filters or {})
-            params.setdefault("limit", _bounded_limit(limit))
-            params.setdefault("offset", max(0, offset))
-            result = self._client.get(
-                "/network-monitoring/v1alpha1/device-inventory",
-                params=params,
-            )
-            return result.get("devices", result.get("items", []))
-        except Exception as exc:
-            logger.warning("MCPClient.get_devices failed: %s", exc)
-            return []
+        """Return a single bounded page of device-inventory records.
+
+        The device-inventory API paginates with a `next` cursor, not offset.
+        Pass ``next_cursor`` (from a prior call's cursor) to page forward.
+        ``offset`` is accepted for backward compatibility only: when
+        ``next_cursor`` is omitted and ``offset`` is positive, it is
+        translated to an approximate starting cursor (``offset + 1``) — this
+        is best-effort, not an exact seek, because `next` is an opaque
+        server-issued token on some tenants. Prefer ``get_devices_page`` for
+        exact multi-page traversal.
+        """
+        cursor = next_cursor or (str(offset + 1) if offset > 0 else None)
+        items, _ = self.get_devices_page(filters, limit=limit, next_cursor=cursor)
+        return items
 
     # ------------------------------------------------------------------
     # Sites
@@ -205,10 +257,15 @@ class MCPClient:
         severity: Optional[str] = None,
         limit: int = _DEFAULT_LIST_LIMIT,
         offset: int = 0,
+        next_cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """Return active alerts, optionally filtered by site or severity.
 
         Severity must be passed via OData filter expression, not a bare param.
+        /network-notifications/v1/alerts paginates with a `next` cursor, not
+        offset (per getalertlistv1). ``offset`` is kept for backward
+        compatibility and translated to an approximate starting cursor
+        (``offset + 1``) when ``next_cursor`` is omitted.
         """
         filters = ["status eq 'Active'"]
         if site_id:
@@ -218,8 +275,10 @@ class MCPClient:
         params: dict[str, Any] = {
             "filter": " and ".join(filters),
             "limit": _bounded_limit(limit),
-            "offset": max(0, offset),
         }
+        cursor = next_cursor or (str(offset + 1) if offset > 0 else None)
+        if cursor:
+            params["next"] = cursor
         try:
             result = self._client.get("/network-notifications/v1/alerts", params=params)
             return result.get("alerts", result.get("items", []))
@@ -281,17 +340,23 @@ class MCPClient:
     # Clients
     # ------------------------------------------------------------------
 
-    def get_clients(
+    def get_clients_page(
         self,
         site_id: Optional[str] = None,
         serial_number: Optional[str] = None,
         ssid: Optional[str] = None,
         connection_type: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0,
-    ) -> list[dict[str, Any]]:
-        """Return connected clients, optionally filtered by site, device serial, SSID, or type."""
-        params: dict[str, Any] = {"limit": _bounded_limit(limit), "offset": max(0, offset)}
+        next_cursor: Optional[str] = None,
+    ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        """Return one cursor-paginated page of connected clients.
+
+        /network-monitoring/v1/clients paginates with a `next` cursor, not
+        offset (per the clients v1 reference). Returns ``(items, next_cursor)``.
+        """
+        params: dict[str, Any] = {"limit": _bounded_limit(limit)}
+        if next_cursor:
+            params["next"] = next_cursor
         if site_id:
             params["site-id"] = site_id
         if serial_number:
@@ -305,35 +370,62 @@ class MCPClient:
             params["filter"] = " and ".join(odata)
         try:
             result = self._client.get("/network-monitoring/v1/clients", params=params)
-            return result.get("clients", result.get("items", []))
+            items = result.get("clients", result.get("items", []))
+            return items, result.get("next")
         except Exception as exc:
-            logger.warning("MCPClient.get_clients failed: %s", exc)
-            return []
+            logger.warning("MCPClient.get_clients_page failed: %s", exc)
+            return [], None
+
+    def get_clients(
+        self,
+        site_id: Optional[str] = None,
+        serial_number: Optional[str] = None,
+        ssid: Optional[str] = None,
+        connection_type: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        next_cursor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Return one bounded page of connected clients.
+
+        ``offset`` is accepted for backward compatibility only and translated
+        to an approximate starting cursor (``offset + 1``) when
+        ``next_cursor`` is omitted — the API paginates with `next`, not
+        offset. Prefer ``get_clients_page`` for exact multi-page traversal.
+        """
+        cursor = next_cursor or (str(offset + 1) if offset > 0 else None)
+        items, _ = self.get_clients_page(
+            site_id=site_id,
+            serial_number=serial_number,
+            ssid=ssid,
+            connection_type=connection_type,
+            limit=limit,
+            next_cursor=cursor,
+        )
+        return items
 
     def find_client(self, mac_or_ip: str) -> Optional[dict[str, Any]]:
         """Find a single client by MAC address or IP address, or None if not found.
 
-        Note: the clients API does not filter server-side by macAddress or ipAddress,
-        so we fetch all clients and filter client-side.
+        Note: the clients API does not filter server-side by macAddress or
+        ipAddress, so we sweep pages using the server-issued `next` cursor
+        (not a computed offset — offset is not a supported query param on
+        this endpoint) and filter client-side.
         """
         try:
             limit = 100
-            offset = 0
+            cursor: Optional[str] = None
             normalized = mac_or_ip.lower()
             for _ in range(_MAX_SEARCH_PAGES):
-                result = self._client.get(
-                    "/network-monitoring/v1/clients",
-                    params={"limit": limit, "offset": offset},
-                )
-                items = result.get("clients", result.get("items", []))
+                items, cursor_next = self.get_clients_page(limit=limit, next_cursor=cursor)
                 for client in items:
                     if (client.get("macAddress") or "").lower() == normalized:
                         return client
                     if (client.get("ipv4") or "").lower() == normalized:
                         return client
-                if len(items) < limit:
+                if not cursor_next:
                     break
-                offset += limit
+                cursor = cursor_next
             else:
                 logger.warning(
                     "MCPClient.find_client(%s): searched %d clients without finding "

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -44,7 +44,7 @@ def test_list_active_alerts_calls_expected_endpoint(monkeypatch):
         "/network-notifications/v1/alerts",
         params={
             "limit": 25,
-            "offset": 10,
+            "next": "11",
             "filter": "status eq 'Active' and siteId eq 'site-1' and severity eq 'CRITICAL'",
             "sort": "severity desc",
         },
@@ -64,24 +64,25 @@ def test_legacy_list_alerts_forwards_offset(monkeypatch):
         severity="CRITICAL",
         limit=25,
         offset=0,
+        next_cursor=None,
     )
 
 
 def test_list_clients_forwards_offset(monkeypatch):
     mcp_client = MagicMock()
-    mcp_client.get_clients.return_value = []
+    mcp_client.get_clients_page.return_value = ([], None)
     monkeypatch.setattr(monitoring, "get_mcp_client", lambda: mcp_client)
 
     result = monitoring.list_clients(site_id="site-1", limit=25, offset=10)
 
     assert result == []
-    mcp_client.get_clients.assert_called_once_with(
+    mcp_client.get_clients_page.assert_called_once_with(
         site_id="site-1",
         serial_number=None,
         ssid=None,
         connection_type=None,
         limit=25,
-        offset=10,
+        next_cursor="11",
     )
 
 
@@ -216,7 +217,7 @@ def test_set_alert_priority_validates_priority(monkeypatch):
     with pytest.raises(ValueError, match="priority must be one of"):
         asyncio.run(monitoring.set_alert_priority(_AcceptCtx(), keys=["alert-1"], priority="Urgent"))
 
-    client._request.assert_not_called()
+    client._arequest.assert_not_called()
 
 
 def test_alert_action_decline_does_not_post(monkeypatch):
@@ -228,7 +229,7 @@ def test_alert_action_decline_does_not_post(monkeypatch):
     )
 
     assert result == {"status": "CANCELLED", "detail": "user declined confirmation"}
-    client._request.assert_not_called()
+    client._arequest.assert_not_called()
 
 
 def test_defer_and_reactivate_alerts_confirm_then_post_expected_payloads(monkeypatch):
@@ -326,11 +327,14 @@ def test_find_scope_matches_name_and_type(monkeypatch):
 
 def test_list_scope_devices_filters_known_scope_fields(monkeypatch):
     mcp_client = MagicMock()
-    mcp_client.get_devices.return_value = [
-        {"serialNumber": "AP1", "siteId": "site-1", "deviceType": "ACCESS_POINT"},
-        {"serialNumber": "SW1", "siteId": "site-1", "deviceType": "SWITCH"},
-        {"serialNumber": "AP2", "siteId": "site-2", "deviceType": "ACCESS_POINT"},
-    ]
+    mcp_client.get_devices_page.return_value = (
+        [
+            {"serialNumber": "AP1", "siteId": "site-1", "deviceType": "ACCESS_POINT"},
+            {"serialNumber": "SW1", "siteId": "site-1", "deviceType": "SWITCH"},
+            {"serialNumber": "AP2", "siteId": "site-2", "deviceType": "ACCESS_POINT"},
+        ],
+        None,
+    )
     monkeypatch.setattr(monitoring, "get_mcp_client", lambda: mcp_client)
 
     result = monitoring.list_scope_devices("site-1", device_type="AP", limit=10)
@@ -338,7 +342,9 @@ def test_list_scope_devices_filters_known_scope_fields(monkeypatch):
     assert result["items"] == [
         {"serialNumber": "AP1", "siteId": "site-1", "deviceType": "ACCESS_POINT"}
     ]
-    mcp_client.get_devices.assert_called_once_with({"siteId": "site-1"}, limit=200, offset=0)
+    mcp_client.get_devices_page.assert_called_once_with(
+        {"siteId": "site-1"}, limit=200, next_cursor=None
+    )
 
 
 def test_site_health_summary_uses_site_id_inventory_filter(monkeypatch):
@@ -365,3 +371,246 @@ def test_list_devices_config_health_validates_search_length(monkeypatch):
         monitoring.list_devices_config_health(search="ab")
 
     client.get.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Topology / swarms / AP tunnel telemetry / applications / reporting
+# ---------------------------------------------------------------------------
+
+
+def test_get_topology_calls_expected_endpoint(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"nodes": [], "links": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.get_topology("site-1")
+
+    assert result == {"nodes": [], "links": []}
+    client.get.assert_called_once_with("/network-monitoring/v1/topology/site-1")
+
+
+def test_list_swarms_uses_cursor_not_offset(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"swarms": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    monitoring.list_swarms(limit=50, offset=19)
+
+    client.get.assert_called_once_with(
+        "/network-monitoring/v1/swarms", params={"limit": 50, "next": "20"}
+    )
+
+
+def test_get_swarm_calls_expected_endpoint(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"clusterId": "c1"}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.get_swarm("c1")
+
+    assert result == {"clusterId": "c1"}
+    client.get.assert_called_once_with("/network-monitoring/v1/swarms/c1")
+
+
+def test_list_ap_tunnels_uses_cursor_not_offset(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"tunnels": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    monitoring.list_ap_tunnels("AP1", site_id="site-1", limit=20, offset=5)
+
+    client.get.assert_called_once_with(
+        "/network-monitoring/v1/aps/AP1/tunnels",
+        params={"limit": 20, "next": "6", "site-id": "site-1"},
+    )
+
+
+def test_get_ap_tunnel_calls_expected_endpoint(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"tunnelId": "t1"}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.get_ap_tunnel("AP1", "t1")
+
+    assert result == {"tunnelId": "t1"}
+    client.get.assert_called_once_with("/network-monitoring/v1/aps/AP1/tunnels/t1")
+
+
+def test_list_applications_uses_true_offset_pagination(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"items": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    monitoring.list_applications(
+        site_id="site-1", start_time="2026-01-01T00:00:00Z", end_time="2026-01-02T00:00:00Z",
+        client_id="aa:bb", limit=50, offset=10,
+    )
+
+    client.get.assert_called_once_with(
+        "/network-monitoring/v1/applications",
+        params={
+            "site-id": "site-1",
+            "start-at": "2026-01-01T00:00:00Z",
+            "end-at": "2026-01-02T00:00:00Z",
+            "limit": 50,
+            "offset": 10,
+            "client-id": "aa:bb",
+        },
+    )
+
+
+def test_list_reports_uses_cursor(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"items": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    monitoring.list_reports(search="wireless", next_cursor="5")
+
+    client.get.assert_called_once_with(
+        "/network-reporting/v1/reports",
+        params={"limit": 10, "next": "5", "search": "wireless"},
+    )
+
+
+def test_list_report_runs_calls_expected_endpoint(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"items": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    monitoring.list_report_runs(report_id="42", sort="modifiedAt desc")
+
+    client.get.assert_called_once_with(
+        "/network-reporting/v1alpha1/reports/42/report-runs",
+        params={"limit": 10, "sort": "modifiedAt desc"},
+    )
+
+
+def test_get_reports_metadata_calls_expected_endpoint(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"reportTypes": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.get_reports_metadata()
+
+    assert result == {"reportTypes": []}
+    client.get.assert_called_once_with("/network-reporting/v1alpha1/reports-metadata")
+
+
+def test_get_reporting_service_health_calls_expected_endpoint(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"status": "UP"}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.get_reporting_service_health()
+
+    assert result == {"status": "UP"}
+    client.get.assert_called_once_with("/network-reporting/v1alpha1/reports/health")
+
+
+# ---------------------------------------------------------------------------
+# Client onboarding events
+# ---------------------------------------------------------------------------
+
+
+def test_list_client_onboarding_events_filters_by_event_name(monkeypatch):
+    mcp_client = MagicMock()
+    mcp_client.get_events.return_value = [
+        {"eventName": "Client Onboarding", "clientMacAddress": "aa:bb"},
+        {"eventName": "Interface Down"},
+        {"eventName": "Client Onboarding", "clientMacAddress": "cc:dd"},
+    ]
+    monkeypatch.setattr(monitoring, "get_mcp_client", lambda: mcp_client)
+
+    result = monitoring.list_client_onboarding_events("SW1", hours=12)
+
+    assert result["items"] == [
+        {"eventName": "Client Onboarding", "clientMacAddress": "aa:bb"},
+        {"eventName": "Client Onboarding", "clientMacAddress": "cc:dd"},
+    ]
+    mcp_client.get_events.assert_called_once_with("SW1", hours=12, api_limit=1000)
+
+
+# ---------------------------------------------------------------------------
+# Notification-rule CRUD (best-effort, unconfirmed endpoint shape)
+# ---------------------------------------------------------------------------
+
+
+def test_create_notification_rule_dry_run_returns_payload_without_sending(monkeypatch):
+    client = MagicMock()
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = asyncio.run(
+        monitoring.create_notification_rule(_AcceptCtx(), {"name": "rule-1"}, dry_run=True)
+    )
+
+    assert result["dry_run"] is True
+    client._request.assert_not_called()
+
+
+def test_create_notification_rule_requires_confirmation(monkeypatch):
+    client = MagicMock()
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = asyncio.run(
+        monitoring.create_notification_rule(_DeclineCtx(), {"name": "rule-1"})
+    )
+
+    assert result["status"] == "CANCELLED"
+    client._request.assert_not_called()
+
+
+def test_create_notification_rule_posts_when_confirmed(monkeypatch):
+    client = MagicMock()
+    client._arequest = AsyncMock(
+        return_value=_response(status_code=201, payload={"id": "rule-1"})
+    )
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = asyncio.run(
+        monitoring.create_notification_rule(_AcceptCtx(), {"name": "rule-1"})
+    )
+
+    assert result["id"] == "rule-1"
+    client._arequest.assert_awaited_once_with(
+        "POST", "/network-notifications/v1/alert-config", json={"name": "rule-1"}
+    )
+
+
+def test_delete_notification_rule_dry_run(monkeypatch):
+    client = MagicMock()
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = asyncio.run(monitoring.delete_notification_rule(_AcceptCtx(), "rule-1", dry_run=True))
+
+    assert result["dry_run"] is True
+    client._arequest.assert_not_called()
+
+
+def test_delete_notification_rule_deletes_when_confirmed(monkeypatch):
+    client = MagicMock()
+    client._arequest = AsyncMock(return_value=_response(status_code=204, payload={}))
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = asyncio.run(monitoring.delete_notification_rule(_AcceptCtx(), "rule-1"))
+
+    assert result["deleted"] is True
+    client._arequest.assert_awaited_once_with(
+        "DELETE", "/network-notifications/v1/alert-config/rule-1"
+    )
+
+
+def test_set_notification_rule_enabled_surfaces_404_cleanly(monkeypatch):
+    client = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 404
+    resp.json.side_effect = ValueError()
+    resp.text = "not found"
+    client._arequest = AsyncMock(return_value=resp)
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = asyncio.run(
+        monitoring.set_notification_rule_enabled(_AcceptCtx(), "rule-1", enabled=True)
+    )
+
+    assert "error" in result
+    assert result["endpoint_used"] == "/network-notifications/v1/alert-config/rule-1"

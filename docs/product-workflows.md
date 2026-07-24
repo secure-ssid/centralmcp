@@ -1,10 +1,9 @@
 # Typed product workflow roadmap
 
-The optional product starters are intentionally small and lab-friendly. They
-give users a safe way to connect ClearPass, Mist, Apstra, ArubaOS 8, and
-EdgeConnect with read workflows plus guarded write tools, and UXI with compact
-read-only workflows, without loading every possible product workflow into the
-MCP tool list.
+The optional product backends remain opt-in and lab-friendly, but now cover the
+verified operational families needed for migration, assurance, NAC, posture,
+and guarded configuration workflows. The low-token router keeps this broader
+catalog out of client context until `find_tool` selects a workflow.
 
 Use this page as the implementation roadmap for typed tools that should graduate
 from generic GET exploration into named MCP workflows.
@@ -37,6 +36,8 @@ Promote a generic GET pattern to a typed tool when it is:
 | List recent auth failures | `clearpass_list_auth_failures` | Bound by `limit` / `offset`; include username, MAC, NAD, reason |
 | Show NAD status | `clearpass_get_network_device` | Useful for RADIUS/TACACS troubleshooting |
 | Find guest by email/name | `clearpass_find_guest` | Read-only lookup only |
+| Insight alerts | `clearpass_list_insight_alerts` | Bounded Insight alert retrieval |
+| OnGuard agents and posture | `clearpass_list_onguard_agents` / `clearpass_get_onguard_posture` | Endpoint posture and agent health |
 
 ## Mist implemented starters
 
@@ -46,6 +47,10 @@ Promote a generic GET pattern to a typed tool when it is:
 | Client lookup by MAC | `mist_get_client` | Compact client health, AP, WLAN, RSSI/SNR |
 | Site WLAN summary | `mist_list_wlans` | Bound output for model context |
 | Recent site alarms | `mist_list_alarms` | Severity/time bounded |
+| NAC and user MACs | `mist_list_nac_tags` / `mist_list_nac_portals` / `mist_list_nac_idps` / `mist_list_user_macs` | Access Assurance and Cloud RADIUS context |
+| Marvis client troubleshooting | `mist_search_marvis_clients` / `mist_get_client_insights` / `mist_search_events` | Official Mist OpenAPI 2606.1.1 paths |
+| Wired and WAN Assurance | `mist_list_switches` / `mist_list_switch_ports` / `mist_list_gateways` / `mist_get_gateway` | Unified device-stat workflows |
+| Org inventory | `mist_list_org_inventory` | Omits claim secrets from output |
 
 ## ClearPass implemented lab writes
 
@@ -56,6 +61,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Delete endpoint | `clearpass_delete_endpoint` | Destructive endpoint delete by MAC |
 | Enable/disable guest | `clearpass_set_guest_enabled` | Patch guest enabled state by username or ID |
 | Delete guest | `clearpass_delete_guest` | Destructive guest delete by username or ID |
+| Trigger posture revalidation | `clearpass_trigger_onguard_revalidation` | Guarded version-dependent OnGuard action; validate against the target CPPM release |
 
 ## Mist implemented lab writes
 
@@ -65,6 +71,8 @@ Promote a generic GET pattern to a typed tool when it is:
 | Ack site alarm | `mist_ack_alarm` | POST site alarm acknowledgement |
 | Unack site alarm | `mist_unack_alarm` | POST site alarm unacknowledgement |
 | Delete WLAN | `mist_delete_wlan` | Destructive site WLAN delete |
+| Claim devices | `mist_claim_devices` | Guarded claim-code submission with masked previews |
+| User MAC and Marvis settings | `mist_upsert_user_mac` / `mist_set_marvis_settings` | Guarded NAC and Marvis configuration |
 
 ## Apstra implemented starters
 
@@ -83,6 +91,9 @@ Promote a generic GET pattern to a typed tool when it is:
 | Blueprint protocol sessions | `apstra_list_protocol_sessions` | Compact protocol/BGP session status from `/api/blueprints/{id}/protocol-sessions` |
 | Blueprint system info | `apstra_get_system_info` | Compact systems/devices from `/api/blueprints/{id}/experience/web/system-info` |
 | Generic lab write | `apstra_write` | Guarded POST/PUT/PATCH/DELETE to `/api/*`; dry-run default |
+| Session authentication | `apstra_login` | Uses `/api/user/login`, falling back to `/api/aaa/login` only on 404/405 |
+| Connectivity-template lifecycle | `apstra_get_connectivity_template` / `apstra_create_connectivity_template` / `apstra_delete_connectivity_template` | Uses current connectivity-template paths with labelled legacy read fallback |
+| Application-point assignment | `apstra_set_application_point_assignment` | Guarded connectivity attachment workflow |
 
 ## ArubaOS 8 implemented starters
 
@@ -122,6 +133,9 @@ Promote a generic GET pattern to a typed tool when it is:
 | User role lab write | `aos8_manage_user_role` | Create/update/delete `role` objects with `rolename`; dry-run default; returns write-memory hint |
 | VLAN lab write | `aos8_manage_vlan` | Create/update/delete `vlan_id` objects; dry-run default; returns write-memory hint |
 | Persist staged AOS8 config | `aos8_write_memory` | POST write-memory for an affected `config_path`; dry-run default |
+| Session lifecycle | `aos8_login` / `aos8_logout` | Preferred UIDARUBA/X-CSRF session flow; legacy token remains a compatibility fallback |
+| Migration export | `aos8_get_vlans` / `aos8_get_policies` / `aos8_export_wlans` / `aos8_export_all` | Normalized source inventory for migration planning |
+| Classic/New Central migration plan | `aos8_migration_plan` | Candidate schemas, warnings, deterministic diffs, and verification steps without target writes |
 
 ## EdgeConnect implemented starters
 
@@ -157,6 +171,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Maintenance mode | `edgeconnect_get_maintenance_mode` / `edgeconnect_set_maintenance_mode` | Compact maintenance-mode read plus guarded lab write to `/gms/rest/maintenanceMode` |
 | Persist appliance changes | `edgeconnect_save_changes` | Guarded lab write to `/gms/rest/appliance/saveChanges`, dry-run default and `confirm=True` required |
 | Generic lab write | `edgeconnect_write` | Guarded POST/PUT/PATCH/DELETE to Orchestrator REST paths; dry-run default |
+| API compatibility diagnosis | `edgeconnect_doctor` | Probes live Orchestrator API/Swagger metadata and reports legacy-gate status |
 
 ## UXI implemented starters
 
@@ -169,11 +184,22 @@ Promote a generic GET pattern to a typed tool when it is:
 | Network and service-test inventory | `uxi_list_wired_networks` / `uxi_list_wireless_networks` / `uxi_list_service_tests` | Read-only network and service test views |
 | Group assignments | `uxi_list_agent_group_assignments` / `uxi_list_sensor_group_assignments` / `uxi_list_network_group_assignments` / `uxi_list_service_test_group_assignments` | Assignment-list views for agents, sensors, networks, and service tests |
 
+## UXI implemented lab writes
+
+| Workflow | Tool | Notes |
+|---|---|---|
+| Generic guarded write | `uxi_write` | POST/PUT/PATCH/DELETE under the UXI API root |
+| Group lifecycle | `uxi_create_group` / `uxi_update_group` / `uxi_delete_group` | Dry-run and confirmation gated |
+| Sensor and agent lifecycle | `uxi_update_sensor` / `uxi_delete_sensor` / `uxi_update_agent` / `uxi_delete_agent` | Guarded resource changes |
+| Assignments | `uxi_assign_sensor_to_group` / `uxi_assign_agent_to_group` / `uxi_assign_network_to_group` / `uxi_assign_service_test_to_group` | Explicit group-assignment workflows |
+
 ## Remaining optional typed candidates
 
-No verified optional typed candidates are queued. Continue promoting new reads
-or lab writes only after confirming stable endpoint patterns from upstream or
-public references.
+EdgeConnect 9.3+ endpoint-by-endpoint promotion remains dependent on the target
+Orchestrator's live `gmsApiInfo.json` / `vxoaApiInfo.json`. ClearPass OnGuard
+write paths and Apstra application-point batch schemas should also be
+live-verified before production use. Continue promoting tools only after the
+vendor source or target instance confirms the request shape.
 
 ## Design constraints
 

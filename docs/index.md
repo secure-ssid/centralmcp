@@ -101,13 +101,19 @@ Available starters:
 |---|---|
 | ClearPass | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` |
 | Juniper Mist | `MIST_HOST`, `MIST_API_TOKEN` |
-| Apstra | `APSTRA_BASE_URL`, `APSTRA_API_TOKEN` |
-| ArubaOS 8 | `AOS8_BASE_URL`, `AOS8_API_TOKEN` |
+| Apstra | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional `APSTRA_API_TOKEN` |
+| ArubaOS 8 | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional `AOS8_API_TOKEN` |
 | EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` |
 | HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
 
 See the [optional product matrix](optional-products.md) for the full setup and
 safety model.
+
+Optional product writes default to blocked. Use the global
+`CENTRALMCP_PRODUCT_ACCESS=read-write` lab mode or a narrower
+`CENTRALMCP_<PLATFORM>_WRITES=1` override. AOS8 migration planning, Mist
+NAC/Marvis/Wired/WAN, ClearPass Insight/OnGuard, and UXI guarded writes remain
+hidden from the MCP client until their backend is enabled.
 
 ## Streamable HTTP
 
@@ -120,6 +126,10 @@ Then point an MCP-capable client to:
 ```text
 http://127.0.0.1:8010/mcp
 ```
+
+The HTTP server also exposes `/livez`, `/readyz`, and `/healthz`. Non-loopback
+binds require explicit host/origin allow-lists and can be protected with
+`MCP_HTTP_BEARER_TOKEN`.
 
 ## Prebuilt docs/API search
 

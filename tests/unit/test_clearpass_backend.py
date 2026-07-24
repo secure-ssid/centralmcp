@@ -471,3 +471,217 @@ def test_clearpass_delete_guest_by_username_previews(monkeypatch):
     assert out["dry_run"] is True
     assert out["method"] == "DELETE"
     assert out["path"] == "/api/guest/username/lab%20user"
+
+
+def test_clearpass_list_insight_alerts_compacts_and_bounds(monkeypatch):
+    class _Resp:
+        status_code = 200
+        text = "[]"
+
+        def json(self):
+            return [
+                {
+                    "id": 1,
+                    "name": "Repeated auth failure",
+                    "severity": "high",
+                    "category": "authentication",
+                    "status": "open",
+                    "summary": "5 failures in 10 minutes",
+                    "debug_blob": "omitted",
+                },
+                {"id": 2, "name": "Rogue AP detected", "severity": "medium", "status": "open"},
+            ]
+
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            called["params"] = params or {}
+            return _Resp()
+
+    monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
+    monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setattr(clearpass.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(clearpass.clearpass_list_insight_alerts(limit=1))
+
+    assert called["url"] == "https://cp.example.com/api/insight/alert"
+    assert out["alerts"]["items"] == [
+        {
+            "id": 1,
+            "name": "Repeated auth failure",
+            "severity": "high",
+            "category": "authentication",
+            "status": "open",
+            "summary": "5 failures in 10 minutes",
+        }
+    ]
+    assert out["alerts"]["_pagination"]["truncated"] is True
+
+
+def test_clearpass_list_onguard_agents_compacts(monkeypatch):
+    class _Resp:
+        status_code = 200
+        text = "[]"
+
+        def json(self):
+            return [
+                {
+                    "id": 1,
+                    "mac_address": "001122334455",
+                    "hostname": "laptop-01",
+                    "os_type": "Windows 11",
+                    "connection_state": "connected",
+                    "health_status": "healthy",
+                    "raw_registry_dump": "omitted",
+                }
+            ]
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            return _Resp()
+
+    monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
+    monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setattr(clearpass.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(clearpass.clearpass_list_onguard_agents())
+
+    assert out["agents"]["items"] == [
+        {
+            "id": 1,
+            "mac_address": "001122334455",
+            "hostname": "laptop-01",
+            "os_type": "Windows 11",
+            "connection_state": "connected",
+            "health_status": "healthy",
+        }
+    ]
+
+
+def test_clearpass_get_onguard_posture_normalizes_mac_and_compacts(monkeypatch):
+    class _Resp:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "mac_address": "001122334455",
+                "healthy": True,
+                "health_status": "healthy",
+                "posture_token": "HEALTHY",
+                "internal_debug_id": "omitted",
+            }
+
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
+    monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setattr(clearpass.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(clearpass.clearpass_get_onguard_posture("00:11-22.33:44:55"))
+
+    assert called["url"] == "https://cp.example.com/api/onguard/posture/mac-address/001122334455"
+    assert out["normalized_mac"] == "001122334455"
+    assert out["posture"] == {
+        "mac_address": "001122334455",
+        "healthy": True,
+        "health_status": "healthy",
+        "posture_token": "HEALTHY",
+    }
+
+
+def test_clearpass_trigger_onguard_revalidation_dry_run_previews(monkeypatch):
+    monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
+    monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+
+    out = asyncio.run(clearpass.clearpass_trigger_onguard_revalidation("00:11:22:33:44:55"))
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["path"] == "/api/onguard/posture/mac-address/001122334455/revalidate"
+    assert out["normalized_mac"] == "001122334455"
+
+
+def test_clearpass_trigger_onguard_revalidation_blocked_when_read_only(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+
+    out = asyncio.run(clearpass.clearpass_trigger_onguard_revalidation("00:11:22:33:44:55"))
+
+    assert out["status"] == "blocked"
+
+
+def test_clearpass_trigger_onguard_revalidation_executes_with_confirm(monkeypatch):
+    class _Resp:
+        status_code = 202
+        text = "{}"
+
+        def json(self):
+            return {"ok": True}
+
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            return _Resp()
+
+    monkeypatch.setenv("CLEARPASS_BASE_URL", "https://cp.example.com")
+    monkeypatch.setenv("CLEARPASS_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+    monkeypatch.setattr(clearpass.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        clearpass.clearpass_trigger_onguard_revalidation(
+            "00:11:22:33:44:55", dry_run=False, confirm=True
+        )
+    )
+
+    assert out["status_code"] == 202
+    assert called["method"] == "POST"
+    assert called["url"] == "https://cp.example.com/api/onguard/posture/mac-address/001122334455/revalidate"
+    assert out["normalized_mac"] == "001122334455"

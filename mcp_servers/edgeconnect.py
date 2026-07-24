@@ -4,9 +4,18 @@ Enabled via tool router env:
   CENTRALMCP_PRODUCTS=edgeconnect
 
 Auth/env:
-  EDGECONNECT_BASE_URL    e.g. https://orchestrator.example.com
-  EDGECONNECT_API_TOKEN   API token
-  EDGECONNECT_AUTH_HEADER Header name; defaults to Authorization
+  EDGECONNECT_BASE_URL       e.g. https://orchestrator.example.com
+  EDGECONNECT_API_TOKEN      API token
+  EDGECONNECT_AUTH_HEADER    Header name; defaults to Authorization
+  EDGECONNECT_ALLOW_LEGACY_API  opt-in gate for pre-9.3 Orchestrator API
+                                 compatibility paths; unset/false by default.
+
+The existing `/gms/rest/*` and `/rest/json/*` endpoint map predates the
+incompatible Orchestrator 9.3 API change. Those operational tools now fail
+closed unless `EDGECONNECT_ALLOW_LEGACY_API=1` is explicitly set for a
+validated older/lab instance. `edgeconnect_doctor()` remains available without
+that flag to probe live Swagger/API-info discovery paths. A complete 9.3+
+remap requires the target Orchestrator's instance-hosted Swagger document.
 """
 
 from __future__ import annotations
@@ -21,8 +30,8 @@ from mcp_servers.shared import (
     DESTRUCTIVE,
     READ_ONLY,
     bound_collection_response,
-    optional_product_write_blocked,
-    optional_product_writes_allowed,
+    platform_write_blocked as _platform_write_blocked,
+    platform_writes_allowed as _platform_writes_allowed,
     redact_sensitive,
     response_payload,
     safe_api_path,
@@ -30,8 +39,23 @@ from mcp_servers.shared import (
 )
 
 mcp = FastMCP("edgeconnect-core")
+
+
+def optional_product_writes_allowed() -> bool:
+    return _platform_writes_allowed("edgeconnect")
+
+
+def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
+    return _platform_write_blocked("edgeconnect", tool_name)
+
+
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _EXECUTE_HINT = "Review the request, then call again with dry_run=False and confirm=True."
+_SWAGGER_DISCOVERY_PATHS = (
+    "/gms/apidocs/gmsApiInfo.json",
+    "/vxoa/apidocs/vxoaApiInfo.json",
+    "/gms/rest/swagger-resources",
+)
 _APPLIANCE_FIELDS = (
     "id",
     "nePk",
@@ -1206,6 +1230,90 @@ def edgeconnect_status() -> dict[str, Any]:
     }
 
 
+def _edgeconnect_legacy_api_allowed() -> bool:
+    """Explicit opt-in gate for pre-9.3 Orchestrator API compatibility paths.
+
+    The module's operational endpoint mappings predate the incompatible 9.3
+    change, so they fail closed unless this explicit compatibility flag is set.
+    """
+    import os
+
+    return os.getenv("EDGECONNECT_ALLOW_LEGACY_API", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _edgeconnect_compatibility_blocked() -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "error": (
+            "The bundled EdgeConnect endpoint map predates Orchestrator 9.3 and "
+            "is disabled by default. Run edgeconnect_doctor and provide a current "
+            "instance-hosted Swagger spec for a 9.3+ remap, or set "
+            "EDGECONNECT_ALLOW_LEGACY_API=1 only for a validated pre-9.3/lab instance."
+        ),
+        "flag": "EDGECONNECT_ALLOW_LEGACY_API",
+    }
+
+
+async def _edgeconnect_probe_path(base_url: str, token: str, header: str, path: str) -> Any:
+    """Best-effort GET status probe of a fixed, hardcoded discovery path.
+
+    Bypasses the `/gms/rest/`/`/rest/json/` path allowlist enforced by
+    `safe_api_path` because `path` is always one of this module's own
+    constants (`_SWAGGER_DISCOVERY_PATHS`), never user input. Returns the
+    HTTP status code, or an error string if the request could not complete —
+    never the response body, since its shape is exactly what's unverified.
+    """
+    auth_value = "Bearer " + token if header.lower() == "authorization" else token
+    headers = {header: auth_value, "Accept": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{base_url}{path}", headers=headers)
+        return resp.status_code
+    except httpx.HTTPError as exc:
+        return f"error: {type(exc).__name__}"
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_doctor() -> dict[str, Any]:
+    """Report EdgeConnect config, the legacy-API gate, and live Swagger discovery probes.
+
+    Probes a short list of well-known Orchestrator Swagger/API-info paths
+    (`gmsApiInfo.json`, `vxoaApiInfo.json`, `swagger-resources`) and reports
+    only their HTTP status codes — never response bodies — so this is safe
+    to run without assuming any particular Orchestrator version. A non-2xx
+    result on every probe usually just means the discovery paths differ on
+    this release; treat results here as informational, not authoritative.
+    Also reports `legacy_mode_enabled` (see `EDGECONNECT_ALLOW_LEGACY_API` in
+    the module docstring) — disabled by default, since no pre-9.3 endpoint
+    shapes are implemented or verified in this codebase.
+    """
+    base_url, token, header = _edgeconnect_config()
+    configured = bool(base_url and token)
+    probes: dict[str, Any] = {}
+    if configured:
+        try:
+            validated_base_url = validate_product_base_url(base_url, product="EdgeConnect")
+        except ValueError as exc:
+            return {"error": str(exc)}
+        for path in _SWAGGER_DISCOVERY_PATHS:
+            probes[path] = await _edgeconnect_probe_path(validated_base_url, token, header, path)
+    return {
+        "configured": configured,
+        "base_url": base_url,
+        "legacy_mode_enabled": _edgeconnect_legacy_api_allowed(),
+        "legacy_mode_note": (
+            "Operational endpoint mappings predate the incompatible 9.3 API change "
+            "and remain blocked unless this explicit legacy/lab flag is enabled."
+        ),
+        "operational_api_status": (
+            "legacy-enabled"
+            if _edgeconnect_legacy_api_allowed()
+            else "blocked-pending-9.3-remap"
+        ),
+        "swagger_discovery_probe": probes,
+    }
+
+
 async def _edgeconnect_get(
     path: str,
     params: dict[str, Any] | None = None,
@@ -1219,6 +1327,8 @@ async def _edgeconnect_get(
             "error": "EdgeConnect not configured. Set EDGECONNECT_BASE_URL and "
             "EDGECONNECT_API_TOKEN."
         }
+    if not _edgeconnect_legacy_api_allowed():
+        return _edgeconnect_compatibility_blocked()
     try:
         path = safe_api_path(path, ("/gms/rest/", "/rest/json/"))
     except ValueError as exc:
@@ -2312,6 +2422,8 @@ async def edgeconnect_write(
     """
     if not optional_product_writes_allowed():
         return optional_product_write_blocked("edgeconnect_write")
+    if not _edgeconnect_legacy_api_allowed():
+        return _edgeconnect_compatibility_blocked()
 
     method = method.upper()
     if method not in _WRITE_METHODS:
@@ -2380,10 +2492,18 @@ if __name__ == "__main__":
     from mcp_servers._middleware import (
         NullStripMiddleware,
         RateLimitMiddleware,
+        SecretTokenizeMiddleware,
         install_middleware,
     )
     from mcp_servers.shared import run_server
 
     stable_list_tools(mcp)
-    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    install_middleware(
+        mcp,
+        [
+            NullStripMiddleware(),
+            RateLimitMiddleware(rate=8.0),
+            SecretTokenizeMiddleware(),
+        ],
+    )
     run_server(mcp)

@@ -70,7 +70,8 @@ def _validate_tool_index_fresh(indexed: int, registered: int) -> None:
     if indexed < registered:
         raise SystemExit(
             f"Tool index is stale: {indexed} indexed tools is below {registered} registered tools. "
-            "Rebuild with `uv run python scripts/ingest_tools.py --products all`."
+            "Rebuild with `CENTRALMCP_PRODUCT_ACCESS=read-write "
+            "uv run python scripts/ingest_tools.py --products all`."
         )
 
 

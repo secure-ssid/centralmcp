@@ -51,6 +51,38 @@ http://127.0.0.1:8010/mcp
 | `curl` returns `406` | Expected for plain curl. Real MCP clients send streaming headers such as `Accept: text/event-stream`. |
 | Optional products work in stdio but not HTTP | Confirm local `.env` exists next to the repo root; the HTTP helper safely loads assignments from it before starting. |
 | Client URL does not match the server | Update `.mcp.http.json` if you changed `MCP_HOST` or `MCP_PORT`. |
+| Non-loopback HTTP startup is refused | Set explicit non-wildcard `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`. Add `MCP_HTTP_BEARER_TOKEN` when the listener is reachable outside the local host. |
+| Health probe needed without MCP negotiation | Request `/livez`, `/readyz`, or `/healthz`; these do not call vendor APIs. |
+| HTTP client receives `401` | Include `Authorization: Bearer <MCP_HTTP_BEARER_TOKEN>` when the shared HTTP token is enabled. |
+| SSE startup is refused when a bearer token is set | Static bearer enforcement is supported only by `streamable-http`; switch `MCP_TRANSPORT` or unset the token. The server fails closed rather than starting an apparently protected SSE listener. |
+
+## API source and RAG freshness
+
+Aruba's July 2026 developer-portal migration retired the old internal-UI
+OpenAPI JSON URLs. Refresh through the ReadMe registry flow:
+
+```bash
+uv run python ingestion/scrape_openapi.py
+uv run python ingestion/scrape_cnac_spec.py
+uv run python ingestion/fetch_mist_openapi.py
+uv run python scripts/check_openapi_drift.py
+uv run python scripts/check_mist_openapi_drift.py
+uv run python ingestion/ingest_docs.py
+```
+
+| Symptom | Fix |
+|---|---|
+| Drift checker exits 2 | No `ingestion/openapi_registry_manifest.json` exists yet; run the OpenAPI scrapers first. |
+| Drift checker exits 1 | Vendor specs or page pointers changed; refresh sources, rebuild indexes, and rerun the checker. |
+| `lookup_api` returns an older path/version | Rebuild `data/specs.sqlite` after refreshing the registry specs. |
+
+## Optional product compatibility
+
+| Symptom | Fix |
+|---|---|
+| AOS8 rejects Bearer auth | Configure `AOS8_USERNAME` and `AOS8_PASSWORD`; the backend will establish a UIDARUBA/X-CSRF session. |
+| Apstra rejects Bearer auth | Configure `APSTRA_USERNAME` and `APSTRA_PASSWORD`, or supply a pre-issued `APSTRA_API_TOKEN`; requests use the `AuthToken` header. |
+| EdgeConnect operational tool reports `blocked` | Run `edgeconnect_doctor`. The bundled pre-9.3 endpoint map is disabled unless `EDGECONNECT_ALLOW_LEGACY_API=1` is explicitly set for a validated older/lab instance; production 9.3+ use requires the target Swagger spec. |
 
 ## Router and catalog
 

@@ -20,8 +20,23 @@ allowed_keys = {
     "CENTRALMCP_ROUTER_MODE",
     "CENTRALMCP_TOOLSETS",
     "CENTRALMCP_GLP_V2BETA1_WRITES",
+    "CENTRALMCP_CENTRAL_WRITES",
+    "CENTRALMCP_AOS8_WRITES",
+    "CENTRALMCP_EDGECONNECT_WRITES",
+    "CENTRALMCP_APSTRA_WRITES",
+    "CENTRALMCP_MIST_WRITES",
+    "CENTRALMCP_CLEARPASS_WRITES",
+    "CENTRALMCP_UXI_WRITES",
+    "CENTRALMCP_TROUBLESHOOTING_API_VERSION",
+    "CENTRALMCP_TOKENIZE_SECRETS",
+    "CENTRALMCP_ALLOW_WILDCARD_HTTP_ALLOWLIST",
+    "CENTRALMCP_ALLOW_INSECURE_HTTP_BINDING",
     "MCP_HOST",
     "MCP_PORT",
+    "MCP_ALLOWED_HOSTS",
+    "MCP_ALLOWED_ORIGINS",
+    "MCP_DNS_REBINDING_PROTECTION",
+    "MCP_HTTP_BEARER_TOKEN",
     "CLEARPASS_BASE_URL",
     "CLEARPASS_API_TOKEN",
     "MIST_HOST",
@@ -70,6 +85,10 @@ case "${MCP_HOST}" in
     {
       echo "WARNING: MCP_HOST=${MCP_HOST} is not loopback."
       echo "Credential-backed MCP tools may be reachable from the network; protect with firewall/auth/TLS."
+      echo "The server itself will refuse to start unless MCP_ALLOWED_HOSTS and"
+      echo "MCP_ALLOWED_ORIGINS are both set explicitly (no wildcard) -- see"
+      echo "mcp_servers/shared.py's UnsafeHttpBindingError. Set MCP_HTTP_BEARER_TOKEN"
+      echo "too if this endpoint is reachable by anything other than a trusted proxy."
       echo
     } >&2
     ;;
@@ -115,13 +134,21 @@ if port_is_listening; then
   exit 1
 fi
 
+if [[ -n "${MCP_HTTP_BEARER_TOKEN:-}" ]]; then
+  bearer_status="enabled (Authorization: Bearer <token> required on /mcp)"
+else
+  bearer_status="disabled (set MCP_HTTP_BEARER_TOKEN to require a shared secret)"
+fi
+
 cat <<EOF
 Starting centralmcp HTTP router
   endpoint: http://${MCP_HOST}:${MCP_PORT}/mcp
+  health:   http://${MCP_HOST}:${MCP_PORT}/livez, /readyz, /healthz (no auth, no MCP negotiation)
   mode:     ${CENTRALMCP_ROUTER_MODE}
   toolsets: ${CENTRALMCP_TOOLSETS}
   products: ${CENTRALMCP_PRODUCTS:-none}
   access:   ${CENTRALMCP_PRODUCT_ACCESS}
+  bearer:   ${bearer_status}
 
 Foreground stop: Ctrl-C
 Background stop:

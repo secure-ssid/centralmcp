@@ -1,8 +1,10 @@
-"""MCP server — Aruba Central NAC and authentication tools (32 tools).
+"""MCP server — Aruba Central NAC and authentication tools (34 tools).
 
-Covers: CNAC MAC registrations, Named MPSK registrations, visitor accounts,
-RADIUS/auth server profiles, AAA profiles, AAA connectivity testing, authorization
-policies, and static classification tags.
+Covers: CNAC MAC registrations, Named MPSK registrations (list/add/update/delete),
+visitor accounts (list/add/update/delete), RADIUS/auth server profiles, AAA
+profiles, AAA connectivity testing, authorization policies, and static
+classification tags. MPSK/visitor reads are bounded by default
+(bound_collection_response); all writes support dry_run.
 """
 import uuid
 from typing import Any
@@ -14,20 +16,17 @@ from mcp_servers.shared import (
     DIAGNOSTIC,
     IDEMPOTENT_WRITE,
     READ_ONLY,
-    _CX_TROUBLESHOOTING_BASE,
     atroubleshoot_async,
     bound_collection_response,
     compact_http_error,
     get_client,
     resp_json,
+    troubleshooting_endpoint_candidates,
 )
 
 mcp = FastMCP("aruba-nac")
 
 _CNAC_BASE = "/network-config/v1alpha1"
-_AP_TROUBLESHOOTING_BASE = "/network-troubleshooting/v1alpha1/aps"
-
-
 # ── MAC Registrations ─────────────────────────────────────────────────────────
 
 @mcp.tool(annotations=READ_ONLY)
@@ -179,6 +178,46 @@ def add_mpsk_registration(
     return result
 
 
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def update_mpsk_registration(
+    registration_id: str,
+    name: str,
+    network: str,
+    user_role: str | None = None,
+    password_policy: str = "WORDS",
+    enable: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Update an existing Named MPSK registration. registration_id (the record's `id`) is required.
+
+    PUT on the collection, keyed by id (per updatenamedmpsk) — mirrors
+    update_mac_registration's PUT-on-collection convention, but keyed by
+    id rather than macAddress.
+    """
+    payload: dict[str, Any] = {
+        "input": {
+            "id": registration_id,
+            "name": name,
+            "network": network,
+            "passwordPolicy": password_policy,
+            "enable": enable,
+        }
+    }
+    if user_role:
+        payload["input"]["userRole"] = user_role
+
+    if dry_run:
+        return {"dry_run": True, "registration_id": registration_id, "payload": payload}
+
+    endpoint = f"{_CNAC_BASE}/cnac-named-mpsk-reg"
+    client = get_client()
+    resp = client._request("PUT", endpoint, json=payload)
+    result = resp_json(resp)
+    if not resp.is_success:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
+
+
 @mcp.tool(annotations=DESTRUCTIVE)
 def delete_mpsk_registration(
     registration_id: str,
@@ -246,6 +285,53 @@ def add_visitor(
     endpoint = f"{_CNAC_BASE}/cnac-visitor"
     client = get_client()
     resp = client._request("POST", endpoint, json=payload)
+    result = resp_json(resp)
+    if not resp.is_success:
+        result["errors"] = [compact_http_error(resp, endpoint)]
+    return result
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def update_visitor(
+    visitor_id: str,
+    display_name: str,
+    name: str,
+    email: str | None = None,
+    phone: str | None = None,
+    company_name: str | None = None,
+    expire_at: str | None = None,
+    enable: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Update an existing visitor account. visitor_id (the record's `id`) is required.
+
+    PUT on the collection, keyed by id (per updatevisitor) — same
+    PUT-on-collection convention as update_mac_registration /
+    update_mpsk_registration.
+    """
+    payload: dict[str, Any] = {
+        "input": {
+            "id": visitor_id,
+            "displayName": display_name,
+            "name": name,
+            "enable": enable,
+        }
+    }
+    if email:
+        payload["input"]["email"] = email
+    if phone:
+        payload["input"]["phone"] = phone
+    if company_name:
+        payload["input"]["companyName"] = company_name
+    if expire_at:
+        payload["input"]["expireAt"] = expire_at
+
+    if dry_run:
+        return {"dry_run": True, "visitor_id": visitor_id, "payload": payload}
+
+    endpoint = f"{_CNAC_BASE}/cnac-visitor"
+    client = get_client()
+    resp = client._request("PUT", endpoint, json=payload)
     result = resp_json(resp)
     if not resp.is_success:
         result["errors"] = [compact_http_error(resp, endpoint)]
@@ -481,7 +567,7 @@ async def test_aaa(
     if device_type.upper() == "AP":
         if not server_name:
             return {"status": None, "errors": ["server_name is required for AP AAA tests"]}
-        endpoint = f"{_AP_TROUBLESHOOTING_BASE}/{serial_number}/aaa"
+        endpoints = troubleshooting_endpoint_candidates("aps", serial_number, "aaa")
         payload: dict[str, Any] = {
             "serverName": server_name,
             "username": username,
@@ -490,7 +576,7 @@ async def test_aaa(
     else:
         if not radius_server_ip:
             return {"status": None, "errors": ["radius_server_ip is required for CX AAA tests"]}
-        endpoint = f"{_CX_TROUBLESHOOTING_BASE}/{serial_number}/aaa"
+        endpoints = troubleshooting_endpoint_candidates("cx", serial_number, "aaa")
         payload = {
             "authMethodType": auth_method,
             "radiusServerIp": radius_server_ip,
@@ -499,7 +585,7 @@ async def test_aaa(
         }
 
     client = get_client()
-    return await atroubleshoot_async(client, endpoint, payload, errors)
+    return await atroubleshoot_async(client, endpoints, payload, errors)
 
 
 # ── Authz Policies ────────────────────────────────────────────────────────────
@@ -844,9 +930,17 @@ if __name__ == "__main__":
     from mcp_servers._middleware import (
         NullStripMiddleware,
         RateLimitMiddleware,
+        SecretTokenizeMiddleware,
         install_middleware,
     )
     stable_list_tools(mcp)
-    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    install_middleware(
+        mcp,
+        [
+            NullStripMiddleware(),
+            RateLimitMiddleware(rate=8.0),
+            SecretTokenizeMiddleware(),
+        ],
+    )
     from mcp_servers.shared import run_server
     run_server(mcp)

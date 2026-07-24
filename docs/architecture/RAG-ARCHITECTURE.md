@@ -1,4 +1,4 @@
-# centralmcp — RAG Architecture & Decision (2026-06-03)
+# centralmcp — RAG Architecture & Source Provenance (updated 2026-07-23)
 
 **Repo:** https://github.com/secure-ssid/centralmcp
 
@@ -14,6 +14,40 @@
 > - **The portal consumes via the MCP** (`search_docs` / `ask_docs` over stdio or streamable-HTTP) — it never touches the store directly, so no shared server is needed.
 >
 > **Redis Stack** remains a documented, supported *server option* for anyone who wants it — but it is **not** the default for the cloned-and-run experience.
+
+## July 2026 OpenAPI source migration
+
+Aruba's developer portal moved to ReadMe SuperHub in July 2026. The retired
+`internal-ui.central.arubanetworks.com/cnxconfig/docs/*.json` URLs now return
+portal error pages, and reference pages no longer embed a complete
+`oasDefinition` object.
+
+`ingestion/readme_registry.py` now parses each page's `oasPublicUrl`, resolves
+the registry identifier through
+`https://dash.readme.com/api/v1/api-registry/{id}`, validates the OpenAPI
+payload, and records project/version/hash/source metadata. Both Aruba OpenAPI
+scrapers share this implementation.
+
+```bash
+uv run python ingestion/scrape_openapi.py
+uv run python ingestion/scrape_cnac_spec.py
+uv run python ingestion/fetch_mist_openapi.py
+uv run python scripts/check_openapi_drift.py
+uv run python scripts/check_mist_openapi_drift.py
+uv run python ingestion/ingest_docs.py
+```
+
+The generated `ingestion/openapi_registry_manifest.json` provides rebuild
+provenance. Raw scraped sources and `data/*` indexes remain generated
+artifacts. Any detected drift requires a source refresh and index rebuild
+before `lookup_api` is described as current.
+
+The same OpenAPI source folder also includes a reproducible snapshot from the
+official `mistsys/mist_openapi` repository. The fetcher pins Mist API version
+2606.1.1 at commit `f374cffdd5a275c7954645a306fcab7f1227e7a3`, verifies the
+expected SHA-256, and feeds the result into both docs RAG and exact SQLite API
+lookup. A scheduled GitHub Actions job checks Aruba registry hashes and whether
+the Mist source file has advanced.
 
 ### Why this and not Redis (reconciling the audit)
 The audit recommended **Redis Stack** — correctly, *for its scope*: "two backends are running and the git history is mid-flip; converge on one with the least code change." Redis is already wired in the working tree and holds both the docs and tool indexes.
@@ -118,7 +152,7 @@ Metrics: `recall@5` (did an expected source appear in top-5), `mrr` (rank of fir
 **Final evaluated corpus (2026-06-03 full rebuild):** 53,052 chunks / 7
 ingested sources (Redis index had 40,900 and was missing `aos_techdocs`,
 `openapi_specs`, and most of `techdocs_html`) + 213-spec SQLite index + router
-tool index (currently 213 core tools / 312 read-only optional starters / 346 read-write optional starters).
+tool index (currently 270 core tools / 392 read-only optional starters / 448 read-write optional starters).
 18/20 eval questions hit at rank 1. Shippable artifacts: `data/docs.lance`
 (190 MB), `data/specs.sqlite` (18 MB), `data/tools.lance` (0.6 MB).
 
@@ -131,7 +165,7 @@ RAG indexes.
 
 The API-lookup rows almost all missed the spec sources at baseline — direct empirical evidence of **R2** (OpenAPI specs absent from the active index). `howto` retrieval is already decent, confirming the redesign's value is concentrated in (a) structured API lookup and (b) hybrid+rerank for exact identifiers, not in replacing vector search wholesale. Re-run `uv run --with pyyaml python tests/eval/run_eval.py` after each change.
 
-~~The remaining `api_exact` miss was `mac-reg-update-url`: the CNAC MAC-registration API was not in the 212 ingested config specs.~~ **Closed 2026-06-03:** the Central NAC Service spec (25 paths, 60 schemas — cnac-mac-reg/visitor/named-mpsk/dpp/certificates/jobs) is not served by the internal-ui cnxconfig docs host, but the readme.io reference pages embed the full OAS document; `ingestion/scrape_cnac_spec.py` extracts it to `cnac-client-registration.json` (213 specs total). With it indexed, **`api_exact` = 1.00** — all 10 api-lookup questions resolve through `lookup_api` with the correct spec at rank 1, no prose fallback needed.
+~~The remaining `api_exact` miss was `mac-reg-update-url`: the CNAC MAC-registration API was not in the 212 ingested config specs.~~ **Closed 2026-06-03 and source path refreshed 2026-07-23:** the Central NAC Service spec (25 paths, 60 schemas — cnac-mac-reg/visitor/named-mpsk/dpp/certificates/jobs) is resolved from the reference page's `oasPublicUrl` through the ReadMe API registry. `ingestion/scrape_cnac_spec.py` writes `cnac-client-registration.json` plus provenance metadata for the 213-spec SQLite rebuild. With it indexed, **`api_exact` = 1.00** — all 10 API-lookup questions resolve through `lookup_api` with the correct spec at rank 1, no prose fallback needed.
 
 ---
 

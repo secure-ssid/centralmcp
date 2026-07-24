@@ -3,13 +3,30 @@
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=aos8
 
-Auth/env:
-  AOS8_BASE_URL   e.g. https://mobility-conductor.example.com
-  AOS8_API_TOKEN  static bearer token
+Auth/env (session login is preferred; the legacy static token still works):
+  AOS8_BASE_URL              e.g. https://mobility-conductor.example.com
+  AOS8_USERNAME               Mobility Conductor/controller login username
+  AOS8_PASSWORD               Mobility Conductor/controller login password
+  AOS8_CLIENT_IP               optional `client_ip` query param sent at login
+  AOS8_SESSION_TTL_SECONDS      cached session lifetime; default 600, max 3600
+  AOS8_API_TOKEN               legacy static bearer token (deprecated fallback)
+
+Session flow (`POST /v1/api/login`): the response's `_global_result.UIDARUBA`
+is sent as a `UIDARUBA` query parameter on every subsequent request (not a
+bearer header), and non-GET requests also carry the `X-CSRF-Token` response
+header when the controller returns one. A 401 clears the cached session and
+retries once after a fresh login. `aos8_login`/`aos8_logout` manage the
+session explicitly; every other tool auto-logs-in on demand.
+
+The documented AOS8 configuration API only exposes `GET` (reads) and `POST`
+(writes, with an `_action` field in the request body — there is no native
+PUT/PATCH/DELETE). `aos8_write` and the typed `aos8_manage_*` tools enforce
+this: only `GET`/`POST` are accepted.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -18,10 +35,11 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import (
     DESTRUCTIVE,
+    DIAGNOSTIC,
     READ_ONLY,
     bound_collection_response,
-    optional_product_write_blocked,
-    optional_product_writes_allowed,
+    platform_write_blocked as _platform_write_blocked,
+    platform_writes_allowed as _platform_writes_allowed,
     redact_sensitive,
     response_payload,
     safe_api_path,
@@ -29,8 +47,21 @@ from mcp_servers.shared import (
 )
 
 mcp = FastMCP("aos8-core")
-_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def optional_product_writes_allowed() -> bool:
+    return _platform_writes_allowed("aos8")
+
+
+def optional_product_write_blocked(tool_name: str) -> dict[str, str]:
+    return _platform_write_blocked("aos8", tool_name)
+
+
+_ALLOWED_METHODS = {"GET", "POST"}
 _CONFIG_ACTIONS = {"create": "add", "update": "modify", "delete": "delete"}
+_DEFAULT_SESSION_TTL_SECONDS = 600
+_MAX_SESSION_TTL_SECONDS = 3600
+_SESSION_CACHE: dict[str, dict[str, Any]] = {}
 _EXECUTE_HINT = "Review the request, then call again with dry_run=False and confirm=True."
 _AP_FIELDS = (
     "Name",
@@ -500,6 +531,180 @@ def _aos8_config() -> tuple[str | None, str | None]:
     return (base_url or None, token or None)
 
 
+def _aos8_session_env() -> dict[str, str | None]:
+    """Session-login credentials/settings. Read fresh every call (env can change in tests)."""
+    import os
+
+    return {
+        "username": os.getenv("AOS8_USERNAME", "").strip() or None,
+        "password": os.getenv("AOS8_PASSWORD", "").strip() or None,
+        "client_ip": os.getenv("AOS8_CLIENT_IP", "").strip() or None,
+        "session_ttl": os.getenv("AOS8_SESSION_TTL_SECONDS", "").strip() or None,
+    }
+
+
+def _aos8_auth_mode() -> str:
+    """`session` (preferred) > `legacy_static_token` > `unconfigured`."""
+    session_env = _aos8_session_env()
+    if session_env["username"] and session_env["password"]:
+        return "session"
+    _, token = _aos8_config()
+    if token:
+        return "legacy_static_token"
+    return "unconfigured"
+
+
+def _aos8_session_ttl_seconds(session_env: dict[str, str | None]) -> int:
+    raw = session_env.get("session_ttl")
+    try:
+        ttl = int(raw) if raw else _DEFAULT_SESSION_TTL_SECONDS
+    except (TypeError, ValueError):
+        ttl = _DEFAULT_SESSION_TTL_SECONDS
+    return max(60, min(ttl, _MAX_SESSION_TTL_SECONDS))
+
+
+async def _aos8_session_login(base_url: str) -> dict[str, Any]:
+    """POST /v1/api/login and cache the returned UIDARUBA + X-CSRF-Token.
+
+    AOS8/Mobility Conductor auth is session-based: the login response's
+    `_global_result.UIDARUBA` is a session ID sent as a query parameter (not
+    a bearer header) on every subsequent request.
+    """
+    session_env = _aos8_session_env()
+    username, password = session_env["username"], session_env["password"]
+    if not username or not password:
+        return {"error": "AOS8 session login requires AOS8_USERNAME and AOS8_PASSWORD."}
+
+    login_params: dict[str, Any] = {"username": username, "password": password}
+    if session_env["client_ip"]:
+        login_params["client_ip"] = session_env["client_ip"]
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{base_url}/v1/api/login", params=login_params)
+    except httpx.HTTPError as exc:
+        return {"error": f"AOS8 login request failed: {exc}"}
+
+    payload = response_payload(resp)
+    global_result = payload.get("_global_result", {}) if isinstance(payload, dict) else {}
+    uidaruba = global_result.get("UIDARUBA")
+    if resp.status_code >= 400 or not uidaruba:
+        return {
+            "error": (
+                f"AOS8 login failed with HTTP {resp.status_code}: "
+                f"{redact_sensitive(payload)}"
+            )
+        }
+
+    ttl = _aos8_session_ttl_seconds(session_env)
+    now = time.time()
+    _SESSION_CACHE[base_url] = {
+        "uidaruba": uidaruba,
+        "csrf_token": resp.headers.get("X-CSRF-Token"),
+        "logged_in_at": now,
+        "expires_at": now + ttl,
+    }
+    return {"status": "logged_in", "status_str": global_result.get("status_str")}
+
+
+async def _aos8_ensure_session(base_url: str) -> dict[str, Any] | None:
+    """Return a login error dict if a fresh login is needed and fails; else None."""
+    entry = _SESSION_CACHE.get(base_url)
+    if entry and entry["expires_at"] > time.time():
+        return None
+    result = await _aos8_session_login(base_url)
+    return result if "error" in result else None
+
+
+def _aos8_logout_session(base_url: str) -> dict[str, Any]:
+    entry = _SESSION_CACHE.pop(base_url, None)
+    return {"status": "logged_out" if entry else "no_active_session"}
+
+
+async def _aos8_dispatch(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    params: dict[str, Any],
+    body: Any,
+) -> httpx.Response:
+    """Call `.get()` for GET (matches every other product backend's read path) or
+    `.request()` otherwise, so existing fakes that only implement `.get()` for
+    read-only tools keep working unchanged.
+    """
+    if method == "GET":
+        return await client.get(url, headers=headers, params=params)
+    return await client.request(method, url, headers=headers, params=params, json=body)
+
+
+async def _aos8_send(
+    method: str,
+    base_url: str,
+    path: str,
+    params: dict[str, Any] | None,
+    body: Any,
+) -> httpx.Response | dict[str, Any]:
+    """Send one authenticated AOS8 request.
+
+    Session mode adds `UIDARUBA` to the query string and `X-CSRF-Token` to
+    non-GET requests, auto-logging-in on demand and retrying once on a 401
+    (stale/expired session). Legacy mode sends a static `Authorization:
+    Bearer <token>` header, unchanged from the original implementation.
+    Returns an `httpx.Response` on success, or `{"error": ...}` if the
+    request could not be attempted (misconfigured, login failure, or a
+    connection/protocol error).
+    """
+    mode = _aos8_auth_mode()
+    if mode == "unconfigured":
+        return {
+            "error": "AOS8 not configured. Set AOS8_USERNAME/AOS8_PASSWORD (preferred) "
+            "or AOS8_BASE_URL and AOS8_API_TOKEN."
+        }
+
+    headers = {"Accept": "application/json"}
+    req_params = dict(params or {})
+
+    if mode == "session":
+        login_error = await _aos8_ensure_session(base_url)
+        if login_error is not None:
+            return login_error
+        entry = _SESSION_CACHE[base_url]
+        req_params["UIDARUBA"] = entry["uidaruba"]
+        if method != "GET" and entry.get("csrf_token"):
+            headers["X-CSRF-Token"] = entry["csrf_token"]
+    else:
+        _, token = _aos8_config()
+        headers["Authorization"] = "Bearer " + (token or "")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await _aos8_dispatch(
+                client, method, f"{base_url}{path}", headers, req_params, body
+            )
+    except httpx.HTTPError as exc:
+        return {"error": str(exc)}
+
+    if mode == "session" and resp.status_code == 401:
+        _SESSION_CACHE.pop(base_url, None)
+        login_error = await _aos8_session_login(base_url)
+        if "error" in login_error:
+            return login_error
+        entry = _SESSION_CACHE[base_url]
+        req_params["UIDARUBA"] = entry["uidaruba"]
+        if method != "GET" and entry.get("csrf_token"):
+            headers["X-CSRF-Token"] = entry["csrf_token"]
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await _aos8_dispatch(
+                    client, method, f"{base_url}{path}", headers, req_params, body
+                )
+        except httpx.HTTPError as exc:
+            return {"error": str(exc)}
+
+    return resp
+
+
 def _strip_aos8_envelope(data: Any) -> Any:
     if not isinstance(data, dict):
         return data
@@ -532,12 +737,15 @@ async def _aos8_write_request(
         return optional_product_write_blocked(tool_name)
 
     method = method.upper()
-    if method not in _WRITE_METHODS:
-        return {"error": f"method must be one of: {', '.join(sorted(_WRITE_METHODS))}"}
+    if method not in _ALLOWED_METHODS:
+        return {"error": f"method must be one of: {', '.join(sorted(_ALLOWED_METHODS))}"}
 
-    base_url, token = _aos8_config()
-    if not base_url or not token:
-        return {"error": "AOS8 not configured. Set AOS8_BASE_URL and AOS8_API_TOKEN."}
+    base_url, _ = _aos8_config()
+    if not base_url or _aos8_auth_mode() == "unconfigured":
+        return {
+            "error": "AOS8 not configured. Set AOS8_USERNAME/AOS8_PASSWORD (preferred) "
+            "or AOS8_BASE_URL and AOS8_API_TOKEN."
+        }
     try:
         safe_path = safe_api_path(path, ("/v1/",))
     except ValueError as exc:
@@ -570,23 +778,15 @@ async def _aos8_write_request(
             **preview,
         }
 
-    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.request(
-                method,
-                url,
-                headers=headers,
-                params=params or {},
-                json=body,
-            )
-        return {
-            "status_code": resp.status_code,
-            "data": redact_sensitive(response_payload(resp)),
-            "url": url,
-        }
-    except httpx.HTTPError as exc:
-        return {"error": str(exc), "url": url}
+    result = await _aos8_send(method, base_url, safe_path, params, body)
+    if isinstance(result, dict):
+        return {**result, "url": url}
+    resp = result
+    return {
+        "status_code": resp.status_code,
+        "data": redact_sensitive(response_payload(resp)),
+        "url": url,
+    }
 
 
 def _payload_has_identifier(payload: dict[str, Any], identifier_fields: tuple[str, ...]) -> bool:
@@ -693,15 +893,86 @@ def _compact_primary_list(
     return out
 
 
+def _extract_primary_list(value: Any) -> list[Any]:
+    """Best-effort extraction of the primary record list from a compacted read result."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        if isinstance(value.get("items"), list):
+            return value["items"]
+        list_values = [v for v in value.values() if isinstance(v, list)]
+        if list_values:
+            return max(list_values, key=len)
+    return []
+
+
 @mcp.tool(annotations=READ_ONLY)
 def aos8_status() -> dict[str, Any]:
-    """Report whether AOS8 backend is configured."""
+    """Report whether the AOS8 backend is configured and the current session state."""
     base_url, token = _aos8_config()
+    session_env = _aos8_session_env()
+    mode = _aos8_auth_mode()
+    entry = _SESSION_CACHE.get(base_url or "")
+    now = time.time()
     return {
-        "configured": bool(base_url and token),
+        "configured": mode != "unconfigured" and bool(base_url),
         "base_url": base_url,
+        # Legacy fields kept for backward compatibility with existing callers.
         "has_token": bool(token),
+        "auth_mode": mode,
+        "has_username": bool(session_env["username"]),
+        "has_password": bool(session_env["password"]),
+        "has_legacy_token": bool(token),
+        "session_active": bool(entry and entry["expires_at"] > now),
+        "session_age_seconds": (now - entry["logged_in_at"]) if entry else None,
+        "has_csrf_token": bool(entry and entry.get("csrf_token")),
+        "allowed_methods": sorted(_ALLOWED_METHODS),
     }
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+async def aos8_login(force: bool = False) -> dict[str, Any]:
+    """Log in to AOS8/Mobility Conductor and cache the session (UIDARUBA + CSRF token).
+
+    Requires `AOS8_USERNAME`/`AOS8_PASSWORD`. No-op if a valid cached session
+    already exists unless `force=True`. All other AOS8 tools auto-login on
+    demand, so calling this explicitly is only needed to pre-warm or force a
+    fresh session.
+    """
+    base_url, _ = _aos8_config()
+    if not base_url:
+        return {"error": "AOS8 not configured. Set AOS8_BASE_URL."}
+    try:
+        base_url = validate_product_base_url(base_url, product="AOS8")
+    except ValueError as exc:
+        return {"error": str(exc)}
+    if _aos8_auth_mode() != "session":
+        return {"error": "AOS8 session login requires AOS8_USERNAME and AOS8_PASSWORD."}
+    if force:
+        _SESSION_CACHE.pop(base_url, None)
+    entry = _SESSION_CACHE.get(base_url)
+    if entry and entry["expires_at"] > time.time():
+        return {"status": "already_logged_in", "session_age_seconds": time.time() - entry["logged_in_at"]}
+    return await _aos8_session_login(base_url)
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+async def aos8_logout() -> dict[str, Any]:
+    """Log out of AOS8/Mobility Conductor and clear the cached session, if any."""
+    base_url, _ = _aos8_config()
+    if not base_url:
+        return {"error": "AOS8 not configured. Set AOS8_BASE_URL."}
+    base_url = base_url.rstrip("/")
+    entry = _SESSION_CACHE.get(base_url)
+    if entry:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                await client.post(
+                    f"{base_url}/v1/api/logout", params={"UIDARUBA": entry["uidaruba"]}
+                )
+        except httpx.HTTPError:
+            pass  # Best-effort: still clear the local cache below.
+    return _aos8_logout_session(base_url)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -716,9 +987,12 @@ async def aos8_get(
     Safety guard: only allows paths beginning with `/v1/`.
     List payloads are bounded with `limit` and `offset`.
     """
-    base_url, token = _aos8_config()
-    if not base_url or not token:
-        return {"error": "AOS8 not configured. Set AOS8_BASE_URL and AOS8_API_TOKEN."}
+    base_url, _ = _aos8_config()
+    if not base_url or _aos8_auth_mode() == "unconfigured":
+        return {
+            "error": "AOS8 not configured. Set AOS8_USERNAME/AOS8_PASSWORD (preferred) "
+            "or AOS8_BASE_URL and AOS8_API_TOKEN."
+        }
     try:
         path = safe_api_path(path, ("/v1/",))
     except ValueError as exc:
@@ -730,14 +1004,12 @@ async def aos8_get(
     except ValueError as exc:
         return {"error": str(exc)}
     url = f"{base_url}{path}"
-    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers, params=params or {})
-        payload = bound_collection_response(response_payload(resp), limit=limit, offset=offset)
-        return {"status_code": resp.status_code, "data": payload, "url": url}
-    except httpx.HTTPError as exc:
-        return {"error": str(exc), "url": url}
+    result = await _aos8_send("GET", base_url, path, params, None)
+    if isinstance(result, dict):
+        return {**result, "url": url}
+    resp = result
+    payload = bound_collection_response(response_payload(resp), limit=limit, offset=offset)
+    return {"status_code": resp.status_code, "data": payload, "url": url}
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1321,6 +1593,161 @@ async def aos8_list_user_roles(
     return out
 
 
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_vlans(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List VLAN configuration objects at an AOS8 hierarchy node."""
+    out = await aos8_get(
+        "/v1/configuration/object/vlan_id",
+        {"config_path": config_path},
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["vlans"] = _compact_aos8_data(out.pop("data"), limit=limit, offset=offset)
+        out["config_path"] = config_path
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_get_policies(
+    config_path: str = "/md",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List session-ACL ("policy") configuration objects at an AOS8 hierarchy node.
+
+    Uses the AOS8 `acl_sess` config object. Object-name support can vary by
+    controller version; an unexpected or empty response usually means this
+    object type is unavailable on the target AOS8 release — verify against
+    a live controller before relying on this in a migration run.
+    """
+    out = await aos8_get(
+        "/v1/configuration/object/acl_sess",
+        {"config_path": config_path},
+        limit=limit,
+        offset=offset,
+    )
+    if "data" in out:
+        out["policies"] = _compact_aos8_data(out.pop("data"), limit=limit, offset=offset)
+        out["config_path"] = config_path
+    return out
+
+
+def _aos8_read_failed(out: dict[str, Any]) -> str | None:
+    """Return a short failure reason if a read-tool result failed, else None."""
+    if "error" in out:
+        return str(out["error"])
+    status_code = out.get("status_code")
+    if isinstance(status_code, int) and not 200 <= status_code < 300:
+        return f"HTTP {status_code}"
+    return None
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_export_wlans(
+    config_path: str = "/md",
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Export AOS8 WLANs as merged SSID-profile + virtual-AP records for migration planning."""
+    ssid_out = await aos8_list_ssid_profiles(config_path=config_path, limit=limit, offset=offset)
+    vap_out = await aos8_list_virtual_aps(config_path=config_path, limit=limit, offset=offset)
+    warnings: list[str] = []
+    ssid_failure = _aos8_read_failed(ssid_out)
+    if ssid_failure:
+        warnings.append(f"ssid_profiles: {ssid_failure}")
+    vap_failure = _aos8_read_failed(vap_out)
+    if vap_failure:
+        warnings.append(f"virtual_aps: {vap_failure}")
+    result: dict[str, Any] = {
+        "config_path": config_path,
+        "ssid_profiles": _extract_primary_list(ssid_out.get("ssid_profiles")),
+        "virtual_aps": _extract_primary_list(vap_out.get("virtual_aps")),
+    }
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_export_all(
+    config_path: str = "/md",
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Export the AOS8 objects used for Classic/New Central migration planning.
+
+    Fans out to WLANs (SSID profiles + virtual APs), user roles, VLANs, AP
+    groups, controllers, and session-ACL policies. A failure on any single
+    object type is collected in `warnings` instead of aborting the whole
+    export, so a partial export is still usable. Feed the result to
+    `aos8_migration_plan()` (or `pipeline.aos8_migration.build_migration_plan`
+    directly) for a deterministic migration plan.
+    """
+    warnings: list[str] = []
+
+    wlans = await aos8_export_wlans(config_path=config_path, limit=limit, offset=offset)
+    warnings.extend(wlans.pop("warnings", []))
+
+    async def _collect(label: str, out: dict[str, Any]) -> list[Any]:
+        failure = _aos8_read_failed(out)
+        if failure:
+            warnings.append(f"{label}: {failure}")
+            return []
+        return _extract_primary_list(out.get(label))
+
+    roles = await _collect(
+        "user_roles", await aos8_list_user_roles(config_path=config_path, limit=limit, offset=offset)
+    )
+    vlans = await _collect(
+        "vlans", await aos8_get_vlans(config_path=config_path, limit=limit, offset=offset)
+    )
+    ap_groups = await _collect(
+        "ap_groups", await aos8_list_ap_groups(config_path=config_path, limit=limit, offset=offset)
+    )
+    controllers = await _collect(
+        "controllers", await aos8_list_controllers(limit=limit, offset=offset)
+    )
+    policies = await _collect(
+        "policies", await aos8_get_policies(config_path=config_path, limit=limit, offset=offset)
+    )
+
+    return {
+        "config_path": config_path,
+        "wlans": {
+            "ssid_profiles": wlans.get("ssid_profiles", []),
+            "virtual_aps": wlans.get("virtual_aps", []),
+        },
+        "roles": roles,
+        "vlans": vlans,
+        "ap_groups": ap_groups,
+        "controllers": controllers,
+        "policies": policies,
+        "warnings": warnings,
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def aos8_migration_plan(config_path: str = "/md", limit: int = 200) -> dict[str, Any]:
+    """Build a deterministic Classic Central / New Central migration plan for one AOS8 node.
+
+    Calls `aos8_export_all()` and passes the export to the pure-python
+    `pipeline.aos8_migration.build_migration_plan`. Returns explicit
+    `candidates` (classic_central/new_central), `warnings` for every
+    lossy/unsupported field, a stable `diff` per object, and a read-only
+    `verification_plan` (existing tool names only — this never calls another
+    MCP tool or writes to a target account itself).
+    """
+    export = await aos8_export_all(config_path=config_path, limit=limit)
+    from pipeline.aos8_migration import build_migration_plan
+
+    return build_migration_plan(export)
+
+
 @mcp.tool(annotations=DESTRUCTIVE)
 async def aos8_write(
     method: str,
@@ -1332,9 +1759,10 @@ async def aos8_write(
 ) -> dict[str, Any]:
     """Perform a lab write request to ArubaOS 8 with a preview-first guard.
 
-    Allows `POST`, `PUT`, `PATCH`, and `DELETE` against `/v1/*` paths on the
-    configured ArubaOS 8 host. Defaults to `dry_run=True`; execution requires
-    `dry_run=False` and `confirm=True`.
+    Allows `GET` and `POST` against `/v1/*` paths on the configured ArubaOS 8
+    host — the documented AOS8 configuration API has no native PUT/PATCH/DELETE;
+    mutations are POST with an `_action` field in the body. Defaults to
+    `dry_run=True`; execution requires `dry_run=False` and `confirm=True`.
     """
     return await _aos8_write_request(
         method,
@@ -1478,10 +1906,18 @@ if __name__ == "__main__":
     from mcp_servers._middleware import (
         NullStripMiddleware,
         RateLimitMiddleware,
+        SecretTokenizeMiddleware,
         install_middleware,
     )
     from mcp_servers.shared import run_server
 
     stable_list_tools(mcp)
-    install_middleware(mcp, [NullStripMiddleware(), RateLimitMiddleware(rate=8.0)])
+    install_middleware(
+        mcp,
+        [
+            NullStripMiddleware(),
+            RateLimitMiddleware(rate=8.0),
+            SecretTokenizeMiddleware(),
+        ],
+    )
     run_server(mcp)

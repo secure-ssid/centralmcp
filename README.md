@@ -78,13 +78,13 @@ EdgeConnect link integrity diagnostics.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 213 core tools / 312 read-only optional starters / 346 read-write optional starters indexed |
+| MCP tools | 270 core tools / 392 read-only optional starters / 448 read-write optional starters indexed |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |
-| GLP | Devices, subscriptions, users, audit logs, workspaces, reporting statuses, service catalog, guarded read-only GLP GET, and feature-gated writes |
-| Optional products | ClearPass, Mist, Apstra, AOS8, EdgeConnect, and UXI starter backends |
-| Pipeline | 8-stage migration flow plus SSID build/delete helpers |
+| GLP | v1/v2beta1 devices and device groups, subscriptions, users, audit logs, workspaces, reporting, service catalog, guarded GLP GET, and feature-gated writes |
+| Optional products | ClearPass Insight/OnGuard, Mist NAC/Marvis/Wired/WAN, Apstra session auth/connectivity templates, AOS8 migration planning, EdgeConnect compatibility diagnostics, and UXI guarded writes |
+| Pipeline | 8-stage migration flow, AOS8 Classic/New Central migration planning, and SSID build/delete helpers |
 
 ## Why the router matters
 
@@ -153,6 +153,9 @@ For optional product starters too:
 uv run python scripts/ingest_tools.py --products all
 ```
 
+That safe default indexes the 392 read-only catalog. To include all 448
+guarded write tools, set `CENTRALMCP_PRODUCT_ACCESS=read-write` while rebuilding.
+
 For full RAG docs/API search, download the prebuilt release index:
 
 ```bash
@@ -160,11 +163,21 @@ uv run python scripts/download_indexes.py
 ```
 
 To rebuild locally, populate the git-ignored `ingestion/sources/` tree with
-scraped docs/API source files first, then run:
+scraped docs/API source files first. Aruba's July 2026 developer-portal
+migration is handled through the page `oasPublicUrl` pointer and ReadMe API
+registry rather than the retired internal-UI JSON URLs:
 
 ```bash
+uv run python ingestion/scrape_openapi.py
+uv run python ingestion/scrape_cnac_spec.py
+uv run python ingestion/fetch_mist_openapi.py
 uv run python ingestion/ingest_docs.py
 ```
+
+After a refresh, use `uv run python scripts/check_openapi_drift.py` to compare
+the generated registry manifest with the current Aruba specifications, and
+`uv run python scripts/check_mist_openapi_drift.py` to check the pinned
+official `mistsys/mist_openapi` snapshot. Both checks run weekly in CI.
 
 RAG source targets are tracked in
 [`ingestion/source_manifest.json`](ingestion/source_manifest.json), including
@@ -207,13 +220,12 @@ one local file:
 python3 scripts/setup_wizard.py --products clearpass,mist
 ```
 
-The optional product starter tools are lab-friendly. Write-capable products
-include guarded writes that default to `dry_run=True` with `confirm=True`
-required for execution; UXI starts as compact read-only workflows for sensors,
-agents, groups, networks, service tests, and assignments. Optional product
-access defaults to `read-only`, which hides and blocks optional product write
-tools. Set `CENTRALMCP_PRODUCT_ACCESS=read-write` or run the wizard with
-`--product-access read-write` only for trusted lab write workflows.
+The optional product tools are lab-friendly. Every optional backend now has
+guarded writes that default to `dry_run=True` with `confirm=True` required for
+execution. Optional product access defaults to `read-only`, which hides and
+blocks optional product write tools. Set `CENTRALMCP_PRODUCT_ACCESS=read-write`
+or a narrower `CENTRALMCP_<PLATFORM>_WRITES=1` override only for trusted lab
+workflows.
 
 ## Streamable HTTP mode
 
@@ -241,6 +253,10 @@ the wizard are available to HTTP mode too.
 If the port is already in use, the helper exits before starting another router
 and prints the listener details plus the `kill <PID>` stop command.
 
+HTTP mode also exposes local `/livez`, `/readyz`, and `/healthz` probes without
+calling external platforms. Non-loopback binds require explicit host/origin
+allow-lists; set `MCP_HTTP_BEARER_TOKEN` to require a shared bearer token.
+
 ## Common environment variables
 
 | Variable | Purpose | Default |
@@ -251,13 +267,18 @@ and prints the listener details plus the `kill <PID>` stop command.
 | `CENTRALMCP_TOOLSETS` | Loaded backend profiles; examples use `central,glp,rag` | all core Aruba backends |
 | `CENTRALMCP_PRODUCTS` | Optional product backends | empty |
 | `CENTRALMCP_PRODUCT_ACCESS` | Optional product write-tool visibility: `read-write` or `read-only` | `read-only` |
+| `CENTRALMCP_<PLATFORM>_WRITES` | Per-platform write override for Central, AOS8, EdgeConnect, Apstra, Mist, ClearPass, or UXI | platform default |
 | `CENTRALMCP_GLP_V2BETA1_WRITES` | Enable guarded GLP write tools | off |
+| `CENTRALMCP_TROUBLESHOOTING_API_VERSION` | Pin troubleshooting API to `v1` or legacy `v1alpha1` | `v1` with fallback |
+| `CENTRALMCP_TOKENIZE_SECRETS` | Enable bounded session-scoped secret tokenization middleware | off |
 | `CENTRALMCP_NORMALIZE_MACS` | Normalize outbound MAC strings in router responses | off |
 | `GLP_TOKEN_URL` | Override GLP SSO token URL | HPE default |
 | `GLP_BASE_URL` | Override GLP API base URL | HPE default |
 | `MCP_TRANSPORT` | `stdio` or `streamable-http` | `stdio` |
 | `MCP_HOST` | HTTP bind address for streamable HTTP mode | `127.0.0.1` |
 | `MCP_PORT` | HTTP port for streamable HTTP mode; `scripts/run_http_router.sh` defaults to `8010` | `8010` |
+| `MCP_ALLOWED_HOSTS` / `MCP_ALLOWED_ORIGINS` | Required explicit allow-lists for safe non-loopback HTTP binding | loopback-only |
+| `MCP_HTTP_BEARER_TOKEN` | Optional bearer token protecting all streamable HTTP routes | unset |
 
 Product starter backends also use product-specific URL/token variables. See [docs/getting-started.md](docs/getting-started.md).
 

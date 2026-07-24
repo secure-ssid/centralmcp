@@ -108,6 +108,7 @@ def _artifact_manifest(version: str) -> dict[str, object]:
         "restore": "tar -xzf centralmcp-rag-index-<version>.tar.gz",
         "rebuild": (
             "uv run python ingestion/ingest_docs.py && "
+            "CENTRALMCP_PRODUCT_ACCESS=read-write "
             "uv run python scripts/ingest_tools.py --products all"
         ),
     }

@@ -10,6 +10,11 @@ import mcp_servers.edgeconnect as edgeconnect
 import mcp_servers.uxi as uxi
 
 
+@pytest.fixture(autouse=True)
+def _enable_validated_legacy_edgeconnect_for_backend_tests(monkeypatch):
+    monkeypatch.setenv("EDGECONNECT_ALLOW_LEGACY_API", "1")
+
+
 class _Resp:
     status_code = 200
     text = '{"ok":true}'
@@ -262,7 +267,8 @@ def test_apstra_get_calls_httpx(monkeypatch):
     assert out["status_code"] == 200
     assert out["data"] == {"ok": True}
     assert called["url"] == "https://apstra.example.com/api/blueprints"
-    assert called["headers"]["Authorization"] == "Bearer secret"
+    assert called["headers"]["AuthToken"] == "secret"
+    assert "Authorization" not in called["headers"]
 
 
 def test_apstra_get_bounds_list_payloads(monkeypatch):
@@ -730,7 +736,7 @@ def test_apstra_list_connectivity_templates_quotes_blueprint_id_and_compacts(mon
     out = asyncio.run(apstra.apstra_list_connectivity_templates("bp 1", limit=1))
 
     assert called["url"] == (
-        "https://apstra.example.com/api/blueprints/bp%201/obj-policy-export"
+        "https://apstra.example.com/api/blueprints/bp%201/connectivity-templates"
     )
     assert out["blueprint_id"] == "bp 1"
     assert out["connectivity_templates"]["policies"] == [
@@ -786,7 +792,7 @@ def test_apstra_list_application_endpoints_uses_read_only_post_and_compacts(monk
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-        async def post(self, url, headers=None):
+        async def post(self, url, headers=None, params=None, json=None):
             called["url"] = url
             called["headers"] = headers or {}
             return _Resp()
@@ -800,7 +806,8 @@ def test_apstra_list_application_endpoints_uses_read_only_post_and_compacts(monk
     assert called["url"] == (
         "https://apstra.example.com/api/blueprints/bp%201/obj-policy-application-points"
     )
-    assert "Authorization" in called["headers"]
+    assert called["headers"]["AuthToken"] == "secret"
+    assert "Authorization" not in called["headers"]
     assert out["blueprint_id"] == "bp 1"
     assert out["application_endpoints"]["application_points"] == [
         {
@@ -4266,14 +4273,6 @@ def test_edgeconnect_list_vrf_segments_filters_list_shape(monkeypatch):
             "https://apstra.example.com/api/blueprints/bp1",
         ),
         (
-            aos8.aos8_write,
-            "AOS8_BASE_URL",
-            "AOS8_API_TOKEN",
-            "https://mm.example.com",
-            "/v1/configuration/object",
-            "https://mm.example.com/v1/configuration/object",
-        ),
-        (
             edgeconnect.edgeconnect_write,
             "EDGECONNECT_BASE_URL",
             "EDGECONNECT_API_TOKEN",
@@ -4311,6 +4310,40 @@ def test_optional_product_write_dry_run_previews(
     assert out["params"] == {"api_key": "******", "reason": "lab"}
     assert out["json"] == {"password": "******", "enabled": True}
     assert "execute_hint" in out
+
+
+def test_aos8_write_dry_run_preview_uses_post(monkeypatch):
+    """AOS8's documented API has no native PATCH; `aos8_write` only accepts GET/POST."""
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+
+    out = asyncio.run(
+        aos8.aos8_write(
+            "post",
+            "/v1/configuration/object",
+            params={"api_key": "abc", "reason": "lab"},
+            body={"password": "secret", "enabled": True},
+        )
+    )
+
+    assert out["dry_run"] is True
+    assert out["method"] == "POST"
+    assert out["url"] == "https://mm.example.com/v1/configuration/object"
+    assert out["params"] == {"api_key": "******", "reason": "lab"}
+    assert out["json"] == {"password": "******", "enabled": True}
+    assert "execute_hint" in out
+
+
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE"])
+def test_aos8_write_rejects_methods_outside_get_post(monkeypatch, method):
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+
+    out = asyncio.run(aos8.aos8_write(method, "/v1/configuration/object"))
+
+    assert out == {"error": "method must be one of: GET, POST"}
 
 
 @pytest.mark.parametrize(
@@ -4613,14 +4646,6 @@ def test_optional_product_write_blocks_when_product_access_read_only(
             "/api/blueprints/bp1",
         ),
         (
-            aos8,
-            aos8.aos8_write,
-            "AOS8_BASE_URL",
-            "AOS8_API_TOKEN",
-            "https://mm.example.com",
-            "/v1/configuration/object",
-        ),
-        (
             edgeconnect,
             edgeconnect.edgeconnect_write,
             "EDGECONNECT_BASE_URL",
@@ -4665,6 +4690,40 @@ def test_optional_product_write_requires_confirm_when_not_dry_run(
     assert out["error"] == "confirm=True is required when dry_run=False."
 
 
+def test_aos8_write_requires_confirm_when_not_dry_run(monkeypatch):
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            raise AssertionError("request should not execute without confirm=True")
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        aos8.aos8_write(
+            "POST",
+            "/v1/configuration/object",
+            body={"name": "lab"},
+            dry_run=False,
+            confirm=False,
+        )
+    )
+
+    assert out["dry_run"] is True
+    assert out["error"] == "confirm=True is required when dry_run=False."
+
+
+
 @pytest.mark.parametrize(
     ("module", "write_func", "env_base", "env_token", "base_url", "path", "expected_url"),
     [
@@ -4676,15 +4735,6 @@ def test_optional_product_write_requires_confirm_when_not_dry_run(
             "https://apstra.example.com",
             "/api/blueprints/bp1",
             "https://apstra.example.com/api/blueprints/bp1",
-        ),
-        (
-            aos8,
-            aos8.aos8_write,
-            "AOS8_BASE_URL",
-            "AOS8_API_TOKEN",
-            "https://mm.example.com",
-            "/v1/configuration/object",
-            "https://mm.example.com/v1/configuration/object",
         ),
         (
             edgeconnect,
@@ -4740,6 +4790,54 @@ def test_optional_product_write_executes_with_default_bearer_auth(
     assert out["status_code"] == 200
     assert called["method"] == "PATCH"
     assert called["url"] == expected_url
+    if module is apstra:
+        assert called["headers"]["AuthToken"] == "secret"
+        assert "Authorization" not in called["headers"]
+    else:
+        assert called["headers"]["Authorization"] == "Bearer secret"
+    assert called["json"] == {"name": "lab"}
+
+
+
+def test_aos8_write_executes_post_with_default_bearer_auth(monkeypatch):
+    called = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, headers=None, params=None, json=None):
+            called["method"] = method
+            called["url"] = url
+            called["headers"] = headers or {}
+            called["params"] = params or {}
+            called["json"] = json
+            return _Resp()
+
+    monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
+    monkeypatch.setenv("AOS8_API_TOKEN", "secret")
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-write")
+    monkeypatch.setattr(aos8.httpx, "AsyncClient", _FakeAsyncClient)
+
+    out = asyncio.run(
+        aos8.aos8_write(
+            "POST",
+            "/v1/configuration/object",
+            body={"name": "lab"},
+            dry_run=False,
+            confirm=True,
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert called["method"] == "POST"
+    assert called["url"] == "https://mm.example.com/v1/configuration/object"
     assert called["headers"]["Authorization"] == "Bearer secret"
     assert called["json"] == {"name": "lab"}
 

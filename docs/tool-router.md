@@ -69,7 +69,7 @@ If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and inclu
 | `monitoring` | Health, alerts, events, clients, devices |
 | `nac` | MAC registration, MPSK, visitors, auth policy tools |
 | `ops` | Troubleshooting and operational tools |
-| `glp` | GreenLake Platform tools for devices, subscriptions, users, audit logs, workspaces, reporting statuses, service catalog, and guarded GLP writes |
+| `glp` | GreenLake Platform v1/v2beta1 devices and groups, subscriptions, users, audit logs, workspaces, reporting, service catalog, API-family discovery, and guarded writes |
 | `rag` | `ask_docs`, `search_docs`, `lookup_api` |
 | `clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect`, `uxi` | Optional starter backends |
 | `all` | All core and optional backends |
@@ -88,13 +88,13 @@ The optional product starters intentionally expose a small lab-friendly surface:
 - `<product>_status`
 - guarded `<product>_get`
 - guarded `<product>_write` for lab POST/PUT/PATCH/DELETE calls on write-capable starters
-- typed ClearPass troubleshooting lookups
-- typed Mist site/client/WLAN/alarm lookups
-- typed Apstra blueprint/anomaly, AOS8 show/config-object diagnostics and
-  guarded WLAN/VLAN lab writes, and EdgeConnect appliance, route, tunnel, VRF,
-  interface-label, ACL object-group, service, bypass, link-integrity, and
-  firewall-zone workflows
-- typed UXI sensor, agent, group, network, service-test, and assignment reads
+- typed ClearPass troubleshooting, Insight, and OnGuard workflows
+- typed Mist wireless, NAC, Marvis, inventory/claims, Wired, and WAN workflows
+- session-authenticated Apstra blueprint/connectivity-template workflows
+- AOS8 operational/config export and Classic/New Central migration planning
+- EdgeConnect appliance, route, tunnel, VRF, interface-label, ACL object-group,
+  service, bypass, link-integrity, firewall-zone, and API compatibility workflows
+- typed UXI sensor, agent, group, network, service-test, assignment, and guarded write workflows
 
 Generic GET responses are paginated with `limit` and `offset` when the response
 contains a list. This keeps token cost low while leaving room to add
@@ -107,6 +107,9 @@ that mode. Use `CENTRALMCP_PRODUCT_ACCESS=read-write` for lab workflows that
 need guarded writes. Those write tools still default to `dry_run=True`; execute
 only after reviewing the preview with `dry_run=False` plus `confirm=True`.
 Unrecognized manual access-mode values fail closed as read-only.
+
+Use `CENTRALMCP_<PLATFORM>_WRITES=1` for a narrower per-platform override when
+one optional backend needs write access without enabling all optional writes.
 
 ## Why `invoke_tool` is destructive
 

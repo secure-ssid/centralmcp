@@ -89,8 +89,23 @@ class TokenManager:
 
         self.access_token: Optional[str] = None
         self.token_expires_at: Optional[float] = None
-        self._refresh_lock = threading.Lock()
+        self._refresh_lock = threading.RLock()
+        # Bumped on every successful refresh. Used to collapse concurrent
+        # 401-triggered force_refresh calls into a single network round
+        # trip -- see get_access_token()'s ``observed_generation`` param.
+        self._generation = 0
         self._load_cached_token()
+
+    @property
+    def generation(self) -> int:
+        """Monotonic counter bumped on every successful token refresh.
+
+        Callers that want concurrent-401 collapse should capture this
+        alongside the token they're using, then pass it back as
+        ``observed_generation`` to ``get_access_token(force_refresh=True, ...)``
+        when that token is rejected.
+        """
+        return self._generation
 
     def _needs_refresh(self, force_refresh: bool = False) -> bool:
         return (
@@ -169,20 +184,76 @@ class TokenManager:
             self.access_token = token_data["access_token"]
             expires_in = token_data.get("expires_in", 7200)
             self.token_expires_at = time.time() + expires_in
+            self._generation += 1
             self._save_token_to_cache()
             logger.info(
-                "Token refreshed. Expires at %s",
+                "Token refreshed (generation=%d). Expires at %s",
+                self._generation,
                 datetime.fromtimestamp(self.token_expires_at).strftime("%Y-%m-%d %H:%M:%S"),
             )
         except httpx.HTTPError as exc:
             raise RuntimeError(f"Token refresh failed: {exc}") from exc
 
-    def get_access_token(self, force_refresh: bool = False) -> str:
-        if self._needs_refresh(force_refresh):
+    def get_access_token(
+        self,
+        force_refresh: bool = False,
+        *,
+        observed_generation: Optional[int] = None,
+    ) -> str:
+        """Return a valid access token, refreshing if needed.
+
+        Args:
+            force_refresh: refresh even if the cached token isn't expired.
+            observed_generation: the ``generation`` this caller last saw
+                *before* deciding it needed a forced refresh (e.g. the
+                generation in effect when the request that got a 401 was
+                sent). When given, ``force_refresh`` is honored only if no
+                other caller has already refreshed since -- i.e.
+                ``observed_generation == self.generation`` at the moment
+                the refresh lock is acquired. This collapses N concurrent
+                401s against the same stale token into a single network
+                round trip instead of N serialized ones. When omitted
+                (the default), ``force_refresh=True`` always refreshes,
+                matching prior behavior.
+        """
+        effective_force = force_refresh
+        if (
+            effective_force
+            and observed_generation is not None
+            and observed_generation != self._generation
+        ):
+            # Someone else already refreshed since this caller observed its
+            # (now stale) generation -- the current token is already newer
+            # than what triggered this force_refresh.
+            effective_force = False
+        if self._needs_refresh(effective_force):
             with self._refresh_lock:
-                if self._needs_refresh(force_refresh):
+                if (
+                    effective_force
+                    and observed_generation is not None
+                    and observed_generation != self._generation
+                ):
+                    effective_force = False
+                if self._needs_refresh(effective_force):
                     self._refresh_token()
         return self.access_token  # type: ignore[return-value]
+
+    def get_access_token_with_generation(
+        self,
+        force_refresh: bool = False,
+        *,
+        observed_generation: Optional[int] = None,
+    ) -> tuple[str, int]:
+        """Like ``get_access_token`` but also returns the generation in
+        effect after the call -- convenient for callers (CentralClient's
+        async request path) that need to remember it for a later
+        generation-aware 401 retry without a second attribute read that
+        could race a concurrent refresh."""
+        with self._refresh_lock:
+            token = self.get_access_token(
+                force_refresh, observed_generation=observed_generation
+            )
+            return token, self._generation
 
     def is_token_valid(self) -> bool:
         if not self.access_token or not self.token_expires_at:
