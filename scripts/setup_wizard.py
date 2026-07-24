@@ -82,6 +82,13 @@ PRODUCT_ENV = {
             "UXI_TOKEN_URL": "https://sso.common.cloud.hpe.com/as/token.oauth2",
         },
     },
+    "axis": {
+        "label": "Axis Atmos Cloud",
+        "vars": {
+            "AXIS_BASE_URL": "https://admin-api.axissecurity.com/api/v1.0",
+            "AXIS_API_TOKEN": "YOUR_AXIS_API_TOKEN",
+        },
+    },
 }
 PLACEHOLDER_MARKERS = ("YOUR_", "REPLACE_ME", "PLACEHOLDER")
 SECRET_ENV_SUFFIXES = ("_TOKEN", "_SECRET", "_PASSWORD", "_API_KEY")
@@ -497,7 +504,7 @@ def main() -> int:
         default="",
         help=(
             "comma-separated optional products to enable "
-            "(clearpass,mist,apstra,aos8,edgeconnect,uxi,all)"
+            "(clearpass,mist,apstra,aos8,edgeconnect,uxi,axis,all)"
         ),
     )
     parser.add_argument(

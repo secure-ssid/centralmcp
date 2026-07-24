@@ -126,6 +126,26 @@ def test_axis_confirmed_write_executes_and_returns_commit_hint(monkeypatch):
     assert out["next_step"] == "Call axis_commit_changes to apply these staged changes."
 
 
+def test_axis_failed_write_does_not_return_commit_hint(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setenv("CENTRALMCP_AXIS_WRITES", "1")
+    captured = {}
+    _fake_http(monkeypatch, captured, _Response({"message": "invalid"}, status_code=400))
+
+    out = asyncio.run(
+        axis.axis_manage_connector(
+            action_type="create",
+            payload={"name": "invalid"},
+            dry_run=False,
+            confirm=True,
+        )
+    )
+
+    assert out["status_code"] == 400
+    assert "error" in out
+    assert "next_step" not in out
+
+
 def test_axis_401_is_bounded_and_action_writes_require_confirmation(monkeypatch):
     _configure(monkeypatch)
     monkeypatch.setenv("CENTRALMCP_AXIS_WRITES", "1")

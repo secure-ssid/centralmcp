@@ -153,6 +153,13 @@ async def _axis_request(
                 "status_code": 401,
                 "url": url,
             }
+        if not 200 <= resp.status_code < 300:
+            return {
+                "error": f"Axis API returned HTTP {resp.status_code}.",
+                "status_code": resp.status_code,
+                "data": redact_sensitive(_axis_bounded_payload(resp)),
+                "url": url,
+            }
         return {
             "status_code": resp.status_code,
             "data": redact_sensitive(_axis_bounded_payload(resp)),
@@ -274,7 +281,8 @@ async def _axis_manage(operation: dict[str, Any], kwargs: dict[str, Any]) -> dic
     if blocked is not None:
         return blocked
     result = await _axis_request(method, path, body=body)
-    result["next_step"] = operation["next_step"]
+    if "error" not in result:
+        result["next_step"] = operation["next_step"]
     return result
 
 

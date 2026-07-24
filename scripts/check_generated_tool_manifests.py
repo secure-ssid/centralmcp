@@ -30,6 +30,7 @@ def validate_manifest(path: Path) -> tuple[str, int]:
     source = doc.get("source")
     if not isinstance(source, dict) or source.get("operation_count") != len(operations):
         raise ValueError(f"{path}: source.operation_count does not match operations")
+    derived_registry = source.get("official_openapi") is False
 
     names: set[str] = set()
     keys: set[str] = set()
@@ -52,7 +53,10 @@ def validate_manifest(path: Path) -> tuple[str, int]:
         if capability not in CAPABILITIES:
             raise ValueError(f"{path}: invalid capability {capability!r} for {key}")
         method, key_path = key.split(" ", 1)
-        if method != operation.get("method") or key_path != operation.get("path"):
+        if (
+            not derived_registry
+            and (method != operation.get("method") or key_path != operation.get("path"))
+        ):
             raise ValueError(f"{path}: key/method/path mismatch for {name}")
     return platform, len(operations)
 

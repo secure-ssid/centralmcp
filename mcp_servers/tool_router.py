@@ -8,7 +8,7 @@ Supports three exposure modes:
 Backend servers are imported in-process — no subprocess overhead.
 
 Optional product backends can be enabled with:
-  CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
+  CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 
 Toolsets can narrow loaded backends:
   CENTRALMCP_TOOLSETS=central,rag
@@ -25,7 +25,7 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_servers.prompts import register_router_prompts
-from mcp_servers.shared import DESTRUCTIVE, READ_ONLY, optional_product_access_mode
+from mcp_servers.shared import DESTRUCTIVE, DIAGNOSTIC, READ_ONLY, optional_product_access_mode
 
 _BACKEND = os.getenv("CENTRALMCP_RAG_BACKEND", "lancedb").strip().lower()
 _ROUTER_MODE = os.getenv("CENTRALMCP_ROUTER_MODE", "default").strip().lower()
@@ -73,6 +73,7 @@ _OPTIONAL_BACKENDS = {
     "aos8": ("aos8-core", "mcp_servers.aos8"),
     "edgeconnect": ("edgeconnect-core", "mcp_servers.edgeconnect"),
     "uxi": ("uxi-core", "mcp_servers.uxi"),
+    "axis": ("axis-core", "mcp_servers.axis"),
 }
 _OPTIONAL_SERVER_NAMES = {server_name for server_name, _ in _OPTIONAL_BACKENDS.values()}
 _TOOLSET_BACKENDS = {
@@ -89,6 +90,7 @@ _TOOLSET_BACKENDS = {
     "aos8": {"aos8-core"},
     "edgeconnect": {"edgeconnect-core"},
     "uxi": {"uxi-core"},
+    "axis": {"axis-core"},
 }
 
 
@@ -109,6 +111,10 @@ def _is_read_only_tool(tool: Any) -> bool:
     return bool(getattr(getattr(tool, "annotations", None), "readOnlyHint", False))
 
 
+def _is_diagnostic_tool(tool: Any) -> bool:
+    return getattr(tool, "annotations", None) == DIAGNOSTIC
+
+
 def _optional_write_disabled(name: str, tool: Any | None = None, server: str | None = None) -> bool:
     tool = tool or _tool_index.get(name)
     server = server or _tool_backend_names.get(name)
@@ -116,7 +122,7 @@ def _optional_write_disabled(name: str, tool: Any | None = None, server: str | N
         server in _OPTIONAL_SERVER_NAMES
         and not _optional_writes_allowed()
         and tool is not None
-        and not _is_read_only_tool(tool)
+        and not (_is_read_only_tool(tool) or _is_diagnostic_tool(tool))
     )
 
 
@@ -124,7 +130,7 @@ def _build_backends() -> dict[str, str]:
     """Build backend module map, including optional product backends.
 
     Optional products/toolsets are enabled via:
-      CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
+      CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
       CENTRALMCP_TOOLSETS=central,glp,rag
     Unknown product names are ignored.
     """
@@ -172,7 +178,7 @@ def _load_all_backends() -> None:
             if (
                 server_name in _OPTIONAL_SERVER_NAMES
                 and not allow_optional_writes
-                and not _is_read_only_tool(tool)
+                and not (_is_read_only_tool(tool) or _is_diagnostic_tool(tool))
             ):
                 continue
             previous = _tool_backend_names.get(name)

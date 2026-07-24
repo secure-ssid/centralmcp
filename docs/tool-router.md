@@ -84,7 +84,7 @@ surface to the MCP client; it searches the catalog on demand.
 | `ops` | Troubleshooting and operational tools |
 | `glp` | GreenLake Platform v1/v2beta1 devices and groups, subscriptions, users, audit logs, workspaces, reporting, service catalog, API-family discovery, and guarded writes |
 | `rag` | `ask_docs`, `search_docs`, `lookup_api` |
-| `clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect`, `uxi` | Optional starter backends |
+| `clearpass`, `mist`, `apstra`, `aos8`, `edgeconnect`, `uxi`, `axis` | Optional product backends |
 | `all` | All core and optional backends |
 
 ## Optional products
@@ -92,7 +92,7 @@ surface to the MCP client; it searches the catalog on demand.
 Optional products can be enabled either by `CENTRALMCP_TOOLSETS` or by `CENTRALMCP_PRODUCTS`.
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 CENTRALMCP_PRODUCT_ACCESS=read-only
 ```
 
@@ -108,6 +108,7 @@ The optional product backends expose an opt-in, lab-friendly surface:
 - EdgeConnect appliance, route, tunnel, VRF, interface-label, ACL object-group,
   service, bypass, link-integrity, firewall-zone, and API compatibility workflows
 - typed UXI sensor, agent, group, network, service-test, assignment, and guarded write workflows
+- reviewed Axis Atmos application, connector, tunnel, location, policy, and commit workflows
 
 Generic GET responses are paginated with `limit` and `offset` when the response
 contains a list. This keeps token cost low while leaving room to add

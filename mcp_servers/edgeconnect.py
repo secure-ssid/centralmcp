@@ -19,6 +19,8 @@ do not pass through the legacy compatibility gate.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import inspect
 import json
@@ -2513,6 +2515,7 @@ async def edgeconnect_write(
 
 _EDGECONNECT_SOURCE_PARAM = {"source": "menu_rest_apis_id"}
 _EDGECONNECT_MAX_RESPONSE_BYTES = 131_072
+_EDGECONNECT_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 _EDGECONNECT_AUTH_HEADER_NAME = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
 _EDGECONNECT_GENERATED_AUTH_HEADERS = {
     "authorization",
@@ -2591,11 +2594,26 @@ async def _edgeconnect_generated_request(
     content_type: str = "application/json",
 ) -> dict[str, Any]:
     """Execute a generated operation with trusted auth and bounded output."""
+    import os
+
     url, token, auth_header, error = _edgeconnect_generated_prepare(path)
     if error:
         return {"error": error}
     assert url is not None and token is not None and auth_header is not None
     req_headers = _edgeconnect_generated_headers(token, auth_header, headers)
+    if path == "/sdwanai/feedback":
+        session_authorization = os.getenv(
+            "EDGECONNECT_AI_SESSION_AUTHORIZATION", ""
+        ).strip()
+        if not session_authorization:
+            return {
+                "error": (
+                    "This operation requires EDGECONNECT_AI_SESSION_AUTHORIZATION "
+                    "containing the active SD-WAN AI session Authorization header value."
+                ),
+                "url": url,
+            }
+        req_headers["Authorization"] = session_authorization
     params = {**{k: v for k, v in query.items() if v is not None}, **_EDGECONNECT_SOURCE_PARAM}
     kwargs: dict[str, Any] = {"headers": req_headers, "params": params}
     normalized_content_type = content_type.split(";", 1)[0].strip().lower()
@@ -2613,6 +2631,34 @@ async def _edgeconnect_generated_request(
             for key, value in body.items():
                 if isinstance(value, bytes):
                     files[str(key)] = (str(key), value, "application/octet-stream")
+                elif isinstance(value, dict) and "content_base64" in value:
+                    filename = str(value.get("filename") or key)
+                    if (
+                        not filename
+                        or filename in {".", ".."}
+                        or "/" in filename
+                        or "\\" in filename
+                    ):
+                        return {"error": f"invalid multipart filename for field {key!r}"}
+                    try:
+                        content = base64.b64decode(
+                            str(value["content_base64"]), validate=True
+                        )
+                    except (binascii.Error, ValueError):
+                        return {
+                            "error": f"multipart field {key!r} has invalid base64 content"
+                        }
+                    if len(content) > _EDGECONNECT_MAX_UPLOAD_BYTES:
+                        return {
+                            "error": (
+                                f"multipart field {key!r} exceeds the "
+                                f"{_EDGECONNECT_MAX_UPLOAD_BYTES}-byte upload limit"
+                            )
+                        }
+                    content_type_value = str(
+                        value.get("content_type") or "application/octet-stream"
+                    )
+                    files[str(key)] = (filename, content, content_type_value)
                 elif isinstance(value, (dict, list)):
                     files[str(key)] = (None, json.dumps(value), "application/json")
                 else:

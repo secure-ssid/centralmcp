@@ -257,7 +257,7 @@ The unit suite includes static guards that keep async MCP tools off sync HTTP ca
 Optional product backends are disabled by default.
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 CENTRALMCP_PRODUCT_ACCESS=read-only
 ```
 
@@ -276,8 +276,9 @@ python3 scripts/setup_wizard.py --products clearpass
 | Juniper Mist | `MIST_HOST`, `MIST_API_TOKEN` |
 | Apstra | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional pre-issued `APSTRA_API_TOKEN` |
 | ArubaOS 8 | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` |
-| EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, legacy-only `EDGECONNECT_ALLOW_LEGACY_API=1` |
+| EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, legacy-only `EDGECONNECT_ALLOW_LEGACY_API=1`, endpoint-specific `EDGECONNECT_AI_SESSION_AUTHORIZATION` |
 | HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
+| Axis Atmos Cloud | `AXIS_BASE_URL`, `AXIS_API_TOKEN` |
 
 Set `CENTRALMCP_PRODUCT_ACCESS=read-write` only for trusted lab writes, or
 enable a single platform with `CENTRALMCP_<PLATFORM>_WRITES=1`.

@@ -41,7 +41,7 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 Optional products are disabled until explicitly enabled:
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 ```
 
 The current catalog contains 270 core tools, 392 tools with every optional

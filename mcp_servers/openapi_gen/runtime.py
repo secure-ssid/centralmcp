@@ -31,7 +31,7 @@ from urllib.parse import quote
 
 from mcp_servers.openapi_gen.manifest import load_manifest, manifest_exists
 from mcp_servers.openapi_gen.naming import digest, snake
-from mcp_servers.shared import DESTRUCTIVE, IDEMPOTENT_WRITE, READ_ONLY, WRITE
+from mcp_servers.shared import DESTRUCTIVE, DIAGNOSTIC, IDEMPOTENT_WRITE, READ_ONLY, WRITE
 
 # Executor protocols (implemented per platform in the backend module).
 ReadExecutor = Callable[[str, str, dict[str, Any], dict[str, str]], Awaitable[dict[str, Any]]]
@@ -328,6 +328,51 @@ def _make_write_tool(op: dict[str, Any], write_executor: WriteExecutor) -> Calla
     return _tool
 
 
+def _make_diagnostic_tool(
+    op: dict[str, Any], write_executor: WriteExecutor
+) -> Callable[..., Any]:
+    specs = _param_specs(op)
+    method = op["method"]
+    template = op["path"]
+    rb = op.get("request_body") or {}
+    content_type = rb.get("content_type", "application/json")
+    body_type = _py_type(rb.get("schema_type", "object"), rb.get("item_type"))
+    if body_type is Any:
+        body_type = dict
+    body_required = bool(rb.get("required", False))
+    name = op["name"]
+
+    async def _tool(**kwargs: Any) -> dict[str, Any]:
+        try:
+            path = _substitute_path(template, _path_values(specs, kwargs))
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return await write_executor(
+            name,
+            method,
+            path,
+            _build_query(specs, kwargs),
+            _build_headers(specs, kwargs),
+            kwargs.get("body"),
+            content_type,
+            False,
+            True,
+        )
+
+    signature, annotations = _build_signature(
+        specs, is_write=True, body_type=body_type, body_required=body_required
+    )
+    parameters = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.name not in {"dry_run", "confirm"}
+    ]
+    annotations.pop("dry_run", None)
+    annotations.pop("confirm", None)
+    _finalize(_tool, op, signature.replace(parameters=parameters), annotations)
+    return _tool
+
+
 def _finalize(
     fn: Callable[..., Any],
     op: dict[str, Any],
@@ -389,6 +434,9 @@ def register_generated_tools(
         if capability == "read":
             fn = _make_read_tool(op, read_executor)
             annotations = READ_ONLY
+        elif capability == "diagnostic":
+            fn = _make_diagnostic_tool(op, write_executor)
+            annotations = DIAGNOSTIC
         else:
             fn = _make_write_tool(op, write_executor)
             if capability == "destructive":

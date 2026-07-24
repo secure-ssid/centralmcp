@@ -29,7 +29,9 @@ def test_build_backends_enables_clearpass(monkeypatch):
 
 def test_build_backends_enables_multiple_products(monkeypatch):
     monkeypatch.delenv("CENTRALMCP_TOOLSETS", raising=False)
-    monkeypatch.setenv("CENTRALMCP_PRODUCTS", "clearpass,mist,apstra,aos8,edgeconnect,uxi")
+    monkeypatch.setenv(
+        "CENTRALMCP_PRODUCTS", "clearpass,mist,apstra,aos8,edgeconnect,uxi,axis"
+    )
     backends = router._build_backends()
     assert backends.get("clearpass-core") == "mcp_servers.clearpass"
     assert backends.get("mist-core") == "mcp_servers.mist"
@@ -37,6 +39,7 @@ def test_build_backends_enables_multiple_products(monkeypatch):
     assert backends.get("aos8-core") == "mcp_servers.aos8"
     assert backends.get("edgeconnect-core") == "mcp_servers.edgeconnect"
     assert backends.get("uxi-core") == "mcp_servers.uxi"
+    assert backends.get("axis-core") == "mcp_servers.axis"
 
 
 def test_build_backends_toolsets_narrow_core(monkeypatch):
@@ -67,6 +70,30 @@ def test_build_backends_toolsets_all_includes_known_optional(monkeypatch):
     assert "aos8-core" in backends
     assert "edgeconnect-core" in backends
     assert "uxi-core" in backends
+    assert "axis-core" in backends
+
+
+def test_load_all_backends_keeps_diagnostics_in_read_only_mode(monkeypatch):
+    backend = FastMCP("diagnostic-backend")
+
+    @backend.tool(annotations=router.DIAGNOSTIC)
+    def run_diagnostic() -> dict:
+        return {"ok": True}
+
+    monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
+    monkeypatch.setattr(router, "_BACKENDS", {"edgeconnect-core": "demo.diagnostic"})
+    monkeypatch.setattr(router, "_tool_index", {})
+    monkeypatch.setattr(router, "_tool_servers", {})
+    monkeypatch.setattr(router, "_tool_backend_names", {})
+    monkeypatch.setattr(
+        router.importlib,
+        "import_module",
+        lambda path: SimpleNamespace(mcp=backend),
+    )
+
+    router._load_all_backends()
+
+    assert "run_diagnostic" in router._tool_index
 
 
 def test_load_all_backends_filters_optional_writes_when_read_only(monkeypatch):

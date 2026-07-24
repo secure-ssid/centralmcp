@@ -256,7 +256,7 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 Enable optional products only when needed:
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 CENTRALMCP_PRODUCT_ACCESS=read-only
 ```
 

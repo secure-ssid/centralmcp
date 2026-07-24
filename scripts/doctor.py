@@ -24,6 +24,7 @@ OPTIONAL_PRODUCT_ENVS = {
     "aos8": ("AOS8_BASE_URL", "AOS8_API_TOKEN"),
     "edgeconnect": ("EDGECONNECT_BASE_URL", "EDGECONNECT_API_TOKEN"),
     "uxi": ("UXI_CLIENT_ID", "UXI_CLIENT_SECRET"),
+    "axis": ("AXIS_BASE_URL", "AXIS_API_TOKEN"),
 }
 PLACEHOLDER_MARKERS = ("YOUR_", "REPLACE_ME", "PLACEHOLDER")
 READ_ONLY_PRODUCT_ACCESS_VALUES = {"read-only", "readonly", "read_only", "ro"}

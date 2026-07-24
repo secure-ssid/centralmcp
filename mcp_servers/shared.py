@@ -33,6 +33,7 @@ READ_ONLY = ToolAnnotations(
 )
 
 DIAGNOSTIC = ToolAnnotations(
+    title="Diagnostic",
     readOnlyHint=False,
     destructiveHint=False,
     idempotentHint=False,

@@ -14,10 +14,11 @@ diagnostic that is effectively read-only, or a side-effecting GET.
 from __future__ import annotations
 
 READ = "read"
+DIAGNOSTIC = "diagnostic"
 WRITE = "write"
 DESTRUCTIVE = "destructive"
 
-CAPABILITIES = (READ, WRITE, DESTRUCTIVE)
+CAPABILITIES = (READ, DIAGNOSTIC, WRITE, DESTRUCTIVE)
 
 _READ_METHODS = {"GET", "HEAD"}
 _DESTRUCTIVE_METHODS = {"DELETE"}

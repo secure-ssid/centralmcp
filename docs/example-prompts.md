@@ -150,7 +150,7 @@ invoke_read_tool("list_glp_device_groups", {"limit": 25, "offset": 0})
 Optional product starters are disabled unless you enable them:
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
+CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 CENTRALMCP_PRODUCT_ACCESS=read-only
 ```
 

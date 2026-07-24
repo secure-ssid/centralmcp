@@ -55,7 +55,7 @@ flowchart TD
     clone["git clone centralmcp"]
     wizard["scripts/setup_wizard.py"]
     credentials["Central / GLP credentials<br/>config/credentials.yaml"]
-    products["Optional products<br/>ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI"]
+    products["Optional products<br/>ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis"]
     access{"Product access"}
     readonly["read-only<br/>write tools hidden/blocked"]
     readwrite["read-write lab mode<br/>dry-run previews<br/>confirm=True to execute"]
@@ -84,7 +84,7 @@ flowchart TD
 |---|---|
 | Install and connect an MCP client | [Getting started](getting-started.md) |
 | Copy/paste stdio or HTTP client config | [MCP client recipes](mcp-client-recipes.md) |
-| Enable ClearPass, Mist, Apstra, AOS8, EdgeConnect, or UXI | [Optional product starters](optional-products.md) |
+| Enable ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, or Axis | [Optional product starters](optional-products.md) |
 | Plan typed product-specific workflows | [Typed product workflow roadmap](product-workflows.md) |
 | Fix setup, credentials, HTTP, or catalog issues | [Troubleshooting](troubleshooting.md) |
 | Download or package prebuilt RAG/OpenAPI indexes | [Prebuilt RAG/OpenAPI indexes](release-indexes.md) |
@@ -121,8 +121,9 @@ Available starters:
 | Juniper Mist | `MIST_HOST`, `MIST_API_TOKEN` |
 | Apstra | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional `APSTRA_API_TOKEN` |
 | ArubaOS 8 | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional `AOS8_API_TOKEN` |
-| EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` |
+| EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, endpoint-specific `EDGECONNECT_AI_SESSION_AUTHORIZATION` |
 | HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
+| Axis Atmos Cloud | `AXIS_BASE_URL`, `AXIS_API_TOKEN` |
 
 See the [optional product matrix](optional-products.md) for the full setup and
 safety model.

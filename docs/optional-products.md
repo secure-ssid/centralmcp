@@ -21,8 +21,9 @@ python3 scripts/setup_wizard.py --with-products
 | Juniper Mist | 19 / 26 | wireless workflows plus NAC, Marvis clients/settings/events, org inventory/claims, Wired Assurance, and WAN Assurance | `MIST_HOST`, `MIST_API_TOKEN` | Read/write; writes dry-run by default |
 | Apstra | 15 / 20 | session-authenticated blueprint, connectivity-template, application-point, anomaly, topology, and protocol workflows | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional pre-issued `APSTRA_API_TOKEN` | Read/write; writes dry-run by default |
 | ArubaOS 8 | 34 / 43 | UIDARUBA/X-CSRF session auth, operational/config exports, typed writes, and deterministic Classic/New Central migration plans | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` | Read/write; writes dry-run by default |
-| EdgeConnect | 32 / 49 | API/Swagger compatibility diagnostics plus explicitly gated legacy workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, `EDGECONNECT_ALLOW_LEGACY_API` | Legacy operational reads/writes fail closed by default; writes also dry-run by default |
+| EdgeConnect | 32 / 49 | API/Swagger compatibility diagnostics plus explicitly gated legacy workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, `EDGECONNECT_ALLOW_LEGACY_API`, and endpoint-specific `EDGECONNECT_AI_SESSION_AUTHORIZATION` | Legacy operational reads/writes fail closed by default; writes also dry-run by default |
 | HPE Aruba UXI | 13 / 25 | sensor/agent/group/network/service-test inventories plus guarded CRUD and assignment workflows | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Read/write; writes dry-run by default and outbound calls respect 5 requests/second |
+| Axis Atmos Cloud | 12 / 25 | reviewed application, connector, tunnel, location, policy, status, and commit workflows | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Read/write; writes dry-run by default |
 | **Optional subtotal** | **122 / 178** | Six opt-in product backends | Product-specific | Hidden and blocked unless enabled |
 
 Combined with the 270 core Aruba/GLP/RAG tools, these modes produce the
@@ -59,6 +60,10 @@ tools. The bundled operational endpoint map predates 9.3 and is disabled
 unless `EDGECONNECT_ALLOW_LEGACY_API=1` is deliberately set for a validated
 older/lab instance. A production 9.3+ remap requires that Orchestrator's
 instance-hosted Swagger specification.
+
+Generated EdgeConnect multipart upload tools accept file fields as
+`{"filename": "...", "content_base64": "...", "content_type": "..."}` and
+enforce a 20 MiB decoded-file limit.
 
 Product base URLs must use HTTPS and public hostnames by default. For local lab
 testing against localhost or private IPs, set

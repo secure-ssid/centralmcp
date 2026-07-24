@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 
 import mcp_servers.edgeconnect as edgeconnect
@@ -142,6 +143,24 @@ def test_generated_request_supports_form_multipart_and_text(monkeypatch):
 
     asyncio.run(
         edgeconnect._edgeconnect_generated_request(
+            "POST",
+            "/upload",
+            {},
+            {},
+            {
+                "qqfile": {
+                    "filename": "logo.png",
+                    "content_base64": base64.b64encode(b"png").decode(),
+                    "content_type": "image/png",
+                }
+            },
+            "multipart/form-data",
+        )
+    )
+    assert captured["kwargs"]["files"]["qqfile"] == ("logo.png", b"png", "image/png")
+
+    asyncio.run(
+        edgeconnect._edgeconnect_generated_request(
             "POST", "/text", {}, {}, "hello", "text/plain"
         )
     )
@@ -169,3 +188,48 @@ def test_generated_auth_cannot_be_shadowed_and_responses_are_bounded(monkeypatch
     assert captured["kwargs"]["headers"]["X-Trace"] == "ok"
     assert out["data"]["truncated"] is True
     assert out["data"]["content_type"] == "application/json"
+
+
+def test_generated_authorization_mode_uses_bearer_token(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setenv("EDGECONNECT_AUTH_HEADER", "Authorization")
+    captured = {}
+    _fake_http(monkeypatch, captured, _Response({"ok": True}))
+
+    asyncio.run(edgeconnect._edgeconnect_generated_request("GET", "/status", {}, {}))
+
+    assert captured["kwargs"]["headers"]["Authorization"] == "Bearer secret"
+    assert "X-Auth-Token" not in captured["kwargs"]["headers"]
+
+
+def test_sdwan_ai_feedback_uses_separate_session_authorization(monkeypatch):
+    _configure(monkeypatch)
+    captured = {}
+    _fake_http(monkeypatch, captured, _Response({"ok": True}))
+
+    missing = asyncio.run(
+        edgeconnect._edgeconnect_generated_request(
+            "POST",
+            "/sdwanai/feedback",
+            {},
+            {},
+            {"msg_id": "1", "feedback_type": "positive"},
+        )
+    )
+    assert "EDGECONNECT_AI_SESSION_AUTHORIZATION" in missing["error"]
+
+    monkeypatch.setenv(
+        "EDGECONNECT_AI_SESSION_AUTHORIZATION", "Bearer active-session"
+    )
+    out = asyncio.run(
+        edgeconnect._edgeconnect_generated_request(
+            "POST",
+            "/sdwanai/feedback",
+            {},
+            {},
+            {"msg_id": "1", "feedback_type": "positive"},
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert captured["kwargs"]["headers"]["Authorization"] == "Bearer active-session"
