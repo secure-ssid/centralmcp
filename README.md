@@ -3,12 +3,37 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-FastMCP-brightgreen)](https://modelcontextprotocol.io/)
+[![CI](https://github.com/secure-ssid/centralmcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/secure-ssid/centralmcp/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-0969da)](https://secure-ssid.github.io/centralmcp/)
+[![Release](https://img.shields.io/github/v/release/secure-ssid/centralmcp?display_name=tag)](https://github.com/secure-ssid/centralmcp/releases)
+
+![centralmcp 0.3.0 - low-token HPE Networking MCP toolkit](docs/assets/centralmcp-hero.svg)
 
 **Low-token Model Context Protocol (MCP) server for HPE Networking automation: Aruba Central, HPE GreenLake Platform, ClearPass, Juniper Mist, Apstra, ArubaOS 8, EdgeConnect, and HPE Aruba UXI.**
 
 centralmcp gives MCP-capable AI clients a low-token way to search Aruba/HPE docs, look up exact OpenAPI details, inspect Central health, run troubleshooting workflows, manage configuration, and use guarded GreenLake Platform operations.
 
 It is built around direct REST calls with `httpx`.
+
+## Version 0.3.0 highlights
+
+- **448-tool guarded catalog:** 270 core tools, 392 tools in the all-product
+  read-only catalog, or 448 when guarded optional writes are intentionally
+  enabled.
+- **Migration-ready AOS8:** UIDARUBA/X-CSRF sessions, structured exports and
+  parsing, Classic/New Central candidates, compatibility warnings, diffs, and
+  post-migration verification plans.
+- **Broader platform parity:** new Central routing, checkpoint policy,
+  automatic rollback status, telemetry,
+  GLP v2beta1, Mist NAC/Marvis/Wired/WAN, Apstra connectivity, ClearPass
+  Insight/OnGuard, and UXI lifecycle workflows.
+- **Current API sources:** 25 Aruba ReadMe registries plus the pinned official
+  Mist OpenAPI 2606.1.1 snapshot, with weekly drift checks.
+- **Hardened transport and writes:** per-platform gates, dry-run confirmation,
+  health probes, host/origin controls, streamable HTTP bearer protection, and
+  protocol-level MCP tests.
+
+See the [complete 0.3.0 release notes](docs/release-notes-0.3.0.md).
 
 ```mermaid
 flowchart LR
@@ -65,10 +90,12 @@ EdgeConnect link integrity diagnostics.
 | Fix setup or HTTP issues | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Try useful prompts | [docs/example-prompts.md](docs/example-prompts.md) |
 | Understand the low-token router | [docs/tool-router.md](docs/tool-router.md) |
+| Browse tool counts and backend coverage | [docs/tool-catalog.md](docs/tool-catalog.md) |
 | Run with any MCP-capable AI client/model | [Streamable HTTP mode](#streamable-http-mode) |
 | See the architecture diagrams | [docs/architecture/system-overview.md](docs/architecture/system-overview.md) |
 | Browse the documentation map | [docs/README.md](docs/README.md) |
 | Review the RAG design | [docs/architecture/RAG-ARCHITECTURE.md](docs/architecture/RAG-ARCHITECTURE.md) |
+| Review everything added in 0.3.0 | [docs/release-notes-0.3.0.md](docs/release-notes-0.3.0.md) |
 | Run validation before pushing | [`scripts/validate_release.py`](scripts/validate_release.py) |
 | Get support or report issues | [SUPPORT.md](SUPPORT.md) |
 | Contribute safely | [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md) |
@@ -85,6 +112,26 @@ EdgeConnect link integrity diagnostics.
 | GLP | v1/v2beta1 devices and device groups, subscriptions, users, audit logs, workspaces, reporting, service catalog, guarded GLP GET, and feature-gated writes |
 | Optional products | ClearPass Insight/OnGuard, Mist NAC/Marvis/Wired/WAN, Apstra session auth/connectivity templates, AOS8 migration planning, EdgeConnect compatibility diagnostics, and UXI guarded writes |
 | Pipeline | 8-stage migration flow, AOS8 Classic/New Central migration planning, and SSID build/delete helpers |
+
+![centralmcp platform and tool coverage](docs/assets/platform-coverage.svg)
+
+### Tool catalog by backend
+
+| Backend | Read-only catalog | Read-write catalog |
+|---|---:|---:|
+| Central configuration | 75 | 75 |
+| Central monitoring | 77 | 77 |
+| Central NAC | 34 | 34 |
+| Central operations | 40 | 40 |
+| GreenLake Platform | 41 | 41 |
+| RAG/OpenAPI | 3 | 3 |
+| ClearPass | 9 | 15 |
+| Juniper Mist | 19 | 26 |
+| Apstra | 15 | 20 |
+| ArubaOS 8 | 34 | 43 |
+| EdgeConnect | 32 | 49 |
+| HPE Aruba UXI | 13 | 25 |
+| **Total** | **392** | **448** |
 
 ## Why the router matters
 
@@ -341,6 +388,16 @@ The default RAG stack is embedded:
 | API specs | `data/specs.sqlite` | `lookup_api` | Exact endpoint/schema/enum lookup |
 | Tools | `data/tools.lance` | `find_tool` | Semantic router tool discovery |
 
+Current rebuilt index snapshot:
+
+| Content | Count |
+|---|---:|
+| Prose chunks | 47,633 |
+| OpenAPI specs | 239 |
+| Exact endpoints | 3,465 |
+| Schemas | 10,297 |
+| Fields | 57,131 |
+
 Measured on the bundled eval set:
 
 | Metric | Result |
@@ -374,7 +431,7 @@ uv run pytest tests/unit -q
 Run the local release gate:
 
 ```bash
-uv run python scripts/validate_release.py
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 448
 ```
 
 The release helper runs unit tests, optional RAG/API eval when indexes exist, tool catalog floor checks, and local tool-index freshness checks. Unit tests also include static guards for the active MCP/pipeline code, committed low-token MCP config examples, local-only config files, router product/toolset docs, bounded generic read-only GET tools, MCP list default bounds, RAG/search top_k bounds, public tool-count claims, tool-count docstrings, tracked Markdown local links and images, Pages sitemap and robots metadata, documented router example arguments, product workflow tool-name tables, and wizard optional-product env tables.
@@ -387,6 +444,7 @@ lab-friendly direction:
 
 - [HewlettPackard/gl-mcp](https://github.com/HewlettPackard/gl-mcp) - official GreenLake Platform MCP server
 - [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) - MCP Python SDK
+- [mistsys/mist_openapi](https://github.com/mistsys/mist_openapi) - official Mist OpenAPI source
 - [KarthikSKumar98/central-mcp-server](https://github.com/KarthikSKumar98/central-mcp-server) - community Aruba Central MCP server
 - [nowireless4u/hpe-networking-mcp](https://github.com/nowireless4u/hpe-networking-mcp) - unified HPE networking MCP reference
 

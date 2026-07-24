@@ -4,6 +4,22 @@ Low-token Model Context Protocol tooling for HPE Aruba Central, HPE GreenLake
 Platform, embedded docs/API lookup, and optional ClearPass, Mist, Apstra,
 ArubaOS 8, EdgeConnect, and UXI starter backends.
 
+![centralmcp 0.3.0](assets/centralmcp-hero.svg)
+
+## Version 0.3.0 project snapshot
+
+| Area | Current snapshot |
+|---|---|
+| Tool catalog | 270 core / 392 all-product read-only / 448 all-product read-write |
+| RAG | 47,633 prose chunks in LanceDB |
+| Exact API lookup | 239 specs, 3,465 endpoints, 10,297 schemas, 57,131 fields |
+| API provenance | 25 Aruba ReadMe registries plus official Mist OpenAPI 2606.1.1 |
+| Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI |
+| Safety | Per-platform gates, dry-run writes, confirmation, HTTP host/origin and bearer controls |
+
+Read the [0.3.0 release notes](release-notes-0.3.0.md) for the complete
+platform, migration, framework, and API-source update.
+
 ## Search keywords
 
 HPE Networking MCP server, HPE Aruba Networking MCP server, HPE Aruba Central
@@ -30,7 +46,7 @@ The wizard can install dependencies, create local MCP configs, choose a Central
 API gateway region, fill credentials without echoing secrets, enable selected
 optional products, build the router catalog, and run the local doctor.
 
-![Setup wizard preview](assets/setup-wizard-preview.png)
+![Setup wizard preview](assets/setup-wizard-preview.svg)
 
 ## Setup flow
 
@@ -72,7 +88,9 @@ flowchart TD
 | Plan typed product-specific workflows | [Typed product workflow roadmap](product-workflows.md) |
 | Fix setup, credentials, HTTP, or catalog issues | [Troubleshooting](troubleshooting.md) |
 | Download or package prebuilt RAG/OpenAPI indexes | [Prebuilt RAG/OpenAPI indexes](release-indexes.md) |
+| Review the complete 0.3.0 expansion | [0.3.0 release notes](release-notes-0.3.0.md) |
 | Understand the low-token router | [Tool router](tool-router.md) |
+| Browse all backend counts and coverage | [Tool catalog](tool-catalog.md) |
 | Try useful prompts | [Example prompts](example-prompts.md) |
 | See architecture and flow diagrams | [System overview](architecture/system-overview.md) |
 | Review RAG/OpenAPI lookup design | [RAG architecture](architecture/RAG-ARCHITECTURE.md) |
@@ -108,6 +126,8 @@ Available starters:
 
 See the [optional product matrix](optional-products.md) for the full setup and
 safety model.
+
+![centralmcp platform and tool coverage](assets/platform-coverage.svg)
 
 Optional product writes default to blocked. Use the global
 `CENTRALMCP_PRODUCT_ACCESS=read-write` lab mode or a narrower

@@ -1,4 +1,4 @@
-# centralmcp — RAG Architecture & Source Provenance (updated 2026-07-23)
+# centralmcp — RAG Architecture & Source Provenance (updated 2026-07-24)
 
 **Repo:** https://github.com/secure-ssid/centralmcp
 
@@ -45,9 +45,10 @@ before `lookup_api` is described as current.
 The same OpenAPI source folder also includes a reproducible snapshot from the
 official `mistsys/mist_openapi` repository. The fetcher pins Mist API version
 2606.1.1 at commit `f374cffdd5a275c7954645a306fcab7f1227e7a3`, verifies the
-expected SHA-256, and feeds the result into both docs RAG and exact SQLite API
-lookup. A scheduled GitHub Actions job checks Aruba registry hashes and whether
-the Mist source file has advanced.
+expected SHA-256, and feeds the result into exact SQLite API lookup. OpenAPI
+records are deliberately excluded from the prose embedding table. A scheduled
+GitHub Actions job checks Aruba registry hashes and whether the Mist source file
+has advanced.
 
 ### Why this and not Redis (reconciling the audit)
 The audit recommended **Redis Stack** — correctly, *for its scope*: "two backends are running and the git history is mid-flip; converge on one with the least code change." Redis is already wired in the working tree and holds both the docs and tool indexes.
@@ -70,7 +71,9 @@ Net: Redis wins only on "no work today." For a distributable tool, the one-time 
 
 ## Why retrieval quality goes **up**, not down
 
-Deployment (embedded vs server) does not affect retrieval quality — the *design* does. The target design is strictly better than today's vector-only Redis path:
+Deployment (embedded vs server) does not affect retrieval quality — the
+*design* does. The implemented design is strictly better than the historical
+vector-only Redis path:
 
 1. **API/field/enum/endpoint questions → exact SQLite lookup, not vectors.** A large slice of the corpus is OpenAPI specs (structured JSON). Embedding them is lossy; vector search returns *fuzzy-similar* prose instead of the authoritative enum/field list. A `lookup_api(endpoint|schema|field)` tool over the parsed specs is exact and lossless — and doubles as the API-correctness checker the audit needed.
 2. **Prose questions → hybrid (BM25 + vector) + rerank.** Today's path is vector-only and *misses exact identifiers* (`WPA3_SAE`, endpoint paths, error codes). BM25 catches those; a cross-encoder rerank promotes the truly relevant chunk. (~+15–30% precision in practice; Anthropic measured up to **67%** retrieval-failure reduction with contextual + hybrid + rerank.)
@@ -84,11 +87,17 @@ Deployment (embedded vs server) does not affect retrieval quality — the *desig
 These are correctness/quality fixes; most are inherited or simplified by the LanceDB move.
 
 - **R1 — Cosine math (Redis only).** Resolved for the optional Redis backend: `redis_client.py` converts RediSearch COSINE distance to similarity with `clamp(1 - distance, 0, 1)`, and `tests/unit/test_redis_client.py` covers both document and tool search scoring. *N/A under LanceDB* — it returns distance/score directly.
-- **R2 — OpenAPI specs missing from the index.** The "ground-truth" source (`openapi_specs`, +0.08 boost) returns **0 results** from the live index; `aos_techdocs` also absent. *Resolved by design* under the target: specs go to SQLite structured lookup, not the vector index. (If staying on Redis: `ingest_docs.py --source openapi_specs --source aos_techdocs` + a post-ingest assert that every source has >0 docs.)
-- **R3 — nomic task prefixes.** Embed passages as `search_document: <chunk>` and queries as `search_query: <q>`. ⚠️ The current 40,900-doc corpus was embedded **without** prefixes, so adding a query-only prefix *worsens* results — apply **both sides together + a full re-ingest**. Centralize in `embed_document()` / `embed_query()`.
+- **R2 — OpenAPI specs missing from the index.** Resolved by design: specs go
+  to SQLite structured lookup, not the vector index. The current exact index
+  contains 239 specs, 3,465 endpoints, 10,297 schemas, and 57,131 fields.
+- **R3 — nomic task prefixes.** Resolved in `embed_document()` and
+  `embed_query()`: passages use `search_document:` and queries use
+  `search_query:` consistently.
 - **R4 — Batched embeddings.** The default embedded path batches through fastembed (ONNX), and the optional Redis/Ollama path uses Ollama `/api/embed` with `{"input":[...]}` before falling back to legacy `/api/embeddings`. Full re-ingests now use batched embedding paths instead of serial per-chunk requests.
 - **R5 — Hybrid + rerank.** Native in LanceDB (`.search(..., query_type="hybrid")` + a reranker; RRF default). Replaces the brittle static `_SOURCE_BOOST`.
-- **R6 — Chunking.** 800/100 `RecursiveCharacterTextSplitter` cuts parameter tables/enum lists mid-structure. Use a header-aware splitter, ~1000–1200 chars / ~150 overlap (nomic context 2048 tokens). Re-ingest after.
+- **R6 — Chunking.** The prose build uses header-aware chunking with bounded
+  overlap. OpenAPI parameter tables and enums are not chunked because they are
+  parsed into exact SQLite records.
 - **R7 — `ask_docs(question)` tool.** Retrieve hybrid top-k → synthesize a **cited** answer with a small local model → return `{answer, citations}`. Keeps `search_docs` for raw chunks; cuts the per-question token cost the CLAUDE.md RAG-first rule otherwise forces.
 
 ---
@@ -139,9 +148,12 @@ A small, labeled question set + runner so the backend swap is **proven**, not as
 
 Metrics: `recall@5` (did an expected source appear in top-5), `mrr` (rank of first correct), `api_exact` (did `lookup_api` return the exact enum/field). Target: api-lookup `api_exact` = 100% (it's structured), howto `recall@5` ≥ today's baseline.
 
-**Baseline measured 2026-06-03** (current Redis, vector-only, no prefixes, specs missing from index), and **re-measured the same day after wiring `lookup_api`** (SQLite specs index, H13 cosine fix + boost recalibration, query/document prefixes):
+**Baseline measured 2026-06-03** (historical Redis, vector-only, no prefixes,
+specs missing from index), then re-measured after wiring `lookup_api` and the
+embedded LanceDB design. The current 2026-07-24 release gate retains the same
+final scores:
 
-| Metric | Baseline (Redis, vector-only) | After `lookup_api` (2026-06-03) | **Final: embedded LanceDB hybrid (2026-06-03)** | Target |
+| Metric | Baseline (Redis, vector-only) | After `lookup_api` (2026-06-03) | **Current: embedded LanceDB hybrid (2026-07-24)** | Target |
 |---|---|---|---|---|
 | `howto_recall@5` (prose) | 0.80 | 0.80 | **0.90** | ≥ 0.80 ✅ |
 | `api_exact` (API lookups) | **0.50** | 0.90 | **1.00** | 1.00 ✅ |
@@ -149,12 +161,13 @@ Metrics: `recall@5` (did an expected source appear in top-5), `mrr` (rank of fir
 | `mrr` | 0.339 | 0.679 | **0.90** | ≥ 0.50 ✅ |
 | `keyword_hit` | — | 0.80 | **1.00** | — |
 
-**Final evaluated corpus (2026-06-03 full rebuild):** 53,052 chunks / 7
-ingested sources (Redis index had 40,900 and was missing `aos_techdocs`,
-`openapi_specs`, and most of `techdocs_html`) + 213-spec SQLite index + router
-tool index (currently 270 core tools / 392 read-only optional starters / 448 read-write optional starters).
-18/20 eval questions hit at rank 1. Shippable artifacts: `data/docs.lance`
-(190 MB), `data/specs.sqlite` (18 MB), `data/tools.lance` (0.6 MB).
+**Current evaluated corpus (2026-07-24):** 47,633 prose chunks across the
+released documentation sources. The 5,419 OpenAPI vector records from the
+previous build were intentionally removed because structured API lookup is
+authoritative. The rebuilt SQLite index contains 239 specs, 3,465 endpoints,
+10,297 schemas, and 57,131 fields. The router index contains 270 core tools / 392 read-only optional starters / 448 read-write optional starters.
+Minimal mode keeps this catalog behind the three-tool discovery/dispatch
+surface. 18/20 eval questions hit at rank 1.
 
 Tracked RAG refresh targets live in `ingestion/source_manifest.json`. The
 current manifest covers 9 rebuild sources: the evaluated default source set plus
@@ -165,7 +178,13 @@ RAG indexes.
 
 The API-lookup rows almost all missed the spec sources at baseline — direct empirical evidence of **R2** (OpenAPI specs absent from the active index). `howto` retrieval is already decent, confirming the redesign's value is concentrated in (a) structured API lookup and (b) hybrid+rerank for exact identifiers, not in replacing vector search wholesale. Re-run `uv run --with pyyaml python tests/eval/run_eval.py` after each change.
 
-~~The remaining `api_exact` miss was `mac-reg-update-url`: the CNAC MAC-registration API was not in the 212 ingested config specs.~~ **Closed 2026-06-03 and source path refreshed 2026-07-23:** the Central NAC Service spec (25 paths, 60 schemas — cnac-mac-reg/visitor/named-mpsk/dpp/certificates/jobs) is resolved from the reference page's `oasPublicUrl` through the ReadMe API registry. `ingestion/scrape_cnac_spec.py` writes `cnac-client-registration.json` plus provenance metadata for the 213-spec SQLite rebuild. With it indexed, **`api_exact` = 1.00** — all 10 API-lookup questions resolve through `lookup_api` with the correct spec at rank 1, no prose fallback needed.
+The historical `mac-reg-update-url` miss is closed. The Central NAC Service
+spec (cnac-mac-reg, visitor, named MPSK, DPP, certificates, and jobs) resolves
+from the reference page's `oasPublicUrl` through the ReadMe API registry.
+`ingestion/scrape_cnac_spec.py` writes `cnac-client-registration.json` plus
+provenance metadata for the current 239-spec rebuild. With it indexed,
+**`api_exact` = 1.00**: all API-lookup evaluation questions resolve through
+`lookup_api` without prose fallback.
 
 ---
 

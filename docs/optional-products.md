@@ -15,14 +15,18 @@ python3 scripts/setup_wizard.py --with-products
 
 ## Product matrix
 
-| Product | Enables | Required settings | Safety surface |
-|---|---|---|---|
-| ClearPass | endpoint/auth/NAD/guest workflows plus bounded Insight alerts and OnGuard agent/posture operations | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | Read/write; writes dry-run by default |
-| Juniper Mist | wireless workflows plus NAC, Marvis clients/settings/events, org inventory/claims, Wired Assurance, and WAN Assurance | `MIST_HOST`, `MIST_API_TOKEN` | Read/write; writes dry-run by default |
-| Apstra | session-authenticated blueprint, connectivity-template, application-point, anomaly, topology, and protocol workflows | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional pre-issued `APSTRA_API_TOKEN` | Read/write; writes dry-run by default |
-| ArubaOS 8 | UIDARUBA/X-CSRF session auth, operational/config exports, typed writes, and deterministic Classic/New Central migration plans | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` | Read/write; writes dry-run by default |
-| EdgeConnect | API/Swagger compatibility diagnostics plus explicitly gated legacy workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, `EDGECONNECT_ALLOW_LEGACY_API` | Legacy operational reads/writes fail closed by default; writes also dry-run by default |
-| HPE Aruba UXI | sensor/agent/group/network/service-test inventories plus guarded CRUD and assignment workflows | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Read/write; writes dry-run by default and outbound calls respect 5 requests/second |
+| Product | Read-only / read-write tools | Enables | Required settings | Safety surface |
+|---|---:|---|---|---|
+| ClearPass | 9 / 15 | endpoint/auth/NAD/guest workflows plus bounded Insight alerts and OnGuard agent/posture operations | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | Read/write; writes dry-run by default |
+| Juniper Mist | 19 / 26 | wireless workflows plus NAC, Marvis clients/settings/events, org inventory/claims, Wired Assurance, and WAN Assurance | `MIST_HOST`, `MIST_API_TOKEN` | Read/write; writes dry-run by default |
+| Apstra | 15 / 20 | session-authenticated blueprint, connectivity-template, application-point, anomaly, topology, and protocol workflows | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional pre-issued `APSTRA_API_TOKEN` | Read/write; writes dry-run by default |
+| ArubaOS 8 | 34 / 43 | UIDARUBA/X-CSRF session auth, operational/config exports, typed writes, and deterministic Classic/New Central migration plans | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` | Read/write; writes dry-run by default |
+| EdgeConnect | 32 / 49 | API/Swagger compatibility diagnostics plus explicitly gated legacy workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, `EDGECONNECT_ALLOW_LEGACY_API` | Legacy operational reads/writes fail closed by default; writes also dry-run by default |
+| HPE Aruba UXI | 13 / 25 | sensor/agent/group/network/service-test inventories plus guarded CRUD and assignment workflows | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Read/write; writes dry-run by default and outbound calls respect 5 requests/second |
+| **Optional subtotal** | **122 / 178** | Six opt-in product backends | Product-specific | Hidden and blocked unless enabled |
+
+Combined with the 270 core Aruba/GLP/RAG tools, these modes produce the
+392-tool all-product read-only catalog or the 448-tool read-write catalog.
 
 The generic GET tools reject absolute URLs and stay bounded to the configured
 product host. List-like responses are paged with `limit` and `offset` when
@@ -144,9 +148,8 @@ MCP_PORT=8010 bash scripts/run_http_router.sh
 
 ## When to add product-specific tools
 
-The starters are intentionally small. Add product-specific tools when a workflow
-is common enough to deserve a typed, named function instead of a generic GET
-call, for example:
+Keep expanding typed product tools when a workflow is common enough to deserve
+a named function instead of a generic GET call, for example:
 
 | Workflow type | Better as a typed tool? |
 |---|---|

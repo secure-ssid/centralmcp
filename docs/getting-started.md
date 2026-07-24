@@ -141,6 +141,8 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 ```
 
 This exposes only the router discovery/dispatch surface and keeps tool-list token cost low.
+The router can search 270 core tools, 392 tools in the complete read-only
+catalog, or 448 tools when guarded optional writes are enabled.
 
 ### Streamable HTTP instead of stdio
 
@@ -177,6 +179,11 @@ Plain `curl` requests are expected to fail unless they send MCP streaming
 headers such as `Accept: text/event-stream`; use an MCP client for actual tool
 calls.
 
+For a listener outside loopback, configure explicit `MCP_ALLOWED_HOSTS` and
+`MCP_ALLOWED_ORIGINS`. Set `MCP_HTTP_BEARER_TOKEN` only with
+`MCP_TRANSPORT=streamable-http`; clients must send
+`Authorization: Bearer <token>`. Bearer configuration with SSE fails closed.
+
 ## 4. Build the tool catalog
 
 ```bash
@@ -187,6 +194,13 @@ Include optional product starters:
 
 ```bash
 uv run python scripts/ingest_tools.py --products all
+```
+
+The safe default creates the 392-tool read-only catalog. Build all 448 guarded
+tools only for an intentional lab read/write profile:
+
+```bash
+CENTRALMCP_PRODUCT_ACCESS=read-write uv run python scripts/ingest_tools.py --products all
 ```
 
 Or let the wizard enable only the products you want:
@@ -201,15 +215,24 @@ to execute.
 
 ## 5. Optional: build the docs/API RAG indexes
 
-The router tool catalog is quick. The full docs/API index is larger. Fresh
-clones need either a prebuilt release index or locally populated
-`ingestion/sources/` input files before rebuilding docs/API search.
+The router tool catalog is quick. The full docs/API index is larger. Fresh clones need either a prebuilt release index or locally populated
+`ingestion/sources/` input files before rebuilding docs/API search. Structured
+OpenAPI data is written only to SQLite exact lookup; it is not embedded into the
+LanceDB prose corpus.
 
 ```bash
+uv run python ingestion/scrape_openapi.py
+uv run python ingestion/scrape_cnac_spec.py
+uv run python ingestion/fetch_mist_openapi.py
+uv run python scripts/check_openapi_drift.py
+uv run python scripts/check_mist_openapi_drift.py
 uv run python ingestion/ingest_docs.py
 ```
 
 Built indexes live under `data/` and are git-ignored.
+
+The current rebuilt snapshot contains 47,633 prose chunks and an exact API
+index with 239 specs, 3,465 endpoints, 10,297 schemas, and 57,131 fields.
 
 ## 6. Validate
 
@@ -217,7 +240,7 @@ Built indexes live under `data/` and are git-ignored.
 python3 scripts/setup_wizard.py --yes --skip-credentials --skip-catalog
 uv run python scripts/doctor.py
 uv run pytest tests/unit -q
-uv run python scripts/validate_release.py
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 448
 ```
 
 `scripts/doctor.py` is a non-mutating local setup diagnostic. It checks Python
@@ -253,11 +276,15 @@ python3 scripts/setup_wizard.py --products clearpass
 | Juniper Mist | `MIST_HOST`, `MIST_API_TOKEN` |
 | Apstra | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional pre-issued `APSTRA_API_TOKEN` |
 | ArubaOS 8 | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` |
-| EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` |
+| EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, legacy-only `EDGECONNECT_ALLOW_LEGACY_API=1` |
 | HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
 
 Set `CENTRALMCP_PRODUCT_ACCESS=read-write` only for trusted lab writes, or
 enable a single platform with `CENTRALMCP_<PLATFORM>_WRITES=1`.
+
+Run `edgeconnect_doctor` before any EdgeConnect operational workflow. The
+bundled pre-9.3 endpoint map is blocked by default; production 9.3+ remapping
+requires the target Orchestrator's current instance-hosted Swagger document.
 
 ## Safety defaults
 

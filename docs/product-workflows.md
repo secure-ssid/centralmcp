@@ -8,6 +8,17 @@ catalog out of client context until `find_tool` selects a workflow.
 Use this page as the implementation roadmap for typed tools that should graduate
 from generic GET exploration into named MCP workflows.
 
+## Catalog snapshot
+
+| Surface | Tool count |
+|---|---:|
+| Core Central configuration, monitoring, NAC, and operations | 226 |
+| GreenLake Platform | 41 |
+| RAG/OpenAPI | 3 |
+| Optional products, read-only | 122 |
+| Optional products, guarded writes included | 178 |
+| **Complete read-write catalog** | **448** |
+
 ## Promotion rule
 
 Promote a generic GET pattern to a typed tool when it is:
@@ -27,6 +38,9 @@ Promote a generic GET pattern to a typed tool when it is:
 | Reporting status | `list_glp_reporting_statuses` / `get_glp_reporting_status` | Bounded reporting status lookup from `/reporting/v1/statuses` |
 | Service catalog | `list_glp_service_offers` / `get_glp_service_offer` / `list_glp_service_provisions` / `get_glp_service_provision` | Cursor-bounded service catalog read workflows, including optional workspace header for service provisions |
 | Service managers | `list_glp_service_managers` / `get_glp_service_manager` / `list_glp_service_manager_provisions` / `get_glp_service_manager_provision` / `list_glp_per_region_service_managers` / `get_glp_service_managers_for_region` | Official service-manager and per-region service-manager views |
+| v2beta1 devices and groups | `list_glp_devices_v2` / `get_glp_device_v2` / `list_glp_device_groups` / `get_glp_device_group` | Current device inventory and group workflows |
+| Audit Logs v2beta1 | `list_glp_audit_logs_v2` / `get_glp_audit_log_v2` / `get_glp_audit_log_v2_detail` | Bounded audit event search and detail |
+| Workspace contact and subscriptions | `update_glp_workspace_contact` / `glp_add_subscriptions` | Feature-gated writes with dry-run and confirmation |
 
 ## ClearPass implemented starters
 

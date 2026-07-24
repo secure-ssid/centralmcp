@@ -14,6 +14,8 @@ uv run python scripts/doctor.py
 
 3. Check [troubleshooting](docs/troubleshooting.md) for setup, credentials,
    HTTP mode, router catalog, and GitHub Pages deployment notes.
+4. Review the [0.3.0 release notes](docs/release-notes-0.3.0.md) for current
+   platform coverage, API-source changes, and compatibility limits.
 
 ## Where to ask
 

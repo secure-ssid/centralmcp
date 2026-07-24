@@ -29,6 +29,9 @@ body:
         - EdgeConnect
         - HPE Aruba UXI
         - RAG/OpenAPI lookup
+        - AOS8 migration or compatibility mapping
+        - API source ingestion or drift checks
+        - MCP transport, authentication, or safety
         - Setup wizard or docs
         - Other
     validations:

@@ -8,6 +8,8 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 ```
 
 This exposes only `find_tool`, `invoke_read_tool`, and `invoke_tool` in minimal mode while still letting the router reach the backend catalog on demand.
+The catalog can contain 270 core tools, 392 tools with every optional product
+read-only, or 448 tools with guarded optional writes.
 
 ## Pick a connection style
 
@@ -87,6 +89,18 @@ HTTP helper safely loads expected local `.env` assignments first, so optional
 products selected in the wizard are available to the router process. Its startup
 banner prints the selected products and `CENTRALMCP_PRODUCT_ACCESS` mode so lab
 write visibility is obvious before connecting a client.
+
+For non-loopback HTTP, configure explicit host and origin allow-lists:
+
+```env
+MCP_ALLOWED_HOSTS=mcp.example.test
+MCP_ALLOWED_ORIGINS=https://client.example.test
+MCP_HTTP_BEARER_TOKEN=replace-with-a-long-random-value
+```
+
+The client must send `Authorization: Bearer <token>`. Static bearer protection
+is supported only with `streamable-http`; configuring it with SSE refuses
+startup.
 
 ## Optional product clients
 

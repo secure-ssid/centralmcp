@@ -26,8 +26,11 @@ body:
         - MCP router
         - Aruba Central tools
         - GreenLake Platform tools
+        - ArubaOS 8 migration
+        - ClearPass, Mist, Apstra, EdgeConnect, or UXI
         - Optional product starters
         - RAG/OpenAPI lookup
+        - API source drift or ingestion
         - GitHub Pages or documentation
         - Other
     validations:

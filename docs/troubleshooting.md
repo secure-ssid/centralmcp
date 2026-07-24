@@ -53,7 +53,7 @@ http://127.0.0.1:8010/mcp
 | Client URL does not match the server | Update `.mcp.http.json` if you changed `MCP_HOST` or `MCP_PORT`. |
 | Non-loopback HTTP startup is refused | Set explicit non-wildcard `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`. Add `MCP_HTTP_BEARER_TOKEN` when the listener is reachable outside the local host. |
 | Health probe needed without MCP negotiation | Request `/livez`, `/readyz`, or `/healthz`; these do not call vendor APIs. |
-| HTTP client receives `401` | Include `Authorization: Bearer <MCP_HTTP_BEARER_TOKEN>` when the shared HTTP token is enabled. |
+| HTTP client receives `401` | Include `Authorization: Bearer <token>` when the shared HTTP token is enabled. |
 | SSE startup is refused when a bearer token is set | Static bearer enforcement is supported only by `streamable-http`; switch `MCP_TRANSPORT` or unset the token. The server fails closed rather than starting an apparently protected SSE listener. |
 
 ## API source and RAG freshness
@@ -75,14 +75,17 @@ uv run python ingestion/ingest_docs.py
 | Drift checker exits 2 | No `ingestion/openapi_registry_manifest.json` exists yet; run the OpenAPI scrapers first. |
 | Drift checker exits 1 | Vendor specs or page pointers changed; refresh sources, rebuild indexes, and rerun the checker. |
 | `lookup_api` returns an older path/version | Rebuild `data/specs.sqlite` after refreshing the registry specs. |
+| macOS docs rebuild stalls in fastembed multiprocessing | Current `ingest_docs.py` automatically disables subprocess parallelism on macOS. Stop any older stale rebuild by exact PID, update the checkout, and rerun the command. |
+| Docs index is larger because OpenAPI JSON was embedded | Rebuild with the current ingestion path. OpenAPI records now remain in SQLite only; the released prose corpus contains 47,633 chunks. |
 
 ## Optional product compatibility
 
 | Symptom | Fix |
 |---|---|
-| AOS8 rejects Bearer auth | Configure `AOS8_USERNAME` and `AOS8_PASSWORD`; the backend will establish a UIDARUBA/X-CSRF session. |
-| Apstra rejects Bearer auth | Configure `APSTRA_USERNAME` and `APSTRA_PASSWORD`, or supply a pre-issued `APSTRA_API_TOKEN`; requests use the `AuthToken` header. |
+| AOS8 session authentication fails | Configure `AOS8_USERNAME` and `AOS8_PASSWORD`; the backend establishes a UIDARUBA/X-CSRF session and retries once after an unauthorized response. |
+| Apstra session authentication fails | Configure `APSTRA_USERNAME` and `APSTRA_PASSWORD`, or supply a pre-issued `APSTRA_API_TOKEN`; requests use the `AuthToken` header. |
 | EdgeConnect operational tool reports `blocked` | Run `edgeconnect_doctor`. The bundled pre-9.3 endpoint map is disabled unless `EDGECONNECT_ALLOW_LEGACY_API=1` is explicitly set for a validated older/lab instance; production 9.3+ use requires the target Swagger spec. |
+| Central troubleshooting endpoint returns 404 | The client tries `/network-troubleshooting/v1` first and falls back to `v1alpha1` only on 404. Set `CENTRALMCP_TROUBLESHOOTING_API_VERSION=v1alpha1` only for a tenant that still requires the legacy path. |
 
 ## Router and catalog
 
@@ -109,6 +112,13 @@ If `find_tool` cannot locate expected optional product tools, confirm
 `CENTRALMCP_PRODUCTS` and the catalog were built with the same selected
 products.
 
+The all-product read-only catalog contains 392 tools. If release validation
+expects all 448 guarded tools, rebuild with:
+
+```bash
+CENTRALMCP_PRODUCT_ACCESS=read-write uv run python scripts/ingest_tools.py --products all
+```
+
 ## First useful call flow
 
 ```text
@@ -125,3 +135,4 @@ intend to run a write/destructive backend tool.
 |---|---|
 | Pages build succeeds but deploy fails with `due to in progress deployment` | Wait for the earlier Pages deployment to complete and confirm the Pages API is no longer `building`, then rerun the failed workflow or push a follow-up commit. This is a transient GitHub Pages deployment queue race, not a docs/Jekyll build failure. |
 | A rerun stays `queued` with no jobs after the live site is `built` | Cancel that exact stuck rerun before pushing again so a stale Pages queue entry does not stack another deployment race. |
+| Push is rejected while changing `.github/workflows/ci.yml` | The active GitHub token needs repository write access and the OAuth `workflow` scope. Run `gh auth refresh --hostname github.com --scopes workflow`, complete the device authorization, then retry `git push origin main`. |

@@ -100,6 +100,51 @@ invoke_read_tool("list_devices", {"device_type": "AP", "site_id": "SITE_ID", "li
 find_tool("device health by serial number")
 ```
 
+## Review configuration checkpoint behavior
+
+New Central exposes checkpoint policy and automatic rollback status guidance,
+not an API for selecting and restoring an arbitrary historical checkpoint.
+
+```text
+Explain Central checkpoint and rollback behavior, then preview a checkpoint
+policy for my gateway scope without applying it.
+```
+
+```text
+find_tool("configuration rollback status")
+invoke_read_tool("get_config_rollback_status", {})
+find_tool("build configuration checkpoint policy")
+invoke_tool("build_config_checkpoint_policy", {"name": "gateway-checkpoints", "scope_id": "SCOPE_ID", "device_function": "GATEWAY", "dry_run": true})
+```
+
+## Plan an AOS8 migration
+
+```text
+Export the AOS8 configuration at /md, normalize the migration objects, and
+build separate Classic Central and New Central plans. Show warnings and diffs;
+do not write to either target.
+```
+
+```text
+find_tool("AOS8 Classic New Central migration plan")
+invoke_read_tool("aos8_migration_plan", {"config_path": "/md", "limit": 200})
+```
+
+The plan covers WLANs, roles, VLANs, AP groups, controllers, and policies and
+preserves export or malformed-section warnings.
+
+## Inspect GLP device groups
+
+```text
+List GreenLake Platform device groups using the v2beta1 API and keep the output
+to the first 25 groups.
+```
+
+```text
+find_tool("GLP v2beta1 device groups")
+invoke_read_tool("list_glp_device_groups", {"limit": 25, "offset": 0})
+```
+
 ## Optional products
 
 Optional product starters are disabled unless you enable them:
@@ -149,6 +194,18 @@ find_tool("UXI list sensors")
 invoke_read_tool("uxi_list_sensors", {"page_size": 10})
 find_tool("UXI sensor status")
 invoke_read_tool("uxi_get_sensor_status", {"sensor_id": "SENSOR_ID"})
+```
+
+EdgeConnect compatibility prompt:
+
+```text
+Run the EdgeConnect API compatibility doctor. Do not enable legacy endpoints
+or run operational calls.
+```
+
+```text
+find_tool("EdgeConnect Swagger compatibility doctor")
+invoke_read_tool("edgeconnect_doctor", {})
 ```
 
 Lab write dry-run prompt:

@@ -60,6 +60,19 @@ This keeps the tool list small while still covering the common Central, GLP, and
 
 If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and includes convenience wrappers. Keep `minimal` in MCP client configs when token surface matters.
 
+## Catalog size
+
+| Profile | Tools indexed |
+|---|---:|
+| Core Aruba/GLP/RAG | 270 |
+| All products with read-only optional access | 392 |
+| All products with guarded optional writes | 448 |
+
+The complete read/write catalog contains 75 configuration, 77 monitoring, 34
+NAC, 40 operations, 41 GLP, 3 RAG, 15 ClearPass, 26 Mist, 20 Apstra, 43 AOS8,
+49 EdgeConnect, and 25 UXI tools. Minimal mode does not expose that full schema
+surface to the MCP client; it searches the catalog on demand.
+
 ## Toolsets
 
 | Toolset | Enables |
@@ -83,7 +96,7 @@ CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
 CENTRALMCP_PRODUCT_ACCESS=read-only
 ```
 
-The optional product starters intentionally expose a small lab-friendly surface:
+The optional product backends expose an opt-in, lab-friendly surface:
 
 - `<product>_status`
 - guarded `<product>_get`
@@ -110,6 +123,10 @@ Unrecognized manual access-mode values fail closed as read-only.
 
 Use `CENTRALMCP_<PLATFORM>_WRITES=1` for a narrower per-platform override when
 one optional backend needs write access without enabling all optional writes.
+
+Set `CENTRALMCP_TOKENIZE_SECRETS=1` to install the optional session-scoped
+secret-tokenization middleware. Plaintext values remain in bounded TTL vaults
+instead of being repeated through model-visible tool arguments and results.
 
 ## Why `invoke_tool` is destructive
 

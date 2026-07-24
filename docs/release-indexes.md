@@ -3,6 +3,22 @@
 The core router catalog is quick to build locally. The full docs/API RAG index is
 larger, so public releases can include a prebuilt archive.
 
+## Current 0.3.0 snapshot
+
+| Artifact content | Count |
+|---|---:|
+| LanceDB prose chunks | 47,633 |
+| SQLite OpenAPI specs | 239 |
+| Exact endpoints | 3,465 |
+| Schemas | 10,297 |
+| Fields | 57,131 |
+| Read-only tool catalog | 392 |
+| Read-write tool catalog | 448 |
+
+OpenAPI documents are parsed only into SQLite exact lookup. They are not
+embedded into LanceDB, which keeps prose retrieval smaller and avoids lossy
+semantic matching for endpoint paths, fields, and enum values.
+
 ## Download indexes
 
 ```bash
@@ -112,6 +128,10 @@ The New Central techdocs host can block plain HTTP clients, so use the paced
 Playwright scraper (`ingestion/scrape_techdocs_pw.py`) when refreshing that
 source. Do not commit scraped content; rebuild `data/docs.lance` and package the
 index archive instead.
+
+On macOS, `ingestion/ingest_docs.py` disables fastembed subprocess parallelism
+to avoid forkserver deadlocks. The rebuild remains batched but runs in one
+process. Linux release builders may use the normal parallel path.
 
 Aruba's July 2026 ReadMe SuperHub migration retired the former internal-UI JSON
 spec source and the embedded `oasDefinition` page blob. The current scrapers

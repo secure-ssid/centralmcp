@@ -14,15 +14,19 @@ flowchart LR
     specs["data/specs.sqlite<br/>exact OpenAPI lookup"]
     core["Core Aruba servers<br/>monitoring, config, ops, nac, glp"]
     optional["Optional product starters<br/>clearpass, mist, apstra,<br/>aos8, edgeconnect, uxi"]
+    middleware["Safety middleware<br/>write gates, response bounds,<br/>secret tokenization, rate metadata"]
+    sources["Tracked API sources<br/>Aruba ReadMe registries<br/>official Mist OpenAPI"]
     apis["External APIs<br/>Aruba Central, GreenLake,<br/>optional products"]
 
     client -->|"stdio or streamable HTTP"| router
     router -->|"find_tool"| catalog
     router -->|"invoke_read_tool / invoke_tool"| core
     router -->|"opt-in"| optional
+    router --> middleware
     router -->|"RAG toolset"| rag
     rag --> docs
     rag --> specs
+    sources --> specs
     core -->|"async httpx REST"| apis
     optional -->|"async httpx REST"| apis
 ```
@@ -39,6 +43,12 @@ Optional products are disabled until explicitly enabled:
 ```env
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi
 ```
+
+The current catalog contains 270 core tools, 392 tools with every optional
+product in read-only mode, and 448 tools with guarded optional writes. Minimal
+router mode exposes only the compact discovery/dispatch surface to the client.
+
+![centralmcp platform and tool coverage](../assets/platform-coverage.svg)
 
 ## Tool discovery and dispatch
 
@@ -148,3 +158,21 @@ ingestion/markdown*/
 The optional Redis/Ollama Docker helper uses Docker named volumes for service
 state, so it does not create repo-local `redis_data/` or `ollama_data/`
 directories on new setups.
+
+## Migration and API provenance
+
+The AOS8 migration path is separate from the generic eight-stage CSV pipeline.
+It establishes UIDARUBA/X-CSRF sessions, exports WLANs, roles, VLANs, AP groups,
+controllers, and policies, normalizes those objects, and produces separate
+Classic Central and New Central candidates with warnings, deterministic diffs,
+and read-only verification plans.
+
+OpenAPI inputs are reproducible:
+
+- Aruba reference pages resolve `oasPublicUrl` through 25 tracked ReadMe API
+  registries.
+- Mist API version 2606.1.1 is pinned from the official
+  `mistsys/mist_openapi` repository and SHA-256 verified.
+- Weekly CI checks detect registry hash or Mist upstream drift.
+- Structured OpenAPI records are stored only in `data/specs.sqlite`; the
+  47,633-row LanceDB table remains a prose retrieval corpus.

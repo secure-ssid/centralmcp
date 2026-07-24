@@ -19,10 +19,16 @@
     <loc>https://secure-ssid.github.io/centralmcp/tool-router.html</loc>
   </url>
   <url>
+    <loc>https://secure-ssid.github.io/centralmcp/tool-catalog.html</loc>
+  </url>
+  <url>
     <loc>https://secure-ssid.github.io/centralmcp/example-prompts.html</loc>
   </url>
   <url>
     <loc>https://secure-ssid.github.io/centralmcp/release-indexes.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/release-notes-0.3.0.html</loc>
   </url>
   <url>
     <loc>https://secure-ssid.github.io/centralmcp/troubleshooting.html</loc>

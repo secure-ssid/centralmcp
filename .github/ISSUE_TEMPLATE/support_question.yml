@@ -18,8 +18,11 @@ body:
         - MCP client configuration
         - Streamable HTTP mode
         - Router/tool discovery
+        - Aruba Central or GreenLake Platform
+        - AOS8 migration planning
         - Optional product starters
         - RAG/OpenAPI lookup
+        - API source drift or index rebuild
         - GitHub Pages or documentation
         - Other
     validations:

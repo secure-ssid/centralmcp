@@ -15,9 +15,11 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | [optional-products.md](optional-products.md) | Optional product matrix, wizard behavior, env vars, and safety surface |
 | [product-workflows.md](product-workflows.md) | Typed ClearPass/Mist/Apstra/AOS8/EdgeConnect/UXI workflow roadmap |
 | [release-indexes.md](release-indexes.md) | Download, package, and release prebuilt RAG/OpenAPI indexes |
+| [release-notes-0.3.0.md](release-notes-0.3.0.md) | Complete 0.3.0 platform, migration, safety, and API-source changes |
 | [troubleshooting.md](troubleshooting.md) | Setup wizard, credentials, HTTP mode, router catalog, GitHub Pages deploys, and first-call fixes |
 | [example-prompts.md](example-prompts.md) | Practical low-token prompt examples and router call patterns |
 | [tool-router.md](tool-router.md) | Low-token router modes, toolsets, optional products, and safe dispatch |
+| [tool-catalog.md](tool-catalog.md) | Per-backend counts, capability families, build modes, and safety notes |
 | [architecture/system-overview.md](architecture/system-overview.md) | End-to-end MCP architecture diagrams and runtime flow |
 | [architecture/RAG-ARCHITECTURE.md](architecture/RAG-ARCHITECTURE.md) | Embedded RAG design, eval results, and migration rationale |
 
@@ -38,6 +40,7 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | `scripts/setup_wizard.py` | Guided install, Central region, credentials, optional products, MCP configs, catalog, and doctor |
 | `scripts/download_indexes.py` | Restore prebuilt docs/API/tool indexes from GitHub Releases |
 | `scripts/package_indexes.py` | Package local indexes for a GitHub Release asset |
+| `scripts/check_openapi_drift.py` / `scripts/check_mist_openapi_drift.py` | Detect Aruba ReadMe registry and official Mist OpenAPI changes |
 | `scripts/run_http_router.sh` | Start the minimal router over streamable HTTP |
 | `docker-compose.yml` | Optional localhost-only Redis/Ollama server backend for power users |
 | `scripts/doctor.py` | Check local setup without making API calls |
@@ -66,6 +69,9 @@ uv run python scripts/ingest_tools.py
 # Include optional product starters in the tool catalog
 uv run python scripts/ingest_tools.py --products all
 
+# Include every guarded optional write tool (448 total)
+CENTRALMCP_PRODUCT_ACCESS=read-write uv run python scripts/ingest_tools.py --products all
+
 # Start the model-agnostic HTTP MCP router
 MCP_PORT=8010 bash scripts/run_http_router.sh
 
@@ -76,7 +82,7 @@ uv run python scripts/doctor.py
 uv run pytest tests/unit -q
 
 # Run the full local release gate
-uv run python scripts/validate_release.py
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 448
 ```
 
 The wizard can run `uv sync`, choose common Central API gateways, fill secrets
