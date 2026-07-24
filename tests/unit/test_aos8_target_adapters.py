@@ -733,6 +733,62 @@ def test_classic_wpa3_personal_requires_passphrase_presence_signal():
     assert "wpa_passphrase" in action["unsupported_warnings"][0]
 
 
+def test_classic_wpa3_personal_read_back_rejects_transition_enabled_false_success():
+    # Regression: WPA3-Personal is only verified with transition mode
+    # disabled. A write that "succeeds" but whose read-back reports
+    # `opmode_transition_disable: False` (transition still enabled, or the
+    # target silently left it at its own default) must never be marked
+    # "applied" -- the read-back expectation on this field is what catches
+    # that false-success case.
+    wlan = _wpa3_personal_wlan(name="Secure", vlan=30)
+    backend = FakeBackend(
+        reads={
+            "central_api_read_back": {
+                "wlan": {
+                    "name": "Secure",
+                    "essid": "Secure",
+                    "opmode": "wpa3-sae-aes",
+                    "opmode_transition_disable": False,
+                    "vlan": "30",
+                }
+            }
+        }
+    )
+    adapter = classic_adapter(
+        backend, secrets={"wlan:Secure": {"wpa_passphrase": "actual-secret"}}
+    )
+    result = adapter.execute([wlan], dry_run=False, confirmation=True)
+    outcome = result["results"][0]
+    assert outcome["status"] == "failed"
+    assert any(
+        "opmode_transition_disable=True" in error and "not confirmed" in error
+        for error in outcome["errors"]
+    )
+
+
+def test_classic_wpa3_personal_read_back_confirms_transition_disabled_true_marks_applied():
+    wlan = _wpa3_personal_wlan(name="Secure", vlan=30)
+    backend = FakeBackend(
+        reads={
+            "central_api_read_back": {
+                "wlan": {
+                    "name": "Secure",
+                    "essid": "Secure",
+                    "opmode": "wpa3-sae-aes",
+                    "opmode_transition_disable": True,
+                    "vlan": "30",
+                }
+            }
+        }
+    )
+    adapter = classic_adapter(
+        backend, secrets={"wlan:Secure": {"wpa_passphrase": "actual-secret"}}
+    )
+    result = adapter.execute([wlan], dry_run=False, confirmation=True)
+    outcome = result["results"][0]
+    assert outcome["status"] == "applied"
+
+
 # --------------------------------------------------------------------------
 # Classic Central: WPA3-Enterprise (conditional/dry-run-only, requires an
 # explicit already-existing auth-server reference)

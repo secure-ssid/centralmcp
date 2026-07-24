@@ -1812,6 +1812,15 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
             read_back_expectations={
                 "essid": name,
                 "opmode": "wpa3-sae-aes",
+                # WPA3-Personal is verified only with transition mode
+                # disabled (contract matrix §6.2: a WPA2/WPA3 mixed-
+                # transition personal WLAN remains unsupported without live
+                # goldens). A write that "succeeds" but reports transition
+                # mode enabled/absent on read-back is not the verified
+                # configuration this mapping claims to apply, so it must
+                # never be marked "applied" -- this expectation is what
+                # catches that false-success case.
+                "opmode_transition_disable": True,
                 "vlan": str(vlan),
             },
             rollback_operations=[delete],
