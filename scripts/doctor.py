@@ -136,28 +136,29 @@ def _router_env_checks(data: dict[str, object]) -> list[Check]:
     mode = env.get("CENTRALMCP_ROUTER_MODE")
     toolsets = env.get("CENTRALMCP_TOOLSETS")
     products = env.get("CENTRALMCP_PRODUCTS")
+    valid_modes = {"minimal", "default", "direct"}
     checks = [
         Check(
-            "OK" if mode == "minimal" else "WARN",
+            "OK" if mode in valid_modes else "WARN",
             "Local stdio router mode",
-            "CENTRALMCP_ROUTER_MODE is minimal"
-            if mode == "minimal"
-            else "set CENTRALMCP_ROUTER_MODE=minimal for low-token clients",
+            f"CENTRALMCP_ROUTER_MODE is {mode}"
+            if mode in valid_modes
+            else "set CENTRALMCP_ROUTER_MODE to minimal, default, or direct",
         ),
         Check(
-            "OK" if toolsets == "central,glp,rag" else "WARN",
+            "OK" if toolsets in {"central,glp,rag", "all"} else "WARN",
             "Local stdio router toolsets",
-            "CENTRALMCP_TOOLSETS is central,glp,rag"
-            if toolsets == "central,glp,rag"
-            else "set CENTRALMCP_TOOLSETS=central,glp,rag for the default low-token profile",
+            f"CENTRALMCP_TOOLSETS is {toolsets}"
+            if toolsets in {"central,glp,rag", "all"}
+            else "set CENTRALMCP_TOOLSETS=central,glp,rag or all",
         ),
     ]
     if products:
         checks.append(
             Check(
-                "WARN",
+                "OK",
                 "Local stdio optional products",
-                "CENTRALMCP_PRODUCTS is set; optional products increase tool catalog scope",
+                f"CENTRALMCP_PRODUCTS={products!r}",
             )
         )
     return checks
@@ -509,10 +510,11 @@ def _runtime_checks() -> list[Check]:
     toolsets = os.getenv("CENTRALMCP_TOOLSETS")
     mode = os.getenv("CENTRALMCP_ROUTER_MODE")
 
+    valid_modes = {"minimal", "default", "direct"}
     mode_detail = (
         "unset in this shell; committed MCP client examples set 'minimal'"
         if mode is None
-        else f"CENTRALMCP_ROUTER_MODE={mode!r}; use 'minimal' for low-token clients"
+        else f"CENTRALMCP_ROUTER_MODE={mode!r}"
     )
     toolsets_detail = (
         "unset in this shell; committed MCP client examples set 'central,glp,rag'"
@@ -523,21 +525,21 @@ def _runtime_checks() -> list[Check]:
     unknown_products = sorted(set(_csv_values(products)) - set(OPTIONAL_PRODUCT_ENVS))
     checks = [
         Check(
-            "OK" if mode in (None, "minimal") else "WARN",
+            "OK" if mode is None or mode in valid_modes else "WARN",
             "Router mode",
             mode_detail,
         ),
         Check(
-            "OK" if toolsets in (None, "central,glp,rag") else "WARN",
+            "OK" if toolsets in (None, "central,glp,rag", "all") else "WARN",
             "Router toolsets",
             toolsets_detail,
         ),
         Check(
-            "OK" if not products else "WARN",
+            "OK",
             "Optional products",
             "disabled by default"
             if not products
-            else f"CENTRALMCP_PRODUCTS={products!r}; optional backends increase tool catalog scope",
+            else f"CENTRALMCP_PRODUCTS={products!r}",
         ),
         _product_access_check(product_access),
         Check(

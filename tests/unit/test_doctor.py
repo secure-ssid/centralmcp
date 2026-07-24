@@ -55,6 +55,18 @@ def test_doctor_reports_unset_product_access_as_read_only(monkeypatch):
     )
 
 
+def test_doctor_accepts_direct_full_catalog_mode(monkeypatch):
+    monkeypatch.setenv("CENTRALMCP_ROUTER_MODE", "direct")
+    monkeypatch.setenv("CENTRALMCP_TOOLSETS", "all")
+    monkeypatch.setenv("CENTRALMCP_PRODUCTS", "mist")
+
+    checks = {check.name: check for check in doctor._runtime_checks()}
+
+    assert checks["Router mode"].status == "OK"
+    assert checks["Router toolsets"].status == "OK"
+    assert checks["Optional products"].status == "OK"
+
+
 def test_doctor_source_manifest_matches_ingest_sources():
     checks = {check.name: check for check in doctor._source_manifest_checks()}
 
