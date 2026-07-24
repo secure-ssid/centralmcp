@@ -456,3 +456,6 @@ This is an independent community project. It is not an official HPE or HPE Aruba
 ## License
 
 MIT - see [LICENSE](LICENSE).
+
+Generated API metadata and upstream implementation references are documented in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
