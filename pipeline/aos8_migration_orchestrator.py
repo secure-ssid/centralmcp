@@ -186,7 +186,7 @@ def _sanitize(
     structural_redact_marker: str = "******",
     max_depth: int = 8,
     _depth: int = 0,
-    _compiled_secrets: dict[str, re.Pattern[str]] | None = None,
+    _compiled_secrets: dict[str, "_SecretMatcher"] | None = None,
 ) -> Any:
     """Sanitize `value` for return/persistence across two independent
     redaction channels:
@@ -194,9 +194,10 @@ def _sanitize(
     - `secret_values`: actual runtime secrets (credentials, passphrases,
       shared secrets a caller supplied for a real apply/write). A real
       secret must never survive in any form it might appear in, so each
-      secret is matched directly against the text with a single linear
-      regex (`_compile_secret_pattern`) that treats every character of
-      the secret as *either* its raw literal form, *or* its UTF-8
+      secret is matched directly against the text with a single linear,
+      regex-free scan (`_compile_secret_pattern` / `_SecretMatcher`) that
+      treats every character of the secret as *either* its raw literal
+      form, *or* its UTF-8
       percent-encoded byte sequence with every hex digit independently
       case-insensitive, *or* (for a space) a literal `+` (form
       encoding) -- so it matches arbitrary mixtures of raw and encoded
@@ -252,22 +253,25 @@ def _sanitize(
       component that is an exact structural operator-context match
       *and* another component (or an embedded fragment) that holds an
       actual runtime secret; both channels must run over the same string
-      so neither leaks. The `secret_values` regex pass always runs
+      so neither leaks. The `secret_values` scan pass always runs
       afterward, over the (possibly structurally-modified) text, so a
       credential elsewhere in the URL/string -- raw, percent-encoded, or
       form-encoded -- is still caught.
 
     `_compiled_secrets` is private/internal (leading underscore, like
     `_depth`): callers never pass it. Each *top-level* call (`_depth == 0`,
-    identified by `_compiled_secrets is None`) compiles every distinct
-    secret's linear regex exactly once via `_compile_secret_pattern`,
-    then threads the already-compiled `dict[secret, pattern]` down through
-    every recursive call in this call tree, so a leaf never recompiles a
-    pattern another leaf already built for the same secret. This is scoped
-    to a single call/request -- built fresh on this stack, discarded when
-    `_sanitize` returns, never stored on a module-level cache -- so no
-    compiled pattern (and no raw secret it was built from) outlives the
-    call that needed it.
+    identified by `_compiled_secrets is None`) builds every distinct
+    secret's linear `_SecretMatcher` exactly once via
+    `_compile_secret_pattern`, then threads the already-built
+    `dict[secret, matcher]` down through every recursive call in this call
+    tree, so a leaf never rebuilds a matcher another leaf already built
+    for the same secret. This is scoped to a single call/request -- built
+    fresh on this stack, discarded when `_sanitize` returns, never stored
+    on a module-level cache -- so no matcher (and no raw secret it was
+    built from) outlives the call that needed it. `_SecretMatcher` is a
+    plain Python object, never a compiled `re.Pattern`: no secret-derived
+    regex, cache, or global object is ever produced anywhere in this
+    module (see `_SecretMatcher`'s docstring for why).
     """
     secrets = tuple(secret for secret in secret_values if secret)
     structural_secrets = tuple(
@@ -353,24 +357,28 @@ def _sanitize(
         # falls through to the `secret_values` substring pass below on
         # whatever `_redact_url_structural` returns.
         text = _redact_url_structural(text, structural_secret_set, structural_redact_marker)
-        # Actual secrets: one linear regex per secret
-        # (`_compile_secret_pattern`, compiled once per secret for this
-        # top-level `_sanitize` call -- see `compiled_secrets` above --
-        # and reused here rather than recompiled per leaf), applied
-        # directly to the (possibly structurally-modified) text as plain
-        # pattern matching. Each character of the secret is matched as
-        # its raw literal form, its UTF-8 percent-encoded byte sequence
-        # (every hex digit independently case-insensitive), or -- for a
-        # space -- a literal `+` (form encoding), so a single pass
-        # catches any mixture of raw/encoded characters and any
-        # per-escape case mixing, whether the secret is a whole leaf, a
-        # URL/query/fragment component, embedded inside a longer backend
-        # error/result message, or inside a URL string that is itself
-        # embedded in a longer message. This never decodes/re-encodes a
-        # parsed URL or any surrounding prose -- it is a direct regex
-        # substitution over the literal text -- so it cannot corrupt an
-        # absolute URL embedded in prose, or any unrelated text around
-        # a match.
+        # Actual secrets: one linear, regex-free `_SecretMatcher` per
+        # secret (`_compile_secret_pattern`, built once per secret for
+        # this top-level `_sanitize` call -- see `compiled_secrets`
+        # above -- and reused here rather than rebuilt per leaf),
+        # applied directly to the (possibly structurally-modified) text
+        # via `_SecretMatcher.sub`, a plain-string scan/replace -- never
+        # an `re.compile`d pattern. Each character of the secret is
+        # matched as its raw literal form, its UTF-8 percent-encoded
+        # byte sequence (every hex digit independently case-
+        # insensitive), or -- for a space -- a literal `+` (form
+        # encoding), so a single left-to-right scan catches any mixture
+        # of raw/encoded characters and any per-escape case mixing,
+        # whether the secret is a whole leaf, a URL/query/fragment
+        # component, embedded inside a longer backend error/result
+        # message, or inside a URL string that is itself embedded in a
+        # longer message. This never decodes/re-encodes a parsed URL or
+        # any surrounding prose -- it is a direct scan/replace over the
+        # literal text -- so it cannot corrupt an absolute URL embedded
+        # in prose, or any unrelated text around a match. The whole text
+        # is scanned in full before any truncation -- see `_sanitize`'s
+        # module-level note on `_SecretMatcher` -- so a secret can never
+        # hide past a truncation boundary applied *before* this pass.
         for secret in secrets:
             text = compiled_secrets[secret].sub(redact_marker, text)
         if len(text) > 1000:
@@ -379,79 +387,182 @@ def _sanitize(
     return value
 
 
-def _hex_digit_pattern(digit: str) -> str:
-    """Return a regex fragment matching one hex digit of a `%XX` escape:
-    case-insensitively (`[Ff]`) when `digit` is a letter (A-F, since hex
-    letters are the only part of a percent escape that has a case at
-    all), or the literal digit itself (0-9 has no case)."""
-    if digit.isalpha():
-        return f"[{digit.upper()}{digit.lower()}]"
-    return re.escape(digit)
-
-
-def _percent_encoded_char_pattern(char: str) -> str:
-    """Return a regex fragment matching the UTF-8 percent-encoded byte
-    sequence for `char`, with every hex digit independently case-
-    insensitive -- so `%2f`, `%2F`, and any other per-digit case
-    mixture all match the same fragment. A multi-byte (non-ASCII)
-    character yields one concatenated `%XX` per UTF-8 byte, so a
-    Unicode secret character is matched the same way a backend would
-    actually percent-encode it.
+def _percent_encoded_char_literal(char: str) -> str:
+    """Return the canonical (upper-case hex) UTF-8 percent-encoded byte
+    sequence for `char` as a plain literal string -- one `%XX` per UTF-8
+    byte, e.g. `%2F` for `/` or `%C3%A9` for `é`. This is never a regex
+    fragment: `_secret_match_end` compares it against the corresponding
+    slice of scanned text with `.upper()` applied to that slice, so any
+    per-escape mixture of upper-/lower-case hex digits (`%2f`, `%2F`, or
+    a mix within the same string) matches this one canonical literal
+    without enumerating every case combination or building a character
+    class.
     """
-    pieces = []
-    for byte in char.encode("utf-8"):
-        hex_digits = f"{byte:02X}"
-        pieces.append("%" + "".join(_hex_digit_pattern(d) for d in hex_digits))
-    return "".join(pieces)
+    return "".join(f"%{byte:02X}" for byte in char.encode("utf-8"))
 
 
-def _secret_char_pattern(char: str) -> str:
-    """Return a regex fragment matching a single secret character as
-    either: the raw literal character; its UTF-8 percent-encoded byte
-    sequence, with any mixture of upper/lower-case hex digits (see
-    `_percent_encoded_char_pattern`); or, only for a space, also a
-    literal `+` (form encoding). The alternatives are mutually
-    exclusive by construction -- a literal character can never begin
-    with the `%` that starts the percent-encoded alternative -- so
-    there is no ambiguity for the regex engine to backtrack over.
+def _secret_char_pattern(char: str) -> tuple[str, ...]:
+    """Return the literal alternative representations for one secret
+    character: the raw literal character itself, its UTF-8 percent-
+    encoded byte sequence (see `_percent_encoded_char_literal`), and --
+    only for a space -- also a literal `+` (form encoding).
+
+    These are plain strings, never a regex fragment or a compiled
+    pattern -- `_compile_secret_pattern` walks a request-local tuple of
+    these alternatives per character with direct string comparisons
+    (`_secret_match_end`), so no secret-derived regex, `re.compile`
+    call, or character class is ever produced anywhere in this module.
+
+    The raw-literal and percent-encoded alternatives are mutually
+    exclusive for any ordinary secret character -- a literal character
+    can never begin with the `%` that starts the percent-encoded
+    alternative -- but `_secret_match_end` still explores every
+    alternative at each character position as a small, deduplicated
+    frontier (never a first-alternative-wins guess), so a secret whose
+    literal text itself contains `%` is still matched correctly without
+    needing to backtrack into the ones not chosen first.
     """
-    alternatives = [re.escape(char), _percent_encoded_char_pattern(char)]
+    alternatives = (char, _percent_encoded_char_literal(char))
     if char == " ":
-        alternatives.append(re.escape("+"))
-    return "(?:" + "|".join(alternatives) + ")"
+        return (*alternatives, "+")
+    return alternatives
 
 
-def _compile_secret_pattern(secret: str) -> re.Pattern[str]:
-    """Compile a regex matching `secret` against arbitrary mixtures of
-    raw and percent-/form-encoded characters -- e.g. the four characters
-    `/?: ` can appear in backend-echoed text as any of `/?: `,
-    `%2F%3f%3A%20`, `%2F%3f%3A+`, or any other per-character mixture of
-    raw/encoded forms, with every `%XX` hex escape independently case-
-    insensitive.
+def _secret_match_end(
+    text: str, start: int, alternatives: tuple[tuple[str, ...], ...]
+) -> int | None:
+    """Return the index in `text` just past a full match of `alternatives`
+    (one tuple of per-character literal alternatives, in secret-character
+    order -- see `_secret_char_pattern`) starting at `start`, or `None`
+    if no full match starts there.
 
-    Applied directly (via `.sub`) to the literal text -- it never
-    decodes/re-encodes a parsed URL or any surrounding prose, so it
+    Matching is a small non-deterministic-state-machine simulation --
+    conceptually a Thompson-style NFA walk -- rather than a recursive,
+    try-one-alternative-then-backtrack matcher: `frontier` holds every
+    text position still consistent with the secret matched so far, and
+    is rebuilt (deduplicated via a `set`) after each secret character is
+    consumed. Because each character contributes at most 3 alternatives
+    (see `_secret_char_pattern`), `frontier` never holds more than a
+    handful of positions, so the whole walk costs `O(len(secret))` work
+    per starting index -- linear in the secret length (bounded well
+    below `aos8_target_adapters.MAX_SECRET_LENGTH` before a real secret
+    ever reaches this function -- see
+    `_validate_runtime_secret_lengths`) with a small constant factor,
+    and no exponential/catastrophic-backtracking blowup regardless of
+    secret content or text length: unlike naive backtracking, no failed
+    path is ever retried, because every alternative at every position is
+    already explored in the same forward pass.
+    """
+    n = len(text)
+    frontier = {start}
+    for char_alternatives in alternatives:
+        if not frontier:
+            return None
+        next_frontier: set[int] = set()
+        for pos in frontier:
+            for alt in char_alternatives:
+                end = pos + len(alt)
+                if end > n:
+                    continue
+                if alt.startswith("%"):
+                    if text[pos:end].upper() == alt:
+                        next_frontier.add(end)
+                elif text[pos:end] == alt:
+                    next_frontier.add(end)
+        frontier = next_frontier
+    return min(frontier) if frontier else None
+
+
+class _SecretMatcher:
+    """A request-local, regex-free matcher for one secret's linear set of
+    per-character alternatives (see `_secret_char_pattern`).
+
+    Deliberately *not* backed by `re.compile`/`re.Pattern`: this plain
+    Python object holds only a tuple of small per-character alternative
+    tuples (built fresh by `_compile_secret_pattern` on every call, and
+    discarded when the top-level `_sanitize` call that needed it
+    returns) -- no compiled regex, module-level cache, `lru_cache`, or
+    other global object anywhere in this module is ever built from, or
+    retains, raw or percent-encoded secret material.
+
+    `search`/`sub` mirror the small slice of the `re.Pattern` interface
+    `_sanitize` and its regression tests need, but every match is found
+    via `_secret_match_end`'s bounded state-machine walk, never regex
+    alternation/backtracking.
+    """
+
+    __slots__ = ("_alternatives",)
+
+    def __init__(self, alternatives: tuple[tuple[str, ...], ...]) -> None:
+        self._alternatives = alternatives
+
+    def search(self, text: str) -> tuple[int, int] | None:
+        """Return `(start, end)` of the first full match of the secret
+        anywhere in `text` (in any mixture of raw/percent-/form-encoded
+        characters), or `None` if it does not occur at all."""
+        if not self._alternatives:
+            return None
+        for start in range(len(text)):
+            end = _secret_match_end(text, start, self._alternatives)
+            if end is not None:
+                return (start, end)
+        return None
+
+    def sub(self, replacement: str, text: str) -> str:
+        """Replace every non-overlapping full match of the secret in
+        `text` with `replacement`, scanning left to right and advancing
+        past each match found. Applied directly to the literal
+        characters already present in `text` -- this never decodes/
+        re-encodes `text` itself, so it cannot corrupt an absolute URL
+        embedded in prose or any unrelated text around a match."""
+        if not self._alternatives:
+            return text
+        n = len(text)
+        out: list[str] = []
+        pos = 0
+        while pos < n:
+            end = _secret_match_end(text, pos, self._alternatives)
+            if end is not None:
+                out.append(replacement)
+                pos = end
+            else:
+                out.append(text[pos])
+                pos += 1
+        return "".join(out)
+
+
+def _compile_secret_pattern(secret: str) -> _SecretMatcher:
+    """Build a request-local, regex-free `_SecretMatcher` for `secret`
+    against arbitrary mixtures of raw and percent-/form-encoded
+    characters -- e.g. the four characters `/?: ` can appear in
+    backend-echoed text as any of `/?: `, `%2F%3f%3A%20`, `%2F%3f%3A+`,
+    or any other per-character mixture of raw/encoded forms, with every
+    `%XX` hex escape independently case-insensitive.
+
+    Applied directly (via `_SecretMatcher.sub`) to the literal text -- it
+    never decodes/re-encodes a parsed URL or any surrounding prose, so it
     cannot corrupt an absolute URL embedded in prose or any unrelated
     text around a match. Each secret character contributes a small,
-    fixed-size, non-overlapping set of alternatives (see
-    `_secret_char_pattern`), so the compiled pattern is linear in
-    `len(secret)` with no catastrophic-backtracking exposure regardless
-    of secret length or content (also bounded well below
-    `aos8_target_adapters.MAX_SECRET_LENGTH` before a real secret ever
-    reaches this function -- see `_validate_runtime_secret_lengths`).
+    fixed-size set of alternatives (see `_secret_char_pattern`), walked
+    by `_secret_match_end`'s bounded state-machine simulation, so
+    matching is linear in `len(secret)` with no catastrophic-
+    backtracking exposure regardless of secret length or content (also
+    bounded well below `aos8_target_adapters.MAX_SECRET_LENGTH` before a
+    real secret ever reaches this function -- see
+    `_validate_runtime_secret_lengths`).
 
     Deliberately *not* cached across calls (no `lru_cache` or other
-    module-level cache keyed by the secret): a cache keyed by raw secret
-    text would retain every distinct secret -- and its compiled,
-    secret-specific regex -- in process memory for the life of the
-    process, long after the request/operation that supplied it has
-    completed. `_sanitize` instead compiles each secret's pattern once
-    per top-level call via a local `compiled_secrets` dict threaded
-    through its own recursion (see `_sanitize`'s docstring), so
-    repeated compilation is avoided within a single call tree without
-    any secret surviving past it.
+    module-level cache keyed by the secret, and never an `re.compile`d
+    pattern in the first place): a cache keyed by raw secret text would
+    retain every distinct secret -- and a secret-specific matcher built
+    from it -- in process memory for the life of the process, long after
+    the request/operation that supplied it has completed. `_sanitize`
+    instead builds each secret's matcher once per top-level call via a
+    local `compiled_secrets` dict threaded through its own recursion
+    (see `_sanitize`'s docstring), so repeated construction is avoided
+    within a single call tree without any secret surviving past it.
     """
-    return re.compile("".join(_secret_char_pattern(c) for c in secret))
+    return _SecretMatcher(tuple(_secret_char_pattern(c) for c in secret))
 
 
 def _is_url_like(text: str) -> bool:
@@ -637,8 +748,8 @@ def _validate_runtime_secret_lengths(
     """Reject any caller-supplied runtime secret (PSK, RADIUS/TACACS+
     shared secret, LDAP bind password, ...) longer than
     `MAX_SECRET_LENGTH` up front, before it reaches candidate mapping,
-    any write invocation, or `_sanitize`'s per-character secret-regex
-    compilation (`_compile_secret_pattern`).
+    any write invocation, or `_sanitize`'s per-character, regex-free
+    `_SecretMatcher` construction (`_compile_secret_pattern`).
 
     This is `apply()`'s runtime counterpart to
     `aos8_target_adapters._secret_value`/`_secret_bundle_error`, which

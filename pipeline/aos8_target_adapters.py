@@ -218,8 +218,8 @@ _REDACTED_MARKERS = {
 # 1024 is a generous upper bound over every legitimate AOS8/Central
 # migration secret in current use. It exists only to reject a caller
 # error or an oversized/adversarial payload outright, before it reaches
-# candidate mapping, any write invocation, or per-character secret-regex
-# compilation (`_compile_secret_pattern` in
+# candidate mapping, any write invocation, or per-character, regex-free
+# `_SecretMatcher` construction (`_compile_secret_pattern` in
 # `pipeline.aos8_migration_orchestrator`) -- never to accommodate a
 # legitimate secret anywhere near the limit.
 MAX_SECRET_LENGTH = 1024

@@ -2804,3 +2804,226 @@ def test_apply_redacts_secret_within_max_bound_end_to_end(tmp_path):
     assert failed["candidates"][0]["status"] == "failed"
     assert secret not in json.dumps(failed)
     assert secret not in store.path_for("long-secret").read_text()
+
+
+# --------------------------------------------------------------------------
+# Regression coverage after f57d9ae: `_compile_secret_pattern` /
+# `_SecretMatcher` must never build an `re.compile`d pattern (or any other
+# regex/global object) from raw or percent-encoded secret material. All
+# matching is a bounded, linear, regex-free scan/replace.
+# --------------------------------------------------------------------------
+
+
+def test_compile_secret_pattern_returns_no_compiled_regex(monkeypatch):
+    # `_compile_secret_pattern` must return a plain matcher object, never
+    # an `re.Pattern` -- no secret-derived regex is ever compiled.
+    matcher = orchestrator_module._compile_secret_pattern("some-secret-value")
+    assert not isinstance(matcher, re.Pattern)
+    assert not hasattr(matcher, "pattern")
+    assert not hasattr(matcher, "flags")
+
+
+def test_sanitize_never_grows_re_module_cache_with_secret_pattern(tmp_path):
+    # `re`'s own internal compiled-pattern cache (`re._cache`) must never
+    # gain an entry whose source text is (or contains) the secret --
+    # proving `_sanitize`'s secret pass never calls `re.compile`/
+    # `re.match`/`re.sub` with the secret baked into a pattern string.
+    # Warm up first with an unrelated secret so every secret-*independent*
+    # regex this call path legitimately uses (run-id validation,
+    # sensitive-key detection, URL-scheme checks, key normalization, ...)
+    # is already cached before the real snapshot below is taken.
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _wpa2_wlan_candidate("ReCacheGuest")
+    service.create_run([wlan], target(), run_id="re-cache-secret")
+    warm_up_secret = "warm-up-secret-value"
+    service.apply(
+        "re-cache-secret",
+        dry_run=True,
+        confirmation=False,
+        target_secrets={"wlan:ReCacheGuest": {"wpa_passphrase": warm_up_secret}},
+    )
+
+    baseline_cache_keys = set(re._cache.keys())
+
+    secret = "Tr@ck-M3-N0t/1f-Y0u-C@n?"
+    payload = {
+        "error": f"backend rejected {secret} during dry run",
+        "url": f"/network-config/v1/wlan?shared_secret={quote(secret, safe='')}",
+    }
+    result = orchestrator_module._sanitize(payload, secret_values=(secret,))
+    assert secret not in json.dumps(result)
+
+    after_cache_keys = set(re._cache.keys())
+    # No new pattern was added to `re`'s own compiled-pattern cache by the
+    # secret-bearing `_sanitize` call above.
+    assert after_cache_keys == baseline_cache_keys
+    # Defense in depth: even if some unrelated regex usage elsewhere
+    # legitimately added a new entry, none of the *existing* entries may
+    # carry the secret in their source text.
+    for pattern_source, *_ in after_cache_keys:
+        assert secret not in str(pattern_source)
+
+
+def test_no_global_object_or_cache_retains_secret_material(monkeypatch):
+    # After a top-level `_sanitize` call returns, nothing reachable from
+    # module-level state (globals, `_compile_secret_pattern`'s own
+    # attributes, or `re`'s module cache) may retain the raw secret or a
+    # matcher/pattern built from it.
+    secret = "no-global-retention-secret-999"
+    payload = {"error": f"failed for {secret}"}
+    result = orchestrator_module._sanitize(payload, secret_values=(secret,))
+    assert secret not in json.dumps(result)
+
+    # `_compile_secret_pattern` itself carries no cache-like attributes.
+    assert not hasattr(orchestrator_module._compile_secret_pattern, "cache_info")
+    assert not hasattr(orchestrator_module._compile_secret_pattern, "cache_clear")
+    assert not hasattr(orchestrator_module._compile_secret_pattern, "__dict__") or not (
+        getattr(orchestrator_module._compile_secret_pattern, "__dict__", {})
+    )
+
+    # No module-level global (dict, list, set, or otherwise) in the
+    # orchestrator module holds the raw secret anywhere.
+    for name, value in vars(orchestrator_module).items():
+        if name.startswith("__"):
+            continue
+        try:
+            serialized = repr(value)
+        except Exception:
+            continue
+        assert secret not in serialized, f"module global {name!r} retained the secret"
+
+    # `re`'s own module-level compiled-pattern cache carries no trace of
+    # the secret either.
+    for pattern_source, *_ in re._cache.keys():
+        assert secret not in str(pattern_source)
+
+
+def test_secret_matcher_matches_raw_mixed_encoded_form_and_unicode_representations():
+    # A single `_SecretMatcher` must catch the secret across arbitrary
+    # mixtures of raw, percent-encoded (either hex case, mixed within the
+    # same string), form-encoded (`+` for space), and Unicode characters
+    # -- all without regex.
+    secret = "Sécret Pässwörd/Ключ?"
+    matcher = orchestrator_module._compile_secret_pattern(secret)
+
+    raw = secret
+    fully_percent_upper = quote(secret, safe="")
+    # Lower-case only the hex digits of each `%XX` escape -- lower-casing
+    # the whole string would also corrupt any raw (unescaped) ASCII
+    # letters `quote()` left untouched, silently changing the secret's
+    # own case rather than just its escape-hex case.
+    fully_percent_lower = re.sub(
+        r"%[0-9A-Fa-f]{2}", lambda m: m.group(0).lower(), fully_percent_upper
+    )
+    form_encoded = quote_plus(secret)
+    mixed_case_percent = _mixed_case_percent_encode(secret)
+    # Mixed raw/percent-encoded: alternate raw characters with their own
+    # percent-encoded form so both representations appear in one string.
+    mixed_raw_and_percent = "".join(
+        char if index % 2 == 0 else quote(char, safe="")
+        for index, char in enumerate(secret)
+    )
+
+    for variant in (
+        raw,
+        fully_percent_upper,
+        fully_percent_lower,
+        form_encoded,
+        mixed_case_percent,
+        mixed_raw_and_percent,
+    ):
+        text = f"backend said: {variant} was rejected"
+        assert matcher.search(text) is not None, f"failed to match variant {variant!r}"
+        redacted = matcher.sub("******", text)
+        assert secret not in redacted
+        assert raw not in redacted
+        assert "was rejected" in redacted
+        assert "backend said:" in redacted
+
+
+def test_secret_matcher_completes_quickly_at_max_secret_length(tmp_path):
+    # A secret at `MAX_SECRET_LENGTH` must still redact end to end within
+    # a small, deterministic time bound -- proving the regex-free matcher
+    # is linear/bounded rather than exponential in secret length.
+    import time
+
+    secret = "Zq7@Ключ/Sécret?" * (MAX_SECRET_LENGTH // len("Zq7@Ключ/Sécret?"))
+    secret = secret[:MAX_SECRET_LENGTH]
+    assert len(secret) == MAX_SECRET_LENGTH
+
+    text = (
+        "unrelated backend prose " * 200
+        + secret
+        + " trailing backend prose " * 200
+        + quote(secret, safe="")
+        + " more trailing prose " * 200
+    )
+
+    started = time.monotonic()
+    matcher = orchestrator_module._compile_secret_pattern(secret)
+    redacted = matcher.sub("******", text)
+    elapsed = time.monotonic() - started
+
+    assert secret not in redacted
+    assert quote(secret, safe="") not in redacted
+    assert elapsed < 5.0, f"secret matching took too long: {elapsed:.2f}s"
+
+
+def test_sanitize_256_requests_retain_no_global_state_across_calls(monkeypatch):
+    # Companion to `test_sanitize_256_diverse_requests_do_not_grow_
+    # retained_state`: after 256 independent request-scoped `_sanitize`
+    # calls, each with its own distinct secret, none of the secrets are
+    # retained on any module-level global or in `re`'s own module cache.
+    secrets = [f"retained-state-check-secret-{i}" for i in range(256)]
+    for secret in secrets:
+        payload = {"error": f"backend rejected {secret}"}
+        result = orchestrator_module._sanitize(payload, secret_values=(secret,))
+        assert secret not in json.dumps(result)
+
+    for name, value in vars(orchestrator_module).items():
+        if name.startswith("__"):
+            continue
+        try:
+            serialized = repr(value)
+        except Exception:
+            continue
+        for secret in secrets:
+            assert secret not in serialized, f"module global {name!r} retained {secret!r}"
+
+    for pattern_source, *_ in re._cache.keys():
+        for secret in secrets:
+            assert secret not in str(pattern_source)
+
+
+def test_apply_error_persistence_end_to_end_never_leaks_secret_via_re_cache(tmp_path):
+    # End-to-end companion: a failed `apply()` persists its error to disk
+    # and returns it in the response, and neither ever contains the
+    # secret -- nor does `re`'s own compiled-pattern cache gain any
+    # secret-derived entry as a side effect of producing that response.
+    backend = FakeBackend()
+    backend.fail_real["build_underlay_ssid"] = 1
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _wpa2_wlan_candidate("ErrorPersistGuest")
+    service.create_run([wlan], target(), run_id="error-persist-secret")
+    secret = "Persist3d!Err0r#Secret"
+    supplied = {"wlan:ErrorPersistGuest": {"wpa_passphrase": secret}}
+    service.apply(
+        "error-persist-secret", dry_run=True, confirmation=False, target_secrets=supplied
+    )
+
+    baseline_cache_keys = set(re._cache.keys())
+
+    failed = service.apply(
+        "error-persist-secret", dry_run=False, confirmation=True, target_secrets=supplied
+    )
+    assert failed["candidates"][0]["status"] == "failed"
+    assert failed["candidates"][0]["last_error"] is not None
+    dumped = json.dumps(failed)
+    persisted = store.path_for("error-persist-secret").read_text()
+    for text in (dumped, persisted):
+        assert secret not in text
+
+    after_cache_keys = set(re._cache.keys())
+    for pattern_source, *_ in after_cache_keys - baseline_cache_keys:
+        assert secret not in str(pattern_source)
