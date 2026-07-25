@@ -51,6 +51,31 @@ MAX_OPERATOR_CONTEXT_ENTRIES = 100
 MAX_OPERATOR_CONTEXT_STRING_LENGTH = 256
 MAX_AP_GROUP_SERIALS_PER_GROUP = 64
 MAX_SERIAL_STRING_LENGTH = 64
+# `_sanitize`'s truncated-display bound: a sanitized leaf string never
+# returns more than this many characters, regardless of the original
+# text's length (see `_sanitize`'s string branch and `_SECRET_SCAN_WINDOW`
+# below).
+_OUTPUT_LIMIT = 1000
+# The largest number of characters one secret *character* can expand to
+# once percent-encoded: up to 4 UTF-8 bytes for a single Unicode code
+# point, each byte rendered as a 3-character "%XX" escape.
+_MAX_ENCODED_CHARS_PER_SECRET_CHAR = 4 * 3
+# The longest any single bounded secret's raw/percent-/form-encoded
+# representation can be, given `MAX_SECRET_LENGTH` (secrets longer than
+# this are already rejected before they ever reach `_sanitize` -- see
+# `_validate_runtime_secret_lengths`).
+_MAX_SECRET_ENCODED_LENGTH = MAX_SECRET_LENGTH * _MAX_ENCODED_CHARS_PER_SECRET_CHAR
+# How much of a leaf string `_sanitize` ever scans for secrets, before
+# any truncation: large enough that a raw/percent-/form-encoded secret
+# match beginning anywhere within the first `_OUTPUT_LIMIT` returned
+# characters is always found and fully redacted, however far past
+# `_OUTPUT_LIMIT` its encoded form extends -- but never proportional to
+# the (potentially adversarial, 10k/1MB+) full text length, so scanning
+# cost stays `O(_SECRET_SCAN_WINDOW * secret_length)` regardless of how
+# long the input actually is. Text beyond this window can never affect
+# the truncated output, so it is never scanned, matched, or included in
+# it -- only a generic omitted-character count is ever reported for it.
+_SECRET_SCAN_WINDOW = _OUTPUT_LIMIT + _MAX_SECRET_ENCODED_LENGTH
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # Anchored scheme (RFC 3986 `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" /
 # "." )`) followed immediately by "://" -- used by `_is_url_like` to
@@ -177,6 +202,59 @@ def _is_presence_metadata(key: Any, value: Any) -> bool:
     )
 
 
+# Sentinel boundary characters `_sanitize` wraps around every
+# substring-style redaction marker it inserts (see `_choose_sentinel`
+# and `_sanitize`'s string branch): the Unicode Private Use Area
+# (~6,400 code points a real secret would essentially never contain),
+# then a small fallback set of otherwise-unused C0 control code points
+# (deliberately excluding TAB/LF/VT/FF/CR -- 0x09-0x0D -- which
+# legitimately occur in ordinary backend text). Order is deterministic
+# (first non-colliding candidate wins) so the same top-level `_sanitize`
+# call always produces the same sentinel for every leaf it processes.
+_SENTINEL_CANDIDATES: tuple[str, ...] = (
+    tuple(chr(code_point) for code_point in range(0xE000, 0xF8FF + 1))
+    + tuple(chr(code_point) for code_point in range(0x00, 0x09))
+    + tuple(chr(code_point) for code_point in range(0x0E, 0x20))
+)
+# Returned in place of an entire leaf string -- never a partial
+# substring redaction -- only in the theoretical case where
+# `_choose_sentinel` cannot find any candidate absent from the secrets
+# being redacted (see `_sanitize`'s string branch). This discards the
+# whole leaf rather than risk any marker-based substring replacement
+# that cannot be proven safe against secret recreation.
+_SENTINEL_UNAVAILABLE_REDACTED = "<redacted:secret-scan-unavailable>"
+
+
+def _choose_sentinel(forbidden: frozenset[str]) -> str | None:
+    """Return the first character from `_SENTINEL_CANDIDATES` that does
+    not occur in `forbidden`, or `None` if every candidate collides.
+
+    `forbidden` is every character that occurs in any secret or
+    structural-redaction value passed to one top-level `_sanitize` call
+    -- small and bounded (each value is bounded well below
+    `MAX_SECRET_LENGTH`/`MAX_OPERATOR_CONTEXT_STRING_LENGTH`), so this is
+    itself `O(len(candidates) + total secret length)`, never
+    proportional to the (potentially huge, adversarial) text `_sanitize`
+    will scan.
+
+    Because the returned sentinel is provably absent from every secret
+    character, no secret's per-character alternative set (see
+    `_secret_char_pattern`) can ever match it -- so no `_SecretMatcher`,
+    for any secret in this call, can ever match a span that crosses a
+    sentinel-wrapped marker. That holds regardless of processing order,
+    which is what makes it safe to wrap *every* substring-style marker
+    `_sanitize` inserts (see `_sanitize`'s string branch) rather than
+    relying on marker text (e.g. a plain `"******"`) that a *different*
+    secret's literal characters could coincidentally reproduce once
+    spliced next to unredacted trailing/leading text -- the exact
+    "recreation" failure mode this sentinel exists to rule out.
+    """
+    for candidate in _SENTINEL_CANDIDATES:
+        if candidate not in forbidden:
+            return candidate
+    return None
+
+
 def _sanitize(
     value: Any,
     *,
@@ -187,6 +265,7 @@ def _sanitize(
     max_depth: int = 8,
     _depth: int = 0,
     _compiled_secrets: dict[str, "_SecretMatcher"] | None = None,
+    _sentinel: str | None = None,
 ) -> Any:
     """Sanitize `value` for return/persistence across two independent
     redaction channels:
@@ -272,6 +351,26 @@ def _sanitize(
     plain Python object, never a compiled `re.Pattern`: no secret-derived
     regex, cache, or global object is ever produced anywhere in this
     module (see `_SecretMatcher`'s docstring for why).
+
+    `_sentinel` is likewise private/internal and computed once per
+    top-level call, alongside `compiled_secrets`, via `_choose_sentinel`.
+    Every substring-style marker this call inserts into a leaf that has
+    any `secret_values` to redact -- both the `_redact_url_structural`
+    structural marker and every `_SecretMatcher.sub` secret marker in
+    the string branch below -- is wrapped as `sentinel + marker +
+    sentinel`, never the bare marker text, and that wrapper is kept in
+    the returned value rather than stripped back to a plain marker (see
+    the string branch for why). Because `sentinel` is guaranteed absent
+    from every secret's characters, no secret's `_SecretMatcher` can
+    ever match across it, so one secret's inserted marker can never
+    combine with adjacent original text to spell out (and thus
+    "recreate") a *different* secret this same call is redacting --
+    regardless of how many secrets are involved or in what order they
+    are processed. If no sentinel candidate is available at all (see
+    `_choose_sentinel` -- a theoretical case requiring a secret to
+    contain a huge, specific set of otherwise-unused code points), the
+    string branch fails closed: it discards the entire leaf rather than
+    attempt any substring replacement it cannot prove safe.
     """
     secrets = tuple(secret for secret in secret_values if secret)
     structural_secrets = tuple(
@@ -281,8 +380,12 @@ def _sanitize(
         compiled_secrets = {
             secret: _compile_secret_pattern(secret) for secret in dict.fromkeys(secrets)
         }
+        sentinel = _choose_sentinel(
+            frozenset(char for value_ in (*secrets, *structural_secrets) for char in value_)
+        )
     else:
         compiled_secrets = _compiled_secrets
+        sentinel = _sentinel
     if _depth >= max_depth:
         return "<bounded:max-depth>"
     if isinstance(value, Mapping):
@@ -303,6 +406,7 @@ def _sanitize(
                     max_depth=max_depth,
                     _depth=_depth + 1,
                     _compiled_secrets=compiled_secrets,
+                    _sentinel=sentinel,
                 )
             )
         if len(value) > MAX_RESULT_ITEMS:
@@ -323,6 +427,7 @@ def _sanitize(
                 max_depth=max_depth,
                 _depth=_depth + 1,
                 _compiled_secrets=compiled_secrets,
+                _sentinel=sentinel,
             )
             for item in items[:MAX_RESULT_ITEMS]
         ]
@@ -344,9 +449,36 @@ def _sanitize(
         # returns outright -- see the docstring above for why this must
         # happen first and must short-circuit. A whole-leaf match
         # consumes the entire string, so no secret-substring pass is
-        # needed or run.
+        # needed or run, and the marker replaces the entire leaf on its
+        # own -- there is no adjacent original text left in this string
+        # for it to combine with, so it is returned bare (unwrapped):
+        # the sentinel exists to guard substring-style insertions (see
+        # below), not a total, atomic whole-leaf replacement like this
+        # one.
         if text in structural_secret_set:
             return structural_redact_marker
+        needs_secret_scan = bool(secrets)
+        if needs_secret_scan and sentinel is None:
+            # Fail closed (see `_choose_sentinel`): no substring
+            # replacement below can be proven safe against secret
+            # recreation without a sentinel boundary, so none is
+            # attempted -- the entire leaf is discarded instead of any
+            # partial marker-based redaction.
+            return _SENTINEL_UNAVAILABLE_REDACTED
+        # Bound how much of `text` is ever scanned: `_SECRET_SCAN_WINDOW`
+        # is large enough that any raw/percent-/form-encoded secret
+        # match beginning within the first `_OUTPUT_LIMIT` characters of
+        # the (post-redaction) result is always found in full, however
+        # far its encoded form extends past `_OUTPUT_LIMIT` -- but it is
+        # a fixed bound, never proportional to `text`'s actual length,
+        # so a 10k/1MB+ adversarial string costs the same to scan as one
+        # just past `_SECRET_SCAN_WINDOW` characters. Nothing beyond this
+        # window can ever reach the truncated output, so it is never
+        # scanned, matched, or included in it below -- only a generic
+        # omitted-character count is ever reported for it.
+        original_length = len(text)
+        scan_bounded = original_length > _SECRET_SCAN_WINDOW
+        scan_region = text[:_SECRET_SCAN_WINDOW] if scan_bounded else text
         # URL/query component structural redaction: modifies (but never
         # fully replaces) the string in place, and deliberately does NOT
         # return early -- unlike the whole-leaf case above, a URL can
@@ -355,8 +487,23 @@ def _sanitize(
         # fragment, that holds an actual runtime secret. Both channels
         # must run over the same string so neither leaks; execution
         # falls through to the `secret_values` substring pass below on
-        # whatever `_redact_url_structural` returns.
-        text = _redact_url_structural(text, structural_secret_set, structural_redact_marker)
+        # whatever `_redact_url_structural` returns. When this leaf also
+        # has secrets to redact, the marker this pass inserts is
+        # sentinel-wrapped -- see the secret pass below and
+        # `_choose_sentinel` -- because the secret pass always runs
+        # next, over this same (possibly structurally-modified) text: an
+        # un-wrapped marker here would expose the same cross-boundary
+        # recreation risk as an un-wrapped secret marker would. With no
+        # secrets in this call, nothing further ever scans this text, so
+        # the bare marker is used, unchanged from before.
+        structural_marker = (
+            f"{sentinel}{structural_redact_marker}{sentinel}"
+            if needs_secret_scan
+            else structural_redact_marker
+        )
+        scan_region = _redact_url_structural(
+            scan_region, structural_secret_set, structural_marker
+        )
         # Actual secrets: one linear, regex-free `_SecretMatcher` per
         # secret (`_compile_secret_pattern`, built once per secret for
         # this top-level `_sanitize` call -- see `compiled_secrets`
@@ -375,15 +522,40 @@ def _sanitize(
         # longer message. This never decodes/re-encodes a parsed URL or
         # any surrounding prose -- it is a direct scan/replace over the
         # literal text -- so it cannot corrupt an absolute URL embedded
-        # in prose, or any unrelated text around a match. The whole text
-        # is scanned in full before any truncation -- see `_sanitize`'s
-        # module-level note on `_SecretMatcher` -- so a secret can never
-        # hide past a truncation boundary applied *before* this pass.
-        for secret in secrets:
-            text = compiled_secrets[secret].sub(redact_marker, text)
-        if len(text) > 1000:
-            return f"{text[:1000]}... [truncated {len(text) - 1000} chars]"
-        return text
+        # in prose, or any unrelated text around a match.
+        #
+        # Every secret's marker is sentinel-wrapped, and the wrapper is
+        # kept in the value this pass produces (never stripped back to a
+        # bare marker before returning): with more than one secret (or a
+        # secret plus a structural value) in play, one secret's *own*
+        # marker text can otherwise sit directly next to trailing
+        # original characters that, purely by coincidence, spell out a
+        # *different* secret this same call is redacting -- e.g. a
+        # secret "AAA" immediately followed by literal "xx" redacts to
+        # "******xx", which is exactly a second secret's literal value
+        # if that second secret happens to equal "******xx". Whether
+        # that "recreated" text is itself later matched (and safely
+        # re-redacted) or is the last substitution to run (and so
+        # becomes part of the final returned value) depends only on
+        # secret processing order -- which callers do not control and
+        # must not need to reason about. The sentinel rules this out
+        # unconditionally: it is provably absent from every secret's own
+        # characters (see `_choose_sentinel`), so no secret's matcher can
+        # ever match a span that crosses it, regardless of order.
+        if needs_secret_scan:
+            wrapped_redact_marker = f"{sentinel}{redact_marker}{sentinel}"
+            for secret in secrets:
+                scan_region = compiled_secrets[secret].sub(wrapped_redact_marker, scan_region)
+        if scan_bounded or len(scan_region) > _OUTPUT_LIMIT:
+            visible = scan_region[:_OUTPUT_LIMIT]
+            # Never include the unscanned suffix (if any) -- only a
+            # generic count of characters not represented in `visible`,
+            # derived from the original (pre-redaction) length so it
+            # never depends on how much the redaction passes above
+            # happened to shrink the text.
+            omitted = original_length - len(visible)
+            return f"{visible}... [truncated {omitted} chars]"
+        return scan_region
     return value
 
 
@@ -491,10 +663,24 @@ class _SecretMatcher:
     alternation/backtracking.
     """
 
-    __slots__ = ("_alternatives",)
+    __slots__ = ("_alternatives", "_first_chars")
 
     def __init__(self, alternatives: tuple[tuple[str, ...], ...]) -> None:
         self._alternatives = alternatives
+        # The set of characters that could possibly start a match --
+        # the first character of every alternative for the secret's
+        # *first* character (see `_secret_char_pattern`): the raw
+        # literal, `%` (percent-encoding always starts with it), and,
+        # for a space, `+`. `search`/`sub` use this as a cheap `in a
+        # set` membership pre-check before paying `_secret_match_end`'s
+        # (small, but nonzero) per-position walk cost -- skipping a
+        # position whose character cannot possibly begin a match never
+        # changes which matches are found, since `_secret_match_end`
+        # would have rejected that same position on its own first
+        # character comparison anyway; it just avoids calling it.
+        self._first_chars: frozenset[str] = (
+            frozenset(alt[0] for alt in alternatives[0] if alt) if alternatives else frozenset()
+        )
 
     def search(self, text: str) -> tuple[int, int] | None:
         """Return `(start, end)` of the first full match of the secret
@@ -502,7 +688,10 @@ class _SecretMatcher:
         characters), or `None` if it does not occur at all."""
         if not self._alternatives:
             return None
+        first_chars = self._first_chars
         for start in range(len(text)):
+            if text[start] not in first_chars:
+                continue
             end = _secret_match_end(text, start, self._alternatives)
             if end is not None:
                 return (start, end)
@@ -518,10 +707,15 @@ class _SecretMatcher:
         if not self._alternatives:
             return text
         n = len(text)
+        first_chars = self._first_chars
         out: list[str] = []
         pos = 0
         while pos < n:
-            end = _secret_match_end(text, pos, self._alternatives)
+            end = (
+                _secret_match_end(text, pos, self._alternatives)
+                if text[pos] in first_chars
+                else None
+            )
             if end is not None:
                 out.append(replacement)
                 pos = end

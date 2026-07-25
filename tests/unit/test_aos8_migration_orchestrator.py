@@ -17,6 +17,7 @@ from pipeline.aos8_migration_orchestrator import (
     MalformedMigrationStateError,
     MigrationRunError,
     MigrationRunStore,
+    _choose_sentinel,
     _compile_secret_pattern,
     _target_context,
 )
@@ -27,6 +28,19 @@ from pipeline.aos8_target_adapters import (
     TargetType,
     WriteGateError,
 )
+
+
+def _sentinel_for(*secret_material: str) -> str:
+    """The sentinel character `_sanitize` will choose for a top-level call
+    whose secret/structural-redaction values are `secret_material` --
+    mirrors `_choose_sentinel`'s own selection (a union of every
+    character across all of them) so tests can build the exact expected
+    sentinel-wrapped marker text without hard-coding a specific
+    character."""
+    forbidden = frozenset(char for value in secret_material for char in value)
+    sentinel = _choose_sentinel(forbidden)
+    assert sentinel is not None, "no sentinel candidate available for test secrets"
+    return sentinel
 
 
 def _mixed_case_percent_encode(value: str) -> str:
@@ -1744,7 +1758,8 @@ def test_sanitize_secret_values_redacts_credential_in_url_payload_and_list():
     sanitized = _sanitize(payload, secret_values=(secret,))
     dumped = json.dumps(sanitized)
     assert secret not in dumped
-    assert sanitized["wlan"]["auth_server1"] == "******"
+    sentinel = _sentinel_for(secret)
+    assert sanitized["wlan"]["auth_server1"] == f"{sentinel}******{sentinel}"
     assert "attempt failed for other-value" in dumped
 
 
@@ -1771,7 +1786,11 @@ def test_sanitize_url_path_structural_identifier_and_query_credential_both_redac
         structural_redact_marker=marker,
     )
     endpoint = sanitized["endpoint"]
-    assert endpoint == f"/network-config/v1alpha1/auth-servers/{marker}?token=******"
+    sentinel = _sentinel_for(secret, structural_value)
+    assert endpoint == (
+        f"/network-config/v1alpha1/auth-servers/{sentinel}{marker}{sentinel}"
+        f"?token={sentinel}******{sentinel}"
+    )
     assert structural_value not in endpoint
     assert secret not in endpoint
 
@@ -1800,9 +1819,10 @@ def test_sanitize_url_query_structural_identifier_and_path_fragment_credential_b
         structural_redact_marker=marker,
     )
     endpoint = sanitized["endpoint"]
+    sentinel = _sentinel_for(secret, structural_value)
     assert secret not in endpoint
     assert structural_value not in endpoint
-    assert f"group={marker}" in endpoint
+    assert f"group={sentinel}{marker}{sentinel}" in endpoint
     assert "other=1" in endpoint
     assert "/network-config/v1/server-groups/prefix-" in endpoint
     assert "-suffix" in endpoint
@@ -2004,10 +2024,12 @@ def test_sanitize_redacts_percent_encoded_secret_in_path_query_and_fragment():
     assert secret not in dumped
     assert encoded_upper not in dumped
     assert encoded_lower not in dumped
-    assert sanitized["path"] == "/network-config/v1/wlan/******"
-    assert sanitized["query_upper"] == "/network-config/v1/wlan?shared_secret=******"
-    assert sanitized["query_lower"] == "/network-config/v1/wlan?shared_secret=******"
-    assert sanitized["fragment"] == "/network-config/v1/wlan?status=rejected#detail=******"
+    sentinel = _sentinel_for(secret)
+    marker = f"{sentinel}******{sentinel}"
+    assert sanitized["path"] == f"/network-config/v1/wlan/{marker}"
+    assert sanitized["query_upper"] == f"/network-config/v1/wlan?shared_secret={marker}"
+    assert sanitized["query_lower"] == f"/network-config/v1/wlan?shared_secret={marker}"
+    assert sanitized["fragment"] == f"/network-config/v1/wlan?status=rejected#detail={marker}"
     # A URL that never contains the secret must survive byte-for-byte.
     assert sanitized["unrelated"] == unrelated_url
 
@@ -2026,7 +2048,10 @@ def test_sanitize_redacts_form_encoded_plus_secret_in_query_value():
     sanitized = _sanitize({"endpoint": url}, secret_values=(secret,))
     assert secret not in sanitized["endpoint"]
     assert encoded not in sanitized["endpoint"]
-    assert sanitized["endpoint"] == "/network-config/v1/wlan?shared_secret=******&status=rejected"
+    sentinel = _sentinel_for(secret)
+    assert sanitized["endpoint"] == (
+        f"/network-config/v1/wlan?shared_secret={sentinel}******{sentinel}&status=rejected"
+    )
 
 
 def test_sanitize_redacts_encoded_secret_embedded_as_substring_of_url_component():
@@ -2075,12 +2100,13 @@ def test_sanitize_combined_structural_query_and_percent_encoded_secret_in_fragme
         structural_redact_marker=marker,
     )
     endpoint = sanitized["endpoint"]
+    sentinel = _sentinel_for(secret, structural_value)
     assert structural_value not in endpoint
     assert secret not in endpoint
     assert encoded_secret not in endpoint
-    assert f"group={marker}" in endpoint
+    assert f"group={sentinel}{marker}{sentinel}" in endpoint
     assert "other=1" in endpoint
-    assert "detail=******" in endpoint
+    assert f"detail={sentinel}******{sentinel}" in endpoint
 
 
 def test_sanitize_combined_structural_path_and_form_encoded_secret_in_query():
@@ -2104,10 +2130,14 @@ def test_sanitize_combined_structural_path_and_form_encoded_secret_in_query():
         structural_redact_marker=marker,
     )
     endpoint = sanitized["endpoint"]
+    sentinel = _sentinel_for(secret, structural_value)
     assert structural_value not in endpoint
     assert secret not in endpoint
     assert encoded_secret not in endpoint
-    assert endpoint == f"/network-config/v1alpha1/auth-servers/{marker}?token=******"
+    assert endpoint == (
+        f"/network-config/v1alpha1/auth-servers/{sentinel}{marker}{sentinel}"
+        f"?token={sentinel}******{sentinel}"
+    )
 
 
 def test_sanitize_url_secret_pass_does_not_corrupt_unrelated_percent_encoded_text():
@@ -2146,7 +2176,10 @@ def test_sanitize_redacts_secret_with_arbitrary_per_escape_hex_case_mixture():
     payload = {"endpoint": f"/network-config/v1/wlan?raw={mixed}&status=rejected"}
 
     sanitized = _sanitize(payload, secret_values=(secret,))
-    assert sanitized["endpoint"] == "/network-config/v1/wlan?raw=******&status=rejected"
+    sentinel = _sentinel_for(secret)
+    assert sanitized["endpoint"] == (
+        f"/network-config/v1/wlan?raw={sentinel}******{sentinel}&status=rejected"
+    )
 
 
 def test_sanitize_redacts_secret_with_mixed_raw_and_encoded_characters():
@@ -2164,7 +2197,10 @@ def test_sanitize_redacts_secret_with_mixed_raw_and_encoded_characters():
     sanitized = _sanitize(payload, secret_values=(secret,))
     assert secret not in sanitized["error"]
     assert mixed not in sanitized["error"]
-    assert sanitized["error"] == "write rejected: shared_secret=****** was invalid"
+    sentinel = _sentinel_for(secret)
+    assert sanitized["error"] == (
+        f"write rejected: shared_secret={sentinel}******{sentinel} was invalid"
+    )
 
 
 def test_sanitize_redacts_form_plus_secret_mixed_with_percent_encoded_characters():
@@ -2179,7 +2215,10 @@ def test_sanitize_redacts_form_plus_secret_mixed_with_percent_encoded_characters
     payload = {"endpoint": f"/network-config/v1/wlan?raw={mixed_plus}&status=rejected"}
 
     sanitized = _sanitize(payload, secret_values=(secret,))
-    assert sanitized["endpoint"] == "/network-config/v1/wlan?raw=******&status=rejected"
+    sentinel = _sentinel_for(secret)
+    assert sanitized["endpoint"] == (
+        f"/network-config/v1/wlan?raw={sentinel}******{sentinel}&status=rejected"
+    )
 
 
 def test_sanitize_redacts_unicode_secret_percent_encoded_bytes():
@@ -2206,8 +2245,10 @@ def test_sanitize_redacts_unicode_secret_percent_encoded_bytes():
     assert secret not in dumped
     assert encoded_upper not in dumped
     assert encoded_lower not in dumped
-    assert sanitized["upper"] == "/network-config/v1/wlan?token=******"
-    assert sanitized["lower"] == "/network-config/v1/wlan?token=******"
+    sentinel = _sentinel_for(secret)
+    marker = f"{sentinel}******{sentinel}"
+    assert sanitized["upper"] == f"/network-config/v1/wlan?token={marker}"
+    assert sanitized["lower"] == f"/network-config/v1/wlan?token={marker}"
 
 
 def test_sanitize_absolute_url_embedded_in_prose_unchanged_except_secret_marker():
@@ -2227,7 +2268,8 @@ def test_sanitize_absolute_url_embedded_in_prose_unchanged_except_secret_marker(
     )
 
     sanitized = _sanitize({"error": message}, secret_values=(secret,))
-    expected = message.replace(encoded, "******")
+    sentinel = _sentinel_for(secret)
+    expected = message.replace(encoded, f"{sentinel}******{sentinel}")
     assert sanitized["error"] == expected
     assert secret not in sanitized["error"]
     assert encoded not in sanitized["error"]
@@ -2246,8 +2288,9 @@ def test_sanitize_preserves_standalone_absolute_url_structure_when_redacting_sec
     url = f"https://central.example.com/network-config/v1/wlan?token={secret}&status=ok"
 
     sanitized = _sanitize({"endpoint": url}, secret_values=(secret,))
+    sentinel = _sentinel_for(secret)
     assert sanitized["endpoint"] == (
-        "https://central.example.com/network-config/v1/wlan?token=******&status=ok"
+        f"https://central.example.com/network-config/v1/wlan?token={sentinel}******{sentinel}&status=ok"
     )
 
 
@@ -3027,3 +3070,287 @@ def test_apply_error_persistence_end_to_end_never_leaks_secret_via_re_cache(tmp_
     after_cache_keys = set(re._cache.keys())
     for pattern_source, *_ in after_cache_keys - baseline_cache_keys:
         assert secret not in str(pattern_source)
+
+
+# --------------------------------------------------------------------------
+# Hardening coverage after 9b68ea4: (1) a sentinel-wrapped marker so one
+# secret's redaction can never combine with adjacent original text to
+# "recreate" a *different* secret this same call is also redacting, and
+# (2) a bounded pre-truncation scan window so a 10k/1MB+ adversarial
+# string never costs more to sanitize than a string just past
+# `_SECRET_SCAN_WINDOW` characters.
+# --------------------------------------------------------------------------
+
+
+def test_choose_sentinel_is_absent_from_forbidden_characters():
+    forbidden = frozenset({"a", "B", "3", "*", "!"})
+    sentinel = orchestrator_module._choose_sentinel(forbidden)
+    assert sentinel is not None
+    assert sentinel not in forbidden
+    # Never one of the two characters `_secret_char_pattern` alternatives
+    # are built from (percent-encoding's leading `%`, form-encoding's
+    # `+`), regardless of `forbidden`'s contents.
+    assert sentinel not in {"%", "+"}
+
+
+def test_choose_sentinel_fails_closed_when_every_candidate_collides():
+    # Theoretical case: every sentinel candidate happens to be one of the
+    # (forced-small, via monkeypatch-free direct call) forbidden
+    # characters -- `_choose_sentinel` must return `None`, never fall
+    # back to some other, unchecked character.
+    all_candidates = frozenset(orchestrator_module._SENTINEL_CANDIDATES)
+    assert orchestrator_module._choose_sentinel(all_candidates) is None
+
+
+def test_sanitize_marker_is_wrapped_in_sentinel_absent_from_every_secret():
+    # `_sanitize` must never insert the bare marker text for a
+    # substring-style secret redaction -- only wrapped in a sentinel that
+    # is provably absent from every secret's own characters (see
+    # `_choose_sentinel`).
+    secret = "Sup3rSecret!"
+    sanitized = orchestrator_module._sanitize(
+        {"error": f"backend rejected {secret} outright"}, secret_values=(secret,)
+    )
+    result = sanitized["error"]
+    assert "******" in result
+    assert result != result.replace("******", "")  # sanity: marker present
+    # The exact bare marker (unwrapped) must never appear.
+    assert "backend rejected ****** outright" not in result
+    sentinel = _sentinel_for(secret)
+    assert sentinel not in secret
+    assert f"backend rejected {sentinel}******{sentinel} outright" == result
+
+
+def test_sanitize_secret_marker_cannot_recreate_a_different_eight_char_secret():
+    # Regression for the exact "recreation" failure mode the sentinel
+    # exists to rule out: `secret_b` never actually occurs in `text` --
+    # only `secret_a` does -- but redacting `secret_a` with a bare
+    # `"******"` marker produces text that, spliced against the
+    # unrelated trailing "xx", exactly equals `secret_b`'s own literal
+    # value. Order `secret_b` *before* `secret_a` in `secret_values` so
+    # `secret_a`'s substitution (which would create the "recreated" text)
+    # runs *last* -- the case where an un-wrapped marker would leak
+    # `secret_b`'s real value verbatim as the final returned string.
+    secret_a = "AAA"
+    secret_b = "******xx"
+    text = "AAAxx"
+    assert secret_b not in text  # sanity: never actually present
+
+    sanitized = orchestrator_module._sanitize(
+        {"error": text}, secret_values=(secret_b, secret_a)
+    )
+    result = sanitized["error"]
+    assert secret_b not in result
+    assert "xx" in result  # the unrelated trailing text still survives
+    assert json.dumps(result)  # never raises
+
+
+def test_sanitize_secret_marker_cannot_recreate_a_different_seven_char_secret():
+    # Mirror of the above one character shorter ("******x"), confirming
+    # the fix is not an off-by-one special case tied to a specific
+    # marker/secret length pairing.
+    secret_a = "AAA"
+    secret_b = "******x"
+    text = "AAAx"
+    assert secret_b not in text
+
+    sanitized = orchestrator_module._sanitize(
+        {"error": text}, secret_values=(secret_b, secret_a)
+    )
+    result = sanitized["error"]
+    assert secret_b not in result
+
+
+def test_sanitize_secret_marker_recreation_is_order_independent():
+    # The fix must hold regardless of which order the caller happens to
+    # supply distinct secrets in -- callers must never need to reason
+    # about ordering to stay safe.
+    secret_a = "AAA"
+    secret_b = "******xx"
+    text = "AAAxx"
+
+    for order in ((secret_a, secret_b), (secret_b, secret_a)):
+        sanitized = orchestrator_module._sanitize({"error": text}, secret_values=order)
+        assert secret_b not in sanitized["error"]
+
+
+def test_sanitize_structural_marker_cannot_recreate_a_secret_across_boundary():
+    # Cross-channel boundary case: the *structural* marker (inserted by
+    # the URL-component pass, which always runs before the secret pass
+    # whenever this leaf also has secrets to redact) must not combine
+    # with adjacent original text either. `secret` never actually occurs
+    # in `url` -- it is only "recreated" if the structural marker for
+    # `structural_value` is left unwrapped and directly followed by the
+    # literal `"/xx"` that happens to trail it in the path.
+    structural_value = "AAA"
+    secret = "******/xx"
+    url = f"/prefix/{structural_value}/xxsuffix"
+    assert secret not in url
+
+    sanitized = orchestrator_module._sanitize(
+        {"endpoint": url},
+        secret_values=(secret,),
+        structural_redaction_values=(structural_value,),
+    )
+    endpoint = sanitized["endpoint"]
+    assert secret not in endpoint
+    # No spurious cross-boundary match occurred at all: the path
+    # structure and trailing text survive completely untouched around
+    # the (sentinel-wrapped) structural marker.
+    sentinel = _sentinel_for(secret, structural_value)
+    assert endpoint == f"/prefix/{sentinel}******{sentinel}/xxsuffix"
+
+
+def test_sanitize_json_roundtrip_preserves_sentinel_wrapped_marker():
+    secret = "Sup3rSecret!"
+    payload = {
+        "error": f"backend rejected {secret} outright",
+        "nested": {"detail": [f"attempt with {secret} failed", "unrelated"]},
+    }
+    sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
+
+    # Default (ensure_ascii=True) serialization -- the MCP-facing path.
+    dumped_ascii = json.dumps(sanitized)
+    assert secret not in dumped_ascii
+    assert json.loads(dumped_ascii) == sanitized
+
+    # `_canonical_json`'s persistence path uses ensure_ascii=False --
+    # raw Unicode (including the private-use sentinel) must still
+    # serialize and round-trip safely.
+    dumped_raw = json.dumps(sanitized, ensure_ascii=False)
+    assert secret not in dumped_raw
+    assert json.loads(dumped_raw) == sanitized
+
+    sentinel = _sentinel_for(secret)
+    assert f"{sentinel}******{sentinel}" in sanitized["error"]
+    assert f"{sentinel}******{sentinel}" in sanitized["nested"]["detail"][0]
+
+
+def test_sanitize_secret_beginning_near_output_cutoff_is_fully_redacted():
+    # A secret starting just inside the visible `_OUTPUT_LIMIT`-character
+    # window, but extending past it, must still be found and fully
+    # redacted -- none of its trailing characters may leak into (or
+    # past) the truncated output.
+    secret = "CutoffSecretValue123"
+    prefix = "x" * (orchestrator_module._OUTPUT_LIMIT - 5)
+    text = prefix + secret + "-trailing-safe-text"
+
+    sanitized = orchestrator_module._sanitize({"error": text}, secret_values=(secret,))
+    result = sanitized["error"]
+    assert secret not in result
+    assert len(result) <= orchestrator_module._OUTPUT_LIMIT + 40
+
+
+def test_sanitize_redacts_encoded_secret_at_max_length_near_output_cutoff():
+    # The longest possible encoded representation of a bounded
+    # (`MAX_SECRET_LENGTH`) secret -- every character a 4-byte UTF-8 code
+    # point, fully percent-encoded -- starting just inside the output
+    # window must still be scanned in full and redacted, proving
+    # `_SECRET_SCAN_WINDOW` is sized correctly for the true worst case,
+    # not just an average one.
+    secret = "\U0001D54A" * MAX_SECRET_LENGTH  # 4-byte-per-char code point
+    encoded = quote(secret, safe="")
+    assert len(encoded) == MAX_SECRET_LENGTH * 12
+
+    prefix = "x" * (orchestrator_module._OUTPUT_LIMIT - 5)
+    text = f"{prefix}{encoded}-trailing-safe-text"
+
+    sanitized = orchestrator_module._sanitize({"error": text}, secret_values=(secret,))
+    result = sanitized["error"]
+    assert secret not in result
+    assert encoded not in result
+
+
+def test_sanitize_secret_scan_time_bounded_regardless_of_adversarial_text_length():
+    # A 10k and a 1MB+ string built entirely from "near misses" of the
+    # secret (every character but the last of it, repeated) forces
+    # `_secret_match_end`'s frontier to stay busy at nearly every scanned
+    # position without ever completing a match. Before the
+    # `_SECRET_SCAN_WINDOW` bound, cost was proportional to the *full*
+    # text length (`O(text_length * secret_length)`); afterward it is
+    # bounded by a fixed window regardless of how long the adversarial
+    # input actually is.
+    secret = "N3ar-M@tch-Secret-Value-1234567890"
+    near_miss_unit = secret[:-1]
+    assert secret not in near_miss_unit * 3
+
+    elapsed_by_size: dict[int, float] = {}
+    for size in (10_000, 1_000_000):
+        filler = (near_miss_unit * (size // len(near_miss_unit) + 1))[:size]
+        assert secret not in filler
+        started = time.monotonic()
+        sanitized = orchestrator_module._sanitize({"error": filler}, secret_values=(secret,))
+        elapsed_by_size[size] = time.monotonic() - started
+        result = sanitized["error"]
+        assert secret not in result
+        assert len(result) <= orchestrator_module._OUTPUT_LIMIT + 40
+
+    # Both complete quickly, and the 1MB case does not take meaningfully
+    # longer than the 10k case -- proving cost is bounded by the scan
+    # window, not by the adversarial input's actual length.
+    assert elapsed_by_size[10_000] < 1.0
+    assert elapsed_by_size[1_000_000] < 1.0
+
+
+def test_sanitize_never_includes_unscanned_suffix_text():
+    # Text far longer than `_SECRET_SCAN_WINDOW` must never leak any of
+    # its unscanned suffix into the returned value -- only a generic
+    # omitted-character count, never the actual trailing content. The
+    # unique suffix marker must start well past `_OUTPUT_LIMIT` (and
+    # past `_SECRET_SCAN_WINDOW`) so this actually exercises the
+    # unscanned-tail case, not merely content that happens to also fall
+    # within the visible, returned prefix.
+    secret = "NeverLeakedSecretXYZ"
+    padding = "x" * (orchestrator_module._SECRET_SCAN_WINDOW + 500)
+    huge_suffix = "UNSCANNED-SUFFIX-MARKER-" * 5000
+    text = f"prefix {secret} {padding}{huge_suffix}"
+    assert len(text) > orchestrator_module._SECRET_SCAN_WINDOW
+
+    sanitized = orchestrator_module._sanitize({"error": text}, secret_values=(secret,))
+    result = sanitized["error"]
+    assert secret not in result
+    assert "UNSCANNED-SUFFIX-MARKER" not in result
+    assert "truncated" in result
+    assert len(result) <= orchestrator_module._OUTPUT_LIMIT + 40
+
+
+def test_sanitize_fails_closed_when_no_sentinel_candidate_is_available(monkeypatch):
+    # Theoretical case (see `_choose_sentinel`): if every sentinel
+    # candidate collides with the secret's own characters, `_sanitize`
+    # must not attempt any substring replacement it cannot prove safe --
+    # it discards the entire leaf rather than risk a bare, un-wrapped
+    # marker.
+    monkeypatch.setattr(orchestrator_module, "_SENTINEL_CANDIDATES", ("A", "B"))
+    secret = "AB"
+    sanitized = orchestrator_module._sanitize(
+        {"error": f"contains {secret} in text"}, secret_values=(secret,)
+    )
+    assert sanitized["error"] == orchestrator_module._SENTINEL_UNAVAILABLE_REDACTED
+    assert secret not in sanitized["error"]
+
+
+def test_secret_matcher_first_character_skip_still_matches_percent_literal_secret():
+    # Regression for the first-character candidate-skip optimization: a
+    # secret whose own literal text begins with `%` must still match --
+    # skipping positions whose character isn't in the secret's possible
+    # first-character set must never reject a position that
+    # `_secret_match_end` would have actually matched.
+    secret = "%2Fnot-a-real-escape"
+    matcher = orchestrator_module._compile_secret_pattern(secret)
+    text = f"backend echoed {secret} verbatim"
+    assert matcher.search(text) is not None
+    redacted = matcher.sub("******", text)
+    assert secret not in redacted
+    assert "backend echoed" in redacted
+    assert "verbatim" in redacted
+
+
+def test_secret_matcher_first_character_skip_still_matches_space_led_secret():
+    # A secret beginning with a space must still match both its raw and
+    # `+` (form-encoded) first-character alternatives.
+    secret = " leading-space-secret"
+    matcher = orchestrator_module._compile_secret_pattern(secret)
+    raw_text = f"value={secret} end"
+    plus_text = "value=+leading-space-secret end"
+    assert matcher.search(raw_text) is not None
+    assert matcher.search(plus_text) is not None
