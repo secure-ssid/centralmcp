@@ -104,8 +104,13 @@ lifecycle built on the only verified Classic object REST in this repository —
 - **Full `full_wlan` GET/POST/complete-PUT lifecycle**, with a **mandatory
   read-back** after every write so the adapter never reports success on the
   strength of a write response alone.
-- **Verified mappings**: **open** and **WPA3-Personal** WLANs map exactly
-  (`exact` classification) with no silent field loss.
+- **Verified mappings**: **open** WLANs map exactly (`exact` classification)
+  with no silent field loss. **WPA3-Personal** is also a verified, tested
+  mapping (official-sample-evidenced `opmode=wpa3-sae-aes` with
+  `opmode_transition_disable=true` and a transient, caller-supplied
+  passphrase) but stays `conditional`, not `exact`, for the same reason as
+  every New Central secured mode below: no target has a live-confirmed apply
+  + secret read-back yet, only a fixture-backed unit-test round trip.
 - **Conditional, dry-run-only WPA3-Enterprise**: only accepted when the
   candidate carries an **explicit reference to an existing auth-server
   object** (never auto-provisioned); even then, execution stays
@@ -216,13 +221,18 @@ by the [AOS8 migration contract matrix](aos8-migration-contract-matrix.md):
 
 Run as the final release gate for this version:
 
-- **1,566 unit tests passed** (`uv run pytest tests/unit -q`) — including the
+- **1,581 unit tests passed** (`uv run pytest tests/unit -q`) — including the
   MCP protocol end-to-end suite (**10 passed**,
   `tests/unit/test_mcp_protocol_e2e.py`), the config-tool write-result
   validation regression suite (**26 passed**,
-  `tests/unit/test_config_write_result_validation.py`), and the AOS8
+  `tests/unit/test_config_write_result_validation.py`), the AOS8
   read-only evaluation script's own tests (**6 passed**,
-  `tests/unit/test_evaluate_aos8_050_readonly.py`).
+  `tests/unit/test_evaluate_aos8_050_readonly.py`), and this release's
+  complete-branch review-fix regressions: `WPA2_PSK` deprecated-alias
+  coverage in `tests/unit/test_ssid_underlay.py`/
+  `tests/unit/test_run_ssid_cli.py`, and `aos8_preview_migration_run`/
+  `aos8_create_migration_run` 0.4.0 positional-signature-compatibility
+  coverage in `tests/unit/test_aos8_migration_orchestrator.py`.
 - **20-sample RAG/API eval green** (`tests/eval/run_eval.py --ci`):
   `source_hit@k` 0.9, `keyword_hit` 1.0, `mrr` 0.9, `howto_recall@k` 0.9,
   `api_exact` 1.0.

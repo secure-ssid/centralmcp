@@ -2321,11 +2321,12 @@ def aos8_preview_migration_run(
     gateway_name: str | None = None,
     gateway_scope_id: str | None = None,
     selected_candidates: list[str] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    *,
     external_object_references: dict[str, dict[str, str]] | None = None,
     ap_group_target_map: dict[str, str] | None = None,
     ap_group_device_serials: dict[str, list[str]] | None = None,
-    limit: int = 50,
-    offset: int = 0,
 ) -> dict[str, Any]:
     """Preview a bounded, dependency-ordered migration run without persisting it.
 
@@ -2402,12 +2403,13 @@ def aos8_create_migration_run(
     gateway_name: str | None = None,
     gateway_scope_id: str | None = None,
     selected_candidates: list[str] | None = None,
-    external_object_references: dict[str, dict[str, str]] | None = None,
-    ap_group_target_map: dict[str, str] | None = None,
-    ap_group_device_serials: dict[str, list[str]] | None = None,
     run_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    *,
+    external_object_references: dict[str, dict[str, str]] | None = None,
+    ap_group_target_map: dict[str, str] | None = None,
+    ap_group_device_serials: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Create an atomic resumable run from a plan/candidate set; secrets are never stored.
 

@@ -63,12 +63,34 @@ def test_build_ssid_body_wpa2_passphrase():
     assert "personal-security" in body
 
 
-def test_build_ssid_body_rejects_stale_wpa2_psk_enum():
+def test_build_ssid_body_normalizes_deprecated_wpa2_psk_alias():
     """`WPA2_PSK` is not a valid New Central opmode (the real enum member is
-    `WPA2_PERSONAL` — see docs/aos8-migration-contract-matrix.md §4). A caller
-    that still passes the stale token must never get personal-security
-    attached; treat it exactly like any other unrecognized opmode."""
+    `WPA2_PERSONAL` — see docs/aos8-migration-contract-matrix.md §4), but it
+    was accepted by the published 0.4.0 CLI. It is kept as a deprecated
+    alias and normalized to `WPA2_PERSONAL` before payload/security
+    branching, so a caller still passing it gets the same passphrase
+    handling as passing `WPA2_PERSONAL` directly."""
     body = _build_ssid_body("X", ["1"], opmode="WPA2_PSK", wpa_passphrase="mypassword")
+    assert body["opmode"] == "WPA2_PERSONAL"
+    assert body["personal-security"]["wpa-passphrase"] == "mypassword"
+
+
+def test_build_ssid_body_wpa2_psk_alias_logs_deprecation_warning(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="pipeline.create_ssid"):
+        _build_ssid_body("X", ["1"], opmode="WPA2_PSK", wpa_passphrase="mypassword")
+    assert any(
+        "WPA2_PSK" in record.message and "deprecated" in record.message
+        for record in caplog.records
+    )
+
+
+def test_build_ssid_body_other_unrecognized_opmode_still_unmapped():
+    """Any opmode other than the deprecated `WPA2_PSK` alias remains
+    treated as unrecognized — no silent extra aliasing is introduced."""
+    body = _build_ssid_body("X", ["1"], opmode="BOGUS_MODE", wpa_passphrase="mypassword")
+    assert body["opmode"] == "BOGUS_MODE"
     assert "personal-security" not in body
 
 
@@ -154,6 +176,44 @@ def test_build_underlay_ssid_body_preserves_spaces():
     body = client.post.call_args_list[0][1]["data"]
     assert body["ssid"] == "Vanity Group"
     assert body["essid"]["name"] == "Vanity Group"
+
+
+# ---------------------------------------------------------------------------
+# build_underlay_ssid — deprecated WPA2_PSK opmode alias (0.4.0 CLI
+# backward compatibility, review finding #1)
+# ---------------------------------------------------------------------------
+
+
+def test_build_underlay_ssid_wpa2_psk_alias_normalizes_payload_and_warns():
+    client = MagicMock()
+    client.post.return_value = {"errorCode": "SUCC_001"}
+
+    result = build_underlay_ssid(
+        client, "Corp-WiFi", ["1000"], "99999",
+        opmode="WPA2_PSK", wpa_passphrase="mypassword",
+    )
+
+    assert result["errors"] == []
+    assert any("WPA2_PSK" in w and "WPA2_PERSONAL" in w for w in result["warnings"])
+
+    create_call = client.post.call_args_list[0]
+    body = create_call.kwargs["data"]
+    assert body["opmode"] == "WPA2_PERSONAL"
+    assert body["personal-security"]["wpa-passphrase"] == "mypassword"
+
+
+def test_build_underlay_ssid_canonical_wpa2_personal_has_no_warning():
+    client = MagicMock()
+    client.post.return_value = {"errorCode": "SUCC_001"}
+
+    result = build_underlay_ssid(
+        client, "Corp-WiFi", ["1000"], "99999",
+        opmode="WPA2_PERSONAL", wpa_passphrase="mypassword",
+    )
+
+    assert result["warnings"] == []
+    body = client.post.call_args_list[0].kwargs["data"]
+    assert body["opmode"] == "WPA2_PERSONAL"
 
 
 # ---------------------------------------------------------------------------
@@ -366,3 +426,50 @@ def test_build_overlay_ssid_policy_group_write_success_uses_validated_patch():
             "policy-group-list": [{"name": "Overlay-WiFi", "position": 3}]
         }
     }
+
+
+# ---------------------------------------------------------------------------
+# build_overlay_ssid — deprecated WPA2_PSK opmode alias (0.4.0 CLI
+# backward compatibility, review finding #1)
+# ---------------------------------------------------------------------------
+
+
+def test_build_overlay_ssid_wpa2_psk_alias_normalizes_payload_and_warns():
+    client = _overlay_client()
+    result = build_overlay_ssid(
+        client,
+        "Overlay-WiFi",
+        ["200"],
+        "99999",
+        "cluster1",
+        "88888",
+        opmode="WPA2_PSK",
+        wpa_passphrase="mypassword",
+    )
+
+    assert any("WPA2_PSK" in w and "WPA2_PERSONAL" in w for w in result["warnings"])
+
+    ssid_calls = [
+        call_args
+        for call_args in client.post.call_args_list
+        if call_args.args and call_args.args[0] == "/network-config/v1/wlan-ssids/Overlay-WiFi"
+    ]
+    assert len(ssid_calls) == 1
+    body = ssid_calls[0].kwargs["data"]
+    assert body["opmode"] == "WPA2_PERSONAL"
+    assert body["personal-security"]["wpa-passphrase"] == "mypassword"
+
+
+def test_build_overlay_ssid_canonical_wpa2_personal_has_no_warning():
+    client = _overlay_client()
+    result = build_overlay_ssid(
+        client,
+        "Overlay-WiFi",
+        ["200"],
+        "99999",
+        "cluster1",
+        "88888",
+        opmode="WPA2_PERSONAL",
+        wpa_passphrase="mypassword",
+    )
+    assert result["warnings"] == []

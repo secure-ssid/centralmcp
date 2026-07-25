@@ -25,6 +25,39 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Deprecated opmode aliases
+# ---------------------------------------------------------------------------
+
+# The 0.4.0 CLI/tooling accepted `WPA2_PSK` as the personal-PSK security
+# mode. The New Central `wlan.json`
+# (`ArubaWlanSecurity_WlanSecurityConfig.opmode`) enum has no `WPA2_PSK`
+# member -- the authoritative value is `WPA2_PERSONAL`. `WPA2_PSK` is kept
+# here as a deprecated alias so 0.4.0 scripts/CSV files/direct callers that
+# still pass it keep working; see docs/aos8-migration-contract-matrix.md §4.
+DEPRECATED_OPMODE_ALIASES: dict[str, str] = {
+    "WPA2_PSK": "WPA2_PERSONAL",
+}
+
+
+def _normalize_opmode(opmode: str) -> str:
+    """Normalize a caller-supplied opmode token to the authoritative
+    New Central WLAN security enum value, logging a concise deprecation
+    warning the first time a stale alias (currently only `WPA2_PSK`) is
+    seen. Unrecognized tokens are returned unchanged -- normalization only
+    ever touches a token in `DEPRECATED_OPMODE_ALIASES`.
+    """
+    canonical = DEPRECATED_OPMODE_ALIASES.get(opmode)
+    if canonical is None:
+        return opmode
+    logger.warning(
+        "opmode '%s' is deprecated — use '%s' instead. Normalizing automatically for this call.",
+        opmode,
+        canonical,
+    )
+    return canonical
+
+
+# ---------------------------------------------------------------------------
 # Default SSID body template (all tunable fields exposed as parameters)
 # ---------------------------------------------------------------------------
 
@@ -53,10 +86,14 @@ def _build_ssid_body(
 
     Note: the New Central WLAN security schema (`wlan.json`,
     `ArubaWlanSecurity_WlanSecurityConfig.opmode`) has no `WPA2_PSK` value —
-    the correct enum member is `WPA2_PERSONAL`. Any caller still passing the
-    stale `WPA2_PSK` token will silently get an open/no-passphrase body from
-    this function, exactly like any other unrecognized opmode; it is never
-    treated as a personal-security alias.
+    the correct enum member is `WPA2_PERSONAL`. `WPA2_PSK` is still accepted
+    here as a deprecated alias (see `DEPRECATED_OPMODE_ALIASES`/
+    `_normalize_opmode`) and is normalized to `WPA2_PERSONAL` — with a
+    logged deprecation warning — before either the payload `opmode` field
+    or the personal-security branch below is evaluated, so passphrase
+    handling is identical to passing `WPA2_PERSONAL` directly. Any other
+    unrecognized opmode is left untouched and silently gets an
+    open/no-passphrase body, as before.
 
     `wpa3_transition` defaults to False: every currently supported/verified
     pure security mode (OPEN, WPA2_PERSONAL, WPA3_SAE, ENHANCED_OPEN) must
@@ -65,6 +102,7 @@ def _build_ssid_body(
     the live-validation caveat documented in
     docs/aos8-migration-contract-matrix.md §6.2.
     """
+    opmode = _normalize_opmode(opmode)
     body: dict[str, Any] = {
         "ssid": ssid_name,
         "enable": enabled,
@@ -187,8 +225,19 @@ def build_underlay_ssid(
 
     Returns:
         Dict with keys: ssid_name, vlan_ids, scope_id, persona, created (bool),
-        scope_mapped (bool), errors (list[str]).
+        scope_mapped (bool), errors (list[str]), warnings (list[str]).
+        `warnings` carries a deprecation notice when `opmode='WPA2_PSK'` is
+        passed (see `DEPRECATED_OPMODE_ALIASES`); the payload opmode is
+        still normalized to `WPA2_PERSONAL`.
     """
+    canonical_opmode = _normalize_opmode(opmode)
+    warnings: list[str] = []
+    if canonical_opmode != opmode:
+        warnings.append(
+            f"opmode '{opmode}' is deprecated — normalized to '{canonical_opmode}'."
+        )
+    opmode = canonical_opmode
+
     url_name = quote(ssid_name, safe="")  # %20-encode spaces for URL path
     result: dict[str, Any] = {
         "ssid_name": ssid_name,
@@ -198,6 +247,7 @@ def build_underlay_ssid(
         "created": False,
         "scope_mapped": False,
         "errors": [],
+        "warnings": warnings,
     }
 
     body = _build_ssid_body(
@@ -312,8 +362,19 @@ def build_overlay_ssid(
     Returns:
         Dict with keys: ssid_name, vlan_ids, scope_id, cluster_name,
         created (bool), overlay_created (bool), scope_mapped (bool),
-        aaa_profile_created (bool), errors (list[str]).
+        aaa_profile_created (bool), errors (list[str]), warnings (list[str]).
+        `warnings` carries a deprecation notice when `opmode='WPA2_PSK'` is
+        passed (see `DEPRECATED_OPMODE_ALIASES`); the payload opmode is
+        still normalized to `WPA2_PERSONAL`.
     """
+    canonical_opmode = _normalize_opmode(opmode)
+    warnings: list[str] = []
+    if canonical_opmode != opmode:
+        warnings.append(
+            f"opmode '{opmode}' is deprecated — normalized to '{canonical_opmode}'."
+        )
+    opmode = canonical_opmode
+
     url_name = quote(ssid_name, safe="")
     result: dict[str, Any] = {
         "ssid_name": ssid_name,
@@ -325,6 +386,7 @@ def build_overlay_ssid(
         "scope_mapped": False,
         "aaa_profile_created": False,
         "errors": [],
+        "warnings": warnings,
     }
 
     # ------------------------------------------------------------------

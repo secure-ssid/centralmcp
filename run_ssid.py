@@ -33,6 +33,8 @@ Options:
   --vlans IDS         Comma-separated VLAN IDs, e.g. 1000 or 1000,1001
   --scope-id ID       Scope-id to map SSID to (default: auto-discovered global)
   --opmode MODE       ENHANCED_OPEN | WPA3_SAE | WPA2_PERSONAL (default: ENHANCED_OPEN)
+                      WPA2_PSK is accepted as a deprecated alias for
+                      WPA2_PERSONAL and is normalized automatically.
   --rf-band BAND      24GHZ_5GHZ | 5GHZ_ONLY | 6GHZ_ONLY (default: 24GHZ_5GHZ)
   --hide-ssid         Suppress broadcast of SSID name
   --max-clients N     Max clients per AP radio (default: 1024)
@@ -90,15 +92,16 @@ def _load_csv(path: str) -> list[dict]:
     return rows
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Aruba New Central — Underlay SSID Builder")
     parser.add_argument("--creds", default="config/credentials.yaml", help="Credentials YAML file")
     parser.add_argument("--ssid", metavar="NAME", help="SSID name (single-SSID mode)")
     parser.add_argument("--vlans", metavar="IDS", help="Comma-separated VLAN IDs (e.g. 1000 or 1000,1001)")
     parser.add_argument("--scope-id", metavar="ID", help="Scope-id to map SSID to (default: global)")
     parser.add_argument("--opmode", default="ENHANCED_OPEN",
-                        choices=["ENHANCED_OPEN", "WPA3_SAE", "WPA2_PERSONAL"],
-                        help="Security/auth mode (default: ENHANCED_OPEN)")
+                        choices=["ENHANCED_OPEN", "WPA3_SAE", "WPA2_PERSONAL", "WPA2_PSK"],
+                        help="Security/auth mode (default: ENHANCED_OPEN). "
+                             "WPA2_PSK is a deprecated alias for WPA2_PERSONAL.")
     parser.add_argument("--rf-band", default="24GHZ_5GHZ",
                         choices=["24GHZ_5GHZ", "24GHZ_ONLY", "5GHZ_ONLY", "6GHZ_ONLY"],
                         help="RF band (default: 24GHZ_5GHZ)")
@@ -110,6 +113,11 @@ def main() -> None:
     parser.add_argument("--input", metavar="FILE", help="CSV file for batch mode")
     parser.add_argument("--dry-run", action="store_true", help="Log actions without writing to API")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
+    return parser
+
+
+def main() -> None:
+    parser = _build_parser()
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -137,6 +145,16 @@ def main() -> None:
                 "opmode": args.opmode,
             }
         ]
+
+    # WPA2_PSK is a deprecated alias for WPA2_PERSONAL (see
+    # pipeline.create_ssid.DEPRECATED_OPMODE_ALIASES); warn once up front so
+    # 0.4.0 scripts/CSVs that still pass it keep working but are visibly
+    # nudged to update.
+    if any(defn["opmode"] == "WPA2_PSK" for defn in ssid_defs):
+        console.print(
+            "[yellow]Warning:[/yellow] --opmode WPA2_PSK is deprecated — "
+            "use WPA2_PERSONAL instead. Normalizing automatically for this run."
+        )
 
     # Build credentials + client
     try:

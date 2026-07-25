@@ -3870,3 +3870,153 @@ def test_persisted_verification_state_is_sanitized_and_bounded(tmp_path):
     assert persisted_verification == result["comparisons"][0]
     assert real_secret not in store.path_for("persisted-verify").read_text()
     assert persisted_verification["verification_status"] == "verified"
+
+
+# ---------------------------------------------------------------------------
+# Review-fix regression: 0.5.0 must not break 0.4.0 positional call sites for
+# `aos8_preview_migration_run`/`aos8_create_migration_run`. The 0.5.0-only
+# `external_object_references`/`ap_group_target_map`/`ap_group_device_serials`
+# fields must land after every 0.4.0 parameter (including `limit`/`offset`,
+# and for create_run, `run_id`) and must be keyword-only, so an old caller
+# that positionally supplied `limit`/`offset` (and `run_id` for create_run)
+# keeps binding those values to the same parameters as in 0.4.0, published
+# at commit 1f79256.
+# ---------------------------------------------------------------------------
+
+
+def test_preview_migration_run_matches_040_positional_signature():
+    import inspect
+
+    params = list(inspect.signature(aos8.aos8_preview_migration_run).parameters.values())
+    positional = [
+        p.name
+        for p in params
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    assert positional == [
+        "target_type",
+        "migration_plan",
+        "candidates",
+        "scope_id",
+        "scope_name",
+        "persona",
+        "conflict_policy",
+        "cluster_name",
+        "cluster_scope_id",
+        "gateway_name",
+        "gateway_scope_id",
+        "selected_candidates",
+        "limit",
+        "offset",
+    ]
+    keyword_only = {p.name for p in params if p.kind is p.KEYWORD_ONLY}
+    assert keyword_only == {
+        "external_object_references",
+        "ap_group_target_map",
+        "ap_group_device_serials",
+    }
+
+
+def test_create_migration_run_matches_040_positional_signature():
+    import inspect
+
+    params = list(inspect.signature(aos8.aos8_create_migration_run).parameters.values())
+    positional = [
+        p.name
+        for p in params
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    assert positional == [
+        "target_type",
+        "migration_plan",
+        "candidates",
+        "scope_id",
+        "scope_name",
+        "persona",
+        "conflict_policy",
+        "cluster_name",
+        "cluster_scope_id",
+        "gateway_name",
+        "gateway_scope_id",
+        "selected_candidates",
+        "run_id",
+        "limit",
+        "offset",
+    ]
+    keyword_only = {p.name for p in params if p.kind is p.KEYWORD_ONLY}
+    assert keyword_only == {
+        "external_object_references",
+        "ap_group_target_map",
+        "ap_group_device_serials",
+    }
+
+
+def test_preview_migration_run_040_positional_call_still_binds_limit_offset(
+    tmp_path, monkeypatch
+):
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    monkeypatch.setattr(aos8, "_aos8_migration_orchestrator", lambda: service)
+    candidates = [candidate("vlan", "20"), candidate("vlan", "21")]
+
+    # Exact 0.4.0 positional call shape: target_type, migration_plan,
+    # candidates, scope_id, scope_name, persona, conflict_policy,
+    # cluster_name, cluster_scope_id, gateway_name, gateway_scope_id,
+    # selected_candidates, limit, offset.
+    result = aos8.aos8_preview_migration_run(
+        "new_central",
+        None,
+        candidates,
+        "100",
+        "Branch",
+        "CAMPUS_AP",
+        "fail",
+        None,
+        None,
+        None,
+        None,
+        None,
+        1,
+        0,
+    )
+    assert "status" not in result
+    assert result["target"]["external_object_references"] == "runtime mapping not supplied"
+    assert result["target"]["ap_group_target_map"] == "runtime mapping not supplied"
+    assert result["target"]["ap_group_device_serials"] == "runtime mapping not supplied"
+    # `limit=1` must have bound to `limit`, not to a runtime-context dict.
+    assert len(result["operations"]) == 1
+
+
+def test_create_migration_run_040_positional_call_still_binds_run_id_limit_offset(
+    tmp_path, monkeypatch
+):
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    monkeypatch.setattr(aos8, "_aos8_migration_orchestrator", lambda: service)
+    candidates = [candidate("vlan", "20")]
+
+    # Exact 0.4.0 positional call shape: target_type, migration_plan,
+    # candidates, scope_id, scope_name, persona, conflict_policy,
+    # cluster_name, cluster_scope_id, gateway_name, gateway_scope_id,
+    # selected_candidates, run_id, limit, offset.
+    result = aos8.aos8_create_migration_run(
+        "new_central",
+        None,
+        candidates,
+        "100",
+        "Branch",
+        "CAMPUS_AP",
+        "fail",
+        None,
+        None,
+        None,
+        None,
+        None,
+        "positional-040-run",
+        50,
+        0,
+    )
+    assert result["status"] != "blocked"
+    # `run_id="positional-040-run"` must have bound to `run_id`, not to a
+    # runtime-context dict (which would raise/behave differently).
+    assert result["run_id"] == "positional-040-run"
