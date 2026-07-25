@@ -11,6 +11,7 @@ from urllib.parse import quote, quote_plus
 import pytest
 
 import mcp_servers.aos8 as aos8
+import pipeline.aos8_migration_orchestrator as orchestrator_module
 from pipeline.aos8_migration_orchestrator import (
     AOS8MigrationOrchestrator,
     MalformedMigrationStateError,
@@ -20,6 +21,7 @@ from pipeline.aos8_migration_orchestrator import (
     _target_context,
 )
 from pipeline.aos8_target_adapters import (
+    MAX_SECRET_LENGTH,
     ClassicCentralAdapter,
     NewCentralAdapter,
     TargetType,
@@ -2622,3 +2624,183 @@ def test_wpa3_enterprise_mcp_preview_allows_context_create_run_rejects_it(
         run_id="mcp-wpa3-ent-no-ctx",
     )
     assert created["candidates"][0]["status"] == "unsupported"
+
+
+# --------------------------------------------------------------------------
+# Regression coverage after 4c6a63a: no module-level cache keyed by raw
+# secrets may retain secret material (or a secret-specific compiled regex)
+# across requests, a caller-supplied runtime secret above
+# `MAX_SECRET_LENGTH` must be rejected before it ever reaches mapping/
+# write/`_sanitize`, and `_sanitize` must compile each distinct secret's
+# regex only once per top-level call, not once per leaf it happens to
+# touch.
+# --------------------------------------------------------------------------
+
+
+def test_apply_rejects_oversized_secret_before_mapping_or_write(tmp_path):
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _wpa2_wlan_candidate("OversizedSecret")
+    service.create_run([wlan], target(), run_id="oversized-secret")
+    # `create_run` itself already issued a preflight read while mapping/
+    # previewing the candidate -- capture that baseline so we can assert
+    # `apply()` adds no new read/write activity of its own.
+    read_calls_before = len(backend.read_calls)
+    oversized = "s" * (MAX_SECRET_LENGTH + 1)
+    supplied = {"wlan:OversizedSecret": {"wpa_passphrase": oversized}}
+
+    with pytest.raises(MigrationRunError, match=str(MAX_SECRET_LENGTH)):
+        service.apply(
+            "oversized-secret",
+            dry_run=True,
+            confirmation=False,
+            target_secrets=supplied,
+        )
+
+    # Rejected before candidate mapping/write ever ran, and before any
+    # attempt bookkeeping was persisted for the candidate.
+    assert backend.write_calls == []
+    assert len(backend.read_calls) == read_calls_before
+    persisted = store.load("oversized-secret")
+    assert persisted["candidates"][0]["attempts"] == 0
+    assert oversized not in store.path_for("oversized-secret").read_text()
+
+
+def test_apply_accepts_secret_at_max_bound(tmp_path):
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _wpa2_wlan_candidate("MaxBoundSecret")
+    service.create_run([wlan], target(), run_id="max-bound-secret")
+    at_bound = "s" * MAX_SECRET_LENGTH
+    supplied = {"wlan:MaxBoundSecret": {"wpa_passphrase": at_bound}}
+
+    service.apply(
+        "max-bound-secret", dry_run=True, confirmation=False, target_secrets=supplied
+    )
+    applied = service.apply(
+        "max-bound-secret", dry_run=False, confirmation=True, target_secrets=supplied
+    )
+    assert applied["candidates"][0]["status"] == "applied"
+    assert at_bound not in store.path_for("max-bound-secret").read_text()
+
+
+def test_compile_secret_pattern_has_no_module_level_cache(monkeypatch):
+    # After 4c6a63a, `_compile_secret_pattern` was wrapped in a module-
+    # level `functools.lru_cache(maxsize=256)` keyed by the raw secret
+    # string -- retaining every distinct secret (and its compiled,
+    # secret-specific regex) in process memory for the process lifetime.
+    # It must now be a plain, uncached function: no `cache_info`/
+    # `cache_clear`, and its body must run fully on every call -- never
+    # short-circuited by a cache hit for a repeated secret. (`re.compile`
+    # itself has its own small internal cache for identical pattern
+    # *source strings*, so identical-secret calls can still return the
+    # same `re.Pattern` object; that is a stdlib `re` module detail, not
+    # evidence of a retained secret-keyed cache in this module -- the
+    # absence of `cache_info`/`cache_clear` plus the call-count check
+    # below is what actually proves it.)
+    assert not hasattr(_compile_secret_pattern, "cache_info")
+    assert not hasattr(_compile_secret_pattern, "cache_clear")
+
+    calls: list[str] = []
+    real_char_pattern = orchestrator_module._secret_char_pattern
+
+    def counting_char_pattern(char):
+        calls.append(char)
+        return real_char_pattern(char)
+
+    monkeypatch.setattr(
+        orchestrator_module, "_secret_char_pattern", counting_char_pattern
+    )
+    orchestrator_module._compile_secret_pattern("ab")
+    orchestrator_module._compile_secret_pattern("ab")
+    # Two characters, called fresh on every invocation: 2 calls x 2
+    # invocations. A cached wrapper would only produce 2 total calls
+    # (one invocation's worth).
+    assert calls == ["a", "b", "a", "b"]
+
+
+def test_sanitize_compiles_each_secret_pattern_once_per_top_level_call(monkeypatch):
+    calls: list[str] = []
+    real_compile = orchestrator_module._compile_secret_pattern
+
+    def counting_compile(secret):
+        calls.append(secret)
+        return real_compile(secret)
+
+    monkeypatch.setattr(orchestrator_module, "_compile_secret_pattern", counting_compile)
+
+    secret_a = "secret-alpha"
+    secret_b = "secret-beta"
+    # Many leaves, each secret repeated multiple times across the
+    # structure -- a per-leaf implementation would recompile far more
+    # than twice.
+    payload = {
+        "candidates": [
+            {"error": f"failed for {secret_a}", "detail": f"see {secret_b} too"}
+            for _ in range(25)
+        ],
+        "summary": f"{secret_a} and {secret_b} appear again here",
+    }
+
+    result = orchestrator_module._sanitize(
+        payload, secret_values=(secret_a, secret_b, secret_a, secret_b)
+    )
+
+    assert calls.count(secret_a) == 1
+    assert calls.count(secret_b) == 1
+    assert len(calls) == 2
+    assert secret_a not in json.dumps(result)
+    assert secret_b not in json.dumps(result)
+
+
+def test_sanitize_256_diverse_requests_do_not_grow_retained_state(monkeypatch):
+    # Simulates 256 independent request-scoped `_sanitize` calls, each
+    # with its own distinct secret. Because compilation is scoped to a
+    # single top-level call (no module-level cache), a secret compiled in
+    # one call must be recompiled -- not served from a persisted cache --
+    # in a later call, and nothing keyed by these secrets is retained
+    # afterward.
+    calls: list[str] = []
+    real_compile = orchestrator_module._compile_secret_pattern
+
+    def counting_compile(secret):
+        calls.append(secret)
+        return real_compile(secret)
+
+    monkeypatch.setattr(orchestrator_module, "_compile_secret_pattern", counting_compile)
+
+    for i in range(256):
+        secret = f"diverse-request-secret-{i}"
+        payload = {"error": f"backend rejected {secret}", "id": i}
+        result = orchestrator_module._sanitize(payload, secret_values=(secret,))
+        assert secret not in json.dumps(result)
+
+    # One compilation per request/secret -- no cross-request cache hit
+    # ever short-circuits a later call, which would show up as fewer than
+    # 256 total compilations.
+    assert len(calls) == 256
+    assert len(set(calls)) == 256
+    # Nothing keyed by these secrets survives on the function itself.
+    assert not hasattr(orchestrator_module._compile_secret_pattern, "cache_info")
+
+
+def test_apply_redacts_secret_within_max_bound_end_to_end(tmp_path):
+    # Companion to the encoded-secret regressions above: a secret at the
+    # normal upper end of realistic AOS8 migration secret material (well
+    # under `MAX_SECRET_LENGTH`) must still be redacted end to end through
+    # a real backend failure/retry-success cycle.
+    backend = FakeBackend()
+    backend.fail_real["build_underlay_ssid"] = 1
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _wpa2_wlan_candidate("LongSecret")
+    service.create_run([wlan], target(), run_id="long-secret")
+    secret = "Cr3d3ntial!" * 20  # 220 chars, comfortably below the bound
+    assert len(secret) <= MAX_SECRET_LENGTH
+    supplied = {"wlan:LongSecret": {"wpa_passphrase": secret}}
+    service.apply("long-secret", dry_run=True, confirmation=False, target_secrets=supplied)
+    failed = service.apply(
+        "long-secret", dry_run=False, confirmation=True, target_secrets=supplied
+    )
+    assert failed["candidates"][0]["status"] == "failed"
+    assert secret not in json.dumps(failed)
+    assert secret not in store.path_for("long-secret").read_text()

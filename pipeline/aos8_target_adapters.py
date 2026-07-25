@@ -210,6 +210,20 @@ _REDACTED_MARKERS = {
     "<redacted:present>",
 }
 
+# Runtime secret material a caller supplies for a real write -- WPA2/WPA3
+# PSK passphrases, RADIUS/TACACS+ shared secrets, LDAP bind passwords.
+# WPA2/WPA3-Personal PSK passphrases are capped at 63 ASCII characters by
+# the Wi-Fi Alliance spec, and RADIUS/TACACS+ shared secrets and LDAP bind
+# passwords are conventionally well under a few hundred characters, so
+# 1024 is a generous upper bound over every legitimate AOS8/Central
+# migration secret in current use. It exists only to reject a caller
+# error or an oversized/adversarial payload outright, before it reaches
+# candidate mapping, any write invocation, or per-character secret-regex
+# compilation (`_compile_secret_pattern` in
+# `pipeline.aos8_migration_orchestrator`) -- never to accommodate a
+# legitimate secret anywhere near the limit.
+MAX_SECRET_LENGTH = 1024
+
 
 def _mask_mapping(value: Mapping[str, Any], sensitive_fields: Iterable[str]) -> dict[str, Any]:
     """Mask top-level sensitive keys plus one level of dotted-path nesting.
@@ -264,6 +278,11 @@ def _secret_value(
             f"{candidate_key}: caller must supply a non-redacted target secret "
             f"named {secret_name!r}."
         )
+    if len(value) > MAX_SECRET_LENGTH:
+        raise AdapterError(
+            f"{candidate_key}: target secret {secret_name!r} exceeds the "
+            f"{MAX_SECRET_LENGTH}-character runtime secret bound."
+        )
     return value
 
 
@@ -277,6 +296,16 @@ def _secret_bundle_error(
     supplied = context.secret_inputs.get(key)
     if not supplied:
         return f"{key}: secret-bearing candidate requires caller-provided target secrets."
+    oversized = [
+        name
+        for name, value in supplied.items()
+        if isinstance(value, str) and len(value) > MAX_SECRET_LENGTH
+    ]
+    if oversized:
+        return (
+            f"{key}: target secret inputs exceed the {MAX_SECRET_LENGTH}-character "
+            f"runtime secret bound: {sorted(oversized)}."
+        )
     invalid = [
         name
         for name, value in supplied.items()

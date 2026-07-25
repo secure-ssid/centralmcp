@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pipeline.aos8_target_adapters import (
+    MAX_SECRET_LENGTH,
     ClassicCentralAdapter,
     ConflictPolicy,
     ContextValidationError,
@@ -2041,3 +2042,35 @@ def test_preview_target_exposes_operator_context_fields():
     }
     assert target["ap_group_target_map"] == {"ap-group-hq": "HQ-Group"}
     assert target["ap_group_device_serials"] == {"ap-group-hq": ["CN1234", "CN5678"]}
+
+
+# --------------------------------------------------------------------------
+# Runtime secret length bound (`MAX_SECRET_LENGTH`): a caller-supplied
+# target secret (PSK/passphrase, RADIUS/TACACS+ shared secret, LDAP bind
+# password) must be rejected outright once it exceeds the bound, before it
+# is ever mapped into a write payload -- see `_secret_value`/
+# `_secret_bundle_error` in `pipeline.aos8_target_adapters`.
+# --------------------------------------------------------------------------
+
+
+def test_secret_bundle_rejects_oversized_wpa3_personal_passphrase():
+    wlan = _wpa3_personal_wlan(name="TooLong")
+    oversized = "x" * (MAX_SECRET_LENGTH + 1)
+    result = classic_adapter(
+        FakeBackend(), secrets={"wlan:TooLong": {"wpa_passphrase": oversized}}
+    ).preview([wlan])
+    action = result["operations"][0]
+    assert action["status"] == "unsupported"
+    assert str(MAX_SECRET_LENGTH) in action["unsupported_warnings"][0]
+    assert oversized not in str(result)
+
+
+def test_secret_bundle_accepts_max_bound_wpa3_personal_passphrase():
+    wlan = _wpa3_personal_wlan(name="MaxBound")
+    at_bound = "y" * MAX_SECRET_LENGTH
+    result = classic_adapter(
+        FakeBackend(), secrets={"wlan:MaxBound": {"wpa_passphrase": at_bound}}
+    ).preview([wlan])
+    action = result["operations"][0]
+    assert action["status"] == "ready"
+    assert action["operations"][0]["payload"]["wlan"]["wpa_passphrase"] == "***"

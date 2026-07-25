@@ -11,12 +11,12 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, unquote_plus
 
 from pipeline.aos8_target_adapters import (
+    MAX_SECRET_LENGTH,
     BaseCentralTargetAdapter,
     ConflictPolicy,
     TargetContext,
@@ -186,6 +186,7 @@ def _sanitize(
     structural_redact_marker: str = "******",
     max_depth: int = 8,
     _depth: int = 0,
+    _compiled_secrets: dict[str, re.Pattern[str]] | None = None,
 ) -> Any:
     """Sanitize `value` for return/persistence across two independent
     redaction channels:
@@ -255,11 +256,29 @@ def _sanitize(
       afterward, over the (possibly structurally-modified) text, so a
       credential elsewhere in the URL/string -- raw, percent-encoded, or
       form-encoded -- is still caught.
+
+    `_compiled_secrets` is private/internal (leading underscore, like
+    `_depth`): callers never pass it. Each *top-level* call (`_depth == 0`,
+    identified by `_compiled_secrets is None`) compiles every distinct
+    secret's linear regex exactly once via `_compile_secret_pattern`,
+    then threads the already-compiled `dict[secret, pattern]` down through
+    every recursive call in this call tree, so a leaf never recompiles a
+    pattern another leaf already built for the same secret. This is scoped
+    to a single call/request -- built fresh on this stack, discarded when
+    `_sanitize` returns, never stored on a module-level cache -- so no
+    compiled pattern (and no raw secret it was built from) outlives the
+    call that needed it.
     """
     secrets = tuple(secret for secret in secret_values if secret)
     structural_secrets = tuple(
         secret for secret in structural_redaction_values if secret
     )
+    if _compiled_secrets is None:
+        compiled_secrets = {
+            secret: _compile_secret_pattern(secret) for secret in dict.fromkeys(secrets)
+        }
+    else:
+        compiled_secrets = _compiled_secrets
     if _depth >= max_depth:
         return "<bounded:max-depth>"
     if isinstance(value, Mapping):
@@ -279,6 +298,7 @@ def _sanitize(
                     structural_redact_marker=structural_redact_marker,
                     max_depth=max_depth,
                     _depth=_depth + 1,
+                    _compiled_secrets=compiled_secrets,
                 )
             )
         if len(value) > MAX_RESULT_ITEMS:
@@ -298,6 +318,7 @@ def _sanitize(
                 structural_redact_marker=structural_redact_marker,
                 max_depth=max_depth,
                 _depth=_depth + 1,
+                _compiled_secrets=compiled_secrets,
             )
             for item in items[:MAX_RESULT_ITEMS]
         ]
@@ -333,23 +354,25 @@ def _sanitize(
         # whatever `_redact_url_structural` returns.
         text = _redact_url_structural(text, structural_secret_set, structural_redact_marker)
         # Actual secrets: one linear regex per secret
-        # (`_compile_secret_pattern`), applied directly to the (possibly
-        # structurally-modified) text as plain pattern matching. Each
-        # character of the secret is matched as its raw literal form,
-        # its UTF-8 percent-encoded byte sequence (every hex digit
-        # independently case-insensitive), or -- for a space -- a
-        # literal `+` (form encoding), so a single pass catches any
-        # mixture of raw/encoded characters and any per-escape case
-        # mixing, whether the secret is a whole leaf, a URL/query/
-        # fragment component, embedded inside a longer backend error/
-        # result message, or inside a URL string that is itself
+        # (`_compile_secret_pattern`, compiled once per secret for this
+        # top-level `_sanitize` call -- see `compiled_secrets` above --
+        # and reused here rather than recompiled per leaf), applied
+        # directly to the (possibly structurally-modified) text as plain
+        # pattern matching. Each character of the secret is matched as
+        # its raw literal form, its UTF-8 percent-encoded byte sequence
+        # (every hex digit independently case-insensitive), or -- for a
+        # space -- a literal `+` (form encoding), so a single pass
+        # catches any mixture of raw/encoded characters and any
+        # per-escape case mixing, whether the secret is a whole leaf, a
+        # URL/query/fragment component, embedded inside a longer backend
+        # error/result message, or inside a URL string that is itself
         # embedded in a longer message. This never decodes/re-encodes a
         # parsed URL or any surrounding prose -- it is a direct regex
         # substitution over the literal text -- so it cannot corrupt an
         # absolute URL embedded in prose, or any unrelated text around
         # a match.
         for secret in secrets:
-            text = _compile_secret_pattern(secret).sub(redact_marker, text)
+            text = compiled_secrets[secret].sub(redact_marker, text)
         if len(text) > 1000:
             return f"{text[:1000]}... [truncated {len(text) - 1000} chars]"
         return text
@@ -398,7 +421,6 @@ def _secret_char_pattern(char: str) -> str:
     return "(?:" + "|".join(alternatives) + ")"
 
 
-@lru_cache(maxsize=256)
 def _compile_secret_pattern(secret: str) -> re.Pattern[str]:
     """Compile a regex matching `secret` against arbitrary mixtures of
     raw and percent-/form-encoded characters -- e.g. the four characters
@@ -414,9 +436,20 @@ def _compile_secret_pattern(secret: str) -> re.Pattern[str]:
     fixed-size, non-overlapping set of alternatives (see
     `_secret_char_pattern`), so the compiled pattern is linear in
     `len(secret)` with no catastrophic-backtracking exposure regardless
-    of secret length or content. Cached because the same handful of
-    secrets is matched against many strings within a single `_sanitize`
-    call tree.
+    of secret length or content (also bounded well below
+    `aos8_target_adapters.MAX_SECRET_LENGTH` before a real secret ever
+    reaches this function -- see `_validate_runtime_secret_lengths`).
+
+    Deliberately *not* cached across calls (no `lru_cache` or other
+    module-level cache keyed by the secret): a cache keyed by raw secret
+    text would retain every distinct secret -- and its compiled,
+    secret-specific regex -- in process memory for the life of the
+    process, long after the request/operation that supplied it has
+    completed. `_sanitize` instead compiles each secret's pattern once
+    per top-level call via a local `compiled_secrets` dict threaded
+    through its own recursion (see `_sanitize`'s docstring), so
+    repeated compilation is avoided within a single call tree without
+    any secret surviving past it.
     """
     return re.compile("".join(_secret_char_pattern(c) for c in secret))
 
@@ -596,6 +629,38 @@ def _placeholder_secret_inputs(
         for candidate in candidates
         if candidate.get("requires_secret_input")
     }
+
+
+def _validate_runtime_secret_lengths(
+    supplied_secrets: Mapping[str, Mapping[str, str]],
+) -> None:
+    """Reject any caller-supplied runtime secret (PSK, RADIUS/TACACS+
+    shared secret, LDAP bind password, ...) longer than
+    `MAX_SECRET_LENGTH` up front, before it reaches candidate mapping,
+    any write invocation, or `_sanitize`'s per-character secret-regex
+    compilation (`_compile_secret_pattern`).
+
+    This is `apply()`'s runtime counterpart to
+    `aos8_target_adapters._secret_value`/`_secret_bundle_error`, which
+    enforce the same bound once a `TargetContext` has been built for a
+    specific candidate; this check runs first, over every supplied
+    secret for the whole request, so an oversized value is refused
+    outright rather than silently truncated, left to blow up a regex
+    compilation, or discovered only candidate-by-candidate partway
+    through a run.
+    """
+    oversized = sorted(
+        f"{key}.{name}"
+        for key, bundle in supplied_secrets.items()
+        if isinstance(bundle, Mapping)
+        for name, value in bundle.items()
+        if isinstance(value, str) and len(value) > MAX_SECRET_LENGTH
+    )
+    if oversized:
+        raise MigrationRunError(
+            "Target secret inputs exceed the "
+            f"{MAX_SECRET_LENGTH}-character runtime secret bound: {oversized}."
+        )
 
 
 def _bounded_operator_string(
@@ -1554,6 +1619,12 @@ class AOS8MigrationOrchestrator:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
+        # Fail closed before touching the run at all: an oversized secret
+        # is a caller-input error independent of any specific run's
+        # state, so it is rejected up front -- before mapping, any write
+        # invocation, or `_sanitize` -- rather than partway through
+        # per-candidate processing below.
+        _validate_runtime_secret_lengths(target_secrets or {})
         with self.store.lock_run(run_id):
             return self._apply_locked(
                 run_id,
