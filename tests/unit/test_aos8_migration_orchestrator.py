@@ -1567,6 +1567,123 @@ def test_sanitize_secret_values_redacts_credential_in_url_payload_and_list():
     assert "attempt failed for other-value" in dumped
 
 
+def test_sanitize_url_path_structural_identifier_and_query_credential_both_redacted():
+    # Regression for the final URL redaction composition issue: a URL
+    # can have one component that is an exact structural (non-secret)
+    # operator-context match -- here, a path segment -- *and* a
+    # different component that holds an actual runtime secret -- here,
+    # a query value. Structural URL/query redaction must modify the
+    # string in place without returning early, so the subsequent
+    # `secret_values` substring pass still runs over (and redacts) the
+    # rest of the same string.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    structural_value = "Legacy-AuthServer"
+    secret = "P@ssw0rd123"
+    marker = "<runtime-context-redacted>"
+    url = f"/network-config/v1alpha1/auth-servers/{structural_value}?token={secret}"
+
+    sanitized = _sanitize(
+        {"endpoint": url},
+        secret_values=(secret,),
+        structural_redaction_values=(structural_value,),
+        structural_redact_marker=marker,
+    )
+    endpoint = sanitized["endpoint"]
+    assert endpoint == f"/network-config/v1alpha1/auth-servers/{marker}?token=******"
+    assert structural_value not in endpoint
+    assert secret not in endpoint
+
+
+def test_sanitize_url_query_structural_identifier_and_path_fragment_credential_both_redacted():
+    # Mirror of the path/query case above, with the structural match in
+    # the query string and the actual secret embedded in both the path
+    # (as a substring, not a clean component) and the fragment trailing
+    # the query. Both redaction channels must still fire over the same
+    # string: the structural query component is replaced, and the
+    # secret substring is scrubbed wherever it appears afterward.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    structural_value = "target-group-1"
+    secret = "F1nal-Secret"
+    marker = "<runtime-context-redacted>"
+    url = (
+        f"/network-config/v1/server-groups/prefix-{secret}-suffix"
+        f"?group={structural_value}&other=1#frag-{secret}-tail"
+    )
+
+    sanitized = _sanitize(
+        {"endpoint": url},
+        secret_values=(secret,),
+        structural_redaction_values=(structural_value,),
+        structural_redact_marker=marker,
+    )
+    endpoint = sanitized["endpoint"]
+    assert secret not in endpoint
+    assert structural_value not in endpoint
+    assert f"group={marker}" in endpoint
+    assert "other=1" in endpoint
+    assert "/network-config/v1/server-groups/prefix-" in endpoint
+    assert "-suffix" in endpoint
+    assert "-tail" in endpoint
+
+
+def test_sanitize_whole_leaf_structural_match_wins_even_when_leaf_looks_like_a_url():
+    # A whole-leaf structural match must still short-circuit and return
+    # only the structural marker even when the matched leaf happens to
+    # look like a URL/path (starts with "/") and embeds an actual secret
+    # substring -- the entire string is registered (and matched) as a
+    # single operator-context identifier, so it must never be routed
+    # through the URL-component parser, which would leave path
+    # separators and unmatched segments behind instead of fully hiding
+    # the identifier.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "hunter2-token"
+    identifier = f"/legacy-import/prefix-{secret}-suffix?raw=1"
+    marker = "<runtime-context-redacted>"
+
+    sanitized = _sanitize(
+        {"legacy_reference": identifier},
+        secret_values=(secret,),
+        structural_redaction_values=(identifier,),
+        structural_redact_marker=marker,
+    )
+    assert sanitized["legacy_reference"] == marker
+    assert secret not in sanitized["legacy_reference"]
+    assert "/legacy-import" not in sanitized["legacy_reference"]
+    assert "raw=1" not in sanitized["legacy_reference"]
+
+
+def test_sanitize_url_structural_and_secret_redaction_do_not_corrupt_unrelated_text():
+    # The new URL structural-then-secret composition must not introduce
+    # any false-positive corruption: a one-character structural
+    # operator value must redact only an exact path/query component
+    # match -- never a fragment of an unrelated path segment, query
+    # value, or prose string -- and a real secret that never actually
+    # occurs anywhere in the payload must leave everything untouched.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    structural_value = "a"
+    secret = "Sup3rSecret!"
+    marker = "<runtime-context-redacted>"
+    unrelated_url = "/network-monitoring/v1/aps?status=ready&band=abnormal"
+
+    sanitized = _sanitize(
+        {
+            "endpoint": unrelated_url,
+            "status": "ready",
+            "notes": ["already applied", "band is abnormal"],
+        },
+        secret_values=(secret,),
+        structural_redaction_values=(structural_value,),
+        structural_redact_marker=marker,
+    )
+    assert sanitized["endpoint"] == unrelated_url
+    assert sanitized["status"] == "ready"
+    assert sanitized["notes"] == ["already applied", "band is abnormal"]
+
+
 def test_sanitize_combined_secret_and_structural_channels():
     # Both channels must be usable together in a single `_sanitize` call:
     # a real secret substring-redacted anywhere it appears, and a short

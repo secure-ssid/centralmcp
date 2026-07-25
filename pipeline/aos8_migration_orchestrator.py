@@ -196,10 +196,11 @@ def _sanitize(
     - `structural_redaction_values`: transient, non-secret
       operator-context identifiers (e.g. an already-existing Classic
       auth-server name, an AP-group target-group name, a device serial).
-      These are redacted only structurally, via `_redact_structural`: a
-      whole leaf string that exactly equals one of them, or an exact
-      decoded path/query component of a URL/endpoint string. They are
-      never substring-replaced, because they can legitimately be as short
+      These are redacted only structurally, via a whole-leaf comparison
+      (handled inline below) plus `_redact_url_structural` for URL/query
+      components: a whole leaf string that exactly equals one of them, or
+      an exact decoded path/query component of a URL/endpoint string.
+      They are never substring-replaced, because they can legitimately be as short
       as one character (see `_bounded_operator_string`) and a generic
       substring scan would corrupt unrelated prose that merely contains
       that character sequence (e.g. "ready", "wlan") anywhere else in the
@@ -208,20 +209,33 @@ def _sanitize(
     Both channels apply independently and can be combined in the same
     call; each keeps its own marker so the two redaction reasons stay
     distinguishable in the output. Per string, `structural_redaction_values`
-    is always evaluated first, against the original, unmodified text, and
-    a match short-circuits: the structural marker is returned immediately
-    without running the `secret_values` substring pass at all. This
-    ordering is required, not cosmetic -- a legitimate operator identifier
-    can embed a secret/placeholder literal as a mere substring (e.g.
-    "prod-__runtime_secret_placeholder__-radius"); replacing that inner
-    slice first would leave the outer text unequal to the structural
-    value it should have matched, so the whole-leaf/URL-component
-    comparison would silently fail and the identifier's prefix/suffix
-    would leak unredacted. Evaluating structurally first, on the original
-    text, and returning on a match, is exact and total by construction: a
-    structural match always covers the entire leaf or a whole URL/query
-    component, so there is nothing left in that string for the secret
-    pass to touch.
+    is always evaluated first, against the original, unmodified text, but
+    the two structural cases behave differently:
+
+    - Whole-leaf match: if `text` as a whole exactly equals one of
+      `structural_redaction_values`, the structural marker is returned
+      immediately, before any other pass runs. This is required, not
+      cosmetic -- a legitimate operator identifier can embed a secret/
+      placeholder literal as a mere substring (e.g.
+      "prod-__runtime_secret_placeholder__-radius"); running the
+      `secret_values` substring pass first would replace that inner
+      slice, leaving the outer text unequal to the structural value it
+      should have matched, so the whole-leaf comparison would silently
+      fail and the identifier's prefix/suffix would leak unredacted.
+      Short-circuiting on the original text before any other pass runs
+      closes that gap, and is exact and total by construction: a
+      whole-leaf match consumes the entire string, so there is nothing
+      left for the secret pass to touch.
+    - URL/query component match: exact decoded/percent-encoded path or
+      query components of a URL/endpoint string are structurally
+      redacted, producing a modified string -- but this does NOT
+      short-circuit. The same URL can have one component that is an
+      exact structural operator-context match *and* another component
+      (or an embedded fragment) that holds an actual runtime secret;
+      both channels must run over the same string so neither leaks. The
+      `secret_values` substring pass always runs afterward, over the
+      (possibly structurally-modified) text, so a credential elsewhere
+      in the URL/string is still caught.
     """
     secrets = tuple(secret for secret in secret_values if secret)
     structural_secrets = tuple(
@@ -280,27 +294,30 @@ def _sanitize(
         return bounded
     if isinstance(value, str):
         text = value
-        # Structural, non-secret operator-context redaction must run
-        # first, against the *original* string, and win outright on a
-        # match. If it ran after the aggressive `secret_values` substring
-        # scan below, a legitimate operator identifier that merely
-        # *contains* a secret/placeholder literal as a substring (e.g.
-        # "prod-__runtime_secret_placeholder__-radius") would already
-        # have had that inner slice replaced by the time the whole-leaf
-        # exact-match comparison in `_redact_structural` runs -- so the
-        # comparison would never match, and the surrounding prefix/suffix
-        # ("prod-"/"-radius") would leak unredacted. Running structural
-        # redaction first, and returning immediately on a match, closes
-        # that gap: a structural match is always the *entire* leaf or a
-        # whole URL/query component, so nothing else in `text` needs the
-        # secret-substring pass once it fires.
-        structural = _redact_structural(text, structural_secrets, structural_redact_marker)
-        if structural != text:
-            return structural
+        structural_secret_set = set(structural_secrets)
+        # Whole-leaf structural match: the entire identifier is hidden
+        # immediately, before any other pass runs, and the function
+        # returns outright -- see the docstring above for why this must
+        # happen first and must short-circuit. A whole-leaf match
+        # consumes the entire string, so no secret-substring pass is
+        # needed or run.
+        if text in structural_secret_set:
+            return structural_redact_marker
+        # URL/query component structural redaction: modifies (but never
+        # fully replaces) the string in place, and deliberately does NOT
+        # return early -- unlike the whole-leaf case above, a URL can
+        # have one component that is an exact structural operator-
+        # context match *and* a different component, or an embedded
+        # fragment, that holds an actual runtime secret. Both channels
+        # must run over the same string so neither leaks; execution
+        # falls through to the `secret_values` substring pass below on
+        # whatever `_redact_url_structural` returns.
+        text = _redact_url_structural(text, structural_secret_set, structural_redact_marker)
         # Actual secrets: aggressive substring replacement, anywhere in
-        # the string -- this must catch a credential embedded in a longer
-        # backend error/result message, not just a leaf that equals it
-        # exactly.
+        # the (possibly structurally-modified) string -- this must catch
+        # a credential embedded in a longer backend error/result
+        # message, or alongside a structurally-redacted URL component,
+        # not just a leaf that equals it exactly.
         for secret in secrets:
             text = text.replace(secret, redact_marker)
         if len(text) > 1000:
@@ -309,34 +326,32 @@ def _sanitize(
     return value
 
 
-def _redact_structural(text: str, secrets: tuple[str, ...], redact_marker: str) -> str:
-    """Redact `secrets` from `text` structurally -- never by arbitrary
-    substring replacement, which would corrupt any unrelated text that
-    merely *contains* a short/generic operator value as a fragment (e.g.
-    an operator-supplied one-character value "a" would otherwise turn
-    "ready" into "re<marker>dy" and "wlan" into "wl<marker>n" everywhere
-    else in the same payload). Two, and only two, structural matches are
-    ever redacted:
+def _redact_url_structural(text: str, secret_set: set[str], redact_marker: str) -> str:
+    """Redact `secret_set` from a URL/endpoint string `text` structurally
+    -- never by arbitrary substring replacement, which would corrupt any
+    unrelated text that merely *contains* a short/generic operator value
+    as a fragment (e.g. an operator-supplied one-character value "a"
+    would otherwise turn "ready" into "re<marker>dy" and "wlan" into
+    "wl<marker>n" everywhere else in the same payload).
 
-    1. `text` as a whole is exactly equal to one of `secrets` (a
-       dict/list leaf whose entire value is the runtime reference, e.g.
-       `payload["wlan"]["auth_server1"]`).
-    2. `text` is a URL/endpoint path (starts with "/" or contains
-       "://"): each `/`-delimited path segment and each `key`/`value` in
-       a `?`-delimited query string is percent-decoded and compared for
-       an exact match, so a runtime value embedded as one path/query
-       component is redacted without touching the rest of the endpoint
-       string, whether it was passed decoded or percent-encoded.
+    The whole-leaf exact-match case is handled by the caller (`_sanitize`)
+    before this function is ever reached; this function only handles the
+    URL/query-component case: if `text` is a URL/endpoint path (starts
+    with "/" or contains "://"), each `/`-delimited path segment and each
+    `key`/`value` in a `?`-delimited query string is percent-decoded and
+    compared for an exact match, so a runtime value embedded as one
+    path/query component is redacted without touching the rest of the
+    endpoint string, whether it was passed decoded or percent-encoded.
+    Non-URL text (and URL text with no matching component) is returned
+    unchanged -- this function never short-circuits the caller's
+    subsequent secret-substring pass.
 
     Generic prose (adapter messages, statuses, warnings) that merely
     happens to share characters with a short operator value is left
     completely unchanged.
     """
-    if not secrets:
+    if not secret_set:
         return text
-    secret_set = set(secrets)
-    if text in secret_set:
-        return redact_marker
     if text.startswith("/") or "://" in text:
         return _redact_url_components(text, secret_set, redact_marker)
     return text
