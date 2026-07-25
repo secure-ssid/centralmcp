@@ -267,3 +267,175 @@ def test_adapter_factory_selects_new_central_resolver_for_new_central_target(
     adapter = service.adapter_factory(context)
     assert adapter.context.scope_name == "Branch"
     assert calls["count"] == 1
+
+
+# --------------------------------------------------------------------------
+# aos8-verification-fixes item 1: `list_config_assignments` production
+# dispatcher path (previously omitted from `_aos8_migration_read_invoker`'s
+# tool allowlist, which made every production role config-assignment
+# verification raise `ValueError: Unapproved migration read tool`).
+# --------------------------------------------------------------------------
+
+
+class _FakeConfigAssignmentsClient:
+    """Stands in for `pipeline.clients.central_client.CentralClient` at the
+    `mcp_servers.config.list_config_assignments` boundary -- captures the
+    exact `params` the curated tool sends and returns a real
+    `httpx.Response` (matching production's `resp_json`/`.is_success`
+    usage) rather than a hand-shaped dict."""
+
+    def __init__(self, body: dict):
+        self._body = body
+        self.calls: list[tuple[str, str, dict | None]] = []
+
+    def _request(self, method: str, endpoint: str, params=None):
+        self.calls.append((method, endpoint, params))
+        request = httpx.Request("GET", f"https://example.invalid{endpoint}")
+        return httpx.Response(200, json=self._body, request=request)
+
+
+def test_read_invoker_dispatches_list_config_assignments_production_path(
+    monkeypatch,
+):
+    """The production dispatcher must accept `list_config_assignments` (not
+    just the test-only `FakeBackend`), route it to the real curated tool,
+    and pass scope/device-function/profile-type through to the real
+    `CentralClient` boundary unchanged, bounded/parsed the same way
+    `list_roles` already is."""
+    fake_client = _FakeConfigAssignmentsClient(
+        {
+            "items": [
+                {
+                    "scope-id": "100",
+                    "device-function": "CAMPUS_AP",
+                    "profile-type": "roles",
+                    "profile-instance": "employee",
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr("mcp_servers.config.get_client", lambda: fake_client)
+    operation = Operation(
+        invocation="tool",
+        name="list_config_assignments",
+        arguments={
+            "scope_id": "100",
+            "device_function": "CAMPUS_AP",
+            "profile_type": "roles",
+            "full_list": True,
+        },
+        match_identifier="employee",
+    )
+
+    result = aos8._aos8_migration_read_invoker(operation)
+
+    assert fake_client.calls == [
+        (
+            "GET",
+            "/network-config/v1alpha1/config-assignments",
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+            },
+        )
+    ]
+    assert result["items"][0]["profile-instance"] == "employee"
+
+
+def _new_central_context() -> TargetContext:
+    return TargetContext(
+        target_type=TargetType.NEW_CENTRAL,
+        scope_id="100",
+        scope_name="Branch",
+        persona="CAMPUS_AP",
+    )
+
+
+def _stub_list_scopes(monkeypatch):
+    monkeypatch.setattr(
+        "mcp_servers.monitoring.list_scopes",
+        lambda full_list=True: {
+            "items": [{"scope_id": "100", "scope_name": "Branch"}]
+        },
+    )
+
+
+def test_role_assignment_verification_via_production_dispatcher_end_to_end(
+    monkeypatch,
+):
+    """End-to-end: the real `NewCentralAdapter` (via
+    `_aos8_migration_orchestrator()`'s own `adapter_factory`, exactly as
+    production wires it) + the real `_aos8_migration_read_invoker` + the
+    real `config_tools.list_config_assignments` + the real
+    `pipeline.aos8_migration_orchestrator._verify_assignment` must
+    together confirm a role's config-assignment, never routing through
+    `FakeBackend`."""
+    from pipeline.aos8_migration_orchestrator import _verify_assignment
+
+    _stub_list_scopes(monkeypatch)
+    fake_client = _FakeConfigAssignmentsClient(
+        {
+            "items": [
+                {
+                    "scope-id": "100",
+                    "device-function": "CAMPUS_AP",
+                    "profile-type": "roles",
+                    "profile-instance": "employee",
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr("mcp_servers.config.get_client", lambda: fake_client)
+
+    service = aos8._aos8_migration_orchestrator()
+    adapter = service.adapter_factory(_new_central_context())
+    role_candidate = {
+        "object_type": "role",
+        "identifier": "employee",
+        "payload": {"policies": ["allowall"], "vlan": 20},
+    }
+    action = adapter._map_candidate(role_candidate)
+
+    result = _verify_assignment(adapter, action)
+
+    assert fake_client.calls[0][0] == "GET"
+    assert fake_client.calls[0][1] == "/network-config/v1alpha1/config-assignments"
+    assert result["status"] == "verified"
+
+
+def test_role_assignment_verification_production_dispatcher_reports_mismatch(
+    monkeypatch,
+):
+    """Same production-dispatcher path as above, but the returned
+    assignment binds a different device-function -- must surface as a
+    mismatch, not a false "verified"."""
+    from pipeline.aos8_migration_orchestrator import _verify_assignment
+
+    _stub_list_scopes(monkeypatch)
+    fake_client = _FakeConfigAssignmentsClient(
+        {
+            "items": [
+                {
+                    "scope-id": "100",
+                    "device-function": "MOBILITY_GW",
+                    "profile-type": "roles",
+                    "profile-instance": "employee",
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr("mcp_servers.config.get_client", lambda: fake_client)
+
+    service = aos8._aos8_migration_orchestrator()
+    adapter = service.adapter_factory(_new_central_context())
+    role_candidate = {
+        "object_type": "role",
+        "identifier": "employee",
+        "payload": {"policies": ["allowall"], "vlan": 20},
+    }
+    action = adapter._map_candidate(role_candidate)
+
+    result = _verify_assignment(adapter, action)
+
+    assert result["status"] != "verified"

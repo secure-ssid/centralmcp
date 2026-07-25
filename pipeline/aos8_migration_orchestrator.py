@@ -11,6 +11,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1833,7 +1834,52 @@ class AOS8MigrationOrchestrator:
         identifier = action.read_operation.match_identifier or str(
             entry["candidate"].get("identifier")
         )
-        if not _contains_identifier(safe_target, identifier):
+        # Finding (items 8/9): a collection-shaped read response (e.g.
+        # `list_roles`, `list_config_assignments`) is never assumed fully
+        # inspected just because this process happened to read *a* page of
+        # it. `_resolve_flatten_source` recognizes a collection envelope,
+        # detects backend-declared pagination metadata and this process's
+        # own `MAX_RESULT_ITEMS`/`_sanitize` bounding, pages forward
+        # (bounded) when the read operation's own arguments make that
+        # safe, and falls back to the whole response as the comparison
+        # source for an ordinary single-object read (e.g. `get_ssid`) or a
+        # nested/scalar array *property* of one (e.g. a server-group's own
+        # `servers` list) exactly as before this existed.
+        resolved = _resolve_flatten_source(
+            adapter, action.read_operation, safe_target, identifier
+        )
+        if resolved["status"] == "ambiguous":
+            return {
+                **base,
+                "verification_status": "failed",
+                "reason": (
+                    "Target read returned more than one entry matching this "
+                    "candidate's identity; refusing to guess which one is "
+                    f"authoritative ({resolved['match_count']} matches)."
+                ),
+                "target_state": safe_target,
+                "field_comparison": [],
+            }
+        if resolved["status"] == "indeterminate":
+            # A truncated collection read must never report a definitive
+            # "not found" -- the candidate's identity may simply be among
+            # the unseen entries. This is exactly the finding: a match
+            # past `MAX_RESULT_ITEMS` (or a page boundary the backend
+            # declared but this process could not safely page past) was
+            # previously indistinguishable from a genuine absence.
+            return {
+                **base,
+                "verification_status": "unverifiable",
+                "reason": (
+                    "Target collection read is bounded and the candidate "
+                    "identity was not found among the inspected entries; unseen "
+                    f"entries remain, so absence cannot be safely concluded "
+                    f"({resolved['note']})."
+                ),
+                "target_state": safe_target,
+                "field_comparison": [],
+            }
+        if resolved["status"] == "not_found":
             return {
                 **base,
                 "verification_status": "failed",
@@ -1841,31 +1887,28 @@ class AOS8MigrationOrchestrator:
                 "target_state": safe_target,
                 "field_comparison": [],
             }
-        # Finding (item 8): a collection-shaped read response (e.g.
-        # `list_roles`, `list_config_assignments`) that matches this
-        # candidate's identity in more than one entry is ambiguous -- never
-        # silently compare against only the first (source-order-first-wins)
-        # match. `_collect_matching_entries` returns None for a response
-        # that is not recognizably a single, unambiguous collection
-        # envelope (e.g. an ordinary single-object GET), in which case the
-        # whole response is used as the comparison source exactly as
-        # before.
-        collection_matches = _collect_matching_entries(safe_target, identifier)
-        if collection_matches is not None and len(collection_matches) > 1:
-            return {
-                **base,
-                "verification_status": "failed",
-                "reason": (
-                    "Target read returned more than one entry matching this "
-                    "candidate's identity; refusing to guess which one is "
-                    f"authoritative ({len(collection_matches)} matches)."
-                ),
-                "target_state": safe_target,
-                "field_comparison": [],
-            }
-        flatten_source = collection_matches[0] if collection_matches else safe_target
+        flatten_source = resolved["flatten_source"]
+        truncated = resolved["truncated"]
+        truncation_note = resolved["note"]
         expected, secret_fields = _expected_fields(action, entry["candidate"])
         target_fields = _flatten_fields(flatten_source)
+        # Item 3: some Classic full_wlan expected fields genuinely disagree
+        # across containers under the same bare name once the `wlan.`/
+        # `access_rule.` prefix is stripped -- e.g. `wlan.blacklist` is
+        # always the constant `True` and `access_rule.blacklist` is always
+        # the constant `False` (`_base_full_wlan_body`). A flat response
+        # collapses both to one `blacklist` key that can only agree with
+        # one of them, which is a structural ambiguity, not a genuine
+        # mismatch, for either field. Precomputed once so the per-field
+        # loop can tell that apart from a real single-source mismatch like
+        # `wlan.essid` (only ever expected under `wlan`, so a disagreeing
+        # flat `essid` is unambiguous evidence of a real problem).
+        bare_expected_values: dict[str, list[Any]] = {}
+        for candidate_field, candidate_value in expected.items():
+            if "." in candidate_field and "[" not in candidate_field:
+                prefix, _, remainder = candidate_field.partition(".")
+                if prefix in _CLASSIC_FULL_WLAN_CONTAINER_KEYS and remainder:
+                    bare_expected_values.setdefault(remainder, []).append(candidate_value)
         comparisons: list[dict[str, Any]] = []
         mismatches: list[str] = []
         verified_fields: list[str] = []
@@ -1893,6 +1936,38 @@ class AOS8MigrationOrchestrator:
                 unverifiable_fields.append(field)
                 continue
             matched = any(_comparable_equal(expected_value, actual) for actual in matches)
+            if not matched and field not in target_fields and "." in field and "[" not in field:
+                prefix, _, remainder = field.partition(".")
+                distinct_values = {
+                    str(v) for v in bare_expected_values.get(remainder, [])
+                }
+                if prefix in _CLASSIC_FULL_WLAN_CONTAINER_KEYS and len(distinct_values) > 1:
+                    # This field's own qualified key is absent (flat
+                    # response) and the only evidence found was the bare
+                    # container-prefix alias -- but that same bare name is
+                    # *also* independently expected, with a genuinely
+                    # different value, by a sibling Classic container
+                    # field. A flat single-valued response cannot satisfy
+                    # both, so this disagreement is not reliable evidence
+                    # of a real mismatch for this field specifically --
+                    # report unverifiable rather than a false "mismatch".
+                    comparisons.append(
+                        {
+                            "field": field,
+                            "expected": expected_value,
+                            "actual": None,
+                            "status": "unverifiable",
+                            "reason": (
+                                "field's own qualified key was not present in the "
+                                "flat target read response, and the shared bare "
+                                f"{remainder!r} name is ambiguous across Classic "
+                                "wlan/access_rule containers with different "
+                                "expected values"
+                            ),
+                        }
+                    )
+                    unverifiable_fields.append(field)
+                    continue
             comparisons.append(
                 {
                     "field": field,
@@ -1955,6 +2030,21 @@ class AOS8MigrationOrchestrator:
                     else " Unreturned fields were not asserted."
                 )
             )
+        if truncated and primary_status == "verified":
+            # Item 9: a single visible match within a truncated/bounded
+            # collection read is never conclusively unique -- an unseen
+            # entry beyond the inspection window (or backend page) might
+            # also match this candidate's identity. "Verified" asserts
+            # both correctness *and* uniqueness; only the former was
+            # actually confirmed here, so this can never be reported
+            # stronger than "partially_verified".
+            primary_status = "partially_verified"
+            primary_reason = (
+                f"{primary_reason} However, the target collection read is "
+                "bounded and additional unseen entries might also match this "
+                "candidate's identity, so uniqueness cannot be guaranteed "
+                f"({truncation_note})."
+            )
         result: dict[str, Any] = {
             **base,
             "verification_status": primary_status,
@@ -1975,7 +2065,17 @@ class AOS8MigrationOrchestrator:
             assignment_verification = _verify_assignment(adapter, action)
             result["assignment_verification"] = assignment_verification
             assignment_status = assignment_verification["status"]
-            _severity = {"verified": 0, "partially_verified": 1, "failed": 2}
+            # "unverifiable" (a truncated assignment collection read that
+            # never found the candidate's identity at all) is at least as
+            # inconclusive as "partially_verified" and must downgrade the
+            # aggregate the same way; unrecognized statuses default to the
+            # most conservative ("failed"-equivalent) severity.
+            _severity = {
+                "verified": 0,
+                "partially_verified": 1,
+                "unverifiable": 1,
+                "failed": 2,
+            }
             result["reason"] = (
                 f"{primary_reason} Object verification: {primary_status}; "
                 f"assignment verification: {assignment_status} -- "
@@ -2030,44 +2130,353 @@ def _contains_identifier(value: Any, identifier: str) -> bool:
     return False
 
 
-def _collection_candidates(value: Any) -> list[Any] | None:
-    """Return the bounded list of entries `value` represents as a
-    collection response, or `None` if `value` is not recognizably a
-    single, unambiguous collection envelope.
+# Bounded, best-effort extra paging for a truncated collection-shaped
+# verification read (see `_bounded_collection_read`). Both bounds exist so
+# a pathological/adversarial "always more pages" backend can never turn a
+# single verification read into unbounded work -- paging is a strictly
+# safer alternative to reporting an indeterminate result, never a way to
+# defeat these limits.
+MAX_VERIFICATION_EXTRA_PAGES = 3
+MAX_VERIFICATION_TOTAL_ITEMS = 200
 
-    Recognizes a bare top-level list, and a mapping with exactly one
-    top-level list-valued key (e.g. `{"items": [...]}`, `{"roles": [...]}`,
-    `{"config-assignment": [...]}`) -- deliberately narrow so an ordinary
-    single-object GET response (e.g. `{"name": ..., "vlan-id": ...}`) is
-    never misread as a collection of its own scalar/nested values, and a
-    response with more than one top-level list-valued key (an envelope
+# Sibling-key names (normalized via `_normalized_key`, so hyphen/
+# underscore/case variants all match) this repository has evidence for as
+# backend-declared "more entries exist than were returned" signals --
+# `bound_collection_response`'s own `_pagination.total`, and the more
+# generic raw-backend `total`/`count` envelope shapes.
+_PAGINATION_TOTAL_KEYS = (
+    "total",
+    "total_count",
+    "totalcount",
+    "count",
+    "total_items",
+    "totalitems",
+)
+# Sibling-key names for an explicit "there is a next page" cursor/flag.
+_PAGINATION_CURSOR_KEYS = (
+    "next",
+    "next_offset",
+    "nextoffset",
+    "next_page",
+    "nextpage",
+    "cursor",
+)
+
+
+def _pagination_metadata_truncated(
+    container: Mapping[str, Any], returned_count: int
+) -> bool:
+    """Best-effort detection that `container` -- the sibling keys of a
+    collection envelope, e.g. `bound_collection_response`'s own
+    `{"items": [...], "_pagination": {"offset":.., "limit":.., "total":..,
+    "truncated":..}}` shape, or a raw backend `total`/`count`/`next`
+    envelope -- declares more entries exist than were actually returned in
+    this read. Checks both `container` itself and a nested `_pagination`
+    mapping so a raw, un-wrapped backend shape is recognized just as
+    reliably as this repository's own bounding helper.
+    """
+    candidates: list[Mapping[str, Any]] = [container]
+    nested = container.get("_pagination")
+    if isinstance(nested, Mapping):
+        candidates.append(nested)
+    for meta in candidates:
+        normalized = {_normalized_key(k): v for k, v in meta.items()}
+        truncated_flag = normalized.get("truncated")
+        if isinstance(truncated_flag, bool) and truncated_flag:
+            return True
+        for key in _PAGINATION_CURSOR_KEYS:
+            if normalized.get(key):
+                return True
+        offset_value = normalized.get("offset")
+        offset = (
+            offset_value
+            if isinstance(offset_value, (int, float))
+            and not isinstance(offset_value, bool)
+            else 0
+        )
+        for key in _PAGINATION_TOTAL_KEYS:
+            total = normalized.get(key)
+            if (
+                isinstance(total, (int, float))
+                and not isinstance(total, bool)
+                and total > offset + returned_count
+            ):
+                return True
+    return False
+
+
+def _strip_bounding_marker(
+    items: list[Any],
+) -> tuple[list[Any], Mapping[str, Any] | None]:
+    """Strip the trailing `{"_bounded": {"total_items":.., "returned_items":
+    ..}}` marker `_sanitize` appends to a list it truncated to
+    `MAX_RESULT_ITEMS`, returning the real entries and the marker's own
+    metadata (`None` if the list was not marker-truncated). Without this,
+    a `_sanitize`-truncated list is indistinguishable from a genuinely
+    complete one of the same length.
+    """
+    if items and isinstance(items[-1], Mapping) and set(items[-1].keys()) == {"_bounded"}:
+        return items[:-1], items[-1]["_bounded"]
+    return items, None
+
+
+def _extract_collection_container(
+    value: Any,
+) -> tuple[list[Any], Mapping[str, Any]] | None:
+    """Return `(raw_items, container)` if `value` is recognizably a single,
+    unambiguous collection envelope (a bare list, or a mapping with
+    exactly one top-level list-valued key), or `None` otherwise -- the
+    same narrow recognition contract the old `_collection_candidates`
+    implemented directly, split out so pagination/truncation detection can
+    run on the *unbounded* item list before any `MAX_RESULT_ITEMS` slicing,
+    and so a bare list still exposes an (empty) `container` for
+    pagination-metadata lookups without a special case at every call site.
+    A response with more than one top-level list-valued key (an envelope
     shape this repository has no evidence for) is left unclassified rather
     than guessed.
     """
     if isinstance(value, list):
-        return value[:MAX_RESULT_ITEMS]
+        return value, {}
     if isinstance(value, Mapping):
         list_values = [item for item in value.values() if isinstance(item, list)]
         if len(list_values) == 1:
-            return list_values[0][:MAX_RESULT_ITEMS]
+            return list_values[0], value
     return None
 
 
-def _collect_matching_entries(value: Any, identifier: str) -> list[Any] | None:
-    """Return the bounded list of collection entries (see
-    `_collection_candidates`) whose identity matches `identifier`, or
-    `None` if `value` is not a recognizable collection -- in which case the
-    caller falls back to treating the whole of `value` as a single-object
-    response, exactly as before this function existed.
+def _collection_read(value: Any) -> dict[str, Any] | None:
+    """Return the bounded read state of `value` as a collection response,
+    or `None` if `value` is not recognizably a single, unambiguous
+    collection envelope (see `_extract_collection_container`).
+
+    The returned dict has:
+      - `items`: the (`MAX_RESULT_ITEMS`-bounded) entries actually
+        available for comparison.
+      - `truncated`: True whenever entries beyond `items` might exist --
+        this process's own `_sanitize`/`MAX_RESULT_ITEMS` bounding, a raw
+        response that itself exceeded `MAX_RESULT_ITEMS`, or
+        backend-declared pagination metadata
+        (`_pagination_metadata_truncated`) -- so a caller can never report
+        a definitive not-found/verified/unique conclusion from only a
+        partial view of the collection.
+      - `note`: a human-readable explanation of every truncation signal
+        detected, or `None` when the full collection was inspected.
     """
-    items = _collection_candidates(value)
-    if items is None:
+    extracted = _extract_collection_container(value)
+    if extracted is None:
         return None
-    return [
-        item
-        for item in items
-        if isinstance(item, Mapping) and _contains_identifier(item, identifier)
-    ]
+    raw_items, container = extracted
+    items, marker = _strip_bounding_marker(raw_items)
+    notes: list[str] = []
+    truncated = False
+    if marker is not None:
+        truncated = True
+        notes.append(
+            "response bounding already truncated "
+            f"{marker.get('total_items')} entries to "
+            f"{marker.get('returned_items')} before verification inspected them"
+        )
+    if len(items) > MAX_RESULT_ITEMS:
+        truncated = True
+        notes.append(
+            f"{len(items)} entries exceeded the {MAX_RESULT_ITEMS}-item "
+            "verification inspection bound"
+        )
+    if _pagination_metadata_truncated(container, len(items)):
+        truncated = True
+        notes.append(
+            "backend pagination metadata indicates additional unread entries exist"
+        )
+    return {
+        "items": items[:MAX_RESULT_ITEMS],
+        "truncated": truncated,
+        "note": "; ".join(notes) if notes else None,
+    }
+
+
+def _pageable_operation(operation: Any) -> bool:
+    """True when `operation` explicitly declares numeric `limit`/`offset`
+    arguments (and not `full_list=True`), so an additional bounded page can
+    safely be requested with the same tool by advancing `offset` -- never
+    guessed for an operation whose arguments give no such signal (e.g. the
+    current `list_roles`/`list_config_assignments` mappings, which always
+    request `full_list=True` -- the backend already returned everything it
+    has in one call, so re-issuing the identical call would not surface
+    anything new; only `_sanitize`'s own safety bounding limits what this
+    process inspects in that case, and paging cannot fix that).
+    """
+    if operation.invocation != "tool":
+        return False
+    arguments = operation.arguments or {}
+    if arguments.get("full_list"):
+        return False
+    limit = arguments.get("limit")
+    offset = arguments.get("offset")
+    return (
+        isinstance(limit, int)
+        and not isinstance(limit, bool)
+        and limit > 0
+        and isinstance(offset, int)
+        and not isinstance(offset, bool)
+    )
+
+
+def _bounded_collection_read(
+    adapter: BaseCentralTargetAdapter, operation: Any, safe_target: Any
+) -> dict[str, Any] | None:
+    """Resolve the bounded, truncation-aware collection state for a
+    verification read, paging forward (bounded by
+    `MAX_VERIFICATION_EXTRA_PAGES`/`MAX_VERIFICATION_TOTAL_ITEMS`) when
+    `operation` declares explicit `limit`/`offset` arguments and the
+    already-read page is truncated -- preferring a safely-bounded
+    additional read over reporting an indeterminate result whenever more
+    of the collection can still be fetched. Returns `None` when
+    `safe_target` is not recognizably a collection response at all (an
+    ordinary single-object read, e.g. `get_ssid`); the caller falls back
+    to its existing non-collection path unchanged.
+    """
+    state = _collection_read(safe_target)
+    if state is None:
+        return None
+    items = list(state["items"])
+    truncated = state["truncated"]
+    notes = [state["note"]] if state["note"] else []
+    pages_fetched = 0
+    current_operation = operation
+    while (
+        truncated
+        and pages_fetched < MAX_VERIFICATION_EXTRA_PAGES
+        and len(items) < MAX_VERIFICATION_TOTAL_ITEMS
+        and _pageable_operation(current_operation)
+    ):
+        arguments = dict(current_operation.arguments)
+        next_offset = int(arguments["offset"]) + int(arguments["limit"])
+        current_operation = replace(
+            current_operation, arguments={**arguments, "offset": next_offset}
+        )
+        try:
+            next_target = adapter.read_invoker(current_operation)
+        except Exception:
+            # A follow-up page failing is not itself a verification
+            # failure of the evidence already gathered -- stop paging and
+            # report the truncated/indeterminate state built so far.
+            notes.append(
+                f"a follow-up page at offset={next_offset} could not be read; "
+                "paging stopped"
+            )
+            break
+        pages_fetched += 1
+        next_state = _collection_read(_sanitize(next_target))
+        if next_state is None:
+            notes.append(
+                f"a follow-up page at offset={next_offset} was not a recognizable "
+                "collection response; paging stopped"
+            )
+            break
+        items.extend(next_state["items"])
+        truncated = next_state["truncated"]
+        if next_state["note"]:
+            notes.append(next_state["note"])
+    if truncated and pages_fetched >= MAX_VERIFICATION_EXTRA_PAGES:
+        notes.append(
+            f"verification paging is bounded to {MAX_VERIFICATION_EXTRA_PAGES} "
+            "additional page(s); further entries may remain unread"
+        )
+    if truncated and len(items) >= MAX_VERIFICATION_TOTAL_ITEMS:
+        notes.append(
+            f"verification paging is bounded to {MAX_VERIFICATION_TOTAL_ITEMS} "
+            "total items; further entries may remain unread"
+        )
+    return {
+        "items": items[:MAX_VERIFICATION_TOTAL_ITEMS],
+        "truncated": truncated,
+        "note": "; ".join(dict.fromkeys(notes)) if notes else None,
+    }
+
+
+def _resolve_flatten_source(
+    adapter: BaseCentralTargetAdapter,
+    operation: Any,
+    safe_target: Any,
+    identifier: str,
+) -> dict[str, Any]:
+    """Resolve the single object `_flatten_fields` should compare against
+    for `safe_target`/`identifier`, sharing one truncation-aware
+    resolution between `_verify_entry` and `_verify_assignment` (items
+    8/9 of the aos8-verification contract).
+
+    Returns a dict with `status` of:
+      - `"not_found"` -- the identity is confirmed absent: not found
+        anywhere in `safe_target`, and (if `safe_target` is recognizably a
+        collection response at all) the collection was fully inspected
+        (never truncated). This is the only status that may report a
+        definitive "not found".
+      - `"indeterminate"` -- the identity was not found among the
+        inspected entries of a *collection* response, but that collection
+        was bounded/truncated -- unseen entries might still contain it, so
+        absence can never be safely concluded.
+      - `"ambiguous"` -- more than one entry within the inspected
+        collection window matches the identity; refuse to guess which is
+        authoritative.
+      - `"ok"` -- a single comparison source was resolved: either the one
+        collection entry whose identity matched (`truncated`/`note`
+        describe whether unseen entries might duplicate it), or the whole
+        `safe_target` response verbatim when it is not recognizably a
+        collection-of-objects response at all, or when it is but no
+        distinct collection entry matched even though the identity was
+        confirmed present elsewhere in the response (e.g. a scalar-valued
+        array property of an otherwise ordinary single-object read, such
+        as `get_ssid`'s `vlan_ids`, or a nested object's own array field,
+        such as a server-group's `servers` list) -- in both of the latter
+        cases `truncated` is always False, since the whole-object
+        fallback makes no uniqueness claim for `_bounded_collection_read`
+        to have bounded in the first place.
+    """
+    found_anywhere = _contains_identifier(safe_target, identifier)
+    collection_state = _bounded_collection_read(adapter, operation, safe_target)
+    if collection_state is not None:
+        matches = [
+            item
+            for item in collection_state["items"]
+            if isinstance(item, Mapping) and _contains_identifier(item, identifier)
+        ]
+        if len(matches) > 1:
+            return {
+                "status": "ambiguous",
+                "match_count": len(matches),
+                "target_state": safe_target,
+            }
+        if len(matches) == 1:
+            return {
+                "status": "ok",
+                "flatten_source": matches[0],
+                "truncated": collection_state["truncated"],
+                "note": collection_state["note"],
+                "target_state": safe_target,
+            }
+        # Zero entries within the recognized collection matched. This is
+        # never itself "not found" -- the recognized "collection" may
+        # simply be a scalar-valued or nested-object array property of an
+        # otherwise ordinary single-object response (see docstring), not a
+        # list of independently-identified candidate objects to search
+        # among; whether the identity is genuinely present is decided by
+        # `found_anywhere` below exactly as if no collection had been
+        # recognized at all.
+        if not found_anywhere and collection_state["truncated"]:
+            return {
+                "status": "indeterminate",
+                "note": collection_state["note"],
+                "target_state": safe_target,
+            }
+    if not found_anywhere:
+        return {"status": "not_found", "target_state": safe_target}
+    return {
+        "status": "ok",
+        "flatten_source": safe_target,
+        "truncated": False,
+        "note": None,
+        "target_state": safe_target,
+    }
 
 
 def _diagnostic_read(
@@ -2106,14 +2515,25 @@ def _diagnostic_read(
     identifier = action.read_operation.match_identifier or str(
         candidate.get("identifier")
     )
-    return {
-        "attempted": True,
-        "target_object_present": _contains_identifier(safe_target, identifier),
-        "note": (
-            "Read-only diagnostic only; this candidate was not applied by "
-            "centralmcp and no field-level verification was performed."
-        ),
-    }
+    # Shares `_verify_entry`'s truncation-aware resolution (items 8/9): a
+    # truncated/paginated collection read can never rule the candidate
+    # absent, and a scalar/nested-object array property of an ordinary
+    # single-object response (e.g. a server-group's own `servers` list)
+    # must never be mistaken for "no candidate object present" either.
+    resolved = _resolve_flatten_source(adapter, action.read_operation, safe_target, identifier)
+    note = (
+        "Read-only diagnostic only; this candidate was not applied by "
+        "centralmcp and no field-level verification was performed."
+    )
+    if resolved["status"] == "indeterminate":
+        return {
+            "attempted": True,
+            "target_object_present": None,
+            "note": f"{note} Bounded/truncated collection read: {resolved['note']}.",
+        }
+    if resolved["status"] == "not_found":
+        return {"attempted": True, "target_object_present": False, "note": note}
+    return {"attempted": True, "target_object_present": True, "note": note}
 
 
 def _verify_assignment(
@@ -2135,6 +2555,12 @@ def _verify_assignment(
     identifier = operation.match_identifier or (
         str(expected["profile_instance"]) if "profile_instance" in expected else None
     )
+    if identifier is None:
+        return {
+            "status": "failed",
+            "reason": "No config-assignment entry was found for this candidate's identity.",
+            "field_comparison": [],
+        }
     try:
         target_state = adapter.read_invoker(operation)
     except Exception as exc:
@@ -2144,24 +2570,42 @@ def _verify_assignment(
             "field_comparison": [],
         }
     safe_target = _sanitize(target_state)
-    if identifier is None or not _contains_identifier(safe_target, str(identifier)):
-        return {
-            "status": "failed",
-            "reason": "No config-assignment entry was found for this candidate's identity.",
-            "field_comparison": [],
-        }
-    matches = _collect_matching_entries(safe_target, str(identifier))
-    if matches is not None and len(matches) > 1:
+    # Same truncation-aware collection resolution `_verify_entry` uses for
+    # the primary object read (items 8/9): a config-assignment list is
+    # bounded/paginated exactly the same way, so "not found" and "exactly
+    # one match" must never be reported as definitive conclusions from
+    # only a partial view of it.
+    resolved = _resolve_flatten_source(adapter, operation, safe_target, str(identifier))
+    if resolved["status"] == "ambiguous":
         return {
             "status": "failed",
             "reason": (
                 "Target returned more than one config-assignment entry "
                 "matching this candidate's identity; refusing to guess "
-                f"which is authoritative ({len(matches)} matches)."
+                f"which is authoritative ({resolved['match_count']} matches)."
             ),
             "field_comparison": [],
         }
-    flatten_source = matches[0] if matches else safe_target
+    if resolved["status"] == "indeterminate":
+        return {
+            "status": "unverifiable",
+            "reason": (
+                "Target config-assignment read is bounded and this candidate's "
+                "identity was not found among the inspected entries; unseen "
+                f"entries remain, so absence cannot be safely concluded "
+                f"({resolved['note']})."
+            ),
+            "field_comparison": [],
+        }
+    if resolved["status"] == "not_found":
+        return {
+            "status": "failed",
+            "reason": "No config-assignment entry was found for this candidate's identity.",
+            "field_comparison": [],
+        }
+    flatten_source = resolved["flatten_source"]
+    truncated = resolved["truncated"]
+    truncation_note = resolved["note"]
     target_fields = _flatten_fields(flatten_source)
     comparisons: list[dict[str, Any]] = []
     mismatches: list[str] = []
@@ -2202,6 +2646,13 @@ def _verify_assignment(
         reason = (
             "Config-assignment tuple (scope-id/device-function/profile-type/"
             "profile-instance) matched."
+        )
+    if truncated and status == "verified":
+        status = "partially_verified"
+        reason = (
+            f"{reason} However, the target config-assignment read is bounded "
+            "and additional unseen entries might also match this candidate's "
+            f"identity, so uniqueness cannot be guaranteed ({truncation_note})."
         )
     return {"status": status, "reason": reason, "field_comparison": comparisons}
 
@@ -2244,6 +2695,14 @@ def _flatten_fields(
             else:
                 fields.setdefault(qualified, item)
     return fields
+
+
+# The only two top-level container keys the verified Classic `full_wlan`
+# create/update body (`_base_full_wlan_body`) ever nests fields under. See
+# `_field_aliases` -- restricted to exactly these two, real, evidenced
+# names so this alias can never accidentally strip a New Central (or any
+# other platform's) genuinely-meaningful qualifier.
+_CLASSIC_FULL_WLAN_CONTAINER_KEYS = {"wlan", "access_rule"}
 
 
 _VERIFICATION_IGNORED_KEYS = {
@@ -2374,6 +2833,29 @@ def _field_aliases(field: str) -> set[str]:
         aliases.add("name")
     if field == "auth_server_address":
         aliases.update({"auth_server_address", "address", "host"})
+    # Item 3 (Classic flat/nested `full_wlan` equivalence): Classic's
+    # create/update payload is nested (`{"wlan": {...}, "access_rule":
+    # {...}}`), so `_expected_fields`/`_flatten_fields` produce qualified
+    # paths like `wlan.essid`/`wlan.vlan`/`access_rule.name` alongside the
+    # bare leaf (`_flatten_fields` always sets both). A Classic `full_wlan`
+    # GET is not guaranteed to mirror that nesting -- it may return a flat
+    # envelope (bare `essid`/`vlan`/`name`/... with no `wlan`/`access_rule`
+    # wrapper at all). Without this alias, the qualified path alone would
+    # be reported "unverifiable" against an authoritative flat response
+    # even though the bare leaf for the exact same value already matched,
+    # incorrectly downgrading "verified" to "partially_verified" solely
+    # because of that duplicate bare+qualified expectation.
+    #
+    # Deliberately narrow and platform-specific, not a generic lossy
+    # prefix strip: only the single top-level Classic container segment is
+    # aliased away, and never for an indexed array path (`wlan.
+    # servers[0]....`) -- `_flatten_fields` deliberately keeps indexed
+    # qualification so a reordered/truncated/extended array is still
+    # caught; stripping it here would defeat that.
+    if "." in field and "[" not in field:
+        prefix, _, remainder = field.partition(".")
+        if prefix in _CLASSIC_FULL_WLAN_CONTAINER_KEYS and remainder:
+            aliases.add(remainder)
     return aliases
 
 

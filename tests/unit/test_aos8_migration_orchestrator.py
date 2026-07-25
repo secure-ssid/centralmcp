@@ -109,7 +109,13 @@ class FakeBackend:
         self.read_calls.append(operation)
         if operation.name in self.read_failures:
             raise self.read_failures[operation.name]
-        return self.read_values.get(operation.name)
+        value = self.read_values.get(operation.name)
+        # Support an arguments-aware read value (e.g. a paginated response
+        # that must vary with `operation.arguments["offset"]`) alongside
+        # the plain fixed-value form every other test uses.
+        if callable(value):
+            return value(operation)
+        return value
 
     def _operation_secret(self, operation):
         arguments = operation.arguments or {}
@@ -2856,6 +2862,233 @@ def test_classic_wpa3_personal_verified_never_leaks_secret_and_transition_disabl
     assert comparison["verification_status"] == "verified"
 
 
+# --------------------------------------------------------------------------
+# aos8-verification-fixes item 3: Classic flat/nested `full_wlan`
+# response equivalence.
+# --------------------------------------------------------------------------
+
+
+def test_classic_flat_full_wlan_response_reaches_verified_via_alias_equivalence(
+    tmp_path, monkeypatch
+):
+    """Item 3 (blocker #3): a Classic `full_wlan` GET returning a flat
+    envelope (no `wlan`/`access_rule` wrapper at all) must resolve
+    `wlan.essid`/`wlan.vlan`/`access_rule.*`-qualified expectations
+    against the same bare keys `_flatten_fields` already produces for a
+    genuinely single-namespace flat response, reaching "verified" rather
+    than falsely downgrading to "partially_verified" purely because of
+    the duplicate bare+qualified expectation -- not because any field
+    genuinely differs.
+
+    `access_rule`'s two ACL-plumbing constants that structurally collide
+    in *value* with their `wlan`-side namesake once flattened
+    (`blacklist`/`vlan` -- see `_base_full_wlan_body`) are reconciled here
+    via a narrow monkeypatch so this test isolates the alias-equivalence
+    fix itself; that orthogonal, pre-existing single-key ambiguity
+    between two independently-valued container fields is asserted
+    separately (unaffected) by
+    `test_classic_flat_full_wlan_ambiguous_container_defaults_stay_unverifiable_not_mismatch`
+    below, since no aliasing scheme can or should force-resolve it.
+    """
+    import pipeline.aos8_target_adapters as adapters
+
+    original_body = adapters.ClassicCentralAdapter._base_full_wlan_body
+
+    def reconciled_body(self, *args, **kwargs):
+        body = original_body(self, *args, **kwargs)
+        body["access_rule"]["blacklist"] = body["wlan"]["blacklist"]
+        body["access_rule"]["vlan"] = body["wlan"]["vlan"]
+        return body
+
+    monkeypatch.setattr(
+        adapters.ClassicCentralAdapter, "_base_full_wlan_body", reconciled_body
+    )
+
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    wlan = _classic_open_wlan_candidate()
+    service.create_run([wlan], target("classic_central"), run_id="classic-flat-verified")
+    service.apply("classic-flat-verified", dry_run=True, confirmation=False)
+    backend.read_values["central_api_read_back"] = {
+        "wlan": {"name": "Open1", "essid": "Open1", "opmode": "opensystem", "vlan": "20"}
+    }
+    applied = service.apply("classic-flat-verified", dry_run=False, confirmation=True)
+    assert applied["candidates"][0]["status"] == "applied"
+
+    # Same field values as the nested golden test
+    # (`test_classic_open_wlan_verified_full_field_set`), but flattened
+    # into a single envelope with no `wlan`/`access_rule` wrapper at all
+    # -- an authoritative flat `full_wlan` GET shape.
+    backend.read_values["central_api_read"] = {
+        "name": "Open1",
+        "essid": "Open1",
+        "access_type": "unrestricted",
+        "blacklist": True,
+        "broadcast_filter": "arp",
+        "captive_portal": "disable",
+        "deny_intra_vlan_traffic": False,
+        "type": "guest",
+        "opmode": "opensystem",
+        "opmode_transition_disable": True,
+        "vlan": "20",
+        "disable_ssid": False,
+        "hide_ssid": False,
+        "mac_authentication": False,
+        "radius_accounting": False,
+        "rf_band": "all",
+        "ssid_encoding": "utf8",
+        "user_bridging": False,
+        "action": "allow",
+        "eport": "any",
+        "ipaddr": "any",
+        "log": False,
+        "match": "match",
+        "netmask": "any",
+        "protocol": "any",
+        "service_type": "network",
+        "source": "default",
+        "sport": "any",
+    }
+    result = service.verify("classic-flat-verified")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "verified"
+    fields = {item["field"]: item for item in comparison["field_comparison"]}
+    assert fields["wlan.essid"]["status"] == "match"
+    assert fields["wlan.vlan"]["status"] == "match"
+    assert fields["access_rule.name"]["status"] == "match"
+    assert fields["access_rule.action"]["status"] == "match"
+
+
+def test_classic_flat_full_wlan_ambiguous_container_defaults_stay_unverifiable_not_mismatch(
+    tmp_path,
+):
+    """Item 3, edge case: `wlan.blacklist`/`access_rule.blacklist` (and
+    `wlan.vlan`/`access_rule.vlan`) are two independently-valued Classic
+    container fields that structurally collide when flattened to a
+    single bare key (`_base_full_wlan_body`'s ACL-rule defaults are
+    always the opposite of the WLAN's own `blacklist`). A flat response
+    can only agree with one of the two -- this is real structural
+    ambiguity, not a genuine mismatch, so it must downgrade only the
+    affected field(s) to "unverifiable" (partially_verified overall) and
+    must never report a false "mismatch"/"failed" for either."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    wlan = _classic_open_wlan_candidate()
+    service.create_run([wlan], target("classic_central"), run_id="classic-flat-ambiguous")
+    service.apply("classic-flat-ambiguous", dry_run=True, confirmation=False)
+    backend.read_values["central_api_read_back"] = {
+        "wlan": {"name": "Open1", "essid": "Open1", "opmode": "opensystem", "vlan": "20"}
+    }
+    service.apply("classic-flat-ambiguous", dry_run=False, confirmation=True)
+
+    backend.read_values["central_api_read"] = {
+        "name": "Open1",
+        "essid": "Open1",
+        "access_type": "unrestricted",
+        "broadcast_filter": "arp",
+        "captive_portal": "disable",
+        "deny_intra_vlan_traffic": False,
+        "type": "guest",
+        "opmode": "opensystem",
+        "opmode_transition_disable": True,
+        "vlan": "20",
+        "disable_ssid": False,
+        "hide_ssid": False,
+        "mac_authentication": False,
+        "radius_accounting": False,
+        "rf_band": "all",
+        "ssid_encoding": "utf8",
+        "user_bridging": False,
+        # Agrees with wlan.blacklist (True); genuinely conflicts with
+        # access_rule.blacklist's constant False.
+        "blacklist": True,
+        "action": "allow",
+        "eport": "any",
+        "ipaddr": "any",
+        "log": False,
+        "match": "match",
+        "netmask": "any",
+        "protocol": "any",
+        "service_type": "network",
+        "source": "default",
+        "sport": "any",
+    }
+    result = service.verify("classic-flat-ambiguous")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "partially_verified"
+    fields = {item["field"]: item for item in comparison["field_comparison"]}
+    assert fields["access_rule.blacklist"]["status"] == "unverifiable"
+    assert fields["access_rule.vlan"]["status"] == "unverifiable"
+    assert fields["wlan.blacklist"]["status"] == "match"
+    assert fields["wlan.essid"]["status"] == "match"
+    assert not any(item["status"] == "mismatch" for item in comparison["field_comparison"])
+
+
+def test_classic_flat_full_wlan_response_reports_genuine_mismatch(tmp_path):
+    """Item 3, negative case: the alias fix must never mask a genuine
+    field mismatch -- a flat response with a wrong ESSID (a field only
+    ever expected under `wlan`, with no `access_rule.essid` counterpart,
+    so no structural ambiguity applies) must still be reported "failed",
+    exactly as the equivalent nested-response mismatch would be."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    wlan = _classic_open_wlan_candidate()
+    service.create_run([wlan], target("classic_central"), run_id="classic-flat-mismatch")
+    service.apply("classic-flat-mismatch", dry_run=True, confirmation=False)
+    backend.read_values["central_api_read_back"] = {
+        "wlan": {"name": "Open1", "essid": "Open1", "opmode": "opensystem", "vlan": "20"}
+    }
+    service.apply("classic-flat-mismatch", dry_run=False, confirmation=True)
+
+    backend.read_values["central_api_read"] = {
+        "name": "Open1",
+        "essid": "WrongSSID",
+        "opmode": "opensystem",
+        "vlan": "20",
+    }
+    result = service.verify("classic-flat-mismatch")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "failed"
+    fields = {item["field"]: item for item in comparison["field_comparison"]}
+    assert fields["wlan.essid"]["status"] == "mismatch"
+    assert fields["wlan.essid"]["expected"] == "Open1"
+    assert fields["wlan.essid"]["actual"] == "WrongSSID"
+
+
+def test_classic_flat_full_wlan_response_partial_when_fields_missing(tmp_path):
+    """Item 3, partial case: a flat response that legitimately omits
+    several expected fields (rather than conflicting with them) must
+    still report "partially_verified" -- confirming a few fields via the
+    flat/nested alias equivalence never masks genuinely unreturned
+    fields."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    wlan = _classic_open_wlan_candidate()
+    service.create_run([wlan], target("classic_central"), run_id="classic-flat-partial")
+    service.apply("classic-flat-partial", dry_run=True, confirmation=False)
+    backend.read_values["central_api_read_back"] = {
+        "wlan": {"name": "Open1", "essid": "Open1", "opmode": "opensystem", "vlan": "20"}
+    }
+    service.apply("classic-flat-partial", dry_run=False, confirmation=True)
+
+    # Minimal flat response: essid/vlan/opmode confirmed via alias
+    # equivalence, but access_rule's ACL-rule fields are simply absent.
+    backend.read_values["central_api_read"] = {
+        "name": "Open1",
+        "essid": "Open1",
+        "opmode": "opensystem",
+        "vlan": "20",
+    }
+    result = service.verify("classic-flat-partial")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "partially_verified"
+    fields = {item["field"]: item for item in comparison["field_comparison"]}
+    assert fields["wlan.essid"]["status"] == "match"
+    assert fields["wlan.vlan"]["status"] == "match"
+    assert fields["access_rule.action"]["status"] == "unverifiable"
+    assert not any(item["status"] == "mismatch" for item in comparison["field_comparison"])
+
+
 def test_new_central_wlan_family_golden_matrix(tmp_path):
     """Golden: New Central WLAN open/WPA2-Personal/WPA3-SAE/Enhanced-Open
     all reach "verified" once identity, VLAN, opmode, and the WPA3
@@ -3089,6 +3322,211 @@ def test_bounded_large_collection_response_does_not_crash_and_still_matches(tmp_
     result = service.verify("role-bounded-large")
     comparison = result["comparisons"][0]
     assert comparison["verification_status"] == "verified"
+
+
+def test_role_verification_indeterminate_when_match_is_51st_entry_beyond_bound(tmp_path):
+    """Item 8: a match that exists only past the `MAX_RESULT_ITEMS` (50)
+    inspection boundary -- the 51st entry of a 51-entry response, cut off
+    entirely by `_sanitize`'s own bounding before verification ever sees
+    it -- must never be reported as a definitive "not found"/"failed".
+    Absence can never be safely concluded from a truncated collection
+    read; this must surface as indeterminate ("unverifiable")."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-51-last")
+    service.apply("role-51-last", dry_run=True, confirmation=False)
+    service.apply("role-51-last", dry_run=False, confirmation=True)
+
+    padding = [{"name": f"other-role-{i}", "vlan-id": i} for i in range(50)]
+    backend.read_values["list_roles"] = {
+        "roles": [*padding, {"name": "employee", "vlan-id": 20, "allow-all": True}]
+    }
+    backend.read_values["list_config_assignments"] = {
+        "items": [
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            }
+        ]
+    }
+    result = service.verify("role-51-last")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "unverifiable"
+    assert comparison["verification_status"] != "failed"
+
+
+def test_role_verification_downgrades_verified_to_partial_when_collection_truncated(
+    tmp_path,
+):
+    """Item 9: a single, unique visible match within a truncated/bounded
+    collection read is never conclusively unique -- an unseen entry
+    beyond the inspection window might also duplicate this candidate's
+    identity. Must downgrade "verified" to "partially_verified", never
+    report a bare "verified" from only a partial view of the
+    collection."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-dup-beyond")
+    service.apply("role-dup-beyond", dry_run=True, confirmation=False)
+    service.apply("role-dup-beyond", dry_run=False, confirmation=True)
+
+    # 51 total entries (1 match + 50 padding) exceeds MAX_RESULT_ITEMS, so
+    # `_sanitize` truncates and appends its bounding marker -- even though
+    # the match itself is visible (first of the 51).
+    padding = [{"name": f"other-role-{i}", "vlan-id": i} for i in range(50)]
+    backend.read_values["list_roles"] = {
+        "roles": [{"name": "employee", "vlan-id": 20, "allow-all": True}, *padding]
+    }
+    backend.read_values["list_config_assignments"] = {
+        "items": [
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            }
+        ]
+    }
+    result = service.verify("role-dup-beyond")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "partially_verified"
+    assert "uniqueness" in comparison["reason"] or "unseen" in comparison["reason"]
+
+
+def test_role_verification_detects_backend_pagination_metadata_truncation(tmp_path):
+    """Item 8: backend-declared pagination metadata (`total`/`count`/next
+    cursor, e.g. `bound_collection_response`'s own `_pagination` shape)
+    must be detected as a truncation signal independent of `_sanitize`'s
+    own 50-item bound -- a small returned page whose own metadata says
+    more entries exist must never be treated as a complete, definitive
+    collection read."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-pagination-meta")
+    service.apply("role-pagination-meta", dry_run=True, confirmation=False)
+    service.apply("role-pagination-meta", dry_run=False, confirmation=True)
+
+    backend.read_values["list_roles"] = {
+        "roles": [{"name": "employee", "vlan-id": 20, "allow-all": True}],
+        "_pagination": {"offset": 0, "limit": 1, "total": 200, "truncated": True},
+    }
+    backend.read_values["list_config_assignments"] = {
+        "items": [
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            }
+        ]
+    }
+    result = service.verify("role-pagination-meta")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "partially_verified"
+
+
+def test_role_assignment_verification_downgrades_when_pagination_metadata_truncated(
+    tmp_path,
+):
+    """Item 8/9 on the config-assignment side (item 4): the same
+    pagination-metadata truncation detection applies to
+    `list_config_assignments` reads via the shared `_resolve_flatten_source`
+    helper, not just to `list_roles` -- a role's own object can be fully
+    verified while its assignment read is correctly downgraded."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="assignment-pagination-meta")
+    service.apply("assignment-pagination-meta", dry_run=True, confirmation=False)
+    service.apply("assignment-pagination-meta", dry_run=False, confirmation=True)
+
+    backend.read_values["list_roles"] = {
+        "roles": [{"name": "employee", "vlan-id": 20, "allow-all": True}]
+    }
+    backend.read_values["list_config_assignments"] = {
+        "items": [
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            }
+        ],
+        "_pagination": {"offset": 0, "limit": 1, "total": 30, "truncated": True},
+    }
+    result = service.verify("assignment-pagination-meta")
+    comparison = result["comparisons"][0]
+    assert comparison["assignment_verification"]["status"] == "partially_verified"
+    assert comparison["verification_status"] == "partially_verified"
+
+
+def test_role_verification_exact_boundary_not_falsely_flagged_truncated(tmp_path):
+    """Boundary check: exactly `MAX_RESULT_ITEMS` (50) entries, with the
+    match included, must not trigger `_sanitize`'s `>50` truncation
+    marker and must still report a definitive "verified", never falsely
+    downgraded merely for being close to the bound."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-exact-50")
+    service.apply("role-exact-50", dry_run=True, confirmation=False)
+    service.apply("role-exact-50", dry_run=False, confirmation=True)
+
+    padding = [{"name": f"other-role-{i}", "vlan-id": i} for i in range(49)]
+    backend.read_values["list_roles"] = {
+        "roles": [{"name": "employee", "vlan-id": 20, "allow-all": True}, *padding]
+    }
+    backend.read_values["list_config_assignments"] = {
+        "items": [
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            }
+        ]
+    }
+    result = service.verify("role-exact-50")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "verified"
+
+
+def test_role_verification_handles_very_large_collection_without_crashing(tmp_path):
+    """Robustness (item 8/9 at scale): a pathologically large collection
+    response (hundreds of entries, far beyond a single backend page or
+    `MAX_RESULT_ITEMS`) must never crash verification, and must still
+    correctly report an indeterminate result rather than a false "not
+    found" when the candidate's identity only exists deep beyond the
+    inspection boundary."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-huge-collection")
+    service.apply("role-huge-collection", dry_run=True, confirmation=False)
+    service.apply("role-huge-collection", dry_run=False, confirmation=True)
+
+    padding_before = [{"name": f"other-role-{i}", "vlan-id": i} for i in range(300)]
+    backend.read_values["list_roles"] = {
+        "roles": [*padding_before, {"name": "employee", "vlan-id": 20, "allow-all": True}]
+    }
+    backend.read_values["list_config_assignments"] = {
+        "items": [
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            }
+        ]
+    }
+    result = service.verify("role-huge-collection")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "unverifiable"
 
 
 def test_blocked_auth_server_reports_not_applied_with_present_diagnostic(tmp_path):

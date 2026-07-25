@@ -2157,6 +2157,17 @@ def _aos8_migration_read_invoker(operation: Any) -> Any:
         "get_auth_server": nac_tools.get_auth_server,
         "get_ssid": config_tools.get_ssid,
         "list_roles": config_tools.list_roles,
+        # Required for `NewCentralAdapter._map_role`'s independent
+        # `assignment_read_operation` (item 4 of the aos8-verification
+        # contract): a role library object and its scope+device-function
+        # config-assignment binding are separately verifiable, and the
+        # production dispatcher must accept the same bounded, read-only
+        # tool the adapter's `create_config_assignment`/
+        # `delete_config_assignment` operations already have a matching
+        # read counterpart for -- omitting it here silently made every
+        # production role-assignment verification unreachable
+        # (`ValueError: Unapproved migration read tool`).
+        "list_config_assignments": config_tools.list_config_assignments,
     }
     tool = tools.get(operation.name)
     if tool is None:
