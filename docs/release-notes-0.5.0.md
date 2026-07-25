@@ -226,7 +226,7 @@ by the [AOS8 migration contract matrix](aos8-migration-contract-matrix.md):
 
 Run as the final release gate for this version:
 
-- **1,581 unit tests passed** (`uv run pytest tests/unit -q`) — including the
+- **1,587 unit tests passed** (`uv run pytest tests/unit -q`) — including the
   MCP protocol end-to-end suite (**10 passed**,
   `tests/unit/test_mcp_protocol_e2e.py`), the config-tool write-result
   validation regression suite (**26 passed**,
@@ -260,7 +260,7 @@ All of the above are run together by `scripts/validate_release.py`.
    [AOS8 migration contract matrix](aos8-migration-contract-matrix.md) and
    [live/dry-run evaluation](aos8-live-dryrun-evaluation.md) before relying on
    any `conditional` mapping (WPA2 Personal, WPA3-SAE, Enhanced Open on New
-   Central; WPA3-Enterprise on Classic Central) — all four still require
+   Central; WPA3-Personal and WPA3-Enterprise on Classic Central) — all five still require
    `dry_run=True` review and, where noted, remain dry-run-only.
 4. If you plan a live AOS8 evaluation of your own environment, set
    `AOS8_BASE_URL` plus `AOS8_USERNAME`/`AOS8_PASSWORD` (or the legacy
