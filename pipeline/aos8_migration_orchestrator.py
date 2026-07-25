@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, unquote_plus
 
 from pipeline.aos8_target_adapters import (
     MAX_SECRET_LENGTH,
@@ -51,37 +50,16 @@ MAX_OPERATOR_CONTEXT_ENTRIES = 100
 MAX_OPERATOR_CONTEXT_STRING_LENGTH = 256
 MAX_AP_GROUP_SERIALS_PER_GROUP = 64
 MAX_SERIAL_STRING_LENGTH = 64
-# `_sanitize`'s truncated-display bound: a sanitized leaf string never
-# returns more than this many characters, regardless of the original
-# text's length (see `_sanitize`'s string branch and `_SECRET_SCAN_WINDOW`
-# below).
+# `_sanitize`'s truncated-display bound for ordinary (non-secret-context)
+# strings: a sanitized leaf string never returns more than this many
+# characters, regardless of the original text's length (see
+# `_sanitize`'s string branch). This bound is irrelevant whenever
+# `secret_values` is non-empty -- in that case every string leaf is
+# replaced wholesale by a small, fixed marker, never truncated -- so it
+# only ever applies to ordinary backend diagnostics with no runtime
+# secret in scope.
 _OUTPUT_LIMIT = 1000
-# The largest number of characters one secret *character* can expand to
-# once percent-encoded: up to 4 UTF-8 bytes for a single Unicode code
-# point, each byte rendered as a 3-character "%XX" escape.
-_MAX_ENCODED_CHARS_PER_SECRET_CHAR = 4 * 3
-# The longest any single bounded secret's raw/percent-/form-encoded
-# representation can be, given `MAX_SECRET_LENGTH` (secrets longer than
-# this are already rejected before they ever reach `_sanitize` -- see
-# `_validate_runtime_secret_lengths`).
-_MAX_SECRET_ENCODED_LENGTH = MAX_SECRET_LENGTH * _MAX_ENCODED_CHARS_PER_SECRET_CHAR
-# How much of a leaf string `_sanitize` ever scans for secrets, before
-# any truncation: large enough that a raw/percent-/form-encoded secret
-# match beginning anywhere within the first `_OUTPUT_LIMIT` returned
-# characters is always found and fully redacted, however far past
-# `_OUTPUT_LIMIT` its encoded form extends -- but never proportional to
-# the (potentially adversarial, 10k/1MB+) full text length, so scanning
-# cost stays `O(_SECRET_SCAN_WINDOW * secret_length)` regardless of how
-# long the input actually is. Text beyond this window can never affect
-# the truncated output, so it is never scanned, matched, or included in
-# it -- only a generic omitted-character count is ever reported for it.
-_SECRET_SCAN_WINDOW = _OUTPUT_LIMIT + _MAX_SECRET_ENCODED_LENGTH
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-# Anchored scheme (RFC 3986 `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" /
-# "." )`) followed immediately by "://" -- used by `_is_url_like` to
-# require that a string *is* a standalone absolute URL leaf, never that
-# it merely contains "://" somewhere inside arbitrary prose.
-_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _SENSITIVE_KEY_RE = re.compile(
     r"(?:^|[_-])(?:credential|key|passphrase|password|psk|"
     r"secret|token)(?:$|[_-])",
@@ -202,190 +180,57 @@ def _is_presence_metadata(key: Any, value: Any) -> bool:
     )
 
 
-# Sentinel boundary characters `_sanitize` wraps around every
-# substring-style redaction marker it inserts (see `_choose_sentinel`
-# and `_sanitize`'s string branch): the Unicode Private Use Area
-# (~6,400 code points a real secret would essentially never contain),
-# then a small fallback set of otherwise-unused C0 control code points
-# (deliberately excluding TAB/LF/VT/FF/CR -- 0x09-0x0D -- which
-# legitimately occur in ordinary backend text). Order is deterministic
-# (first non-colliding candidate wins) so the same top-level `_sanitize`
-# call always produces the same sentinel for every leaf it processes.
-_SENTINEL_CANDIDATES: tuple[str, ...] = (
-    tuple(chr(code_point) for code_point in range(0xE000, 0xF8FF + 1))
-    + tuple(chr(code_point) for code_point in range(0x00, 0x09))
-    + tuple(chr(code_point) for code_point in range(0x0E, 0x20))
-)
-# Returned in place of an entire leaf string -- never a partial
-# substring redaction -- only in the theoretical case where
-# `_choose_sentinel` cannot find any candidate absent from the secrets
-# being redacted (see `_sanitize`'s string branch). This discards the
-# whole leaf rather than risk any marker-based substring replacement
-# that cannot be proven safe against secret recreation.
-_SENTINEL_UNAVAILABLE_REDACTED = "<redacted:secret-scan-unavailable>"
-
-
-def _choose_sentinel(forbidden: frozenset[str]) -> str | None:
-    """Return the first character from `_SENTINEL_CANDIDATES` that does
-    not occur in `forbidden`, or `None` if every candidate collides.
-
-    `forbidden` is every character that occurs in any secret or
-    structural-redaction value passed to one top-level `_sanitize` call
-    -- small and bounded (each value is bounded well below
-    `MAX_SECRET_LENGTH`/`MAX_OPERATOR_CONTEXT_STRING_LENGTH`), so this is
-    itself `O(len(candidates) + total secret length)`, never
-    proportional to the (potentially huge, adversarial) text `_sanitize`
-    will scan.
-
-    Because the returned sentinel is provably absent from every secret
-    character, no secret's per-character alternative set (see
-    `_secret_char_pattern`) can ever match it -- so no `_SecretMatcher`,
-    for any secret in this call, can ever match a span that crosses a
-    sentinel-wrapped marker. That holds regardless of processing order,
-    which is what makes it safe to wrap *every* substring-style marker
-    `_sanitize` inserts (see `_sanitize`'s string branch) rather than
-    relying on marker text (e.g. a plain `"******"`) that a *different*
-    secret's literal characters could coincidentally reproduce once
-    spliced next to unredacted trailing/leading text -- the exact
-    "recreation" failure mode this sentinel exists to rule out.
-    """
-    for candidate in _SENTINEL_CANDIDATES:
-        if candidate not in forbidden:
-            return candidate
-    return None
+# Fixed, generic marker substituted for every backend-originated string
+# leaf whenever `_sanitize` is called with a non-empty `secret_values`
+# (i.e. at least one real runtime credential -- a PSK, RADIUS/TACACS+
+# shared secret, LDAP bind password, ... -- was supplied for this call).
+# This is generated constant metadata, never echoed secret material: no
+# part of any original string ever survives in the output, so there is
+# nothing of the caller's choosing left in it to compare the marker
+# against, and no need to prove the marker text itself differs from an
+# arbitrary secret a caller might choose.
+_SECRET_CONTEXT_MARKER = "<redacted:runtime-secret-context>"
 
 
 def _sanitize(
     value: Any,
     *,
     secret_values: Iterable[str] = (),
-    structural_redaction_values: Iterable[str] = (),
-    redact_marker: str = "******",
-    structural_redact_marker: str = "******",
     max_depth: int = 8,
     _depth: int = 0,
-    _compiled_secrets: dict[str, "_SecretMatcher"] | None = None,
-    _sentinel: str | None = None,
 ) -> Any:
-    """Sanitize `value` for return/persistence across two independent
-    redaction channels:
+    """Sanitize `value` for return/persistence with a simple, provably
+    fail-closed rule:
 
-    - `secret_values`: actual runtime secrets (credentials, passphrases,
-      shared secrets a caller supplied for a real apply/write). A real
-      secret must never survive in any form it might appear in, so each
-      secret is matched directly against the text with a single linear,
-      regex-free scan (`_compile_secret_pattern` / `_SecretMatcher`) that
-      treats every character of the secret as *either* its raw literal
-      form, *or* its UTF-8
-      percent-encoded byte sequence with every hex digit independently
-      case-insensitive, *or* (for a space) a literal `+` (form
-      encoding) -- so it matches arbitrary mixtures of raw and encoded
-      characters, and arbitrary per-escape case mixing, in one pass. The
-      regex is applied directly to the (possibly structurally-modified)
-      text as plain pattern matching -- it never decodes/re-encodes a
-      parsed URL or any surrounding prose -- so it catches a credential
-      wherever it appears: a leaf, a URL/query/fragment component,
-      embedded inside a longer backend error/result message, or a URL
-      string itself embedded in a longer message, without any risk of
-      corrupting an absolute URL or unrelated text around it. Secrets
-      are caller-supplied credential material, not arbitrary/generic
-      operator text, so there is no short-generic-value corruption risk
-      to guard against.
-    - `structural_redaction_values`: transient, non-secret
-      operator-context identifiers (e.g. an already-existing Classic
-      auth-server name, an AP-group target-group name, a device serial).
-      These are redacted only structurally, via a whole-leaf comparison
-      (handled inline below) plus `_redact_url_structural` for URL/query/
-      fragment components: a whole leaf string that exactly equals one of
-      them, or an exact decoded (percent-/form-encoded) path, query, or
-      fragment component of a URL/endpoint string. They are never
-      substring-replaced, because they can legitimately be as short
-      as one character (see `_bounded_operator_string`) and a generic
-      substring scan would corrupt unrelated prose that merely contains
-      that character sequence (e.g. "ready", "wlan") anywhere else in the
-      same payload.
+    - If `secret_values` is non-empty -- meaning at least one real
+      runtime credential was supplied for this call -- every string leaf
+      anywhere in `value` (after mapping-key-based redaction below) is
+      replaced wholesale by the fixed `_SECRET_CONTEXT_MARKER`. No part
+      of the original string is ever inspected, scanned, matched,
+      encoded/decoded, hashed, or cached to decide *how* to redact it:
+      the mere presence of a real secret anywhere in this call's input is
+      reason enough to discard every string leaf outright, whether or not
+      that specific leaf happens to contain a secret. This makes leakage
+      of the secret -- raw, percent-/form-encoded, Unicode, mixed-case,
+      serialized (e.g. embedded in a JSON string), or prefixed with the
+      marker text itself -- provably impossible, because none of those
+      forms are ever read character-by-character in the first place.
+    - If `secret_values` is empty, string leaves are returned unchanged
+      (bounded only by `_OUTPUT_LIMIT`, to keep an oversized backend
+      diagnostic from growing the response/state file without limit).
+      This is the normal, no-secret-in-scope diagnostic path used by
+      `preview()`, `verify()`, and any `apply()` call that was not
+      supplied a real secret.
 
-    Both channels apply independently and can be combined in the same
-    call; each keeps its own marker so the two redaction reasons stay
-    distinguishable in the output. Per string, `structural_redaction_values`
-    is always evaluated first, against the original, unmodified text, but
-    the two structural cases behave differently:
-
-    - Whole-leaf match: if `text` as a whole exactly equals one of
-      `structural_redaction_values`, the structural marker is returned
-      immediately, before any other pass runs. This is required, not
-      cosmetic -- a legitimate operator identifier can embed a secret/
-      placeholder literal as a mere substring (e.g.
-      "prod-__runtime_secret_placeholder__-radius"); running the
-      `secret_values` substring pass first would replace that inner
-      slice, leaving the outer text unequal to the structural value it
-      should have matched, so the whole-leaf comparison would silently
-      fail and the identifier's prefix/suffix would leak unredacted.
-      Short-circuiting on the original text before any other pass runs
-      closes that gap, and is exact and total by construction: a
-      whole-leaf match consumes the entire string, so there is nothing
-      left for the secret pass to touch.
-    - URL/query/fragment component match: exact decoded/percent-/form-
-      encoded path, query, or fragment components of a URL/endpoint
-      string are structurally redacted, producing a modified string --
-      but this does NOT short-circuit. The same URL can have one
-      component that is an exact structural operator-context match
-      *and* another component (or an embedded fragment) that holds an
-      actual runtime secret; both channels must run over the same string
-      so neither leaks. The `secret_values` scan pass always runs
-      afterward, over the (possibly structurally-modified) text, so a
-      credential elsewhere in the URL/string -- raw, percent-encoded, or
-      form-encoded -- is still caught.
-
-    `_compiled_secrets` is private/internal (leading underscore, like
-    `_depth`): callers never pass it. Each *top-level* call (`_depth == 0`,
-    identified by `_compiled_secrets is None`) builds every distinct
-    secret's linear `_SecretMatcher` exactly once via
-    `_compile_secret_pattern`, then threads the already-built
-    `dict[secret, matcher]` down through every recursive call in this call
-    tree, so a leaf never rebuilds a matcher another leaf already built
-    for the same secret. This is scoped to a single call/request -- built
-    fresh on this stack, discarded when `_sanitize` returns, never stored
-    on a module-level cache -- so no matcher (and no raw secret it was
-    built from) outlives the call that needed it. `_SecretMatcher` is a
-    plain Python object, never a compiled `re.Pattern`: no secret-derived
-    regex, cache, or global object is ever produced anywhere in this
-    module (see `_SecretMatcher`'s docstring for why).
-
-    `_sentinel` is likewise private/internal and computed once per
-    top-level call, alongside `compiled_secrets`, via `_choose_sentinel`.
-    Every substring-style marker this call inserts into a leaf that has
-    any `secret_values` to redact -- both the `_redact_url_structural`
-    structural marker and every `_SecretMatcher.sub` secret marker in
-    the string branch below -- is wrapped as `sentinel + marker +
-    sentinel`, never the bare marker text, and that wrapper is kept in
-    the returned value rather than stripped back to a plain marker (see
-    the string branch for why). Because `sentinel` is guaranteed absent
-    from every secret's characters, no secret's `_SecretMatcher` can
-    ever match across it, so one secret's inserted marker can never
-    combine with adjacent original text to spell out (and thus
-    "recreate") a *different* secret this same call is redacting --
-    regardless of how many secrets are involved or in what order they
-    are processed. If no sentinel candidate is available at all (see
-    `_choose_sentinel` -- a theoretical case requiring a secret to
-    contain a huge, specific set of otherwise-unused code points), the
-    string branch fails closed: it discards the entire leaf rather than
-    attempt any substring replacement it cannot prove safe.
+    Independently of `secret_values`, mapping keys are still redacted by
+    name via `_is_sensitive_key` (e.g. a `shared_secret`/`admin_password`
+    field found in an arbitrary backend response), and both mappings and
+    sequences remain bounded (`MAX_RESULT_ITEMS`) and depth-limited
+    (`max_depth`), exactly as before -- a huge or deeply-nested backend
+    payload cannot force unbounded work here regardless of whether a
+    secret is present.
     """
     secrets = tuple(secret for secret in secret_values if secret)
-    structural_secrets = tuple(
-        secret for secret in structural_redaction_values if secret
-    )
-    if _compiled_secrets is None:
-        compiled_secrets = {
-            secret: _compile_secret_pattern(secret) for secret in dict.fromkeys(secrets)
-        }
-        sentinel = _choose_sentinel(
-            frozenset(char for value_ in (*secrets, *structural_secrets) for char in value_)
-        )
-    else:
-        compiled_secrets = _compiled_secrets
-        sentinel = _sentinel
     if _depth >= max_depth:
         return "<bounded:max-depth>"
     if isinstance(value, Mapping):
@@ -400,13 +245,8 @@ def _sanitize(
                 else _sanitize(
                     item,
                     secret_values=secrets,
-                    structural_redaction_values=structural_secrets,
-                    redact_marker=redact_marker,
-                    structural_redact_marker=structural_redact_marker,
                     max_depth=max_depth,
                     _depth=_depth + 1,
-                    _compiled_secrets=compiled_secrets,
-                    _sentinel=sentinel,
                 )
             )
         if len(value) > MAX_RESULT_ITEMS:
@@ -421,13 +261,8 @@ def _sanitize(
             _sanitize(
                 item,
                 secret_values=secrets,
-                structural_redaction_values=structural_secrets,
-                redact_marker=redact_marker,
-                structural_redact_marker=structural_redact_marker,
                 max_depth=max_depth,
                 _depth=_depth + 1,
-                _compiled_secrets=compiled_secrets,
-                _sentinel=sentinel,
             )
             for item in items[:MAX_RESULT_ITEMS]
         ]
@@ -442,428 +277,13 @@ def _sanitize(
             )
         return bounded
     if isinstance(value, str):
-        text = value
-        structural_secret_set = set(structural_secrets)
-        # Whole-leaf structural match: the entire identifier is hidden
-        # immediately, before any other pass runs, and the function
-        # returns outright -- see the docstring above for why this must
-        # happen first and must short-circuit. A whole-leaf match
-        # consumes the entire string, so no secret-substring pass is
-        # needed or run, and the marker replaces the entire leaf on its
-        # own -- there is no adjacent original text left in this string
-        # for it to combine with, so it is returned bare (unwrapped):
-        # the sentinel exists to guard substring-style insertions (see
-        # below), not a total, atomic whole-leaf replacement like this
-        # one.
-        if text in structural_secret_set:
-            return structural_redact_marker
-        needs_secret_scan = bool(secrets)
-        if needs_secret_scan and sentinel is None:
-            # Fail closed (see `_choose_sentinel`): no substring
-            # replacement below can be proven safe against secret
-            # recreation without a sentinel boundary, so none is
-            # attempted -- the entire leaf is discarded instead of any
-            # partial marker-based redaction.
-            return _SENTINEL_UNAVAILABLE_REDACTED
-        # Bound how much of `text` is ever scanned: `_SECRET_SCAN_WINDOW`
-        # is large enough that any raw/percent-/form-encoded secret
-        # match beginning within the first `_OUTPUT_LIMIT` characters of
-        # the (post-redaction) result is always found in full, however
-        # far its encoded form extends past `_OUTPUT_LIMIT` -- but it is
-        # a fixed bound, never proportional to `text`'s actual length,
-        # so a 10k/1MB+ adversarial string costs the same to scan as one
-        # just past `_SECRET_SCAN_WINDOW` characters. Nothing beyond this
-        # window can ever reach the truncated output, so it is never
-        # scanned, matched, or included in it below -- only a generic
-        # omitted-character count is ever reported for it.
-        original_length = len(text)
-        scan_bounded = original_length > _SECRET_SCAN_WINDOW
-        scan_region = text[:_SECRET_SCAN_WINDOW] if scan_bounded else text
-        # URL/query component structural redaction: modifies (but never
-        # fully replaces) the string in place, and deliberately does NOT
-        # return early -- unlike the whole-leaf case above, a URL can
-        # have one component that is an exact structural operator-
-        # context match *and* a different component, or an embedded
-        # fragment, that holds an actual runtime secret. Both channels
-        # must run over the same string so neither leaks; execution
-        # falls through to the `secret_values` substring pass below on
-        # whatever `_redact_url_structural` returns. When this leaf also
-        # has secrets to redact, the marker this pass inserts is
-        # sentinel-wrapped -- see the secret pass below and
-        # `_choose_sentinel` -- because the secret pass always runs
-        # next, over this same (possibly structurally-modified) text: an
-        # un-wrapped marker here would expose the same cross-boundary
-        # recreation risk as an un-wrapped secret marker would. With no
-        # secrets in this call, nothing further ever scans this text, so
-        # the bare marker is used, unchanged from before.
-        structural_marker = (
-            f"{sentinel}{structural_redact_marker}{sentinel}"
-            if needs_secret_scan
-            else structural_redact_marker
-        )
-        scan_region = _redact_url_structural(
-            scan_region, structural_secret_set, structural_marker
-        )
-        # Actual secrets: one linear, regex-free `_SecretMatcher` per
-        # secret (`_compile_secret_pattern`, built once per secret for
-        # this top-level `_sanitize` call -- see `compiled_secrets`
-        # above -- and reused here rather than rebuilt per leaf),
-        # applied directly to the (possibly structurally-modified) text
-        # via `_SecretMatcher.sub`, a plain-string scan/replace -- never
-        # an `re.compile`d pattern. Each character of the secret is
-        # matched as its raw literal form, its UTF-8 percent-encoded
-        # byte sequence (every hex digit independently case-
-        # insensitive), or -- for a space -- a literal `+` (form
-        # encoding), so a single left-to-right scan catches any mixture
-        # of raw/encoded characters and any per-escape case mixing,
-        # whether the secret is a whole leaf, a URL/query/fragment
-        # component, embedded inside a longer backend error/result
-        # message, or inside a URL string that is itself embedded in a
-        # longer message. This never decodes/re-encodes a parsed URL or
-        # any surrounding prose -- it is a direct scan/replace over the
-        # literal text -- so it cannot corrupt an absolute URL embedded
-        # in prose, or any unrelated text around a match.
-        #
-        # Every secret's marker is sentinel-wrapped, and the wrapper is
-        # kept in the value this pass produces (never stripped back to a
-        # bare marker before returning): with more than one secret (or a
-        # secret plus a structural value) in play, one secret's *own*
-        # marker text can otherwise sit directly next to trailing
-        # original characters that, purely by coincidence, spell out a
-        # *different* secret this same call is redacting -- e.g. a
-        # secret "AAA" immediately followed by literal "xx" redacts to
-        # "******xx", which is exactly a second secret's literal value
-        # if that second secret happens to equal "******xx". Whether
-        # that "recreated" text is itself later matched (and safely
-        # re-redacted) or is the last substitution to run (and so
-        # becomes part of the final returned value) depends only on
-        # secret processing order -- which callers do not control and
-        # must not need to reason about. The sentinel rules this out
-        # unconditionally: it is provably absent from every secret's own
-        # characters (see `_choose_sentinel`), so no secret's matcher can
-        # ever match a span that crosses it, regardless of order.
-        if needs_secret_scan:
-            wrapped_redact_marker = f"{sentinel}{redact_marker}{sentinel}"
-            for secret in secrets:
-                scan_region = compiled_secrets[secret].sub(wrapped_redact_marker, scan_region)
-        if scan_bounded or len(scan_region) > _OUTPUT_LIMIT:
-            visible = scan_region[:_OUTPUT_LIMIT]
-            # Never include the unscanned suffix (if any) -- only a
-            # generic count of characters not represented in `visible`,
-            # derived from the original (pre-redaction) length so it
-            # never depends on how much the redaction passes above
-            # happened to shrink the text.
-            omitted = original_length - len(visible)
-            return f"{visible}... [truncated {omitted} chars]"
-        return scan_region
+        if secrets:
+            return _SECRET_CONTEXT_MARKER
+        if len(value) > _OUTPUT_LIMIT:
+            omitted = len(value) - _OUTPUT_LIMIT
+            return f"{value[:_OUTPUT_LIMIT]}... [truncated {omitted} chars]"
+        return value
     return value
-
-
-def _percent_encoded_char_literal(char: str) -> str:
-    """Return the canonical (upper-case hex) UTF-8 percent-encoded byte
-    sequence for `char` as a plain literal string -- one `%XX` per UTF-8
-    byte, e.g. `%2F` for `/` or `%C3%A9` for `é`. This is never a regex
-    fragment: `_secret_match_end` compares it against the corresponding
-    slice of scanned text with `.upper()` applied to that slice, so any
-    per-escape mixture of upper-/lower-case hex digits (`%2f`, `%2F`, or
-    a mix within the same string) matches this one canonical literal
-    without enumerating every case combination or building a character
-    class.
-    """
-    return "".join(f"%{byte:02X}" for byte in char.encode("utf-8"))
-
-
-def _secret_char_pattern(char: str) -> tuple[str, ...]:
-    """Return the literal alternative representations for one secret
-    character: the raw literal character itself, its UTF-8 percent-
-    encoded byte sequence (see `_percent_encoded_char_literal`), and --
-    only for a space -- also a literal `+` (form encoding).
-
-    These are plain strings, never a regex fragment or a compiled
-    pattern -- `_compile_secret_pattern` walks a request-local tuple of
-    these alternatives per character with direct string comparisons
-    (`_secret_match_end`), so no secret-derived regex, `re.compile`
-    call, or character class is ever produced anywhere in this module.
-
-    The raw-literal and percent-encoded alternatives are mutually
-    exclusive for any ordinary secret character -- a literal character
-    can never begin with the `%` that starts the percent-encoded
-    alternative -- but `_secret_match_end` still explores every
-    alternative at each character position as a small, deduplicated
-    frontier (never a first-alternative-wins guess), so a secret whose
-    literal text itself contains `%` is still matched correctly without
-    needing to backtrack into the ones not chosen first.
-    """
-    alternatives = (char, _percent_encoded_char_literal(char))
-    if char == " ":
-        return (*alternatives, "+")
-    return alternatives
-
-
-def _secret_match_end(
-    text: str, start: int, alternatives: tuple[tuple[str, ...], ...]
-) -> int | None:
-    """Return the index in `text` just past a full match of `alternatives`
-    (one tuple of per-character literal alternatives, in secret-character
-    order -- see `_secret_char_pattern`) starting at `start`, or `None`
-    if no full match starts there.
-
-    Matching is a small non-deterministic-state-machine simulation --
-    conceptually a Thompson-style NFA walk -- rather than a recursive,
-    try-one-alternative-then-backtrack matcher: `frontier` holds every
-    text position still consistent with the secret matched so far, and
-    is rebuilt (deduplicated via a `set`) after each secret character is
-    consumed. Because each character contributes at most 3 alternatives
-    (see `_secret_char_pattern`), `frontier` never holds more than a
-    handful of positions, so the whole walk costs `O(len(secret))` work
-    per starting index -- linear in the secret length (bounded well
-    below `aos8_target_adapters.MAX_SECRET_LENGTH` before a real secret
-    ever reaches this function -- see
-    `_validate_runtime_secret_lengths`) with a small constant factor,
-    and no exponential/catastrophic-backtracking blowup regardless of
-    secret content or text length: unlike naive backtracking, no failed
-    path is ever retried, because every alternative at every position is
-    already explored in the same forward pass.
-    """
-    n = len(text)
-    frontier = {start}
-    for char_alternatives in alternatives:
-        if not frontier:
-            return None
-        next_frontier: set[int] = set()
-        for pos in frontier:
-            for alt in char_alternatives:
-                end = pos + len(alt)
-                if end > n:
-                    continue
-                if alt.startswith("%"):
-                    if text[pos:end].upper() == alt:
-                        next_frontier.add(end)
-                elif text[pos:end] == alt:
-                    next_frontier.add(end)
-        frontier = next_frontier
-    return min(frontier) if frontier else None
-
-
-class _SecretMatcher:
-    """A request-local, regex-free matcher for one secret's linear set of
-    per-character alternatives (see `_secret_char_pattern`).
-
-    Deliberately *not* backed by `re.compile`/`re.Pattern`: this plain
-    Python object holds only a tuple of small per-character alternative
-    tuples (built fresh by `_compile_secret_pattern` on every call, and
-    discarded when the top-level `_sanitize` call that needed it
-    returns) -- no compiled regex, module-level cache, `lru_cache`, or
-    other global object anywhere in this module is ever built from, or
-    retains, raw or percent-encoded secret material.
-
-    `search`/`sub` mirror the small slice of the `re.Pattern` interface
-    `_sanitize` and its regression tests need, but every match is found
-    via `_secret_match_end`'s bounded state-machine walk, never regex
-    alternation/backtracking.
-    """
-
-    __slots__ = ("_alternatives", "_first_chars")
-
-    def __init__(self, alternatives: tuple[tuple[str, ...], ...]) -> None:
-        self._alternatives = alternatives
-        # The set of characters that could possibly start a match --
-        # the first character of every alternative for the secret's
-        # *first* character (see `_secret_char_pattern`): the raw
-        # literal, `%` (percent-encoding always starts with it), and,
-        # for a space, `+`. `search`/`sub` use this as a cheap `in a
-        # set` membership pre-check before paying `_secret_match_end`'s
-        # (small, but nonzero) per-position walk cost -- skipping a
-        # position whose character cannot possibly begin a match never
-        # changes which matches are found, since `_secret_match_end`
-        # would have rejected that same position on its own first
-        # character comparison anyway; it just avoids calling it.
-        self._first_chars: frozenset[str] = (
-            frozenset(alt[0] for alt in alternatives[0] if alt) if alternatives else frozenset()
-        )
-
-    def search(self, text: str) -> tuple[int, int] | None:
-        """Return `(start, end)` of the first full match of the secret
-        anywhere in `text` (in any mixture of raw/percent-/form-encoded
-        characters), or `None` if it does not occur at all."""
-        if not self._alternatives:
-            return None
-        first_chars = self._first_chars
-        for start in range(len(text)):
-            if text[start] not in first_chars:
-                continue
-            end = _secret_match_end(text, start, self._alternatives)
-            if end is not None:
-                return (start, end)
-        return None
-
-    def sub(self, replacement: str, text: str) -> str:
-        """Replace every non-overlapping full match of the secret in
-        `text` with `replacement`, scanning left to right and advancing
-        past each match found. Applied directly to the literal
-        characters already present in `text` -- this never decodes/
-        re-encodes `text` itself, so it cannot corrupt an absolute URL
-        embedded in prose or any unrelated text around a match."""
-        if not self._alternatives:
-            return text
-        n = len(text)
-        first_chars = self._first_chars
-        out: list[str] = []
-        pos = 0
-        while pos < n:
-            end = (
-                _secret_match_end(text, pos, self._alternatives)
-                if text[pos] in first_chars
-                else None
-            )
-            if end is not None:
-                out.append(replacement)
-                pos = end
-            else:
-                out.append(text[pos])
-                pos += 1
-        return "".join(out)
-
-
-def _compile_secret_pattern(secret: str) -> _SecretMatcher:
-    """Build a request-local, regex-free `_SecretMatcher` for `secret`
-    against arbitrary mixtures of raw and percent-/form-encoded
-    characters -- e.g. the four characters `/?: ` can appear in
-    backend-echoed text as any of `/?: `, `%2F%3f%3A%20`, `%2F%3f%3A+`,
-    or any other per-character mixture of raw/encoded forms, with every
-    `%XX` hex escape independently case-insensitive.
-
-    Applied directly (via `_SecretMatcher.sub`) to the literal text -- it
-    never decodes/re-encodes a parsed URL or any surrounding prose, so it
-    cannot corrupt an absolute URL embedded in prose or any unrelated
-    text around a match. Each secret character contributes a small,
-    fixed-size set of alternatives (see `_secret_char_pattern`), walked
-    by `_secret_match_end`'s bounded state-machine simulation, so
-    matching is linear in `len(secret)` with no catastrophic-
-    backtracking exposure regardless of secret length or content (also
-    bounded well below `aos8_target_adapters.MAX_SECRET_LENGTH` before a
-    real secret ever reaches this function -- see
-    `_validate_runtime_secret_lengths`).
-
-    Deliberately *not* cached across calls (no `lru_cache` or other
-    module-level cache keyed by the secret, and never an `re.compile`d
-    pattern in the first place): a cache keyed by raw secret text would
-    retain every distinct secret -- and a secret-specific matcher built
-    from it -- in process memory for the life of the process, long after
-    the request/operation that supplied it has completed. `_sanitize`
-    instead builds each secret's matcher once per top-level call via a
-    local `compiled_secrets` dict threaded through its own recursion
-    (see `_sanitize`'s docstring), so repeated construction is avoided
-    within a single call tree without any secret surviving past it.
-    """
-    return _SecretMatcher(tuple(_secret_char_pattern(c) for c in secret))
-
-
-def _is_url_like(text: str) -> bool:
-    """Return True only for a standalone URL/endpoint leaf: an absolute
-    URL beginning with an anchored, valid `scheme://` at the very start
-    of `text`, or a path/query/fragment leaf beginning with `/`, `?`, or
-    `#`. This is the narrow predicate `_redact_url_structural` uses to
-    decide whether component-wise decoding is safe to attempt at all.
-
-    Deliberately conservative: matching `"://"` anywhere in `text`
-    (rather than an anchored scheme at the start) would let arbitrary
-    prose that merely mentions or embeds a URL (e.g. "see
-    https://example.com/x for detail") be parsed as if the *entire*
-    string were that URL, corrupting everything before the scheme when
-    path/query components are rewritten. This must never be broadened
-    into a generic "does this look like it might contain a URL"
-    heuristic -- see `_redact_url_components`.
-    """
-    return bool(_URL_SCHEME_RE.match(text)) or text.startswith(("/", "?", "#"))
-
-
-def _split_url_parts(text: str) -> tuple[str, str, str, str, str]:
-    """Split a URL/endpoint string into its path, query, and fragment
-    parts, mirroring standard URL syntax (`path?query#fragment`) so both
-    the structural and secret redaction passes decode/compare the same
-    three logical components -- including the fragment, which earlier
-    revisions of this module left folded into the tail of the query
-    string (or the path, if there was no query), so a `#`-delimited
-    fragment could never be matched as its own component.
-
-    Returns `(path_part, query_sep, query_part, fragment_sep, fragment_part)`
-    where the separators are `"?"`/`"#"` when present, or `""` when the
-    corresponding part is absent -- an empty separator means "no query"/
-    "no fragment", not "empty query"/"empty fragment", so callers can
-    tell the two cases apart without a second partition.
-    """
-    body, fragment_sep, fragment_part = text.partition("#")
-    path_part, query_sep, query_part = body.partition("?")
-    return path_part, query_sep, query_part, fragment_sep, fragment_part
-
-
-def _redact_url_structural(text: str, secret_set: set[str], redact_marker: str) -> str:
-    """Redact `secret_set` from a URL/endpoint string `text` structurally
-    -- never by arbitrary substring replacement, which would corrupt any
-    unrelated text that merely *contains* a short/generic operator value
-    as a fragment (e.g. an operator-supplied one-character value "a"
-    would otherwise turn "ready" into "re<marker>dy" and "wlan" into
-    "wl<marker>n" everywhere else in the same payload).
-
-    The whole-leaf exact-match case is handled by the caller (`_sanitize`)
-    before this function is ever reached; this function only handles the
-    URL/query/fragment-component case: if `text` *is* a standalone URL/
-    endpoint leaf (see `_is_url_like` -- an anchored `scheme://` at the
-    very start, or a path/query/fragment leaf starting with `/`, `?`, or
-    `#`), each `/`-delimited path segment, each `key`/`value` in a
-    `?`-delimited query string, and each `key`/`value` in a
-    `#`-delimited fragment is percent-/form-decoded and compared for an
-    exact match, so a runtime value embedded as one path/query/fragment
-    component is redacted without touching the rest of the endpoint
-    string, whether it was passed decoded or percent-encoded. Non-URL
-    text, a URL merely *embedded* inside longer prose (never a
-    standalone leaf), and URL text with no matching component are all
-    returned unchanged -- this function never short-circuits the
-    caller's subsequent secret pass.
-
-    Generic prose (adapter messages, statuses, warnings) that merely
-    happens to share characters with a short operator value is left
-    completely unchanged.
-    """
-    if not secret_set:
-        return text
-    if _is_url_like(text):
-        return _redact_url_components(text, secret_set, redact_marker)
-    return text
-
-
-def _redact_url_components(text: str, secret_set: set[str], redact_marker: str) -> str:
-    """Redact only exact decoded/percent-encoded path, query, or fragment
-    components of a URL/path string `text`, never an arbitrary substring
-    of it."""
-
-    def redact_path_component(component: str) -> str:
-        return redact_marker if unquote(component) in secret_set else component
-
-    def redact_query_component(component: str) -> str:
-        # Query (and fragment) components use form encoding, where `+`
-        # represents a space -- `unquote_plus` decodes both that and
-        # ordinary percent-escapes, so a value form-encoded with `+`
-        # matches the same way a purely percent-encoded one does.
-        return redact_marker if unquote_plus(component) in secret_set else component
-
-    def redact_pair(pair: str) -> str:
-        key, eq, val = pair.partition("=")
-        if not eq:
-            return redact_query_component(key)
-        return f"{redact_query_component(key)}={redact_query_component(val)}"
-
-    path_part, query_sep, query_part, fragment_sep, fragment_part = _split_url_parts(text)
-    redacted_path = "/".join(redact_path_component(segment) for segment in path_part.split("/"))
-    result = redacted_path
-    if query_sep:
-        redacted_query = "&".join(redact_pair(pair) for pair in query_part.split("&"))
-        result = f"{result}{query_sep}{redacted_query}"
-    if fragment_sep:
-        redacted_fragment = "&".join(redact_pair(pair) for pair in fragment_part.split("&"))
-        result = f"{result}{fragment_sep}{redacted_fragment}"
-    return result
 
 
 def _redact_full(value: Any, *, _depth: int = 0) -> Any:
@@ -941,17 +361,15 @@ def _validate_runtime_secret_lengths(
 ) -> None:
     """Reject any caller-supplied runtime secret (PSK, RADIUS/TACACS+
     shared secret, LDAP bind password, ...) longer than
-    `MAX_SECRET_LENGTH` up front, before it reaches candidate mapping,
-    any write invocation, or `_sanitize`'s per-character, regex-free
-    `_SecretMatcher` construction (`_compile_secret_pattern`).
+    `MAX_SECRET_LENGTH` up front, before it reaches candidate mapping or
+    any write invocation.
 
     This is `apply()`'s runtime counterpart to
     `aos8_target_adapters._secret_value`/`_secret_bundle_error`, which
     enforce the same bound once a `TargetContext` has been built for a
     specific candidate; this check runs first, over every supplied
     secret for the whole request, so an oversized value is refused
-    outright rather than silently truncated, left to blow up a regex
-    compilation, or discovered only candidate-by-candidate partway
+    outright rather than discovered only candidate-by-candidate partway
     through a run.
     """
     oversized = sorted(
@@ -1195,13 +613,6 @@ def _without_operator_context(target: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-# Stable, distinct marker for a transiently-supplied operator-context value
-# (e.g. a WPA3-Enterprise auth-server reference, an AP-group target-group
-# name, or a device serial) that leaked into a stateless preview's
-# operations/payloads/blockers/warnings. Deliberately different from the
-# generic secret marker ("******") used for key-based redaction elsewhere
-# in `_sanitize`, so the two redaction reasons stay distinguishable.
-_RUNTIME_CONTEXT_REDACTED_MARKER = "<runtime-context-redacted>"
 # Generic, count-free/value-free markers used in place of the raw
 # `external_object_references`/`ap_group_target_map`/
 # `ap_group_device_serials` maps in a stateless preview's echoed
@@ -1216,38 +627,58 @@ def _operator_context_marker(mapping: Mapping[str, Any]) -> str:
     return _RUNTIME_CONTEXT_SUPPLIED if mapping else _RUNTIME_CONTEXT_NOT_SUPPLIED
 
 
-def _operator_context_redaction_values(
-    external_object_references: Mapping[str, Mapping[str, str]],
-    ap_group_target_map: Mapping[str, str],
-    ap_group_device_serials: Mapping[str, Iterable[str]],
-) -> tuple[str, ...]:
-    """Collect every operator-*supplied* leaf string from the three
-    transient operator-context maps, to be used as exact-match redaction
-    input by `_sanitize(..., structural_redaction_values=...)`.
+# The only fields `_redact_operator_context_operation` ever copies from a
+# real operation-preview dict (see
+# `BaseCentralTargetAdapter._action_preview`) into its redacted output.
+# Every one is a small, controlled value computed from preflight/
+# compatibility checks or static adapter-type metadata -- never built
+# from, or an echo of, a caller-supplied `external_object_references`/
+# `ap_group_target_map`/`ap_group_device_serials` value.
+_OPERATOR_CONTEXT_SAFE_OPERATION_FIELDS = (
+    "candidate",
+    "object_type",
+    "status",
+    "conflict",
+    "write_gate_required",
+    "dry_run",
+    "dry_run_only",
+    "dry_run_only_reason",
+)
 
-    Deliberately excludes the maps' own keys: `ap_group_target_map`'s and
-    `ap_group_device_serials`' keys are AOS8 AP-group names that already
-    equal that candidate's own `identifier` (already shown elsewhere in
-    the same preview), and `external_object_references`'s top-level keys
-    are candidate keys (`object_type:identifier`), likewise already
-    public within the same response. Only the *values* -- an
-    already-existing Classic auth-server name, a Classic target-group
-    name, and device serial numbers -- are genuinely runtime-supplied,
-    potentially-identifying data that must never be echoed back.
+
+def _redact_operator_context_operation(operation: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a structural, value-free preview of one operation entry for
+    a `preview()` call made with a non-empty operator-context map
+    (`external_object_references`/`ap_group_target_map`/
+    `ap_group_device_serials`).
+
+    Deliberately never a generic string-substitution/scanning pass over
+    the operation text (unlike `_sanitize`'s wholesale secret marker for
+    real runtime secrets): an operator-context value can legitimately be
+    as short as a single character (see `_bounded_operator_string`), so
+    no scan over arbitrary operation text could ever be proven safe
+    against corrupting unrelated prose that merely shares characters
+    with it. Instead, every field that could possibly have been built
+    from -- or merely echo -- a runtime operator-context value
+    (`operations`/`payload`/`arguments`/`endpoint`, `read_operation`,
+    `update_operations`, `delete_operations`, `read_back`, `rollback`,
+    `warnings`, `unsupported_warnings`, `blockers`, ...) is omitted
+    outright, and only `_OPERATOR_CONTEXT_SAFE_OPERATION_FIELDS` survives:
+    the candidate's own key/object type (already known to the caller from
+    the source candidate list), status/conflict (computed from
+    preflight/compatibility checks), and dry-run/write-gate flags
+    (adapter-type-only, static per candidate). No operator value, hash,
+    count, prefix/suffix, or derived endpoint/argument/payload is ever
+    included.
     """
-    values: list[str] = []
-    for refs in external_object_references.values():
-        for ref_value in refs.values():
-            if isinstance(ref_value, str) and ref_value:
-                values.append(ref_value)
-    for target_group in ap_group_target_map.values():
-        if isinstance(target_group, str) and target_group:
-            values.append(target_group)
-    for serials in ap_group_device_serials.values():
-        for serial in serials:
-            if isinstance(serial, str) and serial:
-                values.append(serial)
-    return tuple(values)
+    redacted = {
+        field: operation.get(field)
+        for field in _OPERATOR_CONTEXT_SAFE_OPERATION_FIELDS
+        if field in operation
+    }
+    redacted["supported"] = operation.get("status") != "unsupported"
+    redacted["runtime_context_details_redacted"] = True
+    return redacted
 
 
 def _run_fingerprint(
@@ -1734,41 +1165,38 @@ class AOS8MigrationOrchestrator:
         # Defense in depth: the same raw operator-context values may still
         # have been used transiently to construct operation payloads
         # elsewhere in this preview (e.g. WPA3-Enterprise's `auth_server1`
-        # in a create/update payload). Scrub every exact occurrence
-        # recursively -- operations, payloads, blockers, warnings, and
-        # results alike -- and replace it with a stable, distinct marker
-        # rather than leaving the operator-supplied value (or a
-        # derived/identifying count) in the returned preview. These are
-        # non-secret operator identifiers (can legitimately be as short as
-        # one character), so they go through the exact-match-only
-        # `structural_redaction_values` channel, never a substring scan.
-        redaction_values = _operator_context_redaction_values(
-            context.external_object_references,
-            context.ap_group_target_map,
-            context.ap_group_device_serials,
+        # in a create/update payload). Never attempt a generic string
+        # substitution/scan over that text to find and mask it -- an
+        # operator-context value can legitimately be as short as a single
+        # character (see `_bounded_operator_string`), so no scan could
+        # ever be proven safe against corrupting unrelated prose that
+        # merely shares characters with it. Instead, every operation entry
+        # is replaced outright by a small, fixed, controlled structural
+        # summary (`_redact_operator_context_operation`) that omits every
+        # field that could possibly have been built from -- or merely
+        # echo -- a runtime operator-context value (arguments, payloads,
+        # endpoints, read/update/delete operation details, blockers,
+        # warnings, results), keeping only status/supported/conflict and
+        # dry-run/write-gate flags.
+        has_operator_context = bool(
+            context.external_object_references
+            or context.ap_group_target_map
+            or context.ap_group_device_serials
         )
-        # `preview()` also transiently injects a fixed, non-secret
-        # `__runtime_secret_placeholder__` literal (via `placeholders=True`
-        # / `_placeholder_secret_inputs`) into any operation payload field
-        # that requires real target secrets, so callers can see the shape
-        # of a WPA3-Enterprise/auth-server write without ever holding real
-        # credentials. It is not itself sensitive and there is no real
-        # leak path that requires redacting it, so it is deliberately kept
-        # out of the aggressive-substring `secret_values` channel: routing
-        # it there would let it collide with -- and corrupt -- a
-        # legitimate operator-context identifier that merely happens to
-        # embed the placeholder literal as a substring (e.g.
-        # "prod-__runtime_secret_placeholder__-radius"), stripping only
-        # the inner slice and leaking the surrounding prefix/suffix before
-        # the exact-match structural comparison against `redaction_values`
-        # ever runs. The placeholder is left to appear verbatim in the
-        # preview; only genuine operator-supplied identifiers go through
-        # `structural_redaction_values` below.
-        return _sanitize(
-            preview,
-            structural_redaction_values=redaction_values,
-            structural_redact_marker=_RUNTIME_CONTEXT_REDACTED_MARKER,
-        )
+        if has_operator_context:
+            preview["operations"] = [
+                _redact_operator_context_operation(operation)
+                for operation in preview["operations"]
+                if isinstance(operation, Mapping)
+            ]
+            preview["runtime_context_details_redacted"] = True
+        # No secrets are ever real here (`placeholders=True` injects only
+        # the fixed, non-secret `__runtime_secret_placeholder__` literal --
+        # see `_placeholder_secret_inputs`), so `_sanitize` runs with no
+        # `secret_values`: it only bounds/depth-limits the structure and
+        # masks any stray sensitive-named key, exactly as it would for any
+        # other no-secret-in-scope diagnostic.
+        return _sanitize(preview)
 
     def create_run(
         self,
@@ -2155,7 +1583,20 @@ class AOS8MigrationOrchestrator:
         response["dry_run"] = dry_run
         response["attempted_candidates"] = attempted_keys[:MAX_RESULT_ITEMS]
         response["retry_failed"] = retry_failed
-        return _sanitize(response, secret_values=secret_values)
+        # Every backend-originated string in this response was already
+        # redacted wholesale, in place, at the moment it was computed --
+        # see `_record_entry`'s `_sanitize(..., secret_values=...)` calls
+        # for `last_error`/`last_result`/`attempt_history`, using this
+        # call's actual `secret_values`. This final pass runs with no
+        # `secret_values` of its own: it only applies the ordinary
+        # bounding/depth-limiting/sensitive-key masking every apply()
+        # response gets (the same "normal bounded backend diagnostics"
+        # a no-secret apply call returns), never a second wholesale
+        # secret pass over the whole response -- which would otherwise
+        # also blast orchestrator-controlled fields that never came from
+        # the backend at all (`status`, `run_id`, candidate keys,
+        # timestamps, ...) even though they cannot carry the secret.
+        return _sanitize(response)
 
     def _record_entry(
         self,
