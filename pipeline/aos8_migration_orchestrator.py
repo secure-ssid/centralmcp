@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from pipeline.aos8_target_adapters import (
@@ -191,26 +192,30 @@ def _is_presence_metadata(key: Any, value: Any) -> bool:
 # arbitrary secret a caller might choose.
 _SECRET_CONTEXT_MARKER = "<redacted:runtime-secret-context>"
 
-# Fixed, static envelopes substituted for an *entire* backend-originated
-# Mapping/sequence whenever `_sanitize` is called with a non-empty
+# Fixed, static envelope substituted for an *entire* backend-originated
+# Mapping/list/tuple/set whenever `_sanitize` is called with a non-empty
 # `secret_values`. A backend response can name its own dict keys or list
 # items dynamically (e.g. echoing a submitted value back verbatim as a
 # mapping key, or as an item inside a list/tuple/set), so per-key/per-item
 # redaction can never provably rule out leakage the way the string-leaf
 # marker above does: the only way to make that leakage impossible is to
 # never read a single key or item out of the aggregate in the first
-# place. Both envelopes are compile-time constants -- built from no part
-# of the original value (not its keys, values, item/key count, type, or
-# repr) -- so copying one always yields the exact same output regardless
-# of what the original Mapping/sequence contained.
-_SECRET_CONTEXT_MAPPING_ENVELOPE: Mapping[str, str] = {
-    "_redacted": _SECRET_CONTEXT_MARKER,
-    "_kind": "mapping",
-}
-_SECRET_CONTEXT_SEQUENCE_ENVELOPE: Mapping[str, str] = {
-    "_redacted": _SECRET_CONTEXT_MARKER,
-    "_kind": "sequence",
-}
+# place.
+#
+# Every aggregate type -- Mapping, list, tuple, set, and any custom
+# Mapping subclass -- collapses to this *one* identical envelope. There
+# is deliberately no `_kind`/type/count/shape field distinguishing a
+# collapsed mapping from a collapsed sequence: exposing which aggregate
+# type the backend actually returned is itself a (smaller, but real)
+# type leak, so the envelope carries nothing beyond the fixed marker.
+# `MappingProxyType` makes the module-level constant itself immutable
+# (assigning into it raises `TypeError`); every call site still returns
+# a *fresh* `dict(...)` copy of it below, so a caller mutating the
+# returned envelope can never corrupt this shared constant for any
+# other call.
+_SECRET_CONTEXT_AGGREGATE_ENVELOPE: Mapping[str, str] = MappingProxyType(
+    {"_redacted": _SECRET_CONTEXT_MARKER}
+)
 
 
 def _sanitize(
@@ -226,14 +231,17 @@ def _sanitize(
     - If `secret_values` is non-empty -- meaning at least one real
       runtime credential was supplied for this call -- `value` is never
       traversed key-by-key or item-by-item. Instead:
-        * a `Mapping` collapses wholesale to the fixed
-          `_SECRET_CONTEXT_MAPPING_ENVELOPE`, and a `list`/`tuple`/`set`
-          collapses wholesale to the fixed
-          `_SECRET_CONTEXT_SEQUENCE_ENVELOPE`, *before* any key, value,
-          or item of the original aggregate is ever read. This is what
-          makes mapping-key leakage (a backend echoing a submitted value
-          back as a dict key rather than a value) provably impossible:
-          a key that is never read can never appear in the output.
+        * any `Mapping`, `list`, `tuple`, or `set` collapses wholesale to
+          the *same* fixed `_SECRET_CONTEXT_AGGREGATE_ENVELOPE`, as a
+          fresh copy, *before* any key, value, or item of the original
+          aggregate is ever read. This is what makes mapping-key leakage
+          (a backend echoing a submitted value back as a dict key rather
+          than a value) provably impossible: a key that is never read
+          can never appear in the output. There is deliberately no
+          `_kind`/type/count/shape distinction between a collapsed
+          mapping and a collapsed sequence -- every aggregate type
+          produces byte-identical JSON, so which aggregate type the
+          backend actually returned is never observable either.
         * a string leaf is replaced wholesale by the fixed
           `_SECRET_CONTEXT_MARKER`. No part of the original string is
           ever inspected, scanned, matched, encoded/decoded, hashed, or
@@ -268,10 +276,8 @@ def _sanitize(
     if _depth >= max_depth:
         return "<bounded:max-depth>"
     if secrets:
-        if isinstance(value, Mapping):
-            return dict(_SECRET_CONTEXT_MAPPING_ENVELOPE)
-        if isinstance(value, (list, tuple, set)):
-            return dict(_SECRET_CONTEXT_SEQUENCE_ENVELOPE)
+        if isinstance(value, (Mapping, list, tuple, set)):
+            return dict(_SECRET_CONTEXT_AGGREGATE_ENVELOPE)
         if isinstance(value, str):
             return _SECRET_CONTEXT_MARKER
         return value

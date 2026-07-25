@@ -406,7 +406,7 @@ def test_apply_wholesale_redacts_every_adversarial_secret_embedding_end_to_end(
             # to the fixed envelope -- never traversed key-by-key -- so
             # nothing of its original keys/values ever survives.
             assert entry["last_result"] == dict(
-                orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE
+                orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE
             )
 
     # First real attempt fails with the secret embedded (in whichever
@@ -2098,7 +2098,7 @@ def test_sanitize_secret_context_collapses_mapping_regardless_of_key_shape(wrap_
     secret = "P@ss/w?rd#x"
     key = wrap_key(secret)
     sanitized = orchestrator_module._sanitize({key: "irrelevant"}, secret_values=(secret,))
-    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
     dumped = json.dumps(sanitized)
     assert secret not in dumped
     assert quote(secret, safe="") not in dumped
@@ -2112,19 +2112,55 @@ def test_sanitize_secret_context_collapses_deeply_nested_mapping_key():
     secret = "nested-mapping-key-secret"
     payload = {"a": {"b": {"c": {secret: "leak-if-reached"}}}}
     sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
-    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
     assert secret not in json.dumps(sanitized)
 
 
-def test_sanitize_secret_context_collapses_list_containing_mapping():
-    # A list/tuple/set containing a mapping whose key is the secret must
-    # collapse to the fixed sequence envelope before the mapping inside
-    # it, or its keys, are ever inspected.
-    secret = "list-of-mappings-secret"
-    payload = [{secret: "leak-if-reached"}, {"other": "value"}]
+@pytest.mark.parametrize(
+    "make_payload",
+    [
+        lambda secret: {secret: "leak-if-reached"},
+        lambda secret: [{secret: "leak-if-reached"}, {"other": "value"}],
+        lambda secret: ({secret: "leak-if-reached"}, {"other": "value"}),
+        lambda secret: {secret, "plain-item"},
+    ],
+)
+def test_sanitize_secret_context_collapses_every_aggregate_type_identically(make_payload):
+    # Mapping, list, tuple, and set must all collapse to the *same* fixed
+    # envelope -- with no `_kind`/type/count/shape field distinguishing
+    # one from another -- so which aggregate type the backend actually
+    # returned is never observable from the output.
+    secret = "aggregate-type-collapse-secret"
+    payload = make_payload(secret)
     sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
-    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_SEQUENCE_ENVELOPE)
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
     assert secret not in json.dumps(sanitized)
+
+
+def test_sanitize_secret_context_mapping_and_sequence_collapse_are_byte_identical_json():
+    # A dict-shaped backend result and a list-shaped one -- containing
+    # entirely different secret-bearing keys/items -- must produce
+    # byte-for-byte identical JSON once collapsed. No trace of the
+    # original aggregate type, size, or contents may distinguish them.
+    secret = "byte-identical-collapse-secret"
+    mapping_payload = {secret: "value", "another-key": {"nested": secret}}
+    sequence_payload = [secret, {secret: "value"}, [1, 2, secret]]
+    tuple_payload = (secret, secret)
+    set_payload = {secret}
+
+    sanitized_mapping = orchestrator_module._sanitize(mapping_payload, secret_values=(secret,))
+    sanitized_sequence = orchestrator_module._sanitize(sequence_payload, secret_values=(secret,))
+    sanitized_tuple = orchestrator_module._sanitize(tuple_payload, secret_values=(secret,))
+    sanitized_set = orchestrator_module._sanitize(set_payload, secret_values=(secret,))
+
+    dumped = {
+        json.dumps(sanitized_mapping, sort_keys=True),
+        json.dumps(sanitized_sequence, sort_keys=True),
+        json.dumps(sanitized_tuple, sort_keys=True),
+        json.dumps(sanitized_set, sort_keys=True),
+    }
+    assert len(dumped) == 1
+    assert secret not in dumped.pop()
 
 
 def test_sanitize_secret_context_collapses_custom_mapping_key():
@@ -2160,8 +2196,54 @@ def test_sanitize_secret_context_collapses_custom_mapping_key():
 
     payload = {_SecretLeakingKey(): "irrelevant"}
     sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
-    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
     assert secret not in json.dumps(sanitized)
+
+
+def test_sanitize_secret_context_collapses_custom_mapping_subclass_value():
+    # A custom `Mapping` subclass used as the top-level *value* (not
+    # just as a dict key) must also collapse to the identical fixed
+    # envelope: `isinstance(value, Mapping)` catches any subclass, not
+    # only a plain `dict`.
+    secret = "custom-mapping-subclass-value-secret"
+
+    class _CustomMapping(Mapping):
+        def __init__(self, data):
+            self._data = data
+
+        def __getitem__(self, item):
+            return self._data[item]
+
+        def __iter__(self):
+            return iter(self._data)
+
+        def __len__(self):
+            return len(self._data)
+
+    payload = _CustomMapping({secret: "leak-if-reached"})
+    sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
+    assert secret not in json.dumps(sanitized)
+
+
+def test_sanitize_secret_context_aggregate_envelope_copies_are_fresh_and_independent():
+    # Each collapse must return a *fresh* copy: mutating one call's
+    # returned envelope must never corrupt the shared module-level
+    # constant (which is itself immutable via `MappingProxyType`) or any
+    # other call's independently-returned envelope.
+    secret = "fresh-copy-secret"
+    first = orchestrator_module._sanitize({secret: "a"}, secret_values=(secret,))
+    second = orchestrator_module._sanitize([secret, secret], secret_values=(secret,))
+
+    assert first == second == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
+    assert first is not second
+    assert first is not orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE
+
+    first["tampered"] = "mutated"
+    assert second == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
+    assert "tampered" not in orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE
+    with pytest.raises(TypeError):
+        orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE["tampered"] = "mutated"
 
 
 def test_sanitize_secret_context_preserves_directly_sanitized_scalars():
@@ -2208,7 +2290,7 @@ def test_sanitize_multiple_secrets_in_one_call_cannot_combine_or_recreate():
     sanitized = orchestrator_module._sanitize(
         payload, secret_values=("secret-one", "secret-two")
     )
-    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
 
 
 def test_sanitize_marker_is_generated_metadata_not_echoed_secret_material():
@@ -2270,7 +2352,7 @@ def test_sanitize_secret_context_mapping_collapse_is_fast_regardless_of_size():
     started = time.monotonic()
     sanitized = orchestrator_module._sanitize(huge_mapping, secret_values=(secret,))
     elapsed = time.monotonic() - started
-    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
     assert elapsed < 1.0
 
 
@@ -2281,7 +2363,7 @@ def test_no_global_object_or_cache_retains_secret_material():
     secret = "no-global-retention-secret-999"
     payload = {"error": f"failed for {secret}"}
     result = orchestrator_module._sanitize(payload, secret_values=(secret,))
-    assert result == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
+    assert result == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
 
     # No module-level global (dict, list, set, or otherwise) in the
     # orchestrator module holds the raw secret anywhere.
