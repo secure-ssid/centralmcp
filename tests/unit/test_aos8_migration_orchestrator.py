@@ -947,6 +947,94 @@ def test_target_context_accepts_bounded_operator_context_and_converts_serials_to
     assert context.ap_group_device_serials == {"ap-group-hq": ("CN1234", "CN5678")}
 
 
+def test_target_context_rejects_secret_looking_reference_value():
+    # `_is_sensitive_key`/`_looks_like_credential_material` are applied to
+    # *values*, not just names -- a caller accidentally pasting an actual
+    # secret-shaped string into a reference value must be rejected the same
+    # way a secret-named reference key already is.
+    bad_target = {
+        **target("classic_central"),
+        "external_object_references": {
+            "wlan:Corp": {"auth_server1": "Bearer sk-abcdef0123456789"}
+        },
+    }
+    with pytest.raises(MigrationRunError, match="credential material"):
+        _target_context(bad_target)
+
+
+def test_target_context_rejects_pem_material_in_reference_value():
+    bad_target = {
+        **target("classic_central"),
+        "external_object_references": {
+            "wlan:Corp": {"auth_server1": "-----BEGIN PRIVATE KEY-----abc"}
+        },
+    }
+    with pytest.raises(MigrationRunError, match="credential material"):
+        _target_context(bad_target)
+
+
+def test_target_context_rejects_secret_named_ap_group_target_map_key():
+    bad_target = {
+        **target("classic_central"),
+        "ap_group_target_map": {"shared_secret": "HQ-Group"},
+    }
+    with pytest.raises(MigrationRunError, match="secret"):
+        _target_context(bad_target)
+
+
+def test_target_context_rejects_secret_looking_ap_group_target_map_value():
+    bad_target = {
+        **target("classic_central"),
+        "ap_group_target_map": {"ap-group-hq": "password=hunter2"},
+    }
+    with pytest.raises(MigrationRunError, match="credential material"):
+        _target_context(bad_target)
+
+
+def test_target_context_rejects_secret_named_ap_group_device_serials_key():
+    bad_target = {
+        **target("classic_central"),
+        "ap_group_device_serials": {"api_token": ["CN1234"]},
+    }
+    with pytest.raises(MigrationRunError, match="secret"):
+        _target_context(bad_target)
+
+
+def test_target_context_rejects_credential_shaped_device_serial_entry():
+    # JWT-shaped (three dot-separated base64url segments), but short enough
+    # to stay under the per-serial length bound so the credential-material
+    # rejection -- not the length bound -- is what actually fires here.
+    jwt_like = "eyJhbGciOi.eyJzdWIiOi.MTIzNDU2Nz"
+    bad_target = {
+        **target("classic_central"),
+        "ap_group_device_serials": {"ap-group-hq": [jwt_like]},
+    }
+    with pytest.raises(MigrationRunError, match="credential material"):
+        _target_context(bad_target)
+
+
+def test_target_context_accepts_ordinary_looking_operator_context_values():
+    # Regression guard: legitimate group names, GUIDs, and device serials
+    # must never trip the secret-like value heuristics.
+    good_target = {
+        **target("classic_central"),
+        "external_object_references": {
+            "wlan:Corp": {
+                "auth_server1": "InternalServer",
+                "guid_ref": "550e8400-e29b-41d4-a716-446655440000",
+            }
+        },
+        "ap_group_target_map": {"ap-group-hq": "HQ-Group-12345"},
+        "ap_group_device_serials": {"ap-group-hq": ["CN1234", "CN5678"]},
+    }
+    context = _target_context(good_target)
+    assert context.external_object_references["wlan:Corp"]["auth_server1"] == (
+        "InternalServer"
+    )
+    assert context.ap_group_target_map == {"ap-group-hq": "HQ-Group-12345"}
+    assert context.ap_group_device_serials == {"ap-group-hq": ("CN1234", "CN5678")}
+
+
 def _wpa3_enterprise_candidate(name="Enterprise-Test", vlan=40):
     return candidate(
         "wlan",

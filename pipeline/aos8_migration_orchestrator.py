@@ -307,6 +307,62 @@ def _bounded_operator_string(
     return value
 
 
+# Value-shaped credential-material heuristics for the non-secret operator
+# context maps (`external_object_references`, `ap_group_target_map`,
+# `ap_group_device_serials`). These maps carry operator-declared *reference*
+# strings (an existing object's name, an AP-group/Classic-group name, a
+# device serial) -- never secrets -- but nothing stops a caller from pasting
+# an actual credential into one by mistake. `_is_sensitive_key` (applied to
+# both keys and values below) already catches secret-*shaped names* (e.g. a
+# value literally named "shared_secret"); these patterns catch secret-
+# *shaped content* instead: bearer/basic/token auth headers, PEM key/cert
+# material, JWT-style three-part tokens, and inline `password=...`/
+# `secret: ...` assignments. Deliberately narrow to avoid false-positives
+# against legitimate group names, GUIDs, and device serials.
+_CREDENTIAL_HEADER_PREFIX_RE = re.compile(
+    r"^(?:bearer|basic|token)[\s:]+\S", re.IGNORECASE
+)
+_PEM_MATERIAL_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*(?:PRIVATE KEY|CERTIFICATE)-----", re.IGNORECASE
+)
+_JWT_SHAPED_RE = re.compile(r"^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$")
+_INLINE_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?:password|passwd|pwd|secret|passphrase|psk|token|api[_-]?key|credential)"
+    r"\s*[:=]\s*\S",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_credential_material(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    return bool(
+        _CREDENTIAL_HEADER_PREFIX_RE.match(text)
+        or _PEM_MATERIAL_RE.search(text)
+        or _JWT_SHAPED_RE.match(text)
+        or _INLINE_SECRET_ASSIGNMENT_RE.search(text)
+    )
+
+
+def _reject_secret_like(value: str, field_name: str) -> str:
+    """Reject a bounded operator-context string that looks like a secret
+    name (`_is_sensitive_key`) or secret-shaped content
+    (`_looks_like_credential_material`). Applied to both keys and values of
+    `external_object_references`/`ap_group_target_map`/
+    `ap_group_device_serials` -- none of those maps is ever a legitimate
+    channel for secret material (use `target_secrets` on
+    `aos8_apply_migration_run` instead).
+    """
+    if _is_sensitive_key(value) or _looks_like_credential_material(value):
+        raise MigrationRunError(
+            f"{field_name} looks like a secret name or credential material; "
+            "secrets must never be supplied as operator context (use "
+            "target_secrets on aos8_apply_migration_run instead)."
+        )
+    return value
+
+
 def _validate_external_object_references(
     value: Any,
 ) -> dict[str, dict[str, str]]:
@@ -344,17 +400,19 @@ def _validate_external_object_references(
             ref_name_str = _bounded_operator_string(
                 ref_name, "external_object_references reference name"
             )
-            if _is_sensitive_key(ref_name_str):
-                raise MigrationRunError(
-                    f"external_object_references[{key_str!r}][{ref_name_str!r}] "
-                    "looks like a secret field name; secrets must never be "
-                    "supplied as object references (use target_secrets on "
-                    "aos8_apply_migration_run instead)."
-                )
-            bounded_refs[ref_name_str] = _bounded_operator_string(
+            _reject_secret_like(
+                ref_name_str,
+                f"external_object_references[{key_str!r}][{ref_name_str!r}]",
+            )
+            bounded_value = _bounded_operator_string(
                 ref_value,
                 f"external_object_references[{key_str!r}][{ref_name_str!r}]",
             )
+            _reject_secret_like(
+                bounded_value,
+                f"external_object_references[{key_str!r}][{ref_name_str!r}] value",
+            )
+            bounded_refs[ref_name_str] = bounded_value
         bounded[key_str] = bounded_refs
     return bounded
 
@@ -375,9 +433,12 @@ def _validate_ap_group_target_map(value: Any) -> dict[str, str]:
     bounded: dict[str, str] = {}
     for ap_group, classic_group in value.items():
         ap_group_str = _bounded_operator_string(ap_group, "ap_group_target_map key")
-        bounded[ap_group_str] = _bounded_operator_string(
+        _reject_secret_like(ap_group_str, f"ap_group_target_map[{ap_group_str!r}] key")
+        bounded_value = _bounded_operator_string(
             classic_group, f"ap_group_target_map[{ap_group_str!r}]"
         )
+        _reject_secret_like(bounded_value, f"ap_group_target_map[{ap_group_str!r}] value")
+        bounded[ap_group_str] = bounded_value
     return bounded
 
 
@@ -398,6 +459,9 @@ def _validate_ap_group_device_serials(value: Any) -> dict[str, tuple[str, ...]]:
     bounded: dict[str, tuple[str, ...]] = {}
     for ap_group, serials in value.items():
         ap_group_str = _bounded_operator_string(ap_group, "ap_group_device_serials key")
+        _reject_secret_like(
+            ap_group_str, f"ap_group_device_serials[{ap_group_str!r}] key"
+        )
         if not isinstance(serials, (list, tuple)):
             raise MigrationRunError(
                 f"ap_group_device_serials[{ap_group_str!r}] must be a list "
@@ -408,14 +472,18 @@ def _validate_ap_group_device_serials(value: Any) -> dict[str, tuple[str, ...]]:
                 f"ap_group_device_serials[{ap_group_str!r}] may not exceed "
                 f"{MAX_AP_GROUP_SERIALS_PER_GROUP} serial numbers."
             )
-        bounded[ap_group_str] = tuple(
-            _bounded_operator_string(
+        bounded_serials = []
+        for serial in serials:
+            bounded_serial = _bounded_operator_string(
                 serial,
                 f"ap_group_device_serials[{ap_group_str!r}] entry",
                 max_length=MAX_SERIAL_STRING_LENGTH,
             )
-            for serial in serials
-        )
+            _reject_secret_like(
+                bounded_serial, f"ap_group_device_serials[{ap_group_str!r}] entry"
+            )
+            bounded_serials.append(bounded_serial)
+        bounded[ap_group_str] = tuple(bounded_serials)
     return bounded
 
 
