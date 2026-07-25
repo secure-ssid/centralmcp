@@ -208,39 +208,51 @@ def _sanitize(
     - If `secret_values` is non-empty -- meaning at least one real
       runtime credential was supplied for this call -- `value` is never
       traversed key-by-key or item-by-item, iterated, consumed, `len()`-
-      measured, or passed to `repr()`/`str()`. Exactly one `isinstance`
-      check decides the outcome, with no further classification of the
+      measured, or passed to `repr()`/`str()`. Exactly one `type(value)
+      is ...` check decides the outcome (never `isinstance`, which would
+      also admit subclasses), with no further classification of the
       rejected value's category, type, or shape:
-        * `None`, `bool`, `int` (including an int-subtype `Enum` member,
-          e.g. `IntEnum`, which is already a plain `int`), and a *finite*
-          `float` passed *directly* to this call are preserved unchanged
-          -- there is nothing in one of these that could carry a mapping
-          key, sequence shape, or secret-shaped text.
+        * `None`, a value whose type is *exactly* `bool`, a value whose
+          type is *exactly* `int`, and a value whose type is *exactly*
+          `float` and is finite, passed *directly* to this call, are
+          preserved unchanged -- there is nothing in one of these that
+          could carry a mapping key, sequence shape, or secret-shaped
+          text, and being an exact-type match (not merely
+          `isinstance`-compatible) means no subclass can smuggle a
+          secret-bearing attribute, override a dunder, or otherwise piggy-
+          back on the primitive fast path.
         * every other value -- a `str`, a `Mapping` (dict or custom
           subclass), a `list`/`tuple`/`set`/`frozenset`/`deque`/`range`,
           a generator or other iterator, `bytes`/`bytearray`/
           `memoryview` or any other buffer provider, a custom `Sequence`/
           `Iterable`/`Iterator`, a non-finite `float` (`inf`/`-inf`/
-          `nan`), a `pathlib.Path`, a plain `Enum` member, a `dataclass`
-          instance, a `complex`/`Decimal`, or any other custom object
+          `nan`), a `pathlib.Path`, a plain `Enum` member, an int-subtype
+          `Enum` member (e.g. `IntEnum`), a numeric type's subclass
+          (custom or third-party, e.g. a numpy scalar), a `bool`
+          subclass (impossible in CPython but still fails closed rather
+          than being assumed unreachable), a `dataclass` instance, a
+          `complex`/`Decimal`/`Fraction`, or any other custom object
           (including one whose `__repr__`/`__str__` is itself
-          secret-shaped) -- is replaced by the exact same fixed
-          `_SECRET_CONTEXT_MARKER` scalar. None of these is ever
+          secret-shaped, or one carrying secret-bearing attributes on an
+          otherwise-numeric subclass) -- is replaced by the exact same
+          fixed `_SECRET_CONTEXT_MARKER` scalar. None of these is ever
           inspected, iterated, indexed, `len()`-measured, scanned,
-          matched, encoded/decoded, hashed, or `repr()`/`str()`-ed to
-          decide *how* to redact it, and no envelope, `_kind`, or other
-          field distinguishes one rejected category from another: the
-          mere presence of a real secret anywhere in this call's input is
-          reason enough to discard every non-primitive value outright as
-          one indistinguishable marker, whether or not that specific
-          value happens to contain a secret. This makes leakage of the
-          secret -- raw, percent-/form-encoded, Unicode, mixed-case,
-          serialized (e.g. embedded in a JSON string), stored as a
-          mapping key or set/sequence element, stored in a custom
-          object's `__repr__`, or prefixed with the marker text itself --
-          provably impossible, because none of those forms, nor even the
-          rejected value's type, is ever read or observable in the
-          output.
+          matched, encoded/decoded, hashed, or `repr()`/`str()`-ed, and no
+          method or attribute of a rejected value -- including one
+          defined only on a subclass -- is ever invoked to decide *how*
+          to redact it, and no envelope, `_kind`, or other field
+          distinguishes one rejected category from another: the mere
+          presence of a real secret anywhere in this call's input is
+          reason enough to discard every non-exact-primitive value
+          outright as one indistinguishable marker, whether or not that
+          specific value happens to contain a secret. This makes leakage
+          of the secret -- raw, percent-/form-encoded, Unicode,
+          mixed-case, serialized (e.g. embedded in a JSON string), stored
+          as a mapping key or set/sequence element, stored in a custom
+          object's `__repr__`, stored as an attribute on a primitive
+          subclass, or prefixed with the marker text itself -- provably
+          impossible, because none of those forms, nor even the rejected
+          value's type, is ever read or observable in the output.
     - If `secret_values` is empty, mappings/sequences are traversed and
       bounded (`MAX_RESULT_ITEMS`) exactly as before, string leaves are
       returned unchanged (bounded only by `_OUTPUT_LIMIT`, to keep an
@@ -259,19 +271,32 @@ def _sanitize(
     if _depth >= max_depth:
         return "<bounded:max-depth>"
     if secrets:
-        # Only the safe primitive scalars remain unchanged: None, bool,
-        # int (including int-subtype Enum members), and a finite float.
-        # Every other value -- str, Mapping, list/tuple/set/frozenset/
-        # deque/range, a generator or other iterator, bytes/bytearray/
-        # memoryview or any other buffer provider, a custom Sequence/
-        # Iterable/Iterator, a non-finite float, a Path, a plain Enum
-        # member, a dataclass instance, or any other unknown/custom
-        # object -- fails closed to the same fixed marker without ever
-        # calling isinstance against Mapping/Iterable/Iterator, iterating,
-        # indexing, len()-ing, or calling repr()/str() on it.
-        if value is None or isinstance(value, (bool, int)):
+        # Only the exact-type safe primitive scalars remain unchanged:
+        # None, a value whose type is exactly bool, a value whose type
+        # is exactly int, and a value whose type is exactly float and is
+        # finite. `type(value) is ...` is used deliberately instead of
+        # isinstance() so that no subclass -- an int-subtype Enum member
+        # (e.g. IntEnum), a bool subclass (impossible in CPython, but
+        # not assumed unreachable), a numpy scalar or other third-party
+        # numeric subclass, or any custom int/float/bool subclass that
+        # carries secret-bearing attributes or overrides __repr__/__eq__/
+        # __index__/etc. -- can piggyback on the primitive fast path by
+        # merely being isinstance()-compatible. Every other value -- str,
+        # Mapping, list/tuple/set/frozenset/deque/range, a generator or
+        # other iterator, bytes/bytearray/memoryview or any other buffer
+        # provider, a custom Sequence/Iterable/Iterator, a non-finite
+        # float, a Path, a plain Enum member, a dataclass instance,
+        # Decimal, Fraction, complex, or any other unknown/custom/
+        # subclassed object -- fails closed to the same fixed marker
+        # without ever calling isinstance against Mapping/Iterable/
+        # Iterator, iterating, indexing, len()-ing, or invoking any
+        # method/attribute (including one defined only on a subclass) on
+        # it.
+        if value is None:
             return value
-        if isinstance(value, float):
+        if type(value) is bool or type(value) is int:
+            return value
+        if type(value) is float:
             return value if math.isfinite(value) else _SECRET_CONTEXT_MARKER
         return _SECRET_CONTEXT_MARKER
     if isinstance(value, Mapping):

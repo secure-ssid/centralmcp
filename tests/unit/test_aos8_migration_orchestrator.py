@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum, IntEnum
+from fractions import Fraction
 from pathlib import Path
 from urllib.parse import quote, quote_plus
 
@@ -2196,6 +2197,66 @@ class _NoTouchEnum(Enum):
     ACTIVE = "plain-enum-member-value"
 
 
+class _NoTouchPriority(IntEnum):
+    """An int-subtype `Enum` member. `type(value) is int` is `False` for
+    this -- its type is the `IntEnum` subclass, not `int` itself -- so
+    it must fail closed to the marker exactly like any other subclass,
+    even though `isinstance(value, int)` is `True` for it."""
+
+    LOW = 1
+    HIGH = 2
+
+
+class _NoTouchIntSubclass(int):
+    """A custom `int` subclass carrying a secret-bearing attribute.
+    `isinstance(value, int)` is `True`, but `type(value) is int` is
+    `False`, so this must fail closed to the marker without the
+    secret-bearing attribute -- or `__repr__` -- ever being read."""
+
+    def __new__(cls, value, secret_attr):
+        obj = super().__new__(cls, value)
+        obj.secret_attr = secret_attr
+        return obj
+
+    def __repr__(self):
+        return _never_call()
+
+
+class _NoTouchFloatSubclass(float):
+    """A custom `float` subclass carrying a secret-bearing attribute.
+    `isinstance(value, float)` is `True`, but `type(value) is float` is
+    `False`, so this must fail closed to the marker -- regardless of
+    whether the underlying float is finite -- without the secret-bearing
+    attribute or `__repr__` ever being read."""
+
+    def __new__(cls, value, secret_attr):
+        obj = super().__new__(cls, value)
+        obj.secret_attr = secret_attr
+        return obj
+
+    def __repr__(self):
+        return _never_call()
+
+
+class _NoTouchNumpyLikeScalar(float):
+    """A stand-in for a third-party numeric scalar type (e.g.
+    `numpy.float64`, which is itself a genuine `float` subclass in
+    CPython): it exposes extra numeric-library-style methods
+    (`item()`/`astype()`) that must never be invoked, and its `__repr__`
+    must never be read either. `type(value) is float` is `False` for it,
+    so it fails closed to the marker exactly like any other float
+    subclass."""
+
+    def item(self):
+        return _never_call()
+
+    def astype(self, *_args, **_kwargs):
+        return _never_call()
+
+    def __repr__(self):
+        return _never_call()
+
+
 def _make_never_advance_generator(secret):
     def _gen():
         yield secret
@@ -2237,17 +2298,34 @@ def _make_never_advance_generator(secret):
         pytest.param(lambda secret: _NoTouchEnum.ACTIVE, id="plain-enum"),
         pytest.param(lambda secret: complex(1, 2), id="complex"),
         pytest.param(lambda secret: Decimal("1.5"), id="decimal"),
+        pytest.param(lambda secret: Fraction(1, 2), id="fraction"),
+        pytest.param(lambda secret: _NoTouchPriority.HIGH, id="int-enum"),
+        pytest.param(
+            lambda secret: _NoTouchIntSubclass(3, secret), id="int-subclass-with-secret-attr"
+        ),
+        pytest.param(
+            lambda secret: _NoTouchFloatSubclass(1.5, secret),
+            id="float-subclass-with-secret-attr",
+        ),
+        pytest.param(lambda secret: _NoTouchNumpyLikeScalar(1.5), id="numpy-like-scalar-stub"),
     ],
 )
 def test_sanitize_secret_context_every_category_yields_the_identical_marker(make_payload):
     # Every one of these categories -- primitive string, dict, custom
     # Mapping, every non-string Iterable/Iterator ABC category, every
-    # buffer type, every custom duck-typed protocol, and every unknown
-    # object type (dataclass, Path, plain Enum, complex, Decimal) -- must
-    # produce the exact same marker *object* (not merely an equal copy)
-    # once any real secret is in scope, and must do so without ever
-    # calling any of the "no-touch" classes' instrumented dunder/data
-    # methods (each raises `AssertionError` if `_sanitize` ever calls it).
+    # buffer type, every custom duck-typed protocol, every unknown object
+    # type (dataclass, Path, plain Enum, complex, Decimal, Fraction), and
+    # every primitive-shaped *subclass* (IntEnum, a custom int subclass
+    # with a secret-bearing attribute, a custom float subclass with a
+    # secret-bearing attribute, a numpy-scalar-like stub) -- must produce
+    # the exact same marker *object* (not merely an equal copy) once any
+    # real secret is in scope, and must do so without ever calling any of
+    # the "no-touch" classes' instrumented dunder/data methods (each
+    # raises `AssertionError` if `_sanitize` ever calls it). This is what
+    # distinguishes the fix from the pre-fix `isinstance(value, (bool,
+    # int))`/`isinstance(value, float)` checks, which admitted any
+    # subclass -- not just the exact built-in type -- onto the unchanged-
+    # passthrough path.
     secret = "universal-marker-secret"
     payload = make_payload(secret)
     marker = orchestrator_module._SECRET_CONTEXT_MARKER
@@ -2301,7 +2379,11 @@ def test_sanitize_secret_context_preserves_safe_primitive_scalars_unchanged():
     # Numbers/bools/null/finite floats passed *directly* to `_sanitize`
     # survive unchanged even when a real secret is in scope -- there is
     # nothing in a bare scalar that could carry a mapping key or sequence
-    # shape.
+    # shape. Each of these is an *exact* built-in type, not merely
+    # isinstance()-compatible with one.
+    assert type(3) is int
+    assert type(True) is bool
+    assert type(1.5) is float
     assert orchestrator_module._sanitize(3, secret_values=("abc",)) == 3
     assert orchestrator_module._sanitize(True, secret_values=("abc",)) is True
     assert orchestrator_module._sanitize(False, secret_values=("abc",)) is False
@@ -2309,17 +2391,81 @@ def test_sanitize_secret_context_preserves_safe_primitive_scalars_unchanged():
     assert orchestrator_module._sanitize(1.5, secret_values=("abc",)) == 1.5
 
 
-def test_sanitize_secret_context_int_enum_member_preserved_as_int():
-    # An IntEnum member is *already* a safe primitive (a genuine `int`
-    # subtype instance): it is preserved, exactly like a bare `int`, and
-    # is not routed to the marker path.
+def test_sanitize_secret_context_int_enum_member_fails_closed_to_marker():
+    # An `IntEnum` member is an `int` *subtype* instance --
+    # `isinstance(_Priority.HIGH, int)` is `True` -- but its exact type
+    # is the `IntEnum` subclass, not `int` itself
+    # (`type(_Priority.HIGH) is int` is `False`). The fix routes it
+    # through the same fail-closed marker path as every other subclass,
+    # rather than the pre-fix `isinstance(value, (bool, int))` check that
+    # let it (and any other int subclass) slip through unchanged.
     class _Priority(IntEnum):
         LOW = 1
         HIGH = 2
 
+    assert isinstance(_Priority.HIGH, int)
+    assert type(_Priority.HIGH) is not int
     sanitized = orchestrator_module._sanitize(_Priority.HIGH, secret_values=("unrelated",))
-    assert sanitized == _Priority.HIGH
-    assert int(sanitized) == 2
+    assert sanitized is orchestrator_module._SECRET_CONTEXT_MARKER
+
+
+def test_sanitize_secret_context_int_subclass_with_secret_attribute_fails_closed_to_marker():
+    # A custom `int` subclass whose extra attribute carries a real secret
+    # must fail closed to the marker without that attribute -- or
+    # `__repr__` -- ever being read.
+    payload = _NoTouchIntSubclass(3, "secret-on-int-subclass")
+    assert isinstance(payload, int)
+    assert type(payload) is not int
+    sanitized = orchestrator_module._sanitize(payload, secret_values=("unrelated",))
+    assert sanitized is orchestrator_module._SECRET_CONTEXT_MARKER
+
+
+def test_sanitize_secret_context_float_subclass_with_secret_attribute_fails_closed_to_marker():
+    # A custom `float` subclass whose extra attribute carries a real
+    # secret must fail closed to the marker -- even though the underlying
+    # float value is finite -- without that attribute or `__repr__` ever
+    # being read.
+    payload = _NoTouchFloatSubclass(1.5, "secret-on-float-subclass")
+    assert isinstance(payload, float)
+    assert type(payload) is not float
+    sanitized = orchestrator_module._sanitize(payload, secret_values=("unrelated",))
+    assert sanitized is orchestrator_module._SECRET_CONTEXT_MARKER
+
+
+def test_sanitize_secret_context_numpy_like_scalar_stub_fails_closed_to_marker():
+    # A stand-in for a third-party numeric scalar type (e.g.
+    # `numpy.float64`, itself a genuine `float` subclass in CPython) must
+    # fail closed to the marker without any of its extra numeric-library
+    # methods (`item()`/`astype()`) or `__repr__` ever being invoked.
+    payload = _NoTouchNumpyLikeScalar(1.5)
+    assert isinstance(payload, float)
+    assert type(payload) is not float
+    sanitized = orchestrator_module._sanitize(payload, secret_values=("unrelated",))
+    assert sanitized is orchestrator_module._SECRET_CONTEXT_MARKER
+
+
+def test_sanitize_secret_context_decimal_and_fraction_fail_closed_to_marker():
+    # Neither `Decimal` nor `Fraction` is a `bool`/`int`/`float` subclass
+    # at all, so both must fail closed to the marker exactly like any
+    # other unknown object type.
+    assert orchestrator_module._sanitize(
+        Decimal("1.5"), secret_values=("unrelated",)
+    ) is orchestrator_module._SECRET_CONTEXT_MARKER
+    assert orchestrator_module._sanitize(
+        Fraction(1, 2), secret_values=("unrelated",)
+    ) is orchestrator_module._SECRET_CONTEXT_MARKER
+
+
+def test_bool_subclass_is_impossible_in_cpython():
+    # Documents why no dedicated bool-subclass fixture exists in the
+    # matrix above: CPython forbids subclassing `bool` outright, so
+    # `type(value) is bool` already covers every reachable `bool` value
+    # -- there is no subclass instance that could ever reach `_sanitize`
+    # to test against.
+    with pytest.raises(TypeError):
+
+        class _BoolSubclass(bool):
+            pass
 
 
 @pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
