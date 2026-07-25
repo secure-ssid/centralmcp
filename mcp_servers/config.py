@@ -778,8 +778,9 @@ def build_underlay_ssid(
     vlan_ids: list[int] | None = None,
     mac_auth_server_group: str | None = "sys_central_nac",
     default_role: str | None = None,
-    wpa3_transition: bool = False,
     dry_run: bool = False,
+    *,
+    wpa3_transition: bool = False,
 ) -> dict[str, Any]:
     """Create a bridge-mode (underlay) SSID and scope-map it.
 
@@ -794,11 +795,15 @@ def build_underlay_ssid(
         vlan_id / vlan_ids: Single VLAN or list of VLAN IDs.
         mac_auth_server_group: Central NAC server-group for MAC auth. None to skip.
         default_role: Override default MAC-auth role (omit to use SSID name).
-        wpa3_transition: Explicit opt-in for a WPA3-transition-mode SSID. Defaults to
-                False for every currently supported pure opmode (OPEN, WPA2_PERSONAL,
-                WPA3_SAE, ENHANCED_OPEN) -- never silently inherited as True. Only set
-                True when you specifically intend a WPA3-transition SSID.
-        dry_run: Return payload without sending.
+        dry_run: Return payload without sending. Keeps its 0.4.0 positional index
+                (10th positional argument) -- an old positional call that passed
+                True here still only previews the payload and never writes.
+        wpa3_transition: Keyword-only, added in 0.5.0 after dry_run so it cannot
+                shift any pre-existing positional argument. Explicit opt-in for a
+                WPA3-transition-mode SSID. Defaults to False for every currently
+                supported pure opmode (OPEN, WPA2_PERSONAL, WPA3_SAE, ENHANCED_OPEN)
+                -- never silently inherited as True. Only set True when you
+                specifically intend a WPA3-transition SSID.
     """
     client = get_client()
     resolved_vlan_ids = vlan_ids or ([vlan_id] if vlan_id is not None else [1])
@@ -897,8 +902,9 @@ def build_overlay_ssid(
     passphrase: str | None = None,
     mac_auth_server_group: str | None = None,
     policy_name: str | None = None,
-    wpa3_transition: bool = False,
     dry_run: bool = False,
+    *,
+    wpa3_transition: bool = False,
 ) -> dict[str, Any]:
     """Create a tunneled (overlay/GRE) SSID via a gateway cluster.
 
@@ -913,10 +919,14 @@ def build_overlay_ssid(
         passphrase: Required for PSK opmodes — always ask, never generate.
         mac_auth_server_group: If set, creates an AAA profile and enables MAC auth.
         policy_name: Existing GW security policy to attach; auto-creates allow-all if omitted.
-        wpa3_transition: Explicit opt-in for a WPA3-transition-mode SSID. Defaults to
-                False for every currently supported pure opmode (OPEN, WPA2_PERSONAL,
-                WPA3_SAE, ENHANCED_OPEN) -- never silently inherited as True.
-        dry_run: Return payload without sending.
+        dry_run: Return payload without sending. Keeps its 0.4.0 positional index
+                (9th positional argument) -- an old positional call that passed
+                True here still only previews the payload and never writes.
+        wpa3_transition: Keyword-only, added in 0.5.0 after dry_run so it cannot
+                shift any pre-existing positional argument. Explicit opt-in for a
+                WPA3-transition-mode SSID. Defaults to False for every currently
+                supported pure opmode (OPEN, WPA2_PERSONAL, WPA3_SAE, ENHANCED_OPEN)
+                -- never silently inherited as True.
     """
     client = get_client()
     result = _build_overlay(

@@ -39,12 +39,17 @@ following are **behavior/signature changes on existing tools**, made while
 building the AOS8 migration write path (`mcp_servers/config.py`):
 
 - **New `wpa3_transition` parameter** on `build_underlay_ssid` and
-  `build_overlay_ssid` (default `False`). It is an explicit, never-inherited
-  opt-in for a WPA3-transition-mode SSID; every currently supported pure
-  opmode (`OPEN`, `WPA2_PERSONAL`, `WPA3_SAE`, `ENHANCED_OPEN`) continues to
-  default to `False` and behaves exactly as before if the parameter is
-  omitted. Existing callers that do not pass this argument see no change in
-  behavior.
+  `build_overlay_ssid` (default `False`). It is **keyword-only**, added after
+  every 0.4.0 parameter (including `dry_run`), so every 0.4.0 positional
+  parameter — in particular `dry_run` — keeps its exact 0.4.0 positional
+  index (commit `1f79256`). An old positional call that passed `True` for
+  `dry_run` still binds `True` to `dry_run` and still only previews the
+  payload; it can never execute a write. `wpa3_transition` is an explicit,
+  never-inherited opt-in for a WPA3-transition-mode SSID; every currently
+  supported pure opmode (`OPEN`, `WPA2_PERSONAL`, `WPA3_SAE`,
+  `ENHANCED_OPEN`) continues to default to `False` and behaves exactly as
+  before if the parameter is omitted. Existing callers that do not pass this
+  argument see no change in behavior.
 - **Stronger, fail-closed failure handling** on `create_role`, `update_role`,
   `delete_role`, `create_config_assignment`, `delete_config_assignment`, and
   `delete_overlay_ssid`. These tools previously returned a **2xx-shaped
@@ -288,7 +293,15 @@ All of the above are run together by `scripts/validate_release.py`.
    `errors` list themselves; only callers that inspected the old buried
    `errors` field to detect failure need to change error-detection logic to
    a `try`/`except` instead.
-7. To reproduce this release's AOS8 read-only evaluation yourself, run
+7. **`build_underlay_ssid`/`build_overlay_ssid` positional-signature
+   compatibility**: `wpa3_transition` is keyword-only and was added after
+   every 0.4.0 parameter, including `dry_run` — every 0.4.0 positional call
+   site (including one that passed `True` positionally for `dry_run`) binds
+   identically to 0.4.0 (commit `1f79256`) and never executes a write. No
+   caller action is required; see
+   [`tests/unit/test_ssid_dryrun_positional_compat.py`](../tests/unit/test_ssid_dryrun_positional_compat.py)
+   for the reproducible positional-signature and write-guard coverage.
+8. To reproduce this release's AOS8 read-only evaluation yourself, run
    `scripts/evaluate_aos8_050_readonly.py` (offline/fixture-backed by
    default; pass `--live-new-central-readonly` for a GET-only live New
    Central check). See
