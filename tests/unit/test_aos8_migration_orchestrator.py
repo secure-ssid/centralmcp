@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote, quote_plus
 
 import pytest
 
@@ -61,6 +62,12 @@ class FakeBackend:
         # leaf equal to the secret), to exercise the aggressive-substring
         # `secret_values` redaction channel end to end.
         self.embed_secret_in_message = False
+        # When set, embeds the operation secret percent-encoded across a
+        # URL-shaped path segment, query value, and fragment value inside
+        # the backend error/result message, to exercise the URL-component
+        # `secret_values` redaction pass (`_redact_url_secrets`) end to
+        # end -- not just the plain aggressive-substring pass.
+        self.embed_secret_in_url = False
 
     def read(self, operation):
         self.read_calls.append(operation)
@@ -76,12 +83,30 @@ class FakeBackend:
             or arguments.get("passphrase")
         )
 
+    def _secret_url(self, operation):
+        # A URL with the operation secret percent-encoded into a path
+        # segment, a query value, and a fragment value -- exercising all
+        # three component kinds `_redact_url_secrets` decodes/redacts.
+        from urllib.parse import quote
+
+        secret = self._operation_secret(operation)
+        encoded = quote(secret, safe="")
+        return (
+            f"/network-config/v1alpha1/wlan/{encoded}"
+            f"?shared_secret={encoded}&status=rejected#detail={encoded}"
+        )
+
     def write(self, operation, *, confirmation):
         self.write_calls.append((operation, confirmation))
         dry_run = bool(operation.arguments.get("dry_run"))
         remaining = self.fail_real.get(operation.name, 0)
         if not dry_run and remaining:
             self.fail_real[operation.name] = remaining - 1
+            if self.embed_secret_in_url:
+                raise RuntimeError(
+                    f"{operation.name} rejected by upstream "
+                    f"({self._secret_url(operation)})"
+                )
             if self.embed_secret_in_message:
                 secret = self._operation_secret(operation)
                 raise RuntimeError(
@@ -92,6 +117,11 @@ class FakeBackend:
         result = {"ok": True, "name": operation.name, "dry_run": dry_run}
         if self.echo_secret:
             result["echo"] = operation.arguments.get("shared_secret")
+        if self.embed_secret_in_url:
+            result["message"] = (
+                f"applied {operation.name} successfully "
+                f"({self._secret_url(operation)})"
+            )
         if self.embed_secret_in_message:
             secret = self._operation_secret(operation)
             result["message"] = f"applied {operation.name} using value '{secret}' successfully"
@@ -342,6 +372,67 @@ def test_apply_redacts_embedded_credential_in_backend_error_and_result(tmp_path)
     assert applied["candidates"][0]["status"] == "applied"
     assert "embedded-super-secret" not in json.dumps(applied)
     assert "embedded-super-secret" not in store.path_for("secret-in-text").read_text()
+
+
+def test_apply_redacts_percent_encoded_credential_in_backend_error_and_result_url(tmp_path):
+    # End-to-end regression for the percent/form-encoded leak fixed after
+    # 3c64df6: a real caller-supplied secret embedded inside a URL in a
+    # backend error/result message -- percent-encoded across a path
+    # segment, a query value, *and* a fragment value, exactly as an
+    # upstream backend might echo a rejected request -- must be fully
+    # redacted end to end through `apply()`'s `secret_values` channel,
+    # both in the returned response and in the persisted on-disk state.
+    # Plain substring replacement of the raw secret cannot catch this,
+    # because the raw secret text never appears literally in the
+    # percent-encoded message; only component-aware decode-then-redact
+    # (`_redact_url_secrets`) does.
+    backend = FakeBackend()
+    backend.embed_secret_in_url = True
+    backend.fail_real["build_underlay_ssid"] = 1
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _wpa2_wlan_candidate("EncodedSecretGuest")
+    service.create_run([wlan], target(), run_id="encoded-secret-url")
+    secret = "P@ss/w?rd#x"
+    supplied = {"wlan:EncodedSecretGuest": {"wpa_passphrase": secret}}
+    service.apply(
+        "encoded-secret-url",
+        dry_run=True,
+        confirmation=False,
+        target_secrets=supplied,
+    )
+
+    # First real attempt fails with the secret percent-encoded into the
+    # backend's error message URL.
+    failed = service.apply(
+        "encoded-secret-url",
+        dry_run=False,
+        confirmation=True,
+        target_secrets=supplied,
+    )
+    assert failed["candidates"][0]["status"] == "failed"
+    dumped_failed = json.dumps(failed)
+    persisted_failed = store.path_for("encoded-secret-url").read_text()
+    for text in (dumped_failed, persisted_failed):
+        assert secret not in text
+        assert quote(secret, safe="") not in text
+        assert quote(secret, safe="").lower() not in text
+
+    # Retry succeeds, with the secret percent-encoded into the backend's
+    # success message URL.
+    applied = service.apply(
+        "encoded-secret-url",
+        dry_run=False,
+        confirmation=True,
+        target_secrets=supplied,
+        retry_failed=True,
+    )
+    assert applied["candidates"][0]["status"] == "applied"
+    dumped_applied = json.dumps(applied)
+    persisted_applied = store.path_for("encoded-secret-url").read_text()
+    for text in (dumped_applied, persisted_applied):
+        assert secret not in text
+        assert quote(secret, safe="") not in text
+        assert quote(secret, safe="").lower() not in text
 
 
 def test_malformed_state_and_path_traversal_fail_cleanly(tmp_path):
@@ -1785,6 +1876,170 @@ def test_sanitize_actual_secret_substring_redaction_unaffected_by_reorder():
     assert "******" in sanitized["error"]
     assert "authentication failed using secret" in sanitized["error"]
     assert "in request" in sanitized["error"]
+
+
+def test_sanitize_redacts_percent_encoded_secret_in_path_query_and_fragment():
+    # Regression for the leak introduced/left open by 3c64df6's URL-
+    # redaction-composition fix: `secret_values` must be caught not just
+    # raw, but percent-encoded (either hex case) or form-encoded (`+`)
+    # inside a decoded URL path, query, or fragment component -- not
+    # only when the raw secret literal appears verbatim in the text.
+    import re
+
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "P@ss/w?rd#x"
+    encoded_upper = quote(secret, safe="")
+    encoded_lower = re.sub(
+        r"%[0-9A-Fa-f]{2}", lambda m: m.group(0).lower(), encoded_upper
+    )
+
+    path_url = f"/network-config/v1/wlan/{encoded_upper}"
+    query_url_upper = f"/network-config/v1/wlan?shared_secret={encoded_upper}"
+    query_url_lower = f"/network-config/v1/wlan?shared_secret={encoded_lower}"
+    fragment_url = f"/network-config/v1/wlan?status=rejected#detail={encoded_upper}"
+    unrelated_url = "/network-monitoring/v1/aps?status=ready&band=abnormal"
+
+    sanitized = _sanitize(
+        {
+            "path": path_url,
+            "query_upper": query_url_upper,
+            "query_lower": query_url_lower,
+            "fragment": fragment_url,
+            "unrelated": unrelated_url,
+        },
+        secret_values=(secret,),
+    )
+    dumped = json.dumps(sanitized)
+    assert secret not in dumped
+    assert encoded_upper not in dumped
+    assert encoded_lower not in dumped
+    assert sanitized["path"] == "/network-config/v1/wlan/******"
+    assert sanitized["query_upper"] == "/network-config/v1/wlan?shared_secret=******"
+    assert sanitized["query_lower"] == "/network-config/v1/wlan?shared_secret=******"
+    assert sanitized["fragment"] == "/network-config/v1/wlan?status=rejected#detail=******"
+    # A URL that never contains the secret must survive byte-for-byte.
+    assert sanitized["unrelated"] == unrelated_url
+
+
+def test_sanitize_redacts_form_encoded_plus_secret_in_query_value():
+    # A secret containing a space, form-encoded with `+` (the
+    # `application/x-www-form-urlencoded` convention for a space in a
+    # query component), must be decoded and redacted the same as a
+    # purely percent-encoded secret.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "My Secret Value"
+    encoded = quote_plus(secret)
+    url = f"/network-config/v1/wlan?shared_secret={encoded}&status=rejected"
+
+    sanitized = _sanitize({"endpoint": url}, secret_values=(secret,))
+    assert secret not in sanitized["endpoint"]
+    assert encoded not in sanitized["endpoint"]
+    assert sanitized["endpoint"] == "/network-config/v1/wlan?shared_secret=******&status=rejected"
+
+
+def test_sanitize_redacts_encoded_secret_embedded_as_substring_of_url_component():
+    # A secret does not have to be the *entire* decoded path/query
+    # component -- it can be embedded as a substring inside a longer
+    # one (e.g. `prefix-<secret>-suffix`), still percent-encoded as a
+    # whole. Only the secret substring is redacted; the surrounding
+    # decoded text must survive, safely re-encoded.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "hunter2-token"
+    encoded_component = quote(f"prefix-{secret}-suffix", safe="")
+    url = f"/network-config/v1/server-groups/lookup?raw={encoded_component}"
+
+    sanitized = _sanitize({"endpoint": url}, secret_values=(secret,))
+    endpoint = sanitized["endpoint"]
+    assert secret not in endpoint
+    assert "hunter2-token" not in endpoint
+    assert "prefix-" in endpoint
+    assert "-suffix" in endpoint
+    assert "******" in endpoint
+
+
+def test_sanitize_combined_structural_query_and_percent_encoded_secret_in_fragment():
+    # Mixed structural + encoded-secret case: an exact structural
+    # (non-secret) operator-context match in the query string, and an
+    # actual runtime secret percent-encoded in the fragment. Structural
+    # redaction must run first (per `_sanitize`'s documented ordering)
+    # and must not interfere with -- or be bypassed by -- the encoded
+    # secret pass over the fragment.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    structural_value = "target-group-1"
+    secret = "P@ss/w?rd#x"
+    marker = "<runtime-context-redacted>"
+    encoded_secret = quote(secret, safe="")
+    url = (
+        f"/network-config/v1/server-groups"
+        f"?group={structural_value}&other=1#detail={encoded_secret}"
+    )
+
+    sanitized = _sanitize(
+        {"endpoint": url},
+        secret_values=(secret,),
+        structural_redaction_values=(structural_value,),
+        structural_redact_marker=marker,
+    )
+    endpoint = sanitized["endpoint"]
+    assert structural_value not in endpoint
+    assert secret not in endpoint
+    assert encoded_secret not in endpoint
+    assert f"group={marker}" in endpoint
+    assert "other=1" in endpoint
+    assert "detail=******" in endpoint
+
+
+def test_sanitize_combined_structural_path_and_form_encoded_secret_in_query():
+    # Mirror of the above with the structural match in a path segment
+    # and the secret form-encoded (`+` for space) in a query value.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    structural_value = "Legacy-AuthServer"
+    secret = "hunter two token"
+    marker = "<runtime-context-redacted>"
+    encoded_secret = quote_plus(secret)
+    url = (
+        f"/network-config/v1alpha1/auth-servers/{structural_value}"
+        f"?token={encoded_secret}"
+    )
+
+    sanitized = _sanitize(
+        {"endpoint": url},
+        secret_values=(secret,),
+        structural_redaction_values=(structural_value,),
+        structural_redact_marker=marker,
+    )
+    endpoint = sanitized["endpoint"]
+    assert structural_value not in endpoint
+    assert secret not in endpoint
+    assert encoded_secret not in endpoint
+    assert endpoint == f"/network-config/v1alpha1/auth-servers/{marker}?token=******"
+
+
+def test_sanitize_url_secret_pass_does_not_corrupt_unrelated_percent_encoded_text():
+    # The new component-aware secret pass must never decode/re-encode a
+    # component that does not actually contain the secret -- an
+    # unrelated percent-encoded value elsewhere in the same URL, or in a
+    # totally different URL with no matching component, must survive
+    # byte-for-byte, and non-URL text must never be routed through URL
+    # decoding at all.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "Sup3rSecret!"
+    encoded_unrelated = quote("Totally-Different-Value", safe="")
+    url = f"/network-config/v1/server-groups?group={encoded_unrelated}&status=ready"
+    non_url_text = "status=ready and group=Totally-Different-Value in payload"
+
+    sanitized = _sanitize(
+        {"endpoint": url, "notes": non_url_text},
+        secret_values=(secret,),
+    )
+    assert sanitized["endpoint"] == url
+    assert sanitized["notes"] == non_url_text
 
 
 def test_preview_one_character_operator_value_does_not_corrupt_preview(tmp_path):
