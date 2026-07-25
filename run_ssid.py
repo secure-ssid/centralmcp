@@ -32,7 +32,7 @@ Options:
   --ssid NAME         SSID name (single-SSID mode)
   --vlans IDS         Comma-separated VLAN IDs, e.g. 1000 or 1000,1001
   --scope-id ID       Scope-id to map SSID to (default: auto-discovered global)
-  --opmode MODE       ENHANCED_OPEN | WPA3_SAE | WPA2_PSK (default: ENHANCED_OPEN)
+  --opmode MODE       ENHANCED_OPEN | WPA3_SAE | WPA2_PERSONAL (default: ENHANCED_OPEN)
   --rf-band BAND      24GHZ_5GHZ | 5GHZ_ONLY | 6GHZ_ONLY (default: 24GHZ_5GHZ)
   --hide-ssid         Suppress broadcast of SSID name
   --max-clients N     Max clients per AP radio (default: 1024)
@@ -97,13 +97,13 @@ def main() -> None:
     parser.add_argument("--vlans", metavar="IDS", help="Comma-separated VLAN IDs (e.g. 1000 or 1000,1001)")
     parser.add_argument("--scope-id", metavar="ID", help="Scope-id to map SSID to (default: global)")
     parser.add_argument("--opmode", default="ENHANCED_OPEN",
-                        choices=["ENHANCED_OPEN", "WPA3_SAE", "WPA2_PSK"],
+                        choices=["ENHANCED_OPEN", "WPA3_SAE", "WPA2_PERSONAL"],
                         help="Security/auth mode (default: ENHANCED_OPEN)")
     parser.add_argument("--rf-band", default="24GHZ_5GHZ",
                         choices=["24GHZ_5GHZ", "24GHZ_ONLY", "5GHZ_ONLY", "6GHZ_ONLY"],
                         help="RF band (default: 24GHZ_5GHZ)")
     parser.add_argument("--passphrase", metavar="KEY",
-                        help="WPA pre-shared key (required for WPA3_SAE or WPA2_PSK)")
+                        help="WPA pre-shared key (required for WPA3_SAE or WPA2_PERSONAL)")
     parser.add_argument("--hide-ssid", action="store_true", help="Suppress SSID broadcast")
     parser.add_argument("--max-clients", type=int, default=1024, metavar="N",
                         help="Max clients per AP radio (default: 1024)")

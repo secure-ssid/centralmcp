@@ -37,7 +37,7 @@ def _build_ssid_body(
     rf_band: str = "BAND_ALL",
     hide_ssid: bool = False,
     max_clients: int = 1024,
-    wpa3_transition: bool = True,
+    wpa3_transition: bool = False,
     wpa_passphrase: str | None = None,
     client_isolation: bool = False,
     dmo_enable: bool = True,
@@ -48,8 +48,22 @@ def _build_ssid_body(
 ) -> dict[str, Any]:
     """Return the full WLAN SSID POST body for an underlay SSID.
 
-    wpa_passphrase is required when opmode is WPA3_SAE or WPA2_PSK.
+    wpa_passphrase is required when opmode is WPA3_SAE or WPA2_PERSONAL.
     It maps to personal-security.wpa-passphrase in the API body.
+
+    Note: the New Central WLAN security schema (`wlan.json`,
+    `ArubaWlanSecurity_WlanSecurityConfig.opmode`) has no `WPA2_PSK` value —
+    the correct enum member is `WPA2_PERSONAL`. Any caller still passing the
+    stale `WPA2_PSK` token will silently get an open/no-passphrase body from
+    this function, exactly like any other unrecognized opmode; it is never
+    treated as a personal-security alias.
+
+    `wpa3_transition` defaults to False: every currently supported/verified
+    pure security mode (OPEN, WPA2_PERSONAL, WPA3_SAE, ENHANCED_OPEN) must
+    never silently inherit a WPA3-transition-mode SSID. Callers building a
+    real WPA3-transition SSID must opt in explicitly and are responsible for
+    the live-validation caveat documented in
+    docs/aos8-migration-contract-matrix.md §6.2.
     """
     body: dict[str, Any] = {
         "ssid": ssid_name,
@@ -122,7 +136,7 @@ def _build_ssid_body(
         "out-of-service": "NONE",
         "client-isolation": client_isolation,
     }
-    if wpa_passphrase and opmode in ("WPA3_SAE", "WPA2_PSK"):
+    if wpa_passphrase and opmode in ("WPA3_SAE", "WPA2_PERSONAL"):
         body["personal-security"] = {
             "passphrase-format": "STRING",
             "wpa-passphrase": wpa_passphrase,
@@ -147,7 +161,7 @@ def build_underlay_ssid(
     rf_band: str = "BAND_ALL",
     hide_ssid: bool = False,
     max_clients: int = 1024,
-    wpa3_transition: bool = True,
+    wpa3_transition: bool = False,
     wpa_passphrase: str | None = None,
     client_isolation: bool = False,
     dmo_enable: bool = True,
@@ -275,7 +289,7 @@ def build_overlay_ssid(
     opmode: str = "OPEN",
     rf_band: str = "BAND_ALL",
     wpa_passphrase: str | None = None,
-    wpa3_transition: bool = True,
+    wpa3_transition: bool = False,
     mac_auth_server_group: str | None = None,
     policy_name: str | None = None,
     dry_run: bool = False,
@@ -497,10 +511,21 @@ def build_overlay_ssid(
                     logger.error("Failed to create policy '%s': %s", effective_policy, exc)
 
             try:
-                central_client._request(
-                    "PATCH",
+                # Use the validated `.patch()` wrapper (raises via
+                # `response.raise_for_status()` on any non-2xx) rather than
+                # the raw `._request()` primitive -- a raw `_request` call
+                # returns the httpx.Response unchecked, so a non-2xx would
+                # be silently logged as success below instead of failing
+                # the migration step.
+                central_client.patch(
                     "/network-config/v1alpha1/policy-groups",
-                    json={"policy-group": {"policy-group-list": [{"name": effective_policy, "position": 3}]}},
+                    data={
+                        "policy-group": {
+                            "policy-group-list": [
+                                {"name": effective_policy, "position": 3}
+                            ]
+                        }
+                    },
                 )
                 logger.info("Added '%s' to policy group", effective_policy)
             except Exception as exc:

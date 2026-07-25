@@ -367,6 +367,18 @@ _WLAN_SECURITY_MODES = {
     "unknown",
 }
 
+# Modes whose New Central mapping requires a transient, caller-supplied
+# passphrase (pipeline/aos8_target_adapters.py `_WLAN_PASSPHRASE_MODES`).
+# The passphrase is NEVER recovered from source state -- only a presence
+# boolean (`passphrase_present`/`psk_hexkey_present`) is ever carried in
+# `security`. When the source export happened to also expose a raw secret
+# value (common in AOS8 CLI output), `_redact_sensitive_values` already
+# flags `requires_secret_input`/`secret_fields` for the real field path; this
+# set exists to cover the remaining "presence boolean only, no raw value
+# captured" case so preview/orchestrator secret-placeholder flows still see
+# an accurate `requires_secret_input=True` signal.
+_WLAN_PASSPHRASE_MODES = {"wpa2_personal", "wpa3_sae"}
+
 
 def _wlan_security_intent(
     wlan: AOS8Wlan,
@@ -1005,6 +1017,30 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
             dependencies=dependencies,
             unsupported_fields=new_unsupported,
         )
+        if security["mode"] in _WLAN_PASSPHRASE_MODES and not new_candidate[
+            "requires_secret_input"
+        ]:
+            # No raw secret value was present in the source export (only the
+            # `passphrase_present`/`psk_hexkey_present` booleans), so
+            # `_redact_sensitive_values` never set `requires_secret_input`.
+            # The target mapping still requires a transient, caller-supplied
+            # passphrase (never recovered from source state), so flag it
+            # explicitly here for accurate preview/placeholder-secret flows.
+            new_candidate["requires_secret_input"] = True
+            new_candidate["secret_fields"] = sorted(
+                {*new_candidate["secret_fields"], "payload.security.wpa_passphrase"}
+            )
+            new_candidate["warnings"] = sorted(
+                {
+                    *new_candidate["warnings"],
+                    (
+                        f"wlan:{wlan.profile_name}: {security['mode']} requires a "
+                        "caller-supplied transient wpa_passphrase secret at apply "
+                        "time; it is never recovered from source state."
+                    ),
+                }
+            )
+
         classic.append(classic_candidate)
         new.append(new_candidate)
         warnings.extend(classic_candidate["warnings"])
