@@ -1276,6 +1276,7 @@ def test_run_store_clears_candidate_artifacts_and_recomputes_fingerprint_on_stal
     entry = fetched["candidates"][0]
     assert entry["status"] == "blocked"
     assert entry["retryable"] is False
+    assert entry["attempts"] == 0
     assert entry["last_result"] is None
     assert entry["attempt_history"] == []
     assert entry["verification"] is None
@@ -1283,6 +1284,12 @@ def test_run_store_clears_candidate_artifacts_and_recomputes_fingerprint_on_stal
     assert fetched["status"] == "blocked"
     assert fetched["legacy_operator_context_sanitized"] is not None
     assert fetched["fingerprint"] != stale_fingerprint
+    # Run-level activity timestamps reflect attempts made against the
+    # now-removed operator-context state and must be reset, exactly like
+    # each candidate's own attempts/history/result/verification fields.
+    assert fetched["dry_run_attempted_at"] is None
+    assert fetched["last_apply_at"] is None
+    assert fetched["last_verification_at"] is None
 
     raw_state_after_load = path.read_text()
     assert leaked_group_name not in raw_state_after_load
@@ -1291,9 +1298,13 @@ def test_run_store_clears_candidate_artifacts_and_recomputes_fingerprint_on_stal
     on_disk = json.loads(raw_state_after_load)
     assert on_disk["fingerprint"] != stale_fingerprint
     assert on_disk["candidates"][0]["status"] == "blocked"
+    assert on_disk["candidates"][0]["attempts"] == 0
     assert on_disk["candidates"][0]["last_result"] is None
     assert on_disk["candidates"][0]["attempt_history"] == []
     assert on_disk["candidates"][0]["verification"] is None
+    assert on_disk["dry_run_attempted_at"] is None
+    assert on_disk["last_apply_at"] is None
+    assert on_disk["last_verification_at"] is None
 
     listed = service.list_runs()
     listed_dumped = json.dumps(listed)
@@ -1372,6 +1383,106 @@ def test_preview_target_marker_unchanged_when_no_operator_context_supplied(tmp_p
     assert preview["target"]["ap_group_target_map"] == "runtime mapping not supplied"
     assert preview["target"]["ap_group_device_serials"] == "runtime mapping not supplied"
     assert preview["candidate_count"] == 1
+
+
+def test_sanitize_structural_redaction_never_corrupts_short_generic_text():
+    # Regression: a global `str.replace(secret, marker)` would let a
+    # short/generic operator-context value (a one-character
+    # `_bounded_operator_string` is legal) corrupt unrelated text
+    # anywhere else in the same payload -- e.g. a value "a" turning
+    # "ready" into "re<marker>dy" and "wlan" into "wl<marker>n".
+    # Structural redaction must never do that: generic prose that merely
+    # shares characters with a short secret is left completely
+    # unchanged, and only an exact whole-string match is redacted.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    payload = {
+        "status": "ready",
+        "object_type": "wlan",
+        "notes": ["wlan provisioning is ready", "already applied"],
+        "auth_server1": "a",
+    }
+    sanitized = _sanitize(
+        payload, secret_values=("a",), redact_marker="<runtime-context-redacted>"
+    )
+    assert sanitized["status"] == "ready"
+    assert sanitized["object_type"] == "wlan"
+    assert sanitized["notes"] == ["wlan provisioning is ready", "already applied"]
+    # The one leaf whose *entire* value equals the secret is redacted.
+    assert sanitized["auth_server1"] == "<runtime-context-redacted>"
+
+
+def test_sanitize_redacts_exact_url_path_and_query_components_only():
+    # Endpoint/URL strings must have only their exact decoded or
+    # percent-encoded path/query components redacted -- never an
+    # arbitrary substring match against the rest of the URL.
+    from urllib.parse import quote
+
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "Token-Group"
+    encoded = quote(secret, safe="")
+    decoded_endpoint = f"/network-config/v1alpha1/server-groups/{secret}"
+    encoded_endpoint = f"/network-config/v1alpha1/server-groups/{encoded}"
+    query_endpoint = f"/network-monitoring/v1/aps?group={encoded}&status=ready"
+    unrelated_endpoint = "/network-config/v1alpha1/server-groups/Totally-Different"
+
+    marker = "<runtime-context-redacted>"
+    sanitized = _sanitize(
+        {
+            "decoded": decoded_endpoint,
+            "encoded": encoded_endpoint,
+            "query": query_endpoint,
+            "unrelated": unrelated_endpoint,
+        },
+        secret_values=(secret,),
+        redact_marker=marker,
+    )
+    assert sanitized["decoded"] == f"/network-config/v1alpha1/server-groups/{marker}"
+    assert sanitized["encoded"] == f"/network-config/v1alpha1/server-groups/{marker}"
+    assert sanitized["query"] == f"/network-monitoring/v1/aps?group={marker}&status=ready"
+    # A different value in the same URL shape must be left completely
+    # unchanged -- no partial/prefix match against the secret.
+    assert sanitized["unrelated"] == unrelated_endpoint
+    assert secret not in json.dumps(sanitized)
+    assert encoded not in json.dumps(sanitized)
+
+
+def test_preview_one_character_operator_value_does_not_corrupt_preview(tmp_path):
+    # End-to-end: an operator-supplied one-character auth-server name
+    # must be exact-match-redacted from the payload it appears in
+    # verbatim, without corrupting any other generic word/status
+    # ("ready", "wlan", etc.) sharing that character elsewhere in the
+    # same stateless preview response.
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _wpa3_enterprise_candidate("Enterprise-Short")
+    wpa3_target = {
+        **target("classic_central"),
+        "external_object_references": {
+            "wlan:Enterprise-Short": {"auth_server1": "a"}
+        },
+    }
+
+    preview = service.preview([wlan], wpa3_target)
+    action = next(
+        op for op in preview["operations"] if op["object_type"] == "wlan"
+    )
+    assert action["status"] == "ready"
+    dumped = json.dumps(preview)
+    # Generic words containing "a" must survive unredacted/uncorrupted.
+    assert "ready" in dumped
+    assert "already" in dumped or "wlan" in dumped
+    assert "<runtime-context-redacted>" in dumped
+    # The auth_server1 payload field, an exact one-character match, is
+    # the only thing actually redacted.
+    write_operation = action["operations"][0]
+    assert write_operation["payload"]["wlan"]["auth_server1"] == "<runtime-context-redacted>"
+    # The WLAN's own name/essid, which is not the redacted value, must
+    # never be touched even though it appears many times in the same
+    # response alongside the one-character secret.
+    assert write_operation["payload"]["wlan"]["name"] == "Enterprise-Short"
+    assert write_operation["payload"]["wlan"]["essid"] == "Enterprise-Short"
 
 
 def test_apply_signature_has_no_operator_context_parameters(tmp_path):

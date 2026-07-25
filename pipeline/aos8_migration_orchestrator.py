@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from pipeline.aos8_target_adapters import (
     BaseCentralTargetAdapter,
@@ -233,12 +234,66 @@ def _sanitize(
         # category of exact-match value (e.g. transient operator-context
         # strings, never actual secrets) pass a different stable marker so
         # the two redaction reasons stay distinguishable in the output.
-        for secret in secrets:
-            text = text.replace(secret, redact_marker)
+        text = _redact_structural(text, secrets, redact_marker)
         if len(text) > 1000:
             return f"{text[:1000]}... [truncated {len(text) - 1000} chars]"
         return text
     return value
+
+
+def _redact_structural(text: str, secrets: tuple[str, ...], redact_marker: str) -> str:
+    """Redact `secrets` from `text` structurally -- never by arbitrary
+    substring replacement, which would corrupt any unrelated text that
+    merely *contains* a short/generic operator value as a fragment (e.g.
+    an operator-supplied one-character value "a" would otherwise turn
+    "ready" into "re<marker>dy" and "wlan" into "wl<marker>n" everywhere
+    else in the same payload). Two, and only two, structural matches are
+    ever redacted:
+
+    1. `text` as a whole is exactly equal to one of `secrets` (a
+       dict/list leaf whose entire value is the runtime reference, e.g.
+       `payload["wlan"]["auth_server1"]`).
+    2. `text` is a URL/endpoint path (starts with "/" or contains
+       "://"): each `/`-delimited path segment and each `key`/`value` in
+       a `?`-delimited query string is percent-decoded and compared for
+       an exact match, so a runtime value embedded as one path/query
+       component is redacted without touching the rest of the endpoint
+       string, whether it was passed decoded or percent-encoded.
+
+    Generic prose (adapter messages, statuses, warnings) that merely
+    happens to share characters with a short operator value is left
+    completely unchanged.
+    """
+    if not secrets:
+        return text
+    secret_set = set(secrets)
+    if text in secret_set:
+        return redact_marker
+    if text.startswith("/") or "://" in text:
+        return _redact_url_components(text, secret_set, redact_marker)
+    return text
+
+
+def _redact_url_components(text: str, secret_set: set[str], redact_marker: str) -> str:
+    """Redact only exact decoded/percent-encoded path or query components
+    of a URL/path string `text`, never an arbitrary substring of it."""
+
+    def redact_component(component: str) -> str:
+        return redact_marker if unquote(component) in secret_set else component
+
+    path_part, sep, query_part = text.partition("?")
+    redacted_path = "/".join(redact_component(segment) for segment in path_part.split("/"))
+    if not sep:
+        return redacted_path
+
+    def redact_query_pair(pair: str) -> str:
+        key, eq, val = pair.partition("=")
+        if not eq:
+            return redact_component(key)
+        return f"{redact_component(key)}={redact_component(val)}"
+
+    redacted_query = "&".join(redact_query_pair(pair) for pair in query_part.split("&"))
+    return f"{redacted_path}{sep}{redacted_query}"
 
 
 def _redact_full(value: Any, *, _depth: int = 0) -> Any:
@@ -612,26 +667,48 @@ _LEGACY_CANDIDATE_BLOCKED_MESSAGE = (
     "sanitization and cannot be trusted; recreate the run with "
     "aos8_create_migration_run."
 )
+# Run-level activity timestamps that record *when* a dry-run/apply/verify
+# was last attempted against this run. Each one is set from a candidate
+# write/verify pass that may have used the now-removed operator-context
+# state to build its payload, so -- like each candidate's own
+# `attempts`/`attempt_history`/`last_result`/`verification` -- they are
+# untrusted execution history and must be reset to `None`, not merely left
+# in place, when healing a stale run. `checkpoint_and_rollback` is
+# deliberately excluded: it is static, adapter-type-only guidance (see
+# `BaseCentralTargetAdapter.checkpoint_guidance`) that never varies with
+# operator-context values or candidate data, so it carries no
+# pre-sanitization context to reset.
+_LEGACY_RUN_ACTIVITY_FIELDS = (
+    "dry_run_attempted_at",
+    "last_apply_at",
+    "last_verification_at",
+)
 
 
 def _heal_legacy_candidate_entry(entry: Any) -> Any:
     """Reset every field on one candidate entry that could carry a result,
-    error, attempt, or verification record computed while this run still
-    held (or was built from) unsafe operator-context state.
+    attempt count, error, or verification record computed while this run
+    still held (or was built from) unsafe operator-context state.
 
     Unlike the raw `target` operator-context values, these cannot be
     exact-match-redacted: the original operator-context values that may
     have shaped a prior write's payload/result are already gone by the
     time this runs, so there is nothing left to match against. They are
-    cleared outright, and the candidate is marked durably blocked with a
-    generic, value-free message, rather than left holding
-    possibly-tainted data.
+    cleared outright -- including the numeric `attempts` counter, which
+    is untrusted execution history in its own right (it reflects retries
+    made against a payload built from the now-removed operator-context
+    values) -- and the candidate is marked durably blocked with a
+    generic, value-free message, rather than left holding possibly-tainted
+    data. Only the creation identity fields needed to identify the
+    candidate (`key`, `candidate`, `requires_secret_input`,
+    `required_secret_names`) survive unchanged.
     """
     if not isinstance(entry, Mapping):
         return entry
     healed = dict(entry)
     healed["status"] = "blocked"
     healed["retryable"] = False
+    healed["attempts"] = 0
     healed["dry_run_ok"] = False
     healed["last_error"] = _LEGACY_CANDIDATE_BLOCKED_MESSAGE
     healed["last_result"] = None
@@ -651,15 +728,19 @@ def _sanitize_legacy_operator_context(
     an earlier revision persisted instead of the raw values.
 
     Removing those two fields is not enough on its own: any candidate
-    result/error/attempt-history/verification record recorded while the
-    run held that unsafe state, and the run's own `fingerprint` (itself
-    derived from `target`+candidates and therefore potentially an
-    operator-derived hash), could still encode operator-supplied values
-    or counts. All of that is removed/reset here too -- never just the
-    two triggering fields -- and the run and every candidate are marked
-    durably blocked/recreate-required with a generic message. Never
-    mutates `value` in place; returns
-    `(possibly-sanitized run, whether anything changed)`.
+    result/error/attempt/attempt-history/verification record recorded
+    while the run held that unsafe state, the run-level
+    `dry_run_attempted_at`/`last_apply_at`/`last_verification_at`
+    activity timestamps from those same attempts, and the run's own
+    `fingerprint` (itself derived from `target`+candidates and therefore
+    potentially an operator-derived hash), could still encode
+    operator-supplied values or counts. All of that is removed/reset
+    here too -- never just the two triggering fields -- and the run and
+    every candidate are marked durably blocked/recreate-required with a
+    generic message. Only creation identity/source metadata needed to
+    identify the run (`run_id`, `schema_version`, `created_at`, the
+    sanitized `target`) survives untouched. Never mutates `value` in
+    place; returns `(possibly-sanitized run, whether anything changed)`.
     """
     changed = False
     sanitized = dict(value)
@@ -683,6 +764,13 @@ def _sanitize_legacy_operator_context(
         sanitized["candidates"] = healed_candidates
         sanitized["status"] = "blocked"
         sanitized["updated_at"] = _now()
+        # Every run-level activity timestamp reflects an attempt made
+        # against the now-removed operator-context state; reset each one
+        # to `None` (the same "never attempted" value `create_run` uses),
+        # exactly like each candidate's own reset attempt/history fields
+        # above -- these are untrusted execution history, not identity.
+        for field in _LEGACY_RUN_ACTIVITY_FIELDS:
+            sanitized[field] = None
         # The stored `fingerprint` (and the removed
         # `operator_context_metadata`'s embedded hash, if present) may
         # have been derived, directly or indirectly, from the now-removed
@@ -707,12 +795,15 @@ def _sanitize_legacy_operator_context(
                 "external_object_references/ap_group_target_map/"
                 "ap_group_device_serials values, or a resupply fingerprint "
                 "derived from them. Those fields, this run's fingerprint, "
-                "and every candidate's prior result/error/attempt-history/"
-                "verification record have been removed or reset -- none of "
-                "them can be trusted to be free of operator-derived values "
-                "or counts. This run is durably blocked and cannot be "
-                "applied: recreate it with aos8_create_migration_run, and "
-                "use a fresh aos8_preview_migration_run first for any "
+                "every candidate's prior attempts/attempt-history/"
+                "result/error/verification record, and this run's "
+                "dry_run_attempted_at/last_apply_at/last_verification_at "
+                "activity timestamps have all been removed or reset -- "
+                "none of them can be trusted to be free of "
+                "operator-derived values or counts. This run is durably "
+                "blocked and cannot be applied: recreate it with "
+                "aos8_create_migration_run, and use a fresh "
+                "aos8_preview_migration_run first for any "
                 "context-dependent mapping (e.g. WPA3-Enterprise, "
                 "AP-group)."
             ),
