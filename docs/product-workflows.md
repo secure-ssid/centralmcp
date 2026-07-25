@@ -160,7 +160,7 @@ Promote a generic GET pattern to a typed tool when it is:
 | Classic/New Central migration plan | `aos8_migration_plan` | Candidate schemas, warnings, deterministic diffs, and verification steps without target writes |
 | Resumable migration run | `aos8_preview_migration_run` / `aos8_create_migration_run` / `aos8_apply_migration_run` | Atomic per-candidate state, dry-run-first confirmed writes, dependency-aware resume/retry, and ephemeral target secrets |
 | Migration run status | `aos8_get_migration_run` / `aos8_list_migration_runs` | Bounded persisted status, partial results, retryability, and exact checkpoint/rollback guidance |
-| Migration verification | `aos8_verify_migration_run` | Bounded read-only identity/direct-field comparison; does not claim unsupported semantic equivalence |
+| Migration verification | `aos8_verify_migration_run` | Bounded, read-only per-candidate verification: `verified`/`partially_verified`/`failed`/`unsupported`/`not_applied`/`unverifiable`, deterministic indexed array comparison, secret fields always reported unverifiable (never mismatch), a role's config-assignment tuple verified independently of its library object (object and assignment can disagree), and a bounded read-only presence diagnostic (never a verified/applied claim) for blocked candidates (auth-server/AAA/server-group SHARED-assignment mappings) |
 
 ## EdgeConnect implemented starters
 

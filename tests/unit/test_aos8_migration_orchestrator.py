@@ -557,7 +557,7 @@ def test_operator_context_maps_are_rejected_by_every_persistent_workflow(tmp_pat
     assert "ap_group_device_serials" not in created["target"]
 
 
-def test_verification_records_mismatch_and_unsupported_unverifiable(tmp_path):
+def test_verification_records_failed_and_unsupported(tmp_path):
     backend = FakeBackend()
     service, _ = orchestrator(tmp_path, backend)
     vlan = candidate("vlan", "20", payload={"description": "Corp"})
@@ -571,15 +571,19 @@ def test_verification_records_mismatch_and_unsupported_unverifiable(tmp_path):
     comparisons = {
         item["candidate"]: item for item in verified["comparisons"]
     }
-    assert comparisons["vlan:20"]["verification_status"] == "mismatch"
-    assert comparisons["route:ipv4:default"]["verification_status"] == "unverifiable"
+    assert comparisons["vlan:20"]["verification_status"] == "failed"
+    # `route` has no verified target mapping at all (contract matrix §6.12)
+    # and is held at apply-status "unsupported" -- distinct from a
+    # supported-but-not-yet-applied ("not_applied") or a supported mapping
+    # a real read failed against ("failed").
+    assert comparisons["route:ipv4:default"]["verification_status"] == "unsupported"
     assert "unsupported and remains unapplied" in comparisons[
         "route:ipv4:default"
     ]["reason"]
     assert "does not claim full semantic equivalence" in verified["verification_scope"]
 
 
-def test_verification_read_failure_is_unverifiable(tmp_path):
+def test_verification_read_failure_is_failed(tmp_path):
     backend = FakeBackend()
     service, _ = orchestrator(tmp_path, backend)
     service.create_run([candidate("vlan", "20")], target(), run_id="read-fail")
@@ -588,7 +592,7 @@ def test_verification_read_failure_is_unverifiable(tmp_path):
     backend.read_failures["central_api_read"] = RuntimeError("read unavailable")
 
     result = service.verify("read-fail")
-    assert result["comparisons"][0]["verification_status"] == "unverifiable"
+    assert result["comparisons"][0]["verification_status"] == "failed"
     assert "read failed" in result["comparisons"][0]["reason"]
 
 
@@ -840,7 +844,7 @@ def test_verify_catches_payload_field_mismatch_via_operation_payload(tmp_path):
 
     result = service.verify("wlan-mismatch")
     comparison = result["comparisons"][0]
-    assert comparison["verification_status"] == "mismatch"
+    assert comparison["verification_status"] == "failed"
     fields = {item["field"]: item for item in comparison["field_comparison"]}
     assert fields["vlan_ids[0]"]["status"] == "mismatch"
     assert fields["vlan_ids[0]"]["expected"] == 20
@@ -1061,7 +1065,7 @@ def test_verify_detects_reordered_server_group_servers_array(tmp_path):
         ],
     }
     comparison = _verify_server_group_directly(tmp_path, backend, reordered)
-    assert comparison["verification_status"] == "mismatch"
+    assert comparison["verification_status"] == "failed"
     fields = {item["field"]: item for item in comparison["field_comparison"]}
     assert fields["servers[0].server_name"]["status"] == "mismatch"
     assert fields["servers[0].server_name"]["expected"] == "rad1"
@@ -2622,3 +2626,706 @@ def test_sanitize_secret_context_end_to_end_persists_only_fixed_marker(tmp_path)
     persisted = json.loads(state_path.read_text(encoding="utf-8"))
     assert persisted == {"last_error": marker, "last_result": marker}
     assert secret not in state_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# aos8-verification (0.5): bounded read-only migration verification for
+# current adapter behavior. Golden verified/partial/failed cases per
+# family, role+assignment aggregation, blocked-family diagnostics,
+# unsupported-family precision, ambiguous-collection rejection, bounded
+# large responses, and persisted-sanitized-verification regressions.
+# ---------------------------------------------------------------------------
+
+
+def _classic_open_wlan_candidate(name: str = "Open1", vlan: int = 20) -> dict:
+    return candidate(
+        "wlan",
+        name,
+        payload={
+            "name": name,
+            "essid": name,
+            "vlan": vlan,
+            "aaa_profile": None,
+            "security": {
+                "mode": "open",
+                "opmode": "open",
+                "ambiguous": False,
+                "aaa_profile": None,
+                "dot1x_auth_profile": None,
+                "mac_auth_profile": None,
+                "passphrase_present": False,
+                "psk_hexkey_present": False,
+                "wpa3_transition": False,
+                "evidence": [],
+            },
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "open",
+            "virtual_ap.forward_mode": "bridge",
+        },
+    )
+
+
+def _classic_wpa3_personal_wlan_candidate(name: str = "Secure1", vlan: int = 30) -> dict:
+    return candidate(
+        "wlan",
+        name,
+        payload={
+            "name": name,
+            "essid": name,
+            "vlan": vlan,
+            "aaa_profile": None,
+            "security": {
+                "mode": "wpa3_sae",
+                "opmode": "wpa3-sae-aes",
+                "ambiguous": False,
+                "aaa_profile": None,
+                "dot1x_auth_profile": None,
+                "mac_auth_profile": None,
+                "passphrase_present": True,
+                "psk_hexkey_present": False,
+                "wpa3_transition": False,
+                "evidence": [],
+            },
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "wpa3-sae-aes",
+            "virtual_ap.forward_mode": "bridge",
+            "ssid_profile.wpa_passphrase": "<redacted:present>",
+        },
+        requires_secret_input=True,
+        secret_fields=["wpa_passphrase"],
+    )
+
+
+def test_classic_open_wlan_verified_full_field_set(tmp_path):
+    """Golden: Classic OPEN full_wlan reaches "verified" once ESSID/VLAN/
+    opmode/access_type are all confirmed by the (single-item envelope)
+    target read -- item 2 of the aos8-verification contract."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    wlan = _classic_open_wlan_candidate()
+    service.create_run([wlan], target("classic_central"), run_id="classic-open-verified")
+    service.apply("classic-open-verified", dry_run=True, confirmation=False)
+    backend.read_values["central_api_read_back"] = {
+        "wlan": {"name": "Open1", "essid": "Open1", "opmode": "opensystem", "vlan": "20"}
+    }
+    applied = service.apply("classic-open-verified", dry_run=False, confirmation=True)
+    assert applied["candidates"][0]["status"] == "applied"
+
+    # Only now does the target "have" the object -- exercise a realistic
+    # `full_wlan` GET envelope shape (nested under "wlan"/"access_rule"),
+    # echoing back the full stored object (every non-empty default field
+    # `_base_full_wlan_body` sends), not just a hand-picked subset -- a
+    # real GET response is expected to echo the whole stored config.
+    backend.read_values["central_api_read"] = {
+        "wlan": {
+            "name": "Open1",
+            "essid": "Open1",
+            "access_type": "unrestricted",
+            "blacklist": True,
+            "broadcast_filter": "arp",
+            "captive_portal": "disable",
+            "deny_intra_vlan_traffic": False,
+            "type": "guest",
+            "opmode": "opensystem",
+            "opmode_transition_disable": True,
+            "vlan": "20",
+            "disable_ssid": False,
+            "hide_ssid": False,
+            "mac_authentication": False,
+            "radius_accounting": False,
+            "rf_band": "all",
+            "ssid_encoding": "utf8",
+            "user_bridging": False,
+        },
+        "access_rule": {
+            "name": "Open1",
+            "action": "allow",
+            "blacklist": False,
+            "eport": "any",
+            "ipaddr": "any",
+            "log": False,
+            "match": "match",
+            "netmask": "any",
+            "protocol": "any",
+            "service_type": "network",
+            "source": "default",
+            "sport": "any",
+            "vlan": 0,
+        },
+    }
+    result = service.verify("classic-open-verified")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "verified"
+
+
+def test_classic_wpa3_personal_verified_never_leaks_secret_and_transition_disabled(tmp_path):
+    """Golden + regression: Classic WPA3-Personal's secret is declared via
+    a nested dotted `sensitive_argument_fields=("wlan.wpa_passphrase",)` --
+    distinct from New Central's flat top-level `passphrase` argument.
+    `_expected_fields` must exclude it at the *flattened* leaf level too
+    (item 1's "normalized equivalent field names"/item 3's "secret ...
+    never mismatch or verified"), not only when a secret happens to be a
+    bare top-level argument -- otherwise the real transient passphrase
+    would appear in `field_comparison`/persisted verification state."""
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _classic_wpa3_personal_wlan_candidate()
+    service.create_run([wlan], target("classic_central"), run_id="classic-wpa3-verified")
+    real_secret = "Extremely-Real-WPA3-Passphrase!"
+    supplied = {"wlan:Secure1": {"wpa_passphrase": real_secret}}
+    service.apply(
+        "classic-wpa3-verified", dry_run=True, confirmation=False, target_secrets=supplied
+    )
+    backend.read_values["central_api_read_back"] = {
+        "wlan": {
+            "name": "Secure1",
+            "essid": "Secure1",
+            "opmode": "wpa3-sae-aes",
+            "opmode_transition_disable": True,
+            "vlan": "30",
+        }
+    }
+    applied = service.apply(
+        "classic-wpa3-verified", dry_run=False, confirmation=True, target_secrets=supplied
+    )
+    assert applied["candidates"][0]["status"] == "applied"
+    assert real_secret not in json.dumps(applied)
+    assert real_secret not in store.path_for("classic-wpa3-verified").read_text()
+
+    backend.read_values["central_api_read"] = {
+        "wlan": {
+            "name": "Secure1",
+            "essid": "Secure1",
+            "access_type": "unrestricted",
+            "blacklist": True,
+            "broadcast_filter": "arp",
+            "captive_portal": "disable",
+            "deny_intra_vlan_traffic": False,
+            "type": "employee",
+            "opmode": "wpa3-sae-aes",
+            "opmode_transition_disable": True,
+            "vlan": "30",
+            "disable_ssid": False,
+            "hide_ssid": False,
+            "mac_authentication": False,
+            "radius_accounting": False,
+            "rf_band": "all",
+            "ssid_encoding": "utf8",
+            "user_bridging": False,
+        },
+        "access_rule": {
+            "name": "Secure1",
+            "action": "allow",
+            "blacklist": False,
+            "eport": "any",
+            "ipaddr": "any",
+            "log": False,
+            "match": "match",
+            "netmask": "any",
+            "protocol": "any",
+            "service_type": "network",
+            "source": "default",
+            "sport": "any",
+            "vlan": 0,
+        },
+    }
+    result = service.verify("classic-wpa3-verified")
+    comparison = result["comparisons"][0]
+
+    # The real secret is never echoed in `expected`/`actual` anywhere in
+    # the verify() response or the persisted state file.
+    assert real_secret not in json.dumps(result)
+    assert real_secret not in store.path_for("classic-wpa3-verified").read_text()
+
+    secret_entries = [
+        item
+        for item in comparison["field_comparison"]
+        if "passphrase" in item["field"]
+    ]
+    assert secret_entries, "expected a dedicated secret field_comparison entry"
+    for entry in secret_entries:
+        assert entry["status"] == "unverifiable"
+        assert entry["expected"] == "***"
+        assert entry["actual"] is None
+
+    # Every other non-secret expected field (essid/opmode/vlan/transition)
+    # was confirmed, so status legitimately reaches "verified" -- the
+    # secret's presence never downgrades this to "failed"/"mismatch".
+    assert comparison["verification_status"] == "verified"
+
+
+def test_new_central_wlan_family_golden_matrix(tmp_path):
+    """Golden: New Central WLAN open/WPA2-Personal/WPA3-SAE/Enhanced-Open
+    all reach "verified" once identity, VLAN, opmode, and the WPA3
+    transition flag are confirmed, with the runtime passphrase always
+    reported unverifiable-never-mismatch for the two PSK modes -- item 3
+    of the aos8-verification contract."""
+    modes = [
+        ("open-ssid", "open", "OPEN", False),
+        ("wpa2-ssid", "wpa2_personal", "WPA2_PERSONAL", True),
+        ("wpa3-ssid", "wpa3_sae", "WPA3_SAE", True),
+        ("owe-ssid", "enhanced_open", "ENHANCED_OPEN", False),
+    ]
+    for name, mode, opmode, needs_passphrase in modes:
+        backend = FakeBackend()
+        service, _ = orchestrator(tmp_path, backend)
+        security = {
+            "mode": mode,
+            "opmode": mode,
+            "ambiguous": False,
+            "aaa_profile": None,
+            "dot1x_auth_profile": None,
+            "mac_auth_profile": None,
+            "passphrase_present": needs_passphrase,
+            "psk_hexkey_present": False,
+            "wpa3_transition": False,
+            "evidence": [],
+        }
+        wlan = candidate(
+            "wlan",
+            name,
+            payload={"essid": name, "vlan": 42, "security": security},
+            requires_secret_input=needs_passphrase,
+            secret_fields=["wpa_passphrase"] if needs_passphrase else [],
+        )
+        run_id = f"new-central-{mode}"
+        service.create_run([wlan], target(), run_id=run_id)
+        supplied = (
+            {f"wlan:{name}": {"wpa_passphrase": "Sup3rSecret!"}} if needs_passphrase else {}
+        )
+        service.apply(run_id, dry_run=True, confirmation=False, target_secrets=supplied)
+        service.apply(run_id, dry_run=False, confirmation=True, target_secrets=supplied)
+
+        backend.read_values["get_ssid"] = {
+            "name": name,
+            "opmode": opmode,
+            "vlan_ids": [42],
+            "wpa3_transition": False,
+        }
+        result = service.verify(run_id)
+        comparison = result["comparisons"][0]
+        assert comparison["verification_status"] == "verified", (mode, comparison)
+        if needs_passphrase:
+            secret_entries = [
+                item
+                for item in comparison["field_comparison"]
+                if item["field"] == "passphrase"
+            ]
+            assert len(secret_entries) == 1
+            assert secret_entries[0]["status"] == "unverifiable"
+
+
+def test_role_object_verified_assignment_missing_downgrades_to_failed(tmp_path):
+    """Item 4: the role library object can be fully field-verified while
+    its independent scope+device-function config-assignment is missing --
+    the aggregate must reflect the weaker (assignment) result, and both
+    sub-results must be individually inspectable."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-assignment-missing")
+    service.apply("role-assignment-missing", dry_run=True, confirmation=False)
+    applied = service.apply("role-assignment-missing", dry_run=False, confirmation=True)
+    assert applied["candidates"][0]["status"] in {"applied", "skipped"}
+
+    backend.read_values["list_roles"] = {"roles": [{"name": "employee", "vlan-id": 20}]}
+    backend.read_values["list_config_assignments"] = {"items": []}
+
+    result = service.verify("role-assignment-missing")
+    comparison = result["comparisons"][0]
+    assert comparison["assignment_verification"]["status"] == "failed"
+    assert comparison["verification_status"] == "failed"
+    assert "assignment verification: failed" in comparison["reason"]
+
+
+def test_role_object_and_assignment_both_verified(tmp_path):
+    """Item 4, positive case: object and assignment both fully confirmed
+    aggregate to overall "verified"."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-assignment-ok")
+    service.apply("role-assignment-ok", dry_run=True, confirmation=False)
+    applied = service.apply("role-assignment-ok", dry_run=False, confirmation=True)
+    assert applied["candidates"][0]["status"] in {"applied", "skipped"}
+
+    backend.read_values["list_roles"] = {
+        "roles": [{"name": "employee", "vlan-id": 20, "allow-all": True}]
+    }
+    backend.read_values["list_config_assignments"] = {
+        "items": [
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            }
+        ]
+    }
+
+    result = service.verify("role-assignment-ok")
+    comparison = result["comparisons"][0]
+    assert comparison["assignment_verification"]["status"] == "verified"
+    assert comparison["verification_status"] == "verified"
+
+
+def test_role_assignment_wrong_device_function_reports_mismatch(tmp_path):
+    """Item 4: an assignment entry that matches identity but not the full
+    tuple (wrong device-function/scope) is a "failed" assignment result,
+    never silently accepted merely because *an* entry exists."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-assignment-wrong")
+    service.apply("role-assignment-wrong", dry_run=True, confirmation=False)
+    service.apply("role-assignment-wrong", dry_run=False, confirmation=True)
+
+    backend.read_values["list_roles"] = {"roles": [{"name": "employee", "vlan-id": 20}]}
+    backend.read_values["list_config_assignments"] = {
+        "items": [
+            {
+                "scope-id": "999",
+                "device-function": "MOBILITY_GW",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            }
+        ]
+    }
+    result = service.verify("role-assignment-wrong")
+    comparison = result["comparisons"][0]
+    assignment = comparison["assignment_verification"]
+    assert assignment["status"] == "failed"
+    fields = {item["field"]: item for item in assignment["field_comparison"]}
+    assert fields["scope_id"]["status"] == "mismatch"
+    assert fields["device_function"]["status"] == "mismatch"
+    assert comparison["verification_status"] == "failed"
+
+
+def test_role_assignment_ambiguous_multiple_matches_rejected(tmp_path):
+    """Item 8: two config-assignment entries both matching this role's
+    identity is ambiguous; refuse to guess rather than silently comparing
+    against only the first."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-assignment-ambiguous")
+    service.apply("role-assignment-ambiguous", dry_run=True, confirmation=False)
+    service.apply("role-assignment-ambiguous", dry_run=False, confirmation=True)
+
+    backend.read_values["list_roles"] = {"roles": [{"name": "employee", "vlan-id": 20}]}
+    backend.read_values["list_config_assignments"] = {
+        "items": [
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            },
+            {
+                "scope-id": "200",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            },
+        ]
+    }
+    result = service.verify("role-assignment-ambiguous")
+    comparison = result["comparisons"][0]
+    assert comparison["assignment_verification"]["status"] == "failed"
+    assert "more than one" in comparison["assignment_verification"]["reason"]
+    assert comparison["verification_status"] == "failed"
+
+
+def test_ambiguous_primary_collection_match_rejected(tmp_path):
+    """Item 8: a `list_roles`-shaped read returning two entries that both
+    match the candidate's identity must fail verification outright,
+    rather than silently comparing fields against only the first."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-ambiguous-primary")
+    service.apply("role-ambiguous-primary", dry_run=True, confirmation=False)
+    service.apply("role-ambiguous-primary", dry_run=False, confirmation=True)
+
+    backend.read_values["list_roles"] = {
+        "roles": [
+            {"name": "employee", "vlan-id": 20},
+            {"name": "employee", "vlan-id": 21},
+        ]
+    }
+    result = service.verify("role-ambiguous-primary")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "failed"
+    assert "more than one" in comparison["reason"]
+
+
+def test_bounded_large_collection_response_does_not_crash_and_still_matches(tmp_path):
+    """Item 8/9: a collection response far larger than
+    `MAX_RESULT_ITEMS` must never crash verification, and a match within
+    the bounded window is still found and compared normally."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
+    service.create_run([role], target(), run_id="role-bounded-large")
+    service.apply("role-bounded-large", dry_run=True, confirmation=False)
+    service.apply("role-bounded-large", dry_run=False, confirmation=True)
+
+    padding = [{"name": f"other-role-{i}", "vlan-id": i} for i in range(40)]
+    backend.read_values["list_roles"] = {
+        "roles": [*padding, {"name": "employee", "vlan-id": 20, "allow-all": True}]
+    }
+    backend.read_values["list_config_assignments"] = {
+        "items": [
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee",
+            }
+        ]
+    }
+    result = service.verify("role-bounded-large")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "verified"
+
+
+def test_blocked_auth_server_reports_not_applied_with_present_diagnostic(tmp_path):
+    """Item 5: a permanently-blocked auth-server candidate (unverified
+    SHARED config-assignment profile-type, contract matrix §2.1) must
+    never be reported applied/verified -- but a safe, bounded, read-only
+    diagnostic of whether the object already exists at the target is
+    still surfaced."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    auth_server = candidate(
+        "auth_server",
+        "radius:corp-radius",
+        payload={"name": "corp-radius", "server_type": "radius", "host": "10.0.0.5"},
+        requires_secret_input=True,
+        secret_fields=["shared_secret"],
+    )
+    service.create_run([auth_server], target(), run_id="auth-server-blocked")
+    run = service.get_run("auth-server-blocked", include_details=True)
+    assert run["candidates"][0]["status"] == "blocked"
+
+    backend.read_values["get_auth_server"] = {"name": "corp-radius", "type": "RADIUS"}
+    result = service.verify("auth-server-blocked")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "not_applied"
+    assert comparison["diagnostic"]["attempted"] is True
+    assert comparison["diagnostic"]["target_object_present"] is True
+    # Never claims application/verification regardless of presence.
+    assert "not applied by centralmcp" in comparison["diagnostic"]["note"]
+
+
+def test_blocked_aaa_profile_reports_not_applied_with_absent_diagnostic(tmp_path):
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    aaa_profile = candidate(
+        "aaa_profile",
+        "corp-aaa",
+        payload={"name": "corp-aaa", "default_user_role": "employee"},
+    )
+    gw_target = {**target(), "persona": "MOBILITY_GW"}
+    service.create_run([aaa_profile], gw_target, run_id="aaa-profile-blocked")
+    run = service.get_run("aaa-profile-blocked", include_details=True)
+    assert run["candidates"][0]["status"] == "blocked"
+
+    backend.read_values["get_aaa_profile"] = None
+    result = service.verify("aaa-profile-blocked")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "not_applied"
+    assert comparison["diagnostic"]["attempted"] is True
+    assert comparison["diagnostic"]["target_object_present"] is False
+
+
+def test_blocked_candidate_diagnostic_read_failure_reported_not_crashed(tmp_path):
+    """Item 5: a diagnostic read failure for a blocked candidate is
+    reported inline, never raised/crashed, and never claims presence."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    auth_server = candidate(
+        "auth_server",
+        "radius:corp-radius",
+        payload={"name": "corp-radius", "server_type": "radius", "host": "10.0.0.5"},
+        requires_secret_input=True,
+        secret_fields=["shared_secret"],
+    )
+    service.create_run([auth_server], target(), run_id="auth-server-diag-fails")
+    backend.read_failures["get_auth_server"] = RuntimeError("backend unavailable")
+
+    result = service.verify("auth-server-diag-fails")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "not_applied"
+    assert comparison["diagnostic"]["attempted"] is True
+    assert comparison["diagnostic"]["target_object_present"] is None
+    assert "Diagnostic read failed" in comparison["diagnostic"]["note"]
+
+
+def test_blocked_candidate_with_no_read_operation_reports_manual_diagnostic(tmp_path):
+    """Item 5's "otherwise explicit unverifiable/manual state": a blocked
+    candidate with no verified read path at all (New Central WPA3
+    Personal-transition WLAN, contract matrix §6.2 -- unvalidated
+    `wpa3-transition-mode-enable` flag) gets an explicit `attempted: False`
+    diagnostic rather than a bogus read attempt."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    wlan = candidate(
+        "wlan",
+        "Mixed1",
+        payload={
+            "essid": "Mixed1",
+            "vlan": 20,
+            "security": {
+                "mode": "wpa3_transition_personal",
+                "opmode": "wpa3-transition",
+                "ambiguous": False,
+                "aaa_profile": None,
+                "dot1x_auth_profile": None,
+                "mac_auth_profile": None,
+                "passphrase_present": True,
+                "psk_hexkey_present": False,
+                "wpa3_transition": True,
+                "evidence": [],
+            },
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "wpa3-transition",
+            "virtual_ap.forward_mode": "bridge",
+        },
+        requires_secret_input=True,
+        secret_fields=["wpa_passphrase"],
+    )
+    service.create_run([wlan], target(), run_id="new-central-transition-blocked")
+    run = service.get_run("new-central-transition-blocked", include_details=True)
+    assert run["candidates"][0]["status"] == "blocked"
+
+    result = service.verify("new-central-transition-blocked")
+    comparison = result["comparisons"][0]
+    assert comparison["verification_status"] == "not_applied"
+    assert comparison["diagnostic"]["attempted"] is False
+    assert "manual verification is required" in comparison["diagnostic"]["note"]
+
+
+def test_unsupported_family_precise_reason_not_generic(tmp_path):
+    """Item 6: every unsupported family (policies/AP groups/routes/VRRP/
+    controllers/unmapped Classic families) reports "unsupported" -- never
+    a generic success, and never conflated with "not_applied" (a
+    supported-but-blocked mapping) or "unverifiable" (a supported mapping
+    with no read path)."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    families = [
+        candidate("policy", "corp-acl"),
+        candidate("route", "ipv4:default"),
+        candidate("vrrp", "ipv4:1"),
+        candidate("controller", "mc1"),
+        candidate("ap_group", "branch-aps"),
+    ]
+    service.create_run(families, target(), run_id="unsupported-families")
+    run = service.get_run("unsupported-families", include_details=True)
+    for entry in run["candidates"]:
+        assert entry["status"] == "unsupported"
+
+    result = service.verify("unsupported-families")
+    for comparison in result["comparisons"]:
+        assert comparison["verification_status"] == "unsupported"
+        assert comparison["target_state"] is None
+        assert comparison["field_comparison"] == []
+        assert "diagnostic" not in comparison
+
+
+def test_ap_group_runtime_mapping_never_persisted_and_stays_unsupported(tmp_path):
+    """Item 6: AP-group runtime mappings are stateless preview-only and
+    must never appear in persisted verification -- a persisted run's
+    `ap_group` candidate is always "unsupported" with no operator-context
+    leftovers, regardless of any transient preview-time runtime map."""
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    ap_group = candidate("ap_group", "branch-aps", payload={"wlan_profiles": ["Guest"]})
+    runtime_target = {
+        **target(),
+        "ap_group_target_map": {"ap_group:branch-aps": "Classic-Branch"},
+    }
+    # preview() may use the runtime map transiently, but create_run() must
+    # reject it outright (see the operator-context contract) -- there is
+    # no way to get a persisted run with this context at all.
+    with pytest.raises(MigrationRunError, match="ap_group_target_map"):
+        service.create_run([ap_group], runtime_target, run_id="ap-group-runtime")
+
+    created = service.create_run([ap_group], target(), run_id="ap-group-plain")
+    assert created["candidates"][0]["status"] == "unsupported"
+    result = service.verify("ap-group-plain")
+    assert result["comparisons"][0]["verification_status"] == "unsupported"
+    raw_state = store.path_for("ap-group-plain").read_text()
+    assert "ap_group_target_map" not in raw_state
+    assert "ap_group_device_serials" not in raw_state
+
+
+def test_persisted_verification_state_is_sanitized_and_bounded(tmp_path):
+    """Item 7/9: the on-disk run state after `verify()` never carries a
+    real runtime secret, and the persisted verification block round-trips
+    exactly what `verify()` returned (atomic persistence, no silent
+    divergence)."""
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _classic_wpa3_personal_wlan_candidate(name="Secure2")
+    service.create_run([wlan], target("classic_central"), run_id="persisted-verify")
+    real_secret = "another-real-passphrase-value"
+    supplied = {"wlan:Secure2": {"wpa_passphrase": real_secret}}
+    service.apply("persisted-verify", dry_run=True, confirmation=False, target_secrets=supplied)
+    backend.read_values["central_api_read_back"] = {
+        "wlan": {
+            "name": "Secure2",
+            "essid": "Secure2",
+            "opmode": "wpa3-sae-aes",
+            "opmode_transition_disable": True,
+            "vlan": "30",
+        }
+    }
+    service.apply("persisted-verify", dry_run=False, confirmation=True, target_secrets=supplied)
+    backend.read_values["central_api_read"] = {
+        "wlan": {
+            "name": "Secure2",
+            "essid": "Secure2",
+            "access_type": "unrestricted",
+            "blacklist": True,
+            "broadcast_filter": "arp",
+            "captive_portal": "disable",
+            "deny_intra_vlan_traffic": False,
+            "type": "employee",
+            "opmode": "wpa3-sae-aes",
+            "opmode_transition_disable": True,
+            "vlan": "30",
+            "disable_ssid": False,
+            "hide_ssid": False,
+            "mac_authentication": False,
+            "radius_accounting": False,
+            "rf_band": "all",
+            "ssid_encoding": "utf8",
+            "user_bridging": False,
+        },
+        "access_rule": {
+            "name": "Secure2",
+            "action": "allow",
+            "blacklist": False,
+            "eport": "any",
+            "ipaddr": "any",
+            "log": False,
+            "match": "match",
+            "netmask": "any",
+            "protocol": "any",
+            "service_type": "network",
+            "source": "default",
+            "sport": "any",
+            "vlan": 0,
+        },
+    }
+    result = service.verify("persisted-verify")
+    raw_state = json.loads(store.path_for("persisted-verify").read_text())
+    persisted_verification = raw_state["candidates"][0]["verification"]
+    assert persisted_verification == result["comparisons"][0]
+    assert real_secret not in store.path_for("persisted-verify").read_text()
+    assert persisted_verification["verification_status"] == "verified"

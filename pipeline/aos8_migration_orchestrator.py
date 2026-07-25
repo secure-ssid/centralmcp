@@ -1766,19 +1766,51 @@ class AOS8MigrationOrchestrator:
             "source_candidate_intent": source,
             "apply_result": _sanitize(entry.get("last_result")),
         }
-        if status not in _TERMINAL_SUCCESS:
+        action = adapter.candidate_action(entry["candidate"])
+        if status == "unsupported":
+            # Matrix-driven fail-closed families (policies, AP groups,
+            # routes, VRRP, controllers, and every other candidate this
+            # target has no verified write mapping for) are never
+            # "unverifiable" (that term is reserved below for a *supported*
+            # mapping that simply has no read path) -- they get their own
+            # distinct terminal status so a caller can never mistake "no
+            # mapping exists" for "a mapping exists but couldn't be read".
             return {
                 **base,
-                "verification_status": "unverifiable",
-                "reason": (
-                    "Candidate is unsupported and remains unapplied."
-                    if status == "unsupported"
-                    else f"Candidate is not successfully applied/skipped (status={status})."
-                ),
+                "verification_status": "unsupported",
+                "reason": "Candidate is unsupported and remains unapplied.",
                 "target_state": None,
                 "field_comparison": [],
             }
-        action = adapter.candidate_action(entry["candidate"])
+        if status not in _TERMINAL_SUCCESS:
+            # `pending`/`blocked`/`failed`: this candidate was never
+            # successfully applied by centralmcp, so none of
+            # "verified"/"partially_verified"/"failed" is reachable here --
+            # every one of those presupposes a completed write this
+            # orchestrator actually made. This is precisely the blocked
+            # auth-server/server-group/AAA/dot1x/macauth-profile case
+            # (contract matrix SS6.3-SS6.8): those mappings are held at
+            # "blocked" specifically because their SHARED config-assignment
+            # binding is unverified, and must never be reported as
+            # applied/verified here either. The only thing safely offered
+            # is a bounded, best-effort, read-only diagnostic of whether an
+            # object sharing this identity already exists at the target --
+            # useful operator context, never a verification claim.
+            diagnostic = _diagnostic_read(adapter, action, entry["candidate"])
+            return {
+                **base,
+                "verification_status": "not_applied",
+                "reason": (
+                    f"Candidate is not successfully applied (status={status}); "
+                    "no field-level verification is performed for a candidate "
+                    "that was never applied. See `diagnostic` for a read-only, "
+                    "best-effort presence check -- informational only, never "
+                    "a verification result."
+                ),
+                "diagnostic": diagnostic,
+                "target_state": None,
+                "field_comparison": [],
+            }
         if action.read_operation is None:
             return {
                 **base,
@@ -1792,7 +1824,7 @@ class AOS8MigrationOrchestrator:
         except Exception as exc:
             return {
                 **base,
-                "verification_status": "unverifiable",
+                "verification_status": "failed",
                 "reason": f"Target verification read failed: {exc}",
                 "target_state": None,
                 "field_comparison": [],
@@ -1804,13 +1836,36 @@ class AOS8MigrationOrchestrator:
         if not _contains_identifier(safe_target, identifier):
             return {
                 **base,
-                "verification_status": "mismatch",
+                "verification_status": "failed",
                 "reason": "Target verification did not find the candidate identity.",
                 "target_state": safe_target,
                 "field_comparison": [],
             }
+        # Finding (item 8): a collection-shaped read response (e.g.
+        # `list_roles`, `list_config_assignments`) that matches this
+        # candidate's identity in more than one entry is ambiguous -- never
+        # silently compare against only the first (source-order-first-wins)
+        # match. `_collect_matching_entries` returns None for a response
+        # that is not recognizably a single, unambiguous collection
+        # envelope (e.g. an ordinary single-object GET), in which case the
+        # whole response is used as the comparison source exactly as
+        # before.
+        collection_matches = _collect_matching_entries(safe_target, identifier)
+        if collection_matches is not None and len(collection_matches) > 1:
+            return {
+                **base,
+                "verification_status": "failed",
+                "reason": (
+                    "Target read returned more than one entry matching this "
+                    "candidate's identity; refusing to guess which one is "
+                    f"authoritative ({len(collection_matches)} matches)."
+                ),
+                "target_state": safe_target,
+                "field_comparison": [],
+            }
+        flatten_source = collection_matches[0] if collection_matches else safe_target
         expected, secret_fields = _expected_fields(action, entry["candidate"])
-        target_fields = _flatten_fields(safe_target)
+        target_fields = _flatten_fields(flatten_source)
         comparisons: list[dict[str, Any]] = []
         mismatches: list[str] = []
         verified_fields: list[str] = []
@@ -1872,7 +1927,6 @@ class AOS8MigrationOrchestrator:
         # otherwise a candidate with real payload fields that are all
         # unverifiable would still be reported "verified" on identity alone.
         payload_fields = [f for f in comparable_fields if f != "identifier"]
-        payload_verified = [f for f in verified_fields if f != "identifier"]
         # Finding #3: if ANY expected non-secret payload field is absent or
         # otherwise unverifiable against the target read, status must be
         # "partially_verified" -- never "verified" -- even when other
@@ -1880,18 +1934,18 @@ class AOS8MigrationOrchestrator:
         # non-secret payload field to be individually confirmed.
         payload_unverifiable = [f for f in payload_fields if f in unverifiable_fields]
         if mismatches:
-            verification_status = "mismatch"
-            reason = f"Directly comparable fields differed: {sorted(mismatches)}"
+            primary_status = "failed"
+            primary_reason = f"Directly comparable fields differed: {sorted(mismatches)}"
         elif payload_unverifiable:
-            verification_status = "partially_verified"
-            reason = (
+            primary_status = "partially_verified"
+            primary_reason = (
                 "Candidate identity was present, but one or more non-secret "
                 "payload fields could not be confirmed against the target "
                 f"read response: {sorted(payload_unverifiable)}"
             )
         else:
-            verification_status = "verified"
-            reason = (
+            primary_status = "verified"
+            primary_reason = (
                 "Candidate identity was present; directly comparable returned "
                 "fields matched."
                 + (
@@ -1901,13 +1955,35 @@ class AOS8MigrationOrchestrator:
                     else " Unreturned fields were not asserted."
                 )
             )
-        return {
+        result: dict[str, Any] = {
             **base,
-            "verification_status": verification_status,
-            "reason": reason,
+            "verification_status": primary_status,
+            "reason": primary_reason,
             "target_state": safe_target,
             "field_comparison": comparisons,
         }
+
+        if action.assignment_read_operation is not None:
+            # Finding (item 4): a role/SHARED-profile library object and
+            # its scope+device-function config-assignment are independent
+            # facts -- an object can be a real, field-verified object while
+            # its assignment is missing/mismatched (an orphaned object,
+            # unusable at the target). Never collapse that distinction by
+            # reporting only the stronger of the two; aggregate
+            # conservatively -- overall status is never stronger than
+            # either half.
+            assignment_verification = _verify_assignment(adapter, action)
+            result["assignment_verification"] = assignment_verification
+            assignment_status = assignment_verification["status"]
+            _severity = {"verified": 0, "partially_verified": 1, "failed": 2}
+            result["reason"] = (
+                f"{primary_reason} Object verification: {primary_status}; "
+                f"assignment verification: {assignment_status} -- "
+                f"{assignment_verification['reason']}"
+            )
+            if _severity.get(assignment_status, 2) > _severity.get(primary_status, 0):
+                result["verification_status"] = assignment_status
+        return result
 
     @staticmethod
     def _validate_candidates(
@@ -1945,12 +2021,189 @@ def _contains_identifier(value: Any, identifier: str) -> bool:
             "vlan_id",
             "vlan-id",
             "profile-name",
+            "profile-instance",
             "id",
         )
         if any(str(value.get(field)) == identifier for field in identity_fields):
             return True
         return any(_contains_identifier(item, identifier) for item in value.values())
     return False
+
+
+def _collection_candidates(value: Any) -> list[Any] | None:
+    """Return the bounded list of entries `value` represents as a
+    collection response, or `None` if `value` is not recognizably a
+    single, unambiguous collection envelope.
+
+    Recognizes a bare top-level list, and a mapping with exactly one
+    top-level list-valued key (e.g. `{"items": [...]}`, `{"roles": [...]}`,
+    `{"config-assignment": [...]}`) -- deliberately narrow so an ordinary
+    single-object GET response (e.g. `{"name": ..., "vlan-id": ...}`) is
+    never misread as a collection of its own scalar/nested values, and a
+    response with more than one top-level list-valued key (an envelope
+    shape this repository has no evidence for) is left unclassified rather
+    than guessed.
+    """
+    if isinstance(value, list):
+        return value[:MAX_RESULT_ITEMS]
+    if isinstance(value, Mapping):
+        list_values = [item for item in value.values() if isinstance(item, list)]
+        if len(list_values) == 1:
+            return list_values[0][:MAX_RESULT_ITEMS]
+    return None
+
+
+def _collect_matching_entries(value: Any, identifier: str) -> list[Any] | None:
+    """Return the bounded list of collection entries (see
+    `_collection_candidates`) whose identity matches `identifier`, or
+    `None` if `value` is not a recognizable collection -- in which case the
+    caller falls back to treating the whole of `value` as a single-object
+    response, exactly as before this function existed.
+    """
+    items = _collection_candidates(value)
+    if items is None:
+        return None
+    return [
+        item
+        for item in items
+        if isinstance(item, Mapping) and _contains_identifier(item, identifier)
+    ]
+
+
+def _diagnostic_read(
+    adapter: BaseCentralTargetAdapter,
+    action: Any,
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Best-effort, bounded, read-only presence check for a candidate that
+    was never successfully applied by centralmcp (`pending`/`blocked`/
+    `failed`). Never claims verification or application -- only whether an
+    object sharing this identity is already, independently present at the
+    target, which is useful context for an operator deciding how to
+    unblock the candidate (contract matrix SS6.3-SS6.8: a blocked
+    auth-server/server-group/AAA/dot1x/macauth-profile mapping must never
+    be reported applied/verified, but a safe read-only diagnostic is
+    still offered whenever a verified read path exists).
+    """
+    if action.read_operation is None:
+        return {
+            "attempted": False,
+            "target_object_present": None,
+            "note": (
+                "No verified read operation exists for this mapping; manual "
+                "verification is required."
+            ),
+        }
+    try:
+        target_state = adapter.read_invoker(action.read_operation)
+    except Exception as exc:
+        return {
+            "attempted": True,
+            "target_object_present": None,
+            "note": f"Diagnostic read failed: {exc}",
+        }
+    safe_target = _sanitize(target_state)
+    identifier = action.read_operation.match_identifier or str(
+        candidate.get("identifier")
+    )
+    return {
+        "attempted": True,
+        "target_object_present": _contains_identifier(safe_target, identifier),
+        "note": (
+            "Read-only diagnostic only; this candidate was not applied by "
+            "centralmcp and no field-level verification was performed."
+        ),
+    }
+
+
+def _verify_assignment(
+    adapter: BaseCentralTargetAdapter, action: Any
+) -> dict[str, Any]:
+    """Bounded, read-only verification of a SHARED library object's
+    scope+device-function config-assignment tuple (`scope-id`,
+    `device-function`, `profile-type`, `profile-instance`) -- independent
+    of, and never conflated with, the library object's own field
+    verification performed by `_verify_entry` (item 4 of the
+    aos8-verification contract: the object can be verified while its
+    assignment fails/is partial, or vice versa).
+    """
+    operation = action.assignment_read_operation
+    expected = {
+        _normalized_key(name): value
+        for name, value in dict(getattr(action, "assignment_expected", {}) or {}).items()
+    }
+    identifier = operation.match_identifier or (
+        str(expected["profile_instance"]) if "profile_instance" in expected else None
+    )
+    try:
+        target_state = adapter.read_invoker(operation)
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "reason": f"Assignment verification read failed: {exc}",
+            "field_comparison": [],
+        }
+    safe_target = _sanitize(target_state)
+    if identifier is None or not _contains_identifier(safe_target, str(identifier)):
+        return {
+            "status": "failed",
+            "reason": "No config-assignment entry was found for this candidate's identity.",
+            "field_comparison": [],
+        }
+    matches = _collect_matching_entries(safe_target, str(identifier))
+    if matches is not None and len(matches) > 1:
+        return {
+            "status": "failed",
+            "reason": (
+                "Target returned more than one config-assignment entry "
+                "matching this candidate's identity; refusing to guess "
+                f"which is authoritative ({len(matches)} matches)."
+            ),
+            "field_comparison": [],
+        }
+    flatten_source = matches[0] if matches else safe_target
+    target_fields = _flatten_fields(flatten_source)
+    comparisons: list[dict[str, Any]] = []
+    mismatches: list[str] = []
+    missing: list[str] = []
+    for field, expected_value in expected.items():
+        if field not in target_fields:
+            comparisons.append(
+                {
+                    "field": field,
+                    "expected": expected_value,
+                    "actual": None,
+                    "status": "unverifiable",
+                    "reason": "field was not present in the target read response",
+                }
+            )
+            missing.append(field)
+            continue
+        actual = target_fields[field]
+        matched = _comparable_equal(expected_value, actual)
+        comparisons.append(
+            {
+                "field": field,
+                "expected": expected_value,
+                "actual": actual,
+                "status": "match" if matched else "mismatch",
+            }
+        )
+        if not matched:
+            mismatches.append(field)
+    if mismatches:
+        status = "failed"
+        reason = f"Config-assignment fields differed: {sorted(mismatches)}"
+    elif missing:
+        status = "partially_verified"
+        reason = f"Config-assignment fields could not be confirmed: {sorted(missing)}"
+    else:
+        status = "verified"
+        reason = (
+            "Config-assignment tuple (scope-id/device-function/profile-type/"
+            "profile-instance) matched."
+        )
+    return {"status": status, "reason": reason, "field_comparison": comparisons}
 
 
 def _flatten_fields(
@@ -2012,6 +2265,32 @@ _VERIFICATION_IGNORED_KEYS = {
 }
 
 
+def _secret_leaf_names(sensitive_fields: Iterable[str]) -> set[str]:
+    """Return every bare and dotted-qualified leaf name a
+    `sensitive_argument_fields` entry could appear as once flattened by
+    `_flatten_fields`.
+
+    e.g. `"wlan.wpa_passphrase"` yields both the bare leaf
+    `"wpa_passphrase"` (the common single-scalar-secret case) and the
+    fully qualified `"wlan.wpa_passphrase"` (each dot-separated segment
+    normalized independently, matching `_flatten_fields`'s own
+    qualified-path construction exactly) -- so a nested Classic
+    `full_wlan` secret (`sensitive_argument_fields=("wlan.wpa_passphrase",)`)
+    is excluded from `expected` no matter which of the two flattened keys
+    it is looked up under, not only when it happens to be a bare top-level
+    argument (as New Central's flat `passphrase` argument already was).
+    """
+    names: set[str] = set()
+    for field in sensitive_fields:
+        segments = [segment for segment in str(field).split(".") if segment]
+        if not segments:
+            continue
+        normalized_segments = [_normalized_key(segment) for segment in segments]
+        names.add(normalized_segments[-1])
+        names.add(".".join(normalized_segments))
+    return names
+
+
 def _expected_fields(
     action: Any, candidate: Mapping[str, Any]
 ) -> tuple[dict[str, Any], set[str]]:
@@ -2021,17 +2300,29 @@ def _expected_fields(
     `invocation="endpoint"` write (the exact request body New Central will
     receive) -- never from `method`/`endpoint`/the wrapper `data` argument.
     Tool-invocation operations have no `.payload`; their top-level
-    `.arguments` (minus admin/context keys) are used instead. Secret fields
-    (matched by `Operation.sensitive_argument_fields` or `_is_sensitive_key`)
-    are separated out and never compared -- GET responses omit secret
-    material, so they are reported as unverifiable rather than mismatched.
+    `.arguments` (minus admin/context keys) are used instead.
+
+    Secret exclusion runs at two independent levels, both required: a
+    whole top-level container named/declared sensitive (e.g. New Central
+    auth-server's `shared-secret-config` object) is dropped before ever
+    being flattened, so no nested field of it -- secret-shaped or not,
+    e.g. a generic `plaintext-value`/`value` leaf -- can leak; and every
+    already-flattened leaf key (bare and qualified) is checked again
+    against `Operation.sensitive_argument_fields`
+    (`_secret_leaf_names`, handling a nested dotted declaration like
+    Classic's `"wlan.wpa_passphrase"`) and `_is_sensitive_key`, so a secret
+    nested underneath an otherwise-unremarkable container key (e.g.
+    Classic's `wlan.wpa_passphrase`, where `"wlan"` itself is not a
+    secret-named key) is still excluded. GET responses omit secret
+    material either way, so excluded fields are reported unverifiable
+    rather than mismatched.
     """
+    read_operation = getattr(action, "read_operation", None)
     # Use the qualified `match_identifier` (the short, unqualified name New
     # Central actually returns, e.g. "ldap1") rather than the raw candidate
     # identifier (e.g. "ldap:ldap1", qualified by auth-server type) --
     # otherwise this synthetic field would never match a real target read
     # even when the true object identity check above already succeeded.
-    read_operation = getattr(action, "read_operation", None)
     qualified_identifier = (
         getattr(read_operation, "match_identifier", None)
         if read_operation is not None
@@ -2039,21 +2330,39 @@ def _expected_fields(
     ) or candidate.get("identifier")
     raw: dict[str, Any] = {"identifier": qualified_identifier}
     secret_fields: set[str] = set()
+    secret_leaf_names: set[str] = set()
     if action.operations:
         primary = action.operations[0]
-        sensitive = {_normalized_key(field) for field in primary.sensitive_argument_fields}
+        secret_leaf_names = _secret_leaf_names(primary.sensitive_argument_fields)
         source = primary.payload if primary.payload is not None else primary.arguments
         for key, value in source.items():
             normalized = _normalized_key(key)
             if normalized in _VERIFICATION_IGNORED_KEYS:
                 continue
-            if normalized in sensitive or _is_sensitive_key(normalized):
-                secret_fields.add(normalized)
-                continue
             if value in (None, "", [], {}):
                 continue
+            if normalized in secret_leaf_names or _is_sensitive_key(normalized):
+                secret_fields.add(normalized)
+                continue
             raw[normalized] = value
-    expected = {key: _sanitize(value) for key, value in _flatten_fields(raw).items()}
+    flattened = _flatten_fields(raw)
+    expected: dict[str, Any] = {}
+    for key, value in flattened.items():
+        if key in secret_leaf_names or _is_sensitive_key(key):
+            secret_fields.add(key)
+            continue
+        # An empty leaf (e.g. Classic full_wlan's default `auth_server1=""`
+        # -- "no auth server attached") is not a meaningful assertion: a
+        # real GET response is free to omit a field it considers "unset"
+        # entirely rather than echo it back as an explicit empty string,
+        # and there is nothing to verify about an intentionally-blank
+        # value anyway. Filtered here (post-flatten, not only at the
+        # top level of `source.items()` above) so this applies uniformly
+        # to every nesting depth, not only a top-level argument/payload
+        # key.
+        if value in (None, "", [], {}):
+            continue
+        expected[key] = _sanitize(value)
     return expected, secret_fields
 
 

@@ -543,6 +543,7 @@ All of the following remain **read-only discovery and dry-run only**. No real wr
 - [ ] Confirm WPA3 transition (`wpa3-transition-mode-enable`) and RadSec (`auth-server type=RADSEC`) field-level behavior against a live WLAN/auth-server read before reclassifying either as `exact`.
 - [ ] Confirm the Gateway IPv4/IPv6 static-route destination write contract (`prefix-vrf-nexthop-id`, `forwarding-type`) against a live Gateway read before reclassifying routes as `exact`.
 - [ ] Confirm VRRP VLAN-interface attachment and tracking field mapping against a live Gateway VRRP read before reclassifying VRRP as anything but `unsupported`.
+- [ ] Confirm `aos8_verify_migration_run`'s role config-assignment check (`scope-id`/`device-function`/`profile-type`/`profile-instance` via `list_config_assignments`) against a live read before trusting its `assignment_verification` result -- it is independent of, and can legitimately disagree with, the role object's own field verification.
 - [ ] Record every supported, lossy, blocked, and unverifiable finding back into this matrix (update classifications, never silently widen scope in adapter code without a matching matrix update).
 
 ## 9. Related documentation

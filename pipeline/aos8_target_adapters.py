@@ -169,6 +169,21 @@ class CandidateAction:
     # to echo back. Empty means "identifier match alone is the read-back
     # bar" -- still stronger than trusting a bare write-success response.
     read_back_expectations: Mapping[str, Any] = field(default_factory=dict)
+    # Bounded, read-only lookup for a SHARED library object's independent
+    # scope+device-function config-assignment binding (see
+    # `_unverified_assignment_blocker` and docs/aos8-migration-contract-
+    # matrix.md §1.2/§2.1). `None` means this mapping has no SHARED
+    # assignment concept to verify at all (e.g. a LOCAL object, or a
+    # mapping with no verified assignment read path yet) -- distinct from
+    # the object's own `read_operation`, and never conflated with it: an
+    # orchestrator-level verifier must be able to report the library
+    # object as verified while its assignment fails/is partial, or vice
+    # versa (`pipeline.aos8_migration_orchestrator._verify_assignment`).
+    assignment_read_operation: Operation | None = None
+    # The exact scope-id/device-function/profile-type/profile-instance
+    # tuple `assignment_read_operation`'s response is expected to contain.
+    # Only meaningful when `assignment_read_operation` is set.
+    assignment_expected: Mapping[str, Any] = field(default_factory=dict)
     # Metadata-only rollback (e.g. Classic full_wlan DELETE) describing how to
     # undo this candidate's write. Never auto-invoked by `_invoke_actions`; an
     # orchestrator must call it explicitly after confirming a rollback is
@@ -1304,6 +1319,33 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                 dry_run_field=None,
                 match_identifier=str(candidate["identifier"]),
             ),
+            # Item 4 (roles and verified config assignment): the role
+            # object itself (`list_roles`, above) and its scope+device-
+            # function config-assignment binding are independently
+            # verifiable and never conflated -- `list_config_assignments`
+            # is the same bounded, read-only, already-curated tool
+            # `create_config_assignment`/`delete_config_assignment` (used
+            # by `assignment`/`delete_assignment` above) has a matching
+            # read counterpart for.
+            assignment_read_operation=Operation(
+                invocation="tool",
+                name="list_config_assignments",
+                arguments={
+                    "scope_id": self.context.scope_id,
+                    "device_function": self.context.persona,
+                    "profile_type": "roles",
+                    "full_list": True,
+                },
+                provenance="mcp_servers.config.list_config_assignments",
+                dry_run_field=None,
+                match_identifier=str(candidate["identifier"]),
+            ),
+            assignment_expected={
+                "scope-id": self.context.scope_id,
+                "device-function": self.context.persona,
+                "profile-type": "roles",
+                "profile-instance": str(candidate["identifier"]),
+            },
         )
 
     def _auth_server_body(
