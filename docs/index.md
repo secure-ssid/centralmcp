@@ -4,9 +4,9 @@ Low-token Model Context Protocol tooling for HPE Aruba Central, HPE GreenLake
 Platform, embedded docs/API lookup, and optional ClearPass, Mist, Apstra,
 ArubaOS 8, EdgeConnect, UXI, and Axis backends.
 
-![centralmcp 0.4.0](assets/centralmcp-hero.svg)
+![centralmcp 0.5.0](assets/centralmcp-hero.svg)
 
-## Version 0.4.0 project snapshot
+## Version 0.5.0 project snapshot
 
 | Area | Current snapshot |
 |---|---|
@@ -18,11 +18,13 @@ ArubaOS 8, EdgeConnect, UXI, and Axis backends.
 | Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis Atmos Cloud |
 | Safety | Per-platform gates, dry-run writes, confirmation, HTTP host/origin and bearer controls |
 
-Read the [0.4.0 release notes](release-notes-0.4.0.md) for the complete
-resumable AOS8 migration execution, Mist WebSocket diagnostics, EdgeConnect
-compatibility workflow, GLP typed workflows, and Axis generator update. The
+Read the [0.5.0 release notes](release-notes-0.5.0.md) for the verified AOS8
+migration expansion: hardened source parsing, a bounded Classic Central
+`full_wlan` write lifecycle, expanded (still fail-closed) New Central secured
+WLAN mappings, a six-state verification taxonomy, and a read-only live/dry-run
+evaluation. The [0.4.0 release notes](release-notes-0.4.0.md) and
 [0.3.0 release notes](release-notes-0.3.0.md) remain available for historical
-platform, migration, framework, and API-source context.
+context.
 
 See the [capability gap matrix](capability-gap-matrix.md) for reproducible
 executable-tool, generated-operation, benchmark, and practical-gap comparisons.
@@ -30,12 +32,15 @@ executable-tool, generated-operation, benchmark, and practical-gap comparisons.
 ## Search keywords
 
 HPE Networking MCP server, HPE Aruba Networking MCP server, HPE Aruba Central
-MCP server, Aruba Central AI tools, HPE GreenLake Platform MCP, GreenLake
+MCP server, HPE Aruba Networking Central MCP server, Aruba Central AI tools,
+AI network automation, HPE GreenLake Platform MCP, GreenLake
 Platform automation, GreenLake Platform MCP, GreenLake service catalog MCP,
 GreenLake reporting status MCP, FastMCP network automation, Model Context
 Protocol networking, network configuration MCP, Aruba API RAG, Aruba Central
 OpenAPI lookup, ClearPass MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP,
-ArubaOS 8 migration MCP, AOS8 automation, HPE Aruba EdgeConnect MCP,
+ArubaOS 8 migration MCP, ArubaOS 8 migration automation, AOS8 automation,
+Classic Central migration, New Central migration, guarded dry-run migration,
+HPE Aruba EdgeConnect MCP,
 EdgeConnect SD-WAN MCP, HPE Aruba UXI MCP, UXI sensor status MCP, Axis Atmos
 Cloud MCP, guarded read/write lab automation, EdgeConnect zones, EdgeConnect
 interface labels, zone-based firewall MCP, Python `httpx` network automation,
@@ -96,7 +101,9 @@ flowchart TD
 | Plan typed product-specific workflows | [Typed product workflow roadmap](product-workflows.md) |
 | Fix setup, credentials, HTTP, or catalog issues | [Troubleshooting](troubleshooting.md) |
 | Download or package prebuilt RAG/OpenAPI indexes | [Prebuilt RAG/OpenAPI indexes](release-indexes.md) |
-| Review the complete 0.4.0 expansion | [0.4.0 release notes](release-notes-0.4.0.md) |
+| Review the complete 0.5.0 AOS8 migration expansion | [0.5.0 release notes](release-notes-0.5.0.md) |
+| Review the AOS8 migration contract matrix and live evaluation | [Contract matrix](aos8-migration-contract-matrix.md), [live/dry-run evaluation](aos8-live-dryrun-evaluation.md) |
+| Review the prior 0.4.0 expansion (historical) | [0.4.0 release notes](release-notes-0.4.0.md) |
 | Review the prior 0.3.0 expansion (historical) | [0.3.0 release notes](release-notes-0.3.0.md) |
 | Understand the low-token router | [Tool router](tool-router.md) |
 | Browse all backend counts and coverage | [Tool catalog](tool-catalog.md) |
@@ -129,7 +136,7 @@ Available starters:
 | ClearPass | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` |
 | Juniper Mist | `MIST_HOST`, `MIST_API_TOKEN` |
 | Apstra | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional `APSTRA_API_TOKEN` |
-| ArubaOS 8 | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional `AOS8_API_TOKEN` |
+| ArubaOS 8 | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional `AOS8_API_TOKEN`, optional `AOS8_CLIENT_IP`, optional `AOS8_SESSION_TTL_SECONDS` |
 | EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, endpoint-specific `EDGECONNECT_AI_SESSION_AUTHORIZATION` |
 | HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
 | Axis Atmos Cloud | `AXIS_BASE_URL`, `AXIS_API_TOKEN` |

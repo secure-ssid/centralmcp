@@ -275,7 +275,7 @@ python3 scripts/setup_wizard.py --products clearpass
 | ClearPass | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` |
 | Juniper Mist | `MIST_HOST`, `MIST_API_TOKEN` |
 | Apstra | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional pre-issued `APSTRA_API_TOKEN` |
-| ArubaOS 8 | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` |
+| ArubaOS 8 | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN`, optional `AOS8_CLIENT_IP`, optional `AOS8_SESSION_TTL_SECONDS` |
 | EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, legacy-only `EDGECONNECT_ALLOW_LEGACY_API=1`, endpoint-specific `EDGECONNECT_AI_SESSION_AUTHORIZATION` |
 | HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
 | Axis Atmos Cloud | `AXIS_BASE_URL`, `AXIS_API_TOKEN` |
@@ -291,6 +291,12 @@ only to the documented regional `WS /api-ws/v1/stream` endpoint derived from
 Run `edgeconnect_doctor` before any EdgeConnect operational workflow. The
 bundled pre-9.3 endpoint map is blocked by default; production 9.3+ remapping
 requires the target Orchestrator's current instance-hosted Swagger document.
+
+Before relying on any AOS8 migration mapping in your own environment, review
+the [AOS8 migration contract matrix](aos8-migration-contract-matrix.md) and
+prerequisites in [optional-products.md](optional-products.md#arubaos-8-migration-prerequisites);
+a prior read-only [live/dry-run evaluation](aos8-live-dryrun-evaluation.md)
+records exactly which surfaces were confirmed live versus fixture-backed only.
 
 ## Safety defaults
 

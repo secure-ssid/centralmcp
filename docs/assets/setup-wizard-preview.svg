@@ -13,7 +13,7 @@
   </defs>
   <rect width="1400" height="820" fill="#071020"/>
   <rect x="40" y="40" width="1320" height="740" rx="28" fill="#101b2e" stroke="#41556f" stroke-width="3"/>
-  <text x="80" y="125" class="title">centralmcp 0.4.0 guided setup</text>
+  <text x="80" y="125" class="title">centralmcp 0.5.0 guided setup</text>
   <text x="80" y="174" class="subtitle">Low-token HPE Networking MCP toolkit</text>
   <rect x="80" y="220" width="1240" height="500" rx="18" fill="#020817" stroke="#526984" stroke-width="2"/>
   <circle cx="118" cy="258" r="9" fill="#ff5f56"/>

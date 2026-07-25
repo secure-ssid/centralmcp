@@ -7,56 +7,66 @@
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-0969da)](https://secure-ssid.github.io/centralmcp/)
 [![Release](https://img.shields.io/github/v/release/secure-ssid/centralmcp?display_name=tag)](https://github.com/secure-ssid/centralmcp/releases)
 
-![centralmcp 0.4.0 - low-token HPE Networking MCP toolkit](docs/assets/centralmcp-hero.svg)
+![centralmcp 0.5.0 - low-token HPE Networking MCP toolkit](docs/assets/centralmcp-hero.svg)
 
-**Low-token Model Context Protocol (MCP) server for HPE Networking automation: Aruba Central, HPE GreenLake Platform (GLP) automation, ClearPass, Juniper Mist, Apstra, ArubaOS 8 migration, EdgeConnect, HPE Aruba UXI, and Axis Atmos Cloud.**
+**Low-token Model Context Protocol (MCP) server for HPE Networking automation: Aruba Central, HPE GreenLake Platform (GLP) automation, ClearPass, Juniper Mist, Apstra, ArubaOS 8 migration automation, EdgeConnect, HPE Aruba UXI, and Axis Atmos Cloud.**
 
 centralmcp gives MCP-capable AI clients a low-token way to search Aruba/HPE docs, look up exact OpenAPI details, inspect Central health, run troubleshooting workflows, manage configuration, execute guarded ArubaOS 8 migrations, and use guarded GreenLake Platform operations.
 
 It is built around direct REST calls with `httpx`.
 
-## Version 0.4.0 highlights
+## Version 0.5.0 highlights
 
-- **6,165-tool direct-all surface:** 6,162 backend tools (5,686 active
-  generated tools plus 476 curated) plus the router's three
-  discovery/dispatch tools. The nine generated manifests contain 5,703
-  reproducible operations; minimal mode still exposes only three tools.
-  Standard catalog profiles contain 291 core tools / 2450 read-only optional starters / 5258 read-write optional starters; enabling generated GLP expands the complete backend index to 6,162.
-- **Resumable AOS8 migration execution:** an expanded normalized model (AAA/auth
-  profiles, server groups, RADIUS/LDAP/TACACS, routes, VRRP/VRRPv6, and
-  detailed policy rules) plus six resumable migration-run tools that execute
-  guarded, dependency-aware New Central and Classic target writes with
-  dry-run-first confirmation and bounded verification.
-- **Typed GreenLake Platform reads:** 22 high-frequency typed tools for RBAC
-  role/scope groups, events/webhooks/deliveries, locations/tags, and SCIM
-  users/groups/membership.
-- **Mist WebSocket diagnostics:** bounded, authenticated regional WebSocket
-  collection of previously started device diagnostic results.
-- **EdgeConnect compatibility workflow:** a fail-closed local Swagger 2 /
-  OpenAPI 3 compatibility, report, and explicit `--generate` manifest
-  workflow with a provenance/digest pin.
-- **Deterministic Axis manifest generator:** a SHA-pinned, reproducible
-  25-operation registry generator with local-source, explicit-fetch, and
-  offline-check modes.
-- **Reproducible capability gap matrix:** a generated, pinned apples-to-apples
-  benchmark against `nowireless4u/hpe-networking-mcp` that distinguishes
-  executable tools, generated operations, indexed endpoints, and router
-  surfaces.
-- **Migration-ready AOS8:** UIDARUBA/X-CSRF sessions, structured exports and
-  parsing, Classic/New Central candidates, compatibility warnings, diffs, and
-  post-migration verification plans.
-- **Broader platform parity:** new Central routing, checkpoint policy,
-  automatic rollback status, telemetry,
-  GLP v2beta1, Mist NAC/Marvis/Wired/WAN, Apstra connectivity, ClearPass
-  Insight/OnGuard, and UXI lifecycle workflows.
-- **Current API sources:** Aruba ReadMe registries, pinned Mist and GLP
-  snapshots, the official Apstra 6.1 SDK, and reproducible EdgeConnect/Axis
-  reviewed manifests, with drift validation.
-- **Hardened transport and writes:** per-platform gates, dry-run confirmation,
-  health probes, host/origin controls, streamable HTTP bearer protection, and
-  protocol-level MCP tests.
+Version 0.5.0 is a verified ArubaOS 8 (AOS8) migration release: it does not
+change tool counts, add new platforms, or claim exact secured-WLAN apply
+parity between Classic Central and New Central. Investigation effort was
+equal across both targets; the honest result is narrower than "parity."
+Standard catalog profiles contain 291 core tools / 2450 read-only optional starters / 5258 read-write optional starters; enabling generated GLP expands
+the complete backend index to 6,162.
 
-See the [complete 0.4.0 release notes](docs/release-notes-0.4.0.md). The
+- **Hardened AOS8 source foundation:** normalized WLAN security intent,
+  role-only AAA handling, type-aware auth-server dependencies, redaction
+  fixes, additional source aliases, and fail-closed warnings for malformed or
+  ambiguous export fields.
+- **Bounded, honest Classic Central write lifecycle:** full `full_wlan`
+  GET/POST/complete-PUT with a mandatory read-back; verified `exact` mappings
+  for open and WPA3-Personal WLANs; conditional, dry-run-only WPA3 Enterprise
+  gated on an explicit existing auth-server reference; precise
+  manual/unsupported guidance for every object with no verified REST;
+  dedicated Classic target resolution that is never inferred from a New
+  Central scope; and no automatic AP-group equivalence.
+- **Expanded, still fail-closed New Central mappings:** secured WLAN preview
+  mappings for OPEN, WPA2_PERSONAL, WPA3_SAE, and ENHANCED_OPEN; pure SAE
+  transition mode stays disabled; role assignment is verified independently
+  of the role object; auth-server/server-group/AAA/dot1x/macauth object
+  contracts remain blocked pending config-assignment profile-type
+  confirmation; and routes, VRRP, AP-group mapping, and custom policy remain
+  fail-closed.
+- **Six-state verification taxonomy:** `aos8_verify_migration_run` reports
+  `verified`, `partially_verified`, `failed`, `unverifiable`, `unsupported`,
+  or `not_applied`, with bounded pagination, exact-path (generated-spec)
+  precedence, Classic flat/nested schema awareness, and independent
+  assignment verification.
+- **Non-persistent operator context, wholesale secret redaction, no new
+  rollback claim:** preview-only operator maps/external references are never
+  persisted and are rejected outright by persistent runs; stale persisted
+  state referencing removed context is sanitized; real secret values are
+  wholesale-redacted everywhere; and no rollback workflow is added beyond the
+  existing checkpoint-policy/export-before-apply guidance.
+- **Read-only live/dry-run evaluation:** a GET-only New Central
+  preflight/preview evaluation was completed live against a configured
+  tenant; AOS8 source and Classic Central access were unavailable in that
+  environment and were evaluated fixture-backed only. No writes were
+  attempted anywhere. See
+  [docs/aos8-live-dryrun-evaluation.md](docs/aos8-live-dryrun-evaluation.md)
+  and the [AOS8 migration contract matrix](docs/aos8-migration-contract-matrix.md).
+- **Verified at the release gate:** 1,534 unit tests passed (including 10
+  MCP protocol end-to-end tests), a 20-sample RAG/API eval green, and the
+  6,162-tool backend catalog and 5,703-operation generated manifest count
+  both reconfirmed unchanged.
+
+See the [complete 0.5.0 release notes](docs/release-notes-0.5.0.md). The
+[0.4.0 release notes](docs/release-notes-0.4.0.md) and
 [0.3.0 release notes](docs/release-notes-0.3.0.md) remain available for
 historical context.
 
@@ -77,12 +87,15 @@ flowchart LR
 ## Search keywords
 
 HPE Networking MCP server, HPE Aruba Networking MCP server, HPE Aruba Central
-MCP server, Aruba Central AI tools, HPE GreenLake Platform MCP, GreenLake
+MCP server, HPE Aruba Networking Central MCP server, Aruba Central AI tools,
+AI network automation, HPE GreenLake Platform MCP, GreenLake
 Platform automation, GreenLake Platform MCP, GreenLake service catalog MCP,
 GreenLake reporting status MCP, FastMCP network automation, Model Context
 Protocol networking, network configuration MCP, Aruba API RAG, Aruba Central
 OpenAPI lookup, ClearPass MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP,
-ArubaOS 8 migration MCP, AOS8 automation, HPE Aruba EdgeConnect MCP,
+ArubaOS 8 migration MCP, ArubaOS 8 migration automation, AOS8 automation,
+Classic Central migration, New Central migration, guarded dry-run migration,
+HPE Aruba EdgeConnect MCP,
 EdgeConnect SD-WAN MCP, HPE Aruba UXI MCP, UXI sensor status MCP,
 Axis Atmos Cloud MCP,
 guarded read/write lab automation, EdgeConnect zones, EdgeConnect interface
@@ -122,7 +135,9 @@ EdgeConnect link integrity diagnostics, low-token MCP router.
 | See the architecture diagrams | [docs/architecture/system-overview.md](docs/architecture/system-overview.md) |
 | Browse the documentation map | [docs/README.md](docs/README.md) |
 | Review the RAG design | [docs/architecture/RAG-ARCHITECTURE.md](docs/architecture/RAG-ARCHITECTURE.md) |
-| Review everything added in 0.4.0 | [docs/release-notes-0.4.0.md](docs/release-notes-0.4.0.md) |
+| Review everything added in 0.5.0 | [docs/release-notes-0.5.0.md](docs/release-notes-0.5.0.md) |
+| Review the AOS8 migration contract matrix and live evaluation | [docs/aos8-migration-contract-matrix.md](docs/aos8-migration-contract-matrix.md), [docs/aos8-live-dryrun-evaluation.md](docs/aos8-live-dryrun-evaluation.md) |
+| Review the prior 0.4.0 expansion (historical) | [docs/release-notes-0.4.0.md](docs/release-notes-0.4.0.md) |
 | Review the prior 0.3.0 expansion (historical) | [docs/release-notes-0.3.0.md](docs/release-notes-0.3.0.md) |
 | Compare against a pinned benchmark and see remaining gaps | [docs/capability-gap-matrix.md](docs/capability-gap-matrix.md) |
 | Run validation before pushing | [`scripts/validate_release.py`](scripts/validate_release.py) |

@@ -20,7 +20,7 @@ python3 scripts/setup_wizard.py --with-products
 | ClearPass | 272 / 829 | CPPM 6.12.7 APIs plus verified Insight endpoint and OnGuard activity workflows | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | `/oauth` is excluded; writes dry-run by default |
 | Juniper Mist | 544 / 1,077 | Official 1,050-operation OpenAPI plus NAC, Marvis, inventory, Wired and WAN Assurance, and bounded authenticated regional WebSocket diagnostic-result collection | `MIST_HOST`, `MIST_API_TOKEN`; optional session cookie/CSRF | Writes dry-run by default; diagnostics are distinct from config writes |
 | Apstra | 46 / 68 | Official 6.1 SDK-derived blueprints, tasks, endpoint policies, object policies, topology, and protocols | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional `APSTRA_API_TOKEN` | Current `/api/aaa/login` with older `/api/user/login` fallback |
-| ArubaOS 8 | 129 / 307 | UIDARUBA/X-CSRF/SESSION auth, 258 generated config operations, exhaustive exports, and resumable Classic/New Central migration runs | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN` | Writes dry-run by default and require write-memory to persist |
+| ArubaOS 8 | 129 / 307 | UIDARUBA/X-CSRF/SESSION auth, 258 generated config operations, exhaustive exports, and resumable Classic/New Central migration runs | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN`, optional `AOS8_CLIENT_IP`, optional `AOS8_SESSION_TTL_SECONDS` | Writes dry-run by default and require write-memory to persist |
 | EdgeConnect | 684 / 1,265 | 1,216 generated operations, multipart uploads, fail-closed Swagger compatibility diagnostics, and curated SD-WAN workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` and session overrides | Source artifact is reproducible but must be checked against live Orchestrator Swagger |
 | HPE Aruba UXI | 24 / 49 | Current 25-operation API plus OAuth, sensor/agent/group/network/test inventories and documented writes | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Generic writes accept only documented method/path pairs; 5 requests/second |
 | Axis Atmos Cloud | 12 / 25 | Reviewed application, connector, tunnel, location, policy, status, and commit workflows from the deterministic SHA-pinned manifest generator | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Writes dry-run by default |
@@ -71,6 +71,31 @@ limited to post-change checkpoint policy plus automatic device rollback; there
 is no manual checkpoint listing or restore workflow. Classic Central guidance
 remains export-before-apply. Override the state directory only when needed with
 `CENTRALMCP_AOS8_MIGRATION_STATE_DIR`.
+
+### ArubaOS 8 migration prerequisites
+
+Migration-verified mappings are gated by the authoritative
+[AOS8 migration contract matrix](aos8-migration-contract-matrix.md); a
+read-only [live/dry-run evaluation](aos8-live-dryrun-evaluation.md) records
+exactly what was and was not exercised live in one prior evaluation
+environment. To reproduce or extend that evaluation against your own
+ArubaOS 8 estate:
+
+| Requirement | Variable(s) | Notes |
+|---|---|---|
+| AOS8 source access | `AOS8_BASE_URL`, `AOS8_USERNAME`/`AOS8_PASSWORD` (or legacy `AOS8_API_TOKEN`) | Required for any live export, login, or Classic/New Central migration plan against a real Mobility Conductor/controller |
+| Login client context (optional) | `AOS8_CLIENT_IP` | Optional `client_ip` query parameter sent at login; leave unset unless your controller requires it |
+| Session lifetime (optional) | `AOS8_SESSION_TTL_SECONDS` | Cached session lifetime in seconds; default 600, max 3600 |
+| New Central target access | `central_account` in `config/credentials.yaml` | Required for any live New Central preflight read or preview/apply against a real tenant |
+| Classic Central target access | An explicit Classic group name, GUID, or device serial | Required before any live Classic Central preview or apply; **never inferred from a New Central scope** even when one is configured |
+
+Without AOS8 credentials configured, AOS8 source parsing and Classic Central
+target behavior can still be exercised against the fixture-backed unit test
+suite (`tests/unit/test_aos8_parsers.py`, `test_aos8_migration.py`,
+`test_aos8_session.py`, `test_aos8_target_adapters.py`), but not against a
+live controller. New Central preflight reads and stateless `preview()` calls
+can be exercised live with only `central_account` configured, independent of
+AOS8 access.
 
 EdgeConnect API generations differ materially. Run
 `edgeconnect_doctor` against the target Orchestrator before using operational

@@ -3,7 +3,7 @@
 The core router catalog is quick to build locally. The full docs/API RAG index is
 larger, so public releases can include a prebuilt archive.
 
-## Current 0.4.0 snapshot
+## Current 0.5.0 snapshot
 
 | Artifact content | Count |
 |---|---:|
