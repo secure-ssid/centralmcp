@@ -207,7 +207,21 @@ def _sanitize(
 
     Both channels apply independently and can be combined in the same
     call; each keeps its own marker so the two redaction reasons stay
-    distinguishable in the output.
+    distinguishable in the output. Per string, `structural_redaction_values`
+    is always evaluated first, against the original, unmodified text, and
+    a match short-circuits: the structural marker is returned immediately
+    without running the `secret_values` substring pass at all. This
+    ordering is required, not cosmetic -- a legitimate operator identifier
+    can embed a secret/placeholder literal as a mere substring (e.g.
+    "prod-__runtime_secret_placeholder__-radius"); replacing that inner
+    slice first would leave the outer text unequal to the structural
+    value it should have matched, so the whole-leaf/URL-component
+    comparison would silently fail and the identifier's prefix/suffix
+    would leak unredacted. Evaluating structurally first, on the original
+    text, and returning on a match, is exact and total by construction: a
+    structural match always covers the entire leaf or a whole URL/query
+    component, so there is nothing left in that string for the secret
+    pass to touch.
     """
     secrets = tuple(secret for secret in secret_values if secret)
     structural_secrets = tuple(
@@ -266,16 +280,29 @@ def _sanitize(
         return bounded
     if isinstance(value, str):
         text = value
+        # Structural, non-secret operator-context redaction must run
+        # first, against the *original* string, and win outright on a
+        # match. If it ran after the aggressive `secret_values` substring
+        # scan below, a legitimate operator identifier that merely
+        # *contains* a secret/placeholder literal as a substring (e.g.
+        # "prod-__runtime_secret_placeholder__-radius") would already
+        # have had that inner slice replaced by the time the whole-leaf
+        # exact-match comparison in `_redact_structural` runs -- so the
+        # comparison would never match, and the surrounding prefix/suffix
+        # ("prod-"/"-radius") would leak unredacted. Running structural
+        # redaction first, and returning immediately on a match, closes
+        # that gap: a structural match is always the *entire* leaf or a
+        # whole URL/query component, so nothing else in `text` needs the
+        # secret-substring pass once it fires.
+        structural = _redact_structural(text, structural_secrets, structural_redact_marker)
+        if structural != text:
+            return structural
         # Actual secrets: aggressive substring replacement, anywhere in
         # the string -- this must catch a credential embedded in a longer
         # backend error/result message, not just a leaf that equals it
         # exactly.
         for secret in secrets:
             text = text.replace(secret, redact_marker)
-        # Non-secret operator-context identifiers: exact-match-only
-        # structural redaction (whole-leaf or URL component), never a
-        # substring scan -- see `_redact_structural`.
-        text = _redact_structural(text, structural_secrets, structural_redact_marker)
         if len(text) > 1000:
             return f"{text[:1000]}... [truncated {len(text) - 1000} chars]"
         return text
@@ -1191,19 +1218,20 @@ class AOS8MigrationOrchestrator:
         # / `_placeholder_secret_inputs`) into any operation payload field
         # that requires real target secrets, so callers can see the shape
         # of a WPA3-Enterprise/auth-server write without ever holding real
-        # credentials. It is not itself sensitive, but it is still fed
-        # through the aggressive-substring `secret_values` channel for
-        # defense in depth and to keep the two channels exercised together
-        # here exactly as they would be for a real secret-bearing preview.
-        placeholder_secret_values = tuple(
-            value
-            for bundle in context.secret_inputs.values()
-            for value in bundle.values()
-            if isinstance(value, str) and value
-        )
+        # credentials. It is not itself sensitive and there is no real
+        # leak path that requires redacting it, so it is deliberately kept
+        # out of the aggressive-substring `secret_values` channel: routing
+        # it there would let it collide with -- and corrupt -- a
+        # legitimate operator-context identifier that merely happens to
+        # embed the placeholder literal as a substring (e.g.
+        # "prod-__runtime_secret_placeholder__-radius"), stripping only
+        # the inner slice and leaking the surrounding prefix/suffix before
+        # the exact-match structural comparison against `redaction_values`
+        # ever runs. The placeholder is left to appear verbatim in the
+        # preview; only genuine operator-supplied identifiers go through
+        # `structural_redaction_values` below.
         return _sanitize(
             preview,
-            secret_values=placeholder_secret_values,
             structural_redaction_values=redaction_values,
             structural_redact_marker=_RUNTIME_CONTEXT_REDACTED_MARKER,
         )

@@ -1599,6 +1599,77 @@ def test_sanitize_combined_secret_and_structural_channels():
     assert "backend rejected" in sanitized["error"]
 
 
+def test_sanitize_structural_redaction_runs_before_secret_substring_scan():
+    # Regression for the 8b360bc4 follow-up: an operator-context
+    # identifier that merely *embeds* a secret/placeholder literal as a
+    # substring (e.g. the stateless preview's fixed
+    # `__runtime_secret_placeholder__` marker) must still be matched and
+    # redacted as a *whole leaf* by `structural_redaction_values`. If the
+    # `secret_values` substring pass ran first, it would slice out only
+    # the inner "__runtime_secret_placeholder__" fragment, leaving
+    # "prod-******-radius" behind -- which no longer equals the
+    # registered structural value, so the whole-leaf comparison would
+    # silently fail and the "prod-"/"-radius" prefix/suffix would leak
+    # unredacted. Structural redaction must run first, against the
+    # original text, and win outright.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    placeholder = "__runtime_secret_placeholder__"
+    identifier = f"prod-{placeholder}-radius"
+    marker = "<runtime-context-redacted>"
+    sanitized = _sanitize(
+        {"auth_server1": identifier},
+        secret_values=(placeholder,),
+        structural_redaction_values=(identifier,),
+        structural_redact_marker=marker,
+    )
+    assert sanitized["auth_server1"] == marker
+    assert "prod-" not in sanitized["auth_server1"]
+    assert "-radius" not in sanitized["auth_server1"]
+
+
+def test_sanitize_structural_match_wins_over_embedded_actual_secret():
+    # A whole-leaf structural (operator-context) match must win outright
+    # even when the identifier also happens to embed an *actual* runtime
+    # secret as a substring -- the entire leaf is replaced by the
+    # structural marker, never partially substring-redacted first, so no
+    # fragment of the operator identifier can leak around the secret
+    # substitution.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "Sup3rSecret!"
+    identifier = f"svr-{secret}-branch"
+    marker = "<runtime-context-redacted>"
+    sanitized = _sanitize(
+        {"target_group": identifier},
+        secret_values=(secret,),
+        structural_redaction_values=(identifier,),
+        structural_redact_marker=marker,
+    )
+    assert sanitized["target_group"] == marker
+    assert "svr-" not in sanitized["target_group"]
+    assert "-branch" not in sanitized["target_group"]
+    assert secret not in sanitized["target_group"]
+
+
+def test_sanitize_actual_secret_substring_redaction_unaffected_by_reorder():
+    # Normal actual-secret substring redaction (no structural match
+    # anywhere) must be completely unaffected by evaluating the
+    # structural channel first -- a real credential embedded in a longer
+    # backend message is still redacted, and unrelated text survives.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "abc123"
+    payload = {
+        "error": f"Error: authentication failed using secret {secret} in request",
+    }
+    sanitized = _sanitize(payload, secret_values=(secret,))
+    assert secret not in sanitized["error"]
+    assert "******" in sanitized["error"]
+    assert "authentication failed using secret" in sanitized["error"]
+    assert "in request" in sanitized["error"]
+
+
 def test_preview_one_character_operator_value_does_not_corrupt_preview(tmp_path):
     # End-to-end: an operator-supplied one-character auth-server name
     # must be exact-match-redacted from the payload it appears in
