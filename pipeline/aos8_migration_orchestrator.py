@@ -32,10 +32,19 @@ MAX_HISTORY_ITEMS = 10
 # these are operator-declared reference data (an already-existing Classic
 # auth-server name; an AP-group -> Classic-group mapping; device serials),
 # never secrets, but still caller-controlled input that must be bounded
-# before it is ever used to build a `TargetContext`. They are runtime-only,
-# exactly like `secret_inputs`: bounded/validated here, then never written
-# into persisted run state (see `_strip_operator_context`,
-# `_operator_context_metadata`, `_reconcile_operator_context`).
+# before it is ever used to build a `TargetContext`.
+#
+# Fail-closed contract: these three maps are accepted only by the
+# stateless `preview()` path, which persists nothing and may use them
+# transiently to build the returned dry-run preview. Every persistent
+# workflow (`create_run`, `MigrationRunStore.save`, `apply`, stored
+# get/list/history/checkpoint output) rejects any non-empty map outright
+# with a clear error -- see `_reject_persisted_operator_context` -- rather
+# than storing the raw values, a hash/fingerprint, a count, or any other
+# resupply metadata derived from them. There is no verifier for these
+# free-form operator identifiers, so persisting even a hash would create
+# an offline-guessing surface; not persisting anything at all removes that
+# surface entirely.
 MAX_OPERATOR_CONTEXT_ENTRIES = 100
 MAX_OPERATOR_CONTEXT_STRING_LENGTH = 256
 MAX_AP_GROUP_SERIALS_PER_GROUP = 64
@@ -300,14 +309,21 @@ def _bounded_operator_string(
     *,
     max_length: int = MAX_OPERATOR_CONTEXT_STRING_LENGTH,
 ) -> str:
+    """Structurally canonicalize and bound one free-form operator-context
+    string: type, surrounding-whitespace trim, non-empty, and length only.
+    Deliberately never a content/secret-word heuristic -- a legitimate
+    Classic group or AP group literally named "Token-Group" or
+    "private-key-infra" must be accepted unchanged (see the module note
+    above `_validate_external_object_references`).
+    """
     if not isinstance(value, str):
         raise MigrationRunError(f"{field_name} must be a string.")
     text = value.strip()
     if not text:
         raise MigrationRunError(f"{field_name} must be a non-empty string.")
-    if len(value) > max_length:
+    if len(text) > max_length:
         raise MigrationRunError(f"{field_name} exceeds {max_length} characters.")
-    return value
+    return text
 
 
 # `external_object_references`, `ap_group_target_map`, and
@@ -316,17 +332,16 @@ def _bounded_operator_string(
 # Their names and values are arbitrary caller-chosen identifiers -- e.g. a
 # Classic auth-server profile literally named "Token-Group", or an AP group
 # named "private-key-infra" -- so they must never be screened with
-# secret-keyword/secret-shaped-content heuristics (`_is_sensitive_key`, or a
-# former `_looks_like_credential_material`): those heuristics are only sound
-# against dictionary field names with a known, fixed schema (e.g. a
-# candidate payload's "shared_secret" field), not against free-form operator
-# identifiers. Structural bounds (type, non-empty, length, count) are the
-# only validation applied here. The actual secret-persistence risk is
-# eliminated by treating these three maps as runtime-only operator input,
-# exactly like `secret_inputs`: never written into persisted run state,
-# history, fingerprints, candidate snapshots, or returned by a later
-# get/list call (see `_strip_operator_context`, `_operator_context_metadata`,
-# and `_operator_context_values` below).
+# secret-keyword/secret-shaped-content heuristics (`_is_sensitive_key`):
+# those heuristics are only sound against dictionary field names with a
+# known, fixed schema (e.g. a candidate payload's "shared_secret" field),
+# not against free-form operator identifiers. Structural bounds (type,
+# non-empty, whitespace-trimmed, length, count) are the only validation
+# applied here. The actual secret-persistence risk is eliminated by
+# accepting these three maps only from the stateless `preview()` path and
+# rejecting any non-empty map outright everywhere else (see
+# `_reject_persisted_operator_context` below) -- never by storing the
+# values, a hash, a count, or any other resupply metadata.
 
 
 def _validate_external_object_references(
@@ -471,15 +486,15 @@ def _target_context(
 
 
 # `external_object_references`, `ap_group_target_map`, and
-# `ap_group_device_serials` are runtime-only operator input -- exactly like
-# `secret_inputs` -- and must never be written into persisted run state,
-# fingerprints, history, candidate snapshots, action previews saved to
-# disk, list/get output, checkpoints, or logs. The helpers below give the
-# orchestrator a way to (a) prove, without storing any of the actual
-# values, that a later `apply()` call resupplied the *same* bounded input
-# used at `create_run()` time (non-reversible SHA-256 fingerprint + count
-# metadata only), and (b) strip those values out of any adapter-produced
-# text (errors/results) before it is ever persisted.
+# `ap_group_device_serials` are accepted only by the stateless `preview()`
+# path. Every persistent workflow rejects any non-empty map outright (see
+# `_reject_persisted_operator_context`) instead of storing the values, a
+# hash, a count, or any other resupply metadata -- there is no verifier
+# for these free-form operator identifiers, so persisting even a hash
+# would create an offline-guessing surface. `_without_operator_context`
+# simply drops the (guaranteed-empty, by the time it is called) keys
+# before a target dict is persisted, so a persisted `target` never even
+# carries the keys -- matching the 0.4 shape these fields did not exist in.
 _OPERATOR_CONTEXT_FIELDS = (
     "external_object_references",
     "ap_group_target_map",
@@ -487,65 +502,29 @@ _OPERATOR_CONTEXT_FIELDS = (
 )
 
 
-def _operator_context_fingerprint(value: Any) -> dict[str, Any]:
-    """Non-reversible count + SHA-256 fingerprint for one bounded operator-
-    context map. Safe to persist: it reveals neither the reference names,
-    group names, nor device serials that produced it -- only that some
-    bounded input was supplied, and a hash a caller can use to prove a later
-    resupply is the exact same input (see `_reconcile_operator_context`).
+def _reject_persisted_operator_context(
+    target: Mapping[str, Any], *, workflow: str
+) -> None:
+    """Fail closed, with a clear and actionable error, if a persistent
+    workflow (`create_run`, and by construction anything that only ever
+    operates on an already-persisted run's stored target) is asked to use
+    a non-empty operator-context map. These maps may be used transiently
+    to construct a stateless `preview()` response only; call
+    `aos8_preview_migration_run` for that instead.
     """
-    if not value:
-        return {"count": 0, "fingerprint": None}
-    return {
-        "count": len(value),
-        "fingerprint": hashlib.sha256(_canonical_json(value).encode()).hexdigest(),
-    }
+    offending = [field for field in _OPERATOR_CONTEXT_FIELDS if target.get(field)]
+    if offending:
+        raise MigrationRunError(
+            f"{workflow} cannot accept a non-empty "
+            f"{', '.join(sorted(offending))}: operator-context maps are "
+            "accepted only by aos8_preview_migration_run's stateless "
+            "preview, which does not persist a migration run. Remove "
+            "them from this call, or use aos8_preview_migration_run to "
+            "review the same mapping without creating a run."
+        )
 
 
-def _operator_context_metadata(
-    external_object_references: Mapping[str, Mapping[str, str]],
-    ap_group_target_map: Mapping[str, str],
-    ap_group_device_serials: Mapping[str, tuple[str, ...]],
-) -> dict[str, dict[str, Any]]:
-    return {
-        "external_object_references": _operator_context_fingerprint(
-            external_object_references
-        ),
-        "ap_group_target_map": _operator_context_fingerprint(ap_group_target_map),
-        "ap_group_device_serials": _operator_context_fingerprint(
-            {key: list(value) for key, value in ap_group_device_serials.items()}
-        ),
-    }
-
-
-def _operator_context_values(
-    external_object_references: Mapping[str, Mapping[str, str]],
-    ap_group_target_map: Mapping[str, str],
-    ap_group_device_serials: Mapping[str, Iterable[str]],
-) -> tuple[str, ...]:
-    """Every literal string value carried by the three runtime-only
-    operator-context maps. Used purely as an exact-match redaction set
-    (never a content heuristic) so that if an adapter ever echoes one of
-    these values back into an operation payload, error, or result, it is
-    scrubbed out -- the same mechanism already used for `secret_inputs` --
-    before that text is persisted to run state.
-    """
-    values: list[str] = []
-    for refs in external_object_references.values():
-        values.extend(str(item) for item in refs.values())
-    values.extend(str(item) for item in ap_group_target_map.values())
-    for serials in ap_group_device_serials.values():
-        values.extend(str(item) for item in serials)
-    return tuple(item for item in values if item)
-
-
-def _strip_operator_context(target: Mapping[str, Any]) -> dict[str, Any]:
-    """Remove the three runtime-only operator-context maps from a target
-    dict before it is ever written to persisted run state or returned via a
-    later get/list call. They are supplied fresh on every call that needs
-    them (`preview`/`create_run`/`apply`) and are never retrievable from a
-    completed run afterward.
-    """
+def _without_operator_context(target: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: value for key, value in target.items() if key not in _OPERATOR_CONTEXT_FIELDS
     }
@@ -555,15 +534,58 @@ def _run_fingerprint(
     candidates: list[dict[str, Any]],
     target: Mapping[str, Any],
     selected: Iterable[str] | None,
-    operator_context_metadata: Mapping[str, Any],
 ) -> str:
     material = {
         "candidates": candidates,
         "target": dict(target),
         "selected": sorted(selected or ()),
-        "operator_context_metadata": operator_context_metadata,
     }
     return hashlib.sha256(_canonical_json(material).encode()).hexdigest()
+
+
+_LEGACY_OPERATOR_CONTEXT_MARKER = "legacy_operator_context_sanitized"
+
+
+def _sanitize_legacy_operator_context(
+    value: Mapping[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Heal a genuinely stale state file written before this fail-closed
+    contract existed: one that still carries raw
+    `external_object_references`/`ap_group_target_map`/
+    `ap_group_device_serials` values directly on `target`, and/or the
+    non-reversible `operator_context_metadata` fingerprint/count metadata
+    an earlier revision persisted instead of the raw values. Both are
+    removed entirely (no raw values, no hashes) and replaced with a
+    durable warning marker. Never mutates `value` in place; returns
+    `(possibly-sanitized run, whether anything changed)`.
+    """
+    changed = False
+    sanitized = dict(value)
+    target = sanitized.get("target")
+    if isinstance(target, dict) and any(
+        field in target for field in _OPERATOR_CONTEXT_FIELDS
+    ):
+        sanitized["target"] = _without_operator_context(target)
+        changed = True
+    if "operator_context_metadata" in sanitized:
+        del sanitized["operator_context_metadata"]
+        changed = True
+    if changed:
+        sanitized[_LEGACY_OPERATOR_CONTEXT_MARKER] = {
+            "removed_at": _now(),
+            "reason": (
+                "This run's on-disk state was written by a prior revision "
+                "that could persist operator-supplied "
+                "external_object_references/ap_group_target_map/"
+                "ap_group_device_serials values, or a resupply fingerprint "
+                "derived from them. Those fields have been removed from "
+                "this run's state. This run cannot be applied: recreate it "
+                "with aos8_create_migration_run, and use a fresh "
+                "aos8_preview_migration_run first for any context-dependent "
+                "mapping (e.g. WPA3-Enterprise, AP-group)."
+            ),
+        }
+    return sanitized, changed
 
 
 class MigrationRunStore:
@@ -595,6 +617,11 @@ class MigrationRunStore:
             yield
 
     def load(self, run_id: str) -> dict[str, Any]:
+        validated = validate_run_id(run_id)
+        with self.lock_run(validated):
+            return self._load_locked(validated)
+
+    def _load_locked(self, run_id: str) -> dict[str, Any]:
         path = self.path_for(run_id)
         if not path.exists():
             raise MigrationRunNotFoundError(f"Migration run {run_id!r} was not found.")
@@ -619,32 +646,46 @@ class MigrationRunStore:
             raise MalformedMigrationStateError(
                 f"Migration run {run_id!r} has an invalid state schema."
             )
-        # Defense in depth: `external_object_references`/
-        # `ap_group_target_map`/`ap_group_device_serials` are runtime-only
-        # operator input and current code never writes them into a run's
-        # persisted `target`. But a state file written by a prior,
-        # vulnerable revision (or hand-edited) could still carry them --
-        # sanitize on every read so a stale on-disk value is never served
-        # back through `get_run`/`list_runs`/`apply`/`verify`. The next
-        # `save()` for this run naturally persists the sanitized version.
-        target = value.get("target")
-        if isinstance(target, dict) and any(
-            field in target for field in _OPERATOR_CONTEXT_FIELDS
-        ):
-            value["target"] = _strip_operator_context(target)
-        return value
+        # A state file written before this fail-closed contract existed
+        # (or hand-edited) could still carry raw operator-context values on
+        # `target`, or the non-reversible fingerprint/count metadata an
+        # earlier revision persisted instead. Heal it now: rewrite the
+        # actual file with those fields removed and a durable warning
+        # marker added, so a stale on-disk value is never served back
+        # through `get_run`/`list_runs`/`apply`/`verify`, and the healed
+        # version -- not just an in-memory copy -- is what is on disk
+        # afterward.
+        sanitized, changed = _sanitize_legacy_operator_context(value)
+        if changed:
+            self._write_locked(sanitized)
+        return sanitized
 
     def save(self, run: Mapping[str, Any]) -> None:
         run_id = validate_run_id(str(run.get("run_id", "")))
-        # Defense in depth, mirroring `load()`: never let
-        # `external_object_references`/`ap_group_target_map`/
-        # `ap_group_device_serials` reach disk even if some future caller
-        # forgets to strip them from `run["target"]` first.
+        # Hard backstop, not a silent sanitizer: normal code paths
+        # (`create_run`) must reject a non-empty operator-context map
+        # before ever calling `save()` -- see
+        # `_reject_persisted_operator_context`. If one somehow reaches
+        # here regardless, that is a bug in the caller and `save()` fails
+        # loudly rather than quietly persisting or dropping it.
         target = run.get("target")
-        if isinstance(target, dict) and any(
-            field in target for field in _OPERATOR_CONTEXT_FIELDS
-        ):
-            run = {**run, "target": _strip_operator_context(target)}
+        if isinstance(target, dict):
+            offending = [
+                field for field in _OPERATOR_CONTEXT_FIELDS if target.get(field)
+            ]
+            if offending:
+                raise MigrationRunError(
+                    f"Refusing to persist run {run_id!r}: {', '.join(offending)} "
+                    "is non-empty. Operator-context maps must be rejected "
+                    "before a persistent workflow ever calls save()."
+                )
+            if any(field in target for field in _OPERATOR_CONTEXT_FIELDS):
+                run = {**run, "target": _without_operator_context(target)}
+        with self.lock_run(run_id):
+            self._write_locked(run)
+
+    def _write_locked(self, run: Mapping[str, Any]) -> None:
+        run_id = validate_run_id(str(run.get("run_id", "")))
         payload = _canonical_json(run).encode("utf-8")
         if len(payload) > MAX_STATE_BYTES:
             raise MigrationRunError(
@@ -743,13 +784,13 @@ def _run_summary(run: Mapping[str, Any]) -> dict[str, Any]:
         "created_at": run.get("created_at"),
         "updated_at": run.get("updated_at"),
         "target": run.get("target"),
-        # Non-reversible count + SHA-256 metadata only -- never the actual
-        # `external_object_references`/`ap_group_target_map`/
-        # `ap_group_device_serials` values, which are runtime-only operator
-        # input and are never persisted (see `_operator_context_metadata`).
-        # A caller that needs to resupply these on `apply()` can use this to
-        # confirm which fields (if any) the run was created with.
-        "operator_context_metadata": run.get("operator_context_metadata", {}),
+        # Present only when `MigrationRunStore.load()` healed a genuinely
+        # stale state file that predated this fail-closed contract (see
+        # `_sanitize_legacy_operator_context`). A durable warning, never a
+        # value or hash: this run cannot be applied and must be recreated.
+        "legacy_operator_context_sanitized": run.get(
+            _LEGACY_OPERATOR_CONTEXT_MARKER
+        ),
         "candidate_count": len(run.get("candidates", [])),
         "status_counts": _status_counts(run),
         "dry_run_attempted_at": run.get("dry_run_attempted_at"),
@@ -858,30 +899,18 @@ class AOS8MigrationOrchestrator:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
+        # Fail closed before doing anything else: `external_object_references`/
+        # `ap_group_target_map`/`ap_group_device_serials` are accepted only
+        # by the stateless `preview()` path. A persistent run must never be
+        # created from a target that carries a non-empty one.
+        _reject_persisted_operator_context(
+            target, workflow="aos8_create_migration_run"
+        )
         safe_candidates = self._validate_candidates(candidates)
         selected_set = set(selected) if selected is not None else None
         adapter = self._adapter(target, safe_candidates, placeholders=True)
         full_preview = adapter.preview(safe_candidates, selected=selected_set)
-        # `external_object_references`/`ap_group_target_map`/
-        # `ap_group_device_serials` are runtime-only operator input, just
-        # like `secret_inputs`: used transiently above to map this run's
-        # candidates, but never persisted. `operator_context_metadata` is a
-        # non-reversible count + SHA-256 fingerprint per field, safe to
-        # store, that lets a later `apply()` call prove it is resupplying
-        # the exact same input (see `_reconcile_operator_context`).
-        # `operator_context_values` is the exact-match redaction set used to
-        # scrub those values out of any adapter-produced text below.
-        operator_context_values = _operator_context_values(
-            adapter.context.external_object_references,
-            adapter.context.ap_group_target_map,
-            adapter.context.ap_group_device_serials,
-        )
-        operator_context_metadata = _operator_context_metadata(
-            adapter.context.external_object_references,
-            adapter.context.ap_group_target_map,
-            adapter.context.ap_group_device_serials,
-        )
-        persisted_target = _strip_operator_context(full_preview["target"])
+        persisted_target = _without_operator_context(full_preview["target"])
         operation_by_key = {
             str(operation["candidate"]): operation
             for operation in full_preview.get("operations", [])
@@ -897,7 +926,6 @@ class AOS8MigrationOrchestrator:
             selected_candidates,
             persisted_target,
             operation_by_key,
-            operator_context_metadata,
         )
         resolved_run_id = validate_run_id(
             run_id or f"aos8-{fingerprint[:16]}"
@@ -941,11 +969,7 @@ class AOS8MigrationOrchestrator:
                     ),
                     "required_secret_names": _required_secret_names(candidate),
                     "dry_run_ok": initial_status == "skipped",
-                    "last_error": (
-                        _sanitize(joined_errors, secret_values=operator_context_values)
-                        if joined_errors
-                        else None
-                    ),
+                    "last_error": _sanitize(joined_errors) if joined_errors else None,
                     "last_result": None,
                     "attempt_history": [],
                     "verification": None,
@@ -960,7 +984,6 @@ class AOS8MigrationOrchestrator:
             "created_at": created_at,
             "updated_at": created_at,
             "target": persisted_target,
-            "operator_context_metadata": operator_context_metadata,
             "checkpoint_and_rollback": full_preview["checkpoint_and_rollback"],
             "dry_run_attempted_at": None,
             "last_apply_at": None,
@@ -1016,9 +1039,6 @@ class AOS8MigrationOrchestrator:
         dry_run: bool,
         confirmation: bool,
         target_secrets: Mapping[str, Mapping[str, str]] | None = None,
-        external_object_references: Mapping[str, Mapping[str, str]] | None = None,
-        ap_group_target_map: Mapping[str, str] | None = None,
-        ap_group_device_serials: Mapping[str, Iterable[str]] | None = None,
         retry_failed: bool = False,
         limit: int = 50,
         offset: int = 0,
@@ -1029,75 +1049,10 @@ class AOS8MigrationOrchestrator:
                 dry_run=dry_run,
                 confirmation=confirmation,
                 target_secrets=target_secrets,
-                external_object_references=external_object_references,
-                ap_group_target_map=ap_group_target_map,
-                ap_group_device_serials=ap_group_device_serials,
                 retry_failed=retry_failed,
                 limit=limit,
                 offset=offset,
             )
-
-    def _reconcile_operator_context(
-        self,
-        run: dict[str, Any],
-        *,
-        external_object_references: Mapping[str, Mapping[str, str]] | None,
-        ap_group_target_map: Mapping[str, str] | None,
-        ap_group_device_serials: Mapping[str, Iterable[str]] | None,
-    ) -> dict[str, Any]:
-        """Reconcile this apply() call's runtime-only operator-context
-        resupply against the non-reversible fingerprint/count metadata
-        recorded when the run was created, without ever storing the actual
-        values. Returns a `target`-shaped dict (never persisted by the
-        caller) suitable for building an adapter for this call only.
-
-        - If the run was created with a given field (recorded count > 0)
-          and this call does not resupply it, that is a bounded-resupply
-          failure -- raised explicitly, never silently treated as absent.
-        - If resupplied, the fingerprint of the validated resupply must
-          match the fingerprint recorded at create time, or the call is
-          rejected (the caller is not supplying the same input the run's
-          candidates were mapped against).
-        - If the run was created without a given field (recorded count 0,
-          or no metadata at all -- e.g. a pre-fix/0.4 run), a fresh resupply
-          is accepted and the run's metadata is updated to match, so later
-          calls must stay consistent with it in turn.
-        """
-        supplied = {
-            "external_object_references": external_object_references,
-            "ap_group_target_map": ap_group_target_map,
-            "ap_group_device_serials": ap_group_device_serials,
-        }
-        validators: dict[str, Callable[[Any], Any]] = {
-            "external_object_references": _validate_external_object_references,
-            "ap_group_target_map": _validate_ap_group_target_map,
-            "ap_group_device_serials": _validate_ap_group_device_serials,
-        }
-        stored_metadata = run.get("operator_context_metadata") or {}
-        effective: dict[str, Any] = {}
-        new_metadata: dict[str, Any] = {}
-        for field in _OPERATOR_CONTEXT_FIELDS:
-            validated = validators[field](supplied[field])
-            recorded = stored_metadata.get(field) or {"count": 0, "fingerprint": None}
-            if recorded.get("count", 0) > 0:
-                if supplied[field] is None:
-                    raise MigrationRunError(
-                        f"This run was created with {field!r} operator context; "
-                        "it must be resupplied on every apply() call (it is "
-                        "never persisted) -- pass the exact same value again."
-                    )
-                fingerprint = _operator_context_fingerprint(validated)
-                if fingerprint.get("fingerprint") != recorded.get("fingerprint"):
-                    raise MigrationRunError(
-                        f"Resupplied {field!r} does not match the value used "
-                        "when this run was created."
-                    )
-                new_metadata[field] = recorded
-            else:
-                new_metadata[field] = _operator_context_fingerprint(validated)
-            effective[field] = validated
-        run["operator_context_metadata"] = new_metadata
-        return {**run["target"], **effective}
 
     def _apply_locked(
         self,
@@ -1106,30 +1061,31 @@ class AOS8MigrationOrchestrator:
         dry_run: bool,
         confirmation: bool,
         target_secrets: Mapping[str, Mapping[str, str]] | None,
-        external_object_references: Mapping[str, Mapping[str, str]] | None = None,
-        ap_group_target_map: Mapping[str, str] | None = None,
-        ap_group_device_serials: Mapping[str, Iterable[str]] | None = None,
         retry_failed: bool,
         limit: int,
         offset: int,
     ) -> dict[str, Any]:
         run = self.store.load(run_id)
-        effective_target = self._reconcile_operator_context(
-            run,
-            external_object_references=external_object_references,
-            ap_group_target_map=ap_group_target_map,
-            ap_group_device_serials=ap_group_device_serials,
-        )
+        # A run healed from a genuinely stale, pre-fix state file (see
+        # `_sanitize_legacy_operator_context`) may have been created with
+        # operator context that could change how its candidates map --
+        # that context is gone now (never stored, never resuppliable), so
+        # this run must not be applied at all: it must be recreated.
+        if run.get(_LEGACY_OPERATOR_CONTEXT_MARKER):
+            raise MigrationRunError(
+                f"Migration run {run_id!r} contained unsafe legacy "
+                "operator-context data that has been removed from its "
+                "on-disk state (see run['legacy_operator_context_sanitized'])."
+                " It cannot be applied: recreate it with "
+                "aos8_create_migration_run."
+            )
+        effective_target = run["target"]
         supplied_secrets = dict(target_secrets or {})
         secret_values = tuple(
             value
             for bundle in supplied_secrets.values()
             for value in bundle.values()
             if isinstance(value, str) and value
-        ) + _operator_context_values(
-            effective_target["external_object_references"],
-            effective_target["ap_group_target_map"],
-            effective_target["ap_group_device_serials"],
         )
         if not dry_run and not confirmation:
             raise WriteGateError(
@@ -1365,15 +1321,14 @@ class AOS8MigrationOrchestrator:
     ) -> dict[str, Any]:
         run = self.store.load(run_id)
         candidates = [entry["candidate"] for entry in run["candidates"]]
-        # No operator-context resupply is needed here: `verify()` only ever
-        # inspects entries whose status is already a terminal success
-        # (`applied`/`skipped`, see `_verify_entry`), and none of the
-        # mappings that consume `external_object_references`/
-        # `ap_group_target_map`/`ap_group_device_serials` can ever reach
-        # that state -- WPA3-Enterprise is unconditionally `dry_run_only`
-        # (real execution always refused) and AP-group mappings never leave
-        # `unsupported` (contract matrix §5/§6.11). `run["target"]` here
-        # never carries those fields (see `_strip_operator_context`).
+        # Persistent runs never carry `external_object_references`/
+        # `ap_group_target_map`/`ap_group_device_serials` (rejected at
+        # `create_run()` time -- see `_reject_persisted_operator_context`),
+        # so no operator context is available or needed here regardless:
+        # WPA3-Enterprise is unconditionally `dry_run_only` (real execution
+        # always refused) and AP-group mappings never leave `unsupported`
+        # (contract matrix §5/§6.11), so neither family can ever reach the
+        # terminal-success state `verify()` inspects.
         adapter = self._adapter(run["target"], candidates, placeholders=True)
         bounded_limit = max(1, min(int(limit), 200))
         bounded_offset = max(0, int(offset))

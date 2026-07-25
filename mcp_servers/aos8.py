@@ -2028,11 +2028,15 @@ def _aos8_migration_target(
         # mapping and device serials for the manual/unsupported AP-group
         # family). Bounded/validated structurally by
         # `pipeline.aos8_migration_orchestrator._target_context` before ever
-        # reaching a `TargetContext`; never a channel for secrets. This
-        # `target` dict is a call-scoped, in-memory value only -- the
-        # orchestrator never persists these three keys (they are
-        # runtime-only, like `secret_inputs`; see
-        # `_strip_operator_context`/`_reconcile_operator_context`).
+        # reaching a `TargetContext`; never a channel for secrets.
+        #
+        # Fail-closed contract: these three keys are accepted only by the
+        # stateless `aos8_preview_migration_run`, which persists nothing.
+        # `aos8_create_migration_run` rejects any non-empty value here with
+        # a clear error (see
+        # `pipeline.aos8_migration_orchestrator._reject_persisted_operator_context`)
+        # rather than persisting it, a hash of it, or a resupply count.
+        # `aos8_apply_migration_run` does not accept these fields at all.
         "external_object_references": external_object_references or {},
         "ap_group_target_map": ap_group_target_map or {},
         "ap_group_device_serials": ap_group_device_serials or {},
@@ -2319,13 +2323,19 @@ def aos8_preview_migration_run(
     (an already-existing Classic auth-server name for a conditional
     WPA3-Enterprise WLAN; an AOS8 AP-group -> Classic group mapping and
     device serials for the manual/unsupported AP-group family). They are
-    bounded/validated structurally (type, length, count) before use --
-    ordinary identifiers such as "Token-Group" or "private-key-infra" are
-    accepted; they are never screened by secret-keyword/content heuristics,
-    since that would reject legitimate names. They are also never a channel
-    for actual secrets: this call is stateless (nothing here is persisted),
-    but the same fields are runtime-only at every other call site too (see
-    `aos8_create_migration_run`/`aos8_apply_migration_run`).
+    bounded/canonicalized structurally (type, surrounding-whitespace
+    trimmed, length, count) before use -- ordinary identifiers such as
+    "Token-Group" or "private-key-infra" are accepted; they are never
+    screened by secret-keyword/content heuristics, since that would reject
+    legitimate names. They are also never a channel for actual secrets.
+
+    This is the *only* migration-run tool that accepts these three fields:
+    this call is stateless (nothing it returns is persisted), and it may
+    use them transiently to construct the returned preview.
+    `aos8_create_migration_run` rejects any non-empty value for them with a
+    clear error, and `aos8_apply_migration_run` does not accept them at
+    all -- see the fail-closed contract on
+    `pipeline.aos8_migration_orchestrator._reject_persisted_operator_context`.
     """
     try:
         selected = _aos8_migration_candidates(
@@ -2381,15 +2391,18 @@ def aos8_create_migration_run(
 ) -> dict[str, Any]:
     """Create an atomic resumable run from a plan/candidate set; secrets are never stored.
 
-    See `aos8_preview_migration_run` for `external_object_references`/
-    `ap_group_target_map`/`ap_group_device_serials` semantics. They are
-    runtime-only operator input -- exactly like a secret -- and are used
-    only to map this run's candidates; they are never written into the
-    persisted run (target, history, fingerprint, or any get/list output).
-    A later `aos8_apply_migration_run` call that needs the same conditional
-    mapping (e.g. WPA3-Enterprise) must resupply the exact same value via
-    that tool's own `external_object_references`/`ap_group_target_map`/
-    `ap_group_device_serials` arguments.
+    `external_object_references`/`ap_group_target_map`/
+    `ap_group_device_serials` are accepted here only to produce a clear,
+    fail-closed error: a persistent run must never be created with a
+    non-empty value for any of them (see
+    `aos8_preview_migration_run` for their semantics, and
+    `pipeline.aos8_migration_orchestrator._reject_persisted_operator_context`
+    for the rejection). There is no verifier for these free-form operator
+    identifiers, so this tool never persists the raw values, a hash of
+    them, a count, or any other resupply metadata -- pass an empty/absent
+    value (the default) for a normal create_run call, or use
+    `aos8_preview_migration_run` to review a context-dependent mapping
+    (e.g. WPA3-Enterprise, AP-group) without creating a run at all.
     """
     try:
         selected = _aos8_migration_candidates(
@@ -2429,9 +2442,6 @@ def aos8_apply_migration_run(
     dry_run: bool = True,
     confirm: bool = False,
     target_secrets: dict[str, dict[str, str]] | None = None,
-    external_object_references: dict[str, dict[str, str]] | None = None,
-    ap_group_target_map: dict[str, str] | None = None,
-    ap_group_device_serials: dict[str, list[str]] | None = None,
     retry_failed: bool = False,
     limit: int = 50,
     offset: int = 0,
@@ -2439,16 +2449,15 @@ def aos8_apply_migration_run(
     """Dry-run, apply, or resume a run; real writes require confirm and prior dry-run.
 
     `target_secrets` is never persisted (must be resupplied every call it
-    is needed). `external_object_references`/`ap_group_target_map`/
-    `ap_group_device_serials` are the same runtime-only operator context
-    accepted by `aos8_preview_migration_run`/`aos8_create_migration_run`:
-    if the run was created with one of these fields, it must be resupplied
-    here with the exact same value on every call that needs it (checked via
-    a non-reversible fingerprint) -- omitting it, or resupplying a
-    different value, fails closed rather than silently proceeding without
-    it. WPA3-Enterprise and AP-group candidates remain conditional/manual;
-    supplying this context never makes a real (non-dry-run) write happen
-    for either family.
+    is needed). This tool intentionally has no
+    `external_object_references`/`ap_group_target_map`/
+    `ap_group_device_serials` parameters: those operator-context maps are
+    accepted only by the stateless `aos8_preview_migration_run`, and
+    `aos8_create_migration_run` rejects them outright, so a persisted run
+    can never depend on them here. WPA3-Enterprise and AP-group candidates
+    remain conditional/manual: WPA3-Enterprise stays dry-run-only and
+    AP-group mappings never reach applied/skipped, in either case
+    regardless of this tool's arguments.
     """
     try:
         return _aos8_migration_orchestrator().apply(
@@ -2456,9 +2465,6 @@ def aos8_apply_migration_run(
             dry_run=dry_run,
             confirmation=confirm,
             target_secrets=target_secrets,
-            external_object_references=external_object_references,
-            ap_group_target_map=ap_group_target_map,
-            ap_group_device_serials=ap_group_device_serials,
             retry_failed=retry_failed,
             limit=limit,
             offset=offset,

@@ -76,26 +76,24 @@ class TargetContext:
     # Classic auth-server profile name for WPA3-Enterprise). Never a secret;
     # never used to invent/auto-provision a missing dependency.
     #
-    # Runtime-only, exactly like `secret_inputs` above: this field (and
-    # `ap_group_target_map`/`ap_group_device_serials` below) is populated
-    # freshly by the orchestrator for the duration of one
-    # preview/create_run/apply call and is never written into persisted run
-    # state, history, fingerprints, candidate snapshots, or returned by a
-    # later get/list call. See
-    # `pipeline.aos8_migration_orchestrator._strip_operator_context` /
-    # `_reconcile_operator_context`.
+    # Accepted only via the orchestrator's stateless `preview()` -- never
+    # via `create_run()`/`apply()`, which reject a non-empty value here
+    # with a clear error rather than persisting it (or a hash/count of it).
+    # See `pipeline.aos8_migration_orchestrator._reject_persisted_operator_context`.
     external_object_references: Mapping[str, Mapping[str, str]] = field(
         default_factory=dict
     )
     # Explicit, operator-provided AOS8 ap_group name -> Classic Central group
     # name mapping. AOS8 AP groups are never automatically translated into a
     # Classic group; the operator must name the target group themselves.
-    # Runtime-only -- see the note on `external_object_references` above.
+    # Accepted only via stateless preview -- see the note on
+    # `external_object_references` above.
     ap_group_target_map: Mapping[str, str] = field(default_factory=dict)
     # Explicit, operator-provided AOS8 ap_group name -> device serial numbers
     # to move into the mapped Classic group. Never inferred from the AOS8
-    # export (which carries no device/serial data today). Runtime-only --
-    # see the note on `external_object_references` above.
+    # export (which carries no device/serial data today). Accepted only via
+    # stateless preview -- see the note on `external_object_references`
+    # above.
     ap_group_device_serials: Mapping[str, tuple[str, ...]] = field(
         default_factory=dict
     )
@@ -2176,11 +2174,12 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
                 candidate=candidate,
                 compatibility_errors=[
                     # Never echo `target_group` (the operator-supplied
-                    # Classic-group name) into a persisted message --
-                    # `ap_group_target_map`/`ap_group_device_serials` are
-                    # runtime-only operator context, exactly like
-                    # `secret_inputs`, and are never written into run state
-                    # (contract matrix §5/§6.11).
+                    # Classic-group name) into this message -- persistent
+                    # workflows reject a non-empty `ap_group_target_map`/
+                    # `ap_group_device_serials` outright (contract matrix
+                    # §5/§6.11), but this message can still reach a
+                    # stateless `preview()` response, so it stays value-free
+                    # on principle.
                     f"{key}: an explicit Classic group mapping was supplied, "
                     "but no explicit device serial number(s) were supplied "
                     f"via context.ap_group_device_serials[{ap_group_name!r}] "

@@ -293,13 +293,16 @@ def _ap_group_candidate(identifier="ap-group-hq"):
     return candidate("ap_group", identifier, payload={"name": identifier})
 
 
-def test_operator_context_opaque_secret_values_never_persisted_or_returned(tmp_path):
-    """Production-path regression for the review finding: opaque
-    passwords/API keys/Base64/PEM material pasted into
-    `external_object_references`/`ap_group_target_map`/
-    `ap_group_device_serials` must never appear in the on-disk state file,
-    `get_run`/`list_runs` output, or attempt history -- at any point across
-    preview, create_run, and apply (dry-run and blocked real-apply)."""
+def test_operator_context_maps_are_rejected_by_every_persistent_workflow(tmp_path):
+    """Fail-closed contract regression: `external_object_references`/
+    `ap_group_target_map`/`ap_group_device_serials` are accepted only by
+    the stateless `preview()` (which may echo them back in that one live
+    response, since nothing it returns is persisted). Every persistent
+    workflow -- `create_run`, and by construction `apply`/`get_run`/
+    `list_runs`, which only ever operate on an already-persisted run --
+    must reject a non-empty value for any of them with a clear error,
+    and must never write the raw values, a hash, a count, or any other
+    resupply metadata to disk."""
     import base64
 
     backend = FakeBackend()
@@ -338,47 +341,51 @@ def test_operator_context_opaque_secret_values_never_persisted_or_returned(tmp_p
         },
     }
 
+    # `preview()` is stateless -- nothing it returns is persisted -- so it
+    # may echo the caller's own just-supplied context back in this one
+    # live response.
     preview = service.preview([wlan, ap_group], wpa3_target)
-    created = service.create_run(
-        [wlan, ap_group], wpa3_target, run_id="opaque-ctx"
-    )
+    assert opaque_password in json.dumps(preview)
 
-    raw_state = store.path_for("opaque-ctx").read_text()
+    # `create_run()` must reject the same target outright rather than
+    # silently dropping, hashing, or fingerprinting the context.
+    with pytest.raises(MigrationRunError, match="external_object_references"):
+        service.create_run([wlan, ap_group], wpa3_target, run_id="opaque-ctx")
+    # No run file was ever written by the rejected call.
+    assert not store.path_for("opaque-ctx").exists()
+
+    # A target with only `ap_group_target_map`/`ap_group_device_serials`
+    # populated is rejected too (each field is checked independently).
+    ap_group_only_target = {
+        **target("classic_central"),
+        "ap_group_target_map": {"ap-group-opaque": opaque_api_key},
+        "ap_group_device_serials": {
+            "ap-group-opaque": [opaque_aws_key, opaque_base64]
+        },
+    }
+    with pytest.raises(MigrationRunError, match="ap_group_target_map"):
+        service.create_run([ap_group], ap_group_only_target, run_id="opaque-ctx-2")
+    assert not store.path_for("opaque-ctx-2").exists()
+
+    # A normal create_run/apply/get_run/list_runs cycle with no operator
+    # context at all still works, and (trivially) never contains any of
+    # the opaque values above.
+    created = service.create_run([wlan, ap_group], target("classic_central"), run_id="no-ctx")
+    dry_run = service.apply("no-ctx", dry_run=True, confirmation=False)
+    blocked = service.apply("no-ctx", dry_run=False, confirmation=True)
+    fetched = service.get_run("no-ctx", include_details=True)
+    listed = service.list_runs()
+    raw_state = store.path_for("no-ctx").read_text()
     for value in opaque_values:
         assert value not in raw_state
         assert value not in json.dumps(created)
-
-    dry_run = service.apply(
-        "opaque-ctx",
-        dry_run=True,
-        confirmation=False,
-        external_object_references=wpa3_target["external_object_references"],
-        ap_group_target_map=wpa3_target["ap_group_target_map"],
-        ap_group_device_serials=wpa3_target["ap_group_device_serials"],
-    )
-    blocked = service.apply(
-        "opaque-ctx",
-        dry_run=False,
-        confirmation=True,
-        external_object_references=wpa3_target["external_object_references"],
-        ap_group_target_map=wpa3_target["ap_group_target_map"],
-        ap_group_device_serials=wpa3_target["ap_group_device_serials"],
-    )
-    fetched = service.get_run("opaque-ctx", include_details=True)
-    listed = service.list_runs()
-
-    raw_state_after_apply = store.path_for("opaque-ctx").read_text()
-    for value in opaque_values:
-        assert value not in raw_state_after_apply
         assert value not in json.dumps(dry_run)
         assert value not in json.dumps(blocked)
         assert value not in json.dumps(fetched)
         assert value not in json.dumps(listed)
-
-    # `preview()` is stateless (nothing it returns is persisted); it is
-    # therefore allowed to echo the caller's own just-supplied context back
-    # in this one live response, unlike everything asserted above.
-    assert opaque_password in json.dumps(preview)
+    assert "external_object_references" not in created["target"]
+    assert "ap_group_target_map" not in created["target"]
+    assert "ap_group_device_serials" not in created["target"]
 
 
 def test_verification_records_mismatch_and_unsupported_unverifiable(tmp_path):
@@ -991,8 +998,8 @@ def test_target_context_backward_compatible_with_pre_operator_context_state():
 def test_run_store_loads_legacy_0_4_state_without_operator_context_metadata(tmp_path):
     # A 0.4-era run file has neither the three operator-context keys on
     # `target` nor an `operator_context_metadata` key at all. Loading,
-    # summarizing, and listing it must not crash, and must report empty/
-    # absent metadata rather than raising.
+    # summarizing, and listing it must not crash, and must report no
+    # legacy-sanitization marker (there is nothing to sanitize).
     backend = FakeBackend()
     service, store = orchestrator(tmp_path, backend)
     legacy_run = {
@@ -1022,21 +1029,41 @@ def test_run_store_loads_legacy_0_4_state_without_operator_context_metadata(tmp_
     store.save(legacy_run)
 
     fetched = service.get_run("legacy-04")
-    assert fetched["operator_context_metadata"] == {}
+    assert fetched["legacy_operator_context_sanitized"] is None
     assert "external_object_references" not in fetched["target"]
 
     listed = service.list_runs()
     assert listed["runs"][0]["run_id"] == "legacy-04"
-    assert listed["runs"][0]["operator_context_metadata"] == {}
+    assert listed["runs"][0]["legacy_operator_context_sanitized"] is None
+
+    # A 0.4 run with no operator context at all is fully resumable: apply
+    # is not blocked by any legacy marker.
+    applied = service.apply("legacy-04", dry_run=True, confirmation=False)
+    assert applied["dry_run"] is True
 
 
-def test_run_store_sanitizes_stale_operator_context_on_read_without_crashing(
+def _write_raw_state_file(store: MigrationRunStore, run_id: str, run: dict) -> None:
+    """Write a hand-crafted state file directly to disk, bypassing
+    `MigrationRunStore.save()` entirely -- this simulates a genuinely
+    stale file written before the fail-closed contract existed (or a
+    hand-edited one), which is exactly the scenario `load()` must heal.
+    `save()` itself now refuses to persist a non-empty operator-context
+    map (see its hard backstop), so it cannot be used to construct this
+    fixture.
+    """
+    path = store.path_for(run_id)
+    path.write_text(json.dumps(run), encoding="utf-8")
+
+
+def test_run_store_sanitizes_stale_raw_operator_context_on_disk_atomically(
     tmp_path,
 ):
-    # Simulate a state file written before this fix (or hand-edited) that
-    # still carries raw operator-context values directly on `target`. A
-    # read must sanitize -- never crash, and never continue serving the
-    # raw value back out through get_run/list_runs.
+    # Simulate a state file written before the fail-closed contract
+    # existed (or hand-edited) that still carries raw operator-context
+    # values directly on `target`. A read must heal it -- never crash,
+    # never continue serving the raw value back out through
+    # get_run/list_runs/apply, and (per the atomic-migration requirement)
+    # must rewrite the *actual file on disk*, not just an in-memory copy.
     backend = FakeBackend()
     service, store = orchestrator(tmp_path, backend)
     stale_secret_lookalike = "sk-proj-stale-leaked-value-0123456789"
@@ -1069,65 +1096,131 @@ def test_run_store_sanitizes_stale_operator_context_on_read_without_crashing(
         "last_verification_at": None,
         "candidates": [],
     }
-    store.save(stale_run)
-    # `save()` itself sanitizes defensively -- the stale value must not
-    # even have reached disk from this call.
-    assert stale_secret_lookalike not in store.path_for("stale-05").read_text()
+    path = store.path_for("stale-05")
+    _write_raw_state_file(store, "stale-05", stale_run)
+    # Sanity: the hand-crafted fixture really does carry the raw value on
+    # disk before anything reads it.
+    assert stale_secret_lookalike in path.read_text()
 
     fetched = service.get_run("stale-05")
     assert "external_object_references" not in fetched["target"]
     assert "ap_group_target_map" not in fetched["target"]
     assert "ap_group_device_serials" not in fetched["target"]
     assert stale_secret_lookalike not in json.dumps(fetched)
+    assert fetched["legacy_operator_context_sanitized"] is not None
+
+    # The actual on-disk file was rewritten (atomically, by
+    # `MigrationRunStore`'s existing temp-file + os.replace mechanism) --
+    # this is not just an in-memory mutation.
+    raw_state_after_load = path.read_text()
+    assert stale_secret_lookalike not in raw_state_after_load
+    assert "Stale-Group" not in raw_state_after_load
+    assert "CN0001" not in raw_state_after_load
+    assert "external_object_references" not in json.loads(raw_state_after_load)["target"]
+    assert "legacy_operator_context_sanitized" in json.loads(raw_state_after_load)
 
     listed = service.list_runs()
     assert stale_secret_lookalike not in json.dumps(listed)
+    assert listed["runs"][0]["legacy_operator_context_sanitized"] is not None
+
+    # A run healed from unsafe legacy operator context can never be
+    # applied -- it must be recreated instead, since the context that may
+    # have affected its candidates' mapping is gone and cannot be trusted
+    # to be resupplied.
+    with pytest.raises(MigrationRunError, match="recreate"):
+        service.apply("stale-05", dry_run=True, confirmation=False)
 
 
-def test_apply_requires_matching_ap_group_context_resupply(tmp_path):
-    # Same bounded-resupply contract as the WPA3-Enterprise end-to-end test,
-    # exercised for `ap_group_target_map`/`ap_group_device_serials` instead
-    # of `external_object_references`.
+def test_run_store_sanitizes_stale_fingerprint_metadata_on_disk_atomically(
+    tmp_path,
+):
+    # A state file written by the intermediate (now-removed)
+    # fingerprint/resupply design persisted a non-reversible
+    # `operator_context_metadata` (count + SHA-256 hash) instead of the
+    # raw values. That, too, must be healed on load and removed from disk
+    # -- the fail-closed contract stores no hash at all, not even a safe
+    # one, since there is no verifier for these free-form identifiers and
+    # any stored hash is itself an unwanted offline-guessing surface.
     backend = FakeBackend()
     service, store = orchestrator(tmp_path, backend)
-    ap_group = _ap_group_candidate("ap-group-resupply")
-    ap_group_target = {
-        **target("classic_central"),
-        "ap_group_target_map": {"ap-group-resupply": "Resupply-Group"},
-        "ap_group_device_serials": {"ap-group-resupply": ["CN1111", "CN2222"]},
+    stale_run = {
+        "schema_version": 1,
+        "run_id": "stale-fp-06",
+        "fingerprint": "deadbeef",
+        "status": "pending",
+        "created_at": "2025-01-02T00:00:00+00:00",
+        "updated_at": "2025-01-02T00:00:00+00:00",
+        "target": {
+            "type": "classic_central",
+            "scope_id": "1",
+            "scope_name": "Branch",
+            "persona": "CAMPUS_AP",
+            "conflict_policy": "fail",
+            "cluster_name": None,
+            "cluster_scope_id": None,
+            "gateway_name": None,
+            "gateway_scope_id": None,
+        },
+        "operator_context_metadata": {
+            "external_object_references": {
+                "count": 1,
+                "fingerprint": "a" * 64,
+            },
+            "ap_group_target_map": {"count": 0, "fingerprint": None},
+            "ap_group_device_serials": {"count": 0, "fingerprint": None},
+        },
+        "checkpoint_and_rollback": None,
+        "dry_run_attempted_at": None,
+        "last_apply_at": None,
+        "last_verification_at": None,
+        "candidates": [],
     }
-    service.create_run([ap_group], ap_group_target, run_id="ap-group-resupply-run")
+    path = store.path_for("stale-fp-06")
+    _write_raw_state_file(store, "stale-fp-06", stale_run)
+    assert "operator_context_metadata" in json.loads(path.read_text())
 
-    # Omitting the resupply entirely is a bounded-resupply failure, not a
-    # silent fallback to empty context.
-    with pytest.raises(MigrationRunError, match="ap_group_target_map"):
-        service.apply(
-            "ap-group-resupply-run", dry_run=True, confirmation=False
-        )
+    fetched = service.get_run("stale-fp-06")
+    assert fetched["legacy_operator_context_sanitized"] is not None
 
-    # Resupplying a different mapping is also rejected.
-    with pytest.raises(MigrationRunError, match="ap_group_target_map"):
+    raw_state_after_load = path.read_text()
+    assert "operator_context_metadata" not in json.loads(raw_state_after_load)
+    assert "a" * 64 not in raw_state_after_load
+
+    with pytest.raises(MigrationRunError, match="recreate"):
+        service.apply("stale-fp-06", dry_run=True, confirmation=False)
+
+
+def test_apply_signature_has_no_operator_context_parameters(tmp_path):
+    # Requirement: `apply()` (and the MCP `aos8_apply_migration_run` tool)
+    # must not accept `external_object_references`/`ap_group_target_map`/
+    # `ap_group_device_serials` at all -- there is no resupply mechanism
+    # left to reconcile them against.
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    ap_group = _ap_group_candidate("ap-group-no-resupply")
+    service.create_run([ap_group], target("classic_central"), run_id="no-resupply-run")
+
+    with pytest.raises(TypeError):
         service.apply(
-            "ap-group-resupply-run",
+            "no-resupply-run",
             dry_run=True,
             confirmation=False,
-            ap_group_target_map={"ap-group-resupply": "Different-Group"},
-            ap_group_device_serials={"ap-group-resupply": ["CN1111", "CN2222"]},
+            ap_group_target_map={"ap-group-no-resupply": "Some-Group"},
         )
 
-    # An exact resupply is accepted (the candidate still remains
-    # unsupported/manual either way -- contract matrix §5/§6.11 -- but the
-    # call itself must not be rejected for a matching resupply).
-    result = service.apply(
-        "ap-group-resupply-run",
-        dry_run=True,
-        confirmation=False,
-        ap_group_target_map={"ap-group-resupply": "Resupply-Group"},
-        ap_group_device_serials={"ap-group-resupply": ["CN1111", "CN2222"]},
-    )
+    import inspect
+
+    apply_params = set(inspect.signature(service.apply).parameters)
+    for field in ("external_object_references", "ap_group_target_map", "ap_group_device_serials"):
+        assert field not in apply_params
+
+    mcp_apply_params = set(inspect.signature(aos8.aos8_apply_migration_run).parameters)
+    for field in ("external_object_references", "ap_group_target_map", "ap_group_device_serials"):
+        assert field not in mcp_apply_params
+
+    # A normal apply() call with no operator context still works.
+    result = service.apply("no-resupply-run", dry_run=True, confirmation=False)
     assert result["candidates"][0]["status"] == "unsupported"
-    assert "Resupply-Group" not in store.path_for("ap-group-resupply-run").read_text()
-    assert "CN1111" not in store.path_for("ap-group-resupply-run").read_text()
 
 
 def test_target_context_rejects_oversized_external_object_references():
@@ -1216,6 +1309,34 @@ def test_target_context_accepts_ordinary_looking_operator_context_values():
     assert context.ap_group_device_serials == {"ap-group-hq": ("CN1234", "CN5678")}
 
 
+def test_target_context_canonicalizes_surrounding_whitespace_structurally():
+    # Requirement: transient identifier strings are canonicalized
+    # structurally (surrounding-whitespace trimmed) -- never by a
+    # secret-word/content heuristic. Whitespace-padded keys and values
+    # across all three maps must be trimmed to their canonical form.
+    padded_target = {
+        **target("classic_central"),
+        "external_object_references": {
+            "  wlan:Corp  ": {"  auth_server1  ": "  InternalServer  "}
+        },
+        "ap_group_target_map": {"  ap-group-hq  ": "  HQ-Group  "},
+        "ap_group_device_serials": {"  ap-group-hq  ": ["  CN1234  ", "CN5678"]},
+    }
+    context = _target_context(padded_target)
+    assert context.external_object_references == {
+        "wlan:Corp": {"auth_server1": "InternalServer"}
+    }
+    assert context.ap_group_target_map == {"ap-group-hq": "HQ-Group"}
+    assert context.ap_group_device_serials == {"ap-group-hq": ("CN1234", "CN5678")}
+
+    # A string that is nothing but whitespace is still rejected as empty
+    # (canonicalization trims, it does not invent a non-empty value).
+    with pytest.raises(MigrationRunError, match="non-empty"):
+        _target_context(
+            {**target("classic_central"), "ap_group_target_map": {"ap-group-hq": "   "}}
+        )
+
+
 def _wpa3_enterprise_candidate(name="Enterprise-Test", vlan=40):
     return candidate(
         "wlan",
@@ -1245,15 +1366,17 @@ def _wpa3_enterprise_candidate(name="Enterprise-Test", vlan=40):
     )
 
 
-def test_wpa3_enterprise_reachable_end_to_end_via_orchestrator_preview_and_create_run(
+def test_wpa3_enterprise_reachable_only_via_stateless_preview_never_create_run(
     tmp_path,
 ):
-    # Full propagation path: operator-context supplied at `preview()`/
-    # `create_run()` reaches `TargetContext.external_object_references`,
-    # which is what makes WPA3-Enterprise's conditional dry-run reachable
-    # instead of permanently "unsupported" for missing auth_server1. The
-    # context is runtime-only throughout -- never persisted -- so `apply()`
-    # must resupply the exact same value on every call that needs it.
+    # Full contract: WPA3-Enterprise's conditional mapping only ever
+    # becomes "ready"/dry-run-reachable when `external_object_references`
+    # supplies the already-existing auth-server name. That context is
+    # accepted by the stateless `preview()` only -- `create_run()` must
+    # reject it outright, never persist it (raw, hashed, or as a resupply
+    # count), and a run created *without* that context simply keeps the
+    # candidate unsupported, exactly like the missing-reference case
+    # always did.
     backend = FakeBackend()
     service, store = orchestrator(tmp_path, backend)
     refs = {"wlan:Enterprise-Test": {"auth_server1": "InternalServer"}}
@@ -1271,73 +1394,48 @@ def test_wpa3_enterprise_reachable_end_to_end_via_orchestrator_preview_and_creat
     assert action["status"] == "ready"
     assert action["dry_run_only"] is True
 
-    created = service.create_run([wlan], wpa3_target, run_id="wpa3-ent")
-    # `create_run` maps preview's "ready" into the retryable "pending"
-    # apply-state -- the important assertion is that it is *not*
-    # "unsupported"/"blocked" (which is what a missing auth_server1
-    # reference would produce).
-    assert created["candidates"][0]["status"] == "pending"
-    assert created["candidates"][0]["retryable"] is True
-    # The runtime-only context itself must never be persisted: it is absent
-    # from `create_run`'s own response target, absent from the on-disk
-    # state file, but its presence is still recorded via non-reversible
-    # count/fingerprint metadata (never the value "InternalServer" itself).
+    # `create_run()` must reject the same target outright.
+    with pytest.raises(MigrationRunError, match="external_object_references"):
+        service.create_run([wlan], wpa3_target, run_id="wpa3-ent")
+    assert not store.path_for("wpa3-ent").exists()
+
+    # Creating the run without any operator context is allowed, but the
+    # candidate remains unsupported -- there is no way to make the
+    # auth-server reference reach this run at all, by design.
+    created = service.create_run([wlan], target("classic_central"), run_id="wpa3-ent-no-ctx")
+    assert created["candidates"][0]["status"] == "unsupported"
     assert "external_object_references" not in created["target"]
-    assert created["operator_context_metadata"]["external_object_references"][
-        "count"
-    ] == 1
-    raw_state = store.path_for("wpa3-ent").read_text()
+    raw_state = store.path_for("wpa3-ent-no-ctx").read_text()
     assert "InternalServer" not in raw_state
     assert "external_object_references" not in json.loads(raw_state)["target"]
 
-    # Without resupplying the same operator context, apply() fails closed
-    # rather than silently proceeding without it.
-    with pytest.raises(MigrationRunError, match="external_object_references"):
-        service.apply("wpa3-ent", dry_run=True, confirmation=False)
-
-    # Resupplying a *different* value is also rejected (it would silently
-    # change which auth-server the candidate maps to from what was
-    # reviewed at create_run time).
-    with pytest.raises(MigrationRunError, match="external_object_references"):
+    # `apply()` has no operator-context parameters at all -- passing one
+    # is a plain TypeError, not a resupply-mismatch error.
+    with pytest.raises(TypeError):
         service.apply(
-            "wpa3-ent",
+            "wpa3-ent-no-ctx",
             dry_run=True,
             confirmation=False,
-            external_object_references={
-                "wlan:Enterprise-Test": {"auth_server1": "SomeOtherServer"}
-            },
+            external_object_references=refs,
         )
 
-    dry_run = service.apply(
-        "wpa3-ent",
-        dry_run=True,
-        confirmation=False,
-        external_object_references=refs,
-    )
-    assert dry_run["candidates"][0]["dry_run_ok"] is True
-    assert "InternalServer" not in json.dumps(dry_run)
-    assert "InternalServer" not in store.path_for("wpa3-ent").read_text()
-
-    # Real (non-dry-run) execution stays refused -- WPA3-Enterprise remains
-    # conditional/dry-run-only even with the auth-server reference supplied.
-    blocked = service.apply(
-        "wpa3-ent",
-        dry_run=False,
-        confirmation=True,
-        external_object_references=refs,
-    )
-    assert blocked["candidates"][0]["status"] == "blocked"
+    # Applying the context-free run stays unsupported/refused throughout.
+    dry_run = service.apply("wpa3-ent-no-ctx", dry_run=True, confirmation=False)
+    assert dry_run["candidates"][0]["status"] == "unsupported"
+    blocked = service.apply("wpa3-ent-no-ctx", dry_run=False, confirmation=True)
+    assert blocked["candidates"][0]["status"] == "unsupported"
 
 
-def test_wpa3_enterprise_mcp_preview_and_create_run_propagate_operator_context(
+def test_wpa3_enterprise_mcp_preview_allows_context_create_run_rejects_it(
     tmp_path, monkeypatch
 ):
     # End-to-end through the real MCP tool signatures
     # (`aos8_preview_migration_run`/`aos8_create_migration_run`), confirming
-    # `external_object_references` reaches the adapter via the MCP boundary,
-    # not just via a direct orchestrator/adapter call.
+    # `external_object_references` reaches the adapter via the MCP boundary
+    # for stateless preview, and that the same context is rejected -- with
+    # a clear, non-crashing error -- by the persistent `aos8_create_migration_run`.
     backend = FakeBackend()
-    service, _ = orchestrator(tmp_path, backend)
+    service, store = orchestrator(tmp_path, backend)
     monkeypatch.setattr(aos8, "_aos8_migration_orchestrator", lambda: service)
     wlan = _wpa3_enterprise_candidate()
 
@@ -1355,7 +1453,7 @@ def test_wpa3_enterprise_mcp_preview_and_create_run_propagate_operator_context(
         "wlan:Enterprise-Test": {"auth_server1": "InternalServer"}
     }
 
-    created = aos8.aos8_create_migration_run(
+    rejected = aos8.aos8_create_migration_run(
         "classic_central",
         candidates=[wlan],
         scope_name="Branch Group",
@@ -1364,5 +1462,15 @@ def test_wpa3_enterprise_mcp_preview_and_create_run_propagate_operator_context(
         },
         run_id="mcp-wpa3-ent",
     )
-    assert created["candidates"][0]["status"] == "pending"
-    assert created["candidates"][0]["retryable"] is True
+    assert rejected["status"] == "blocked"
+    assert "external_object_references" in rejected["error"]
+    assert "InternalServer" not in json.dumps(rejected)
+    assert not store.path_for("mcp-wpa3-ent").exists()
+
+    created = aos8.aos8_create_migration_run(
+        "classic_central",
+        candidates=[wlan],
+        scope_name="Branch Group",
+        run_id="mcp-wpa3-ent-no-ctx",
+    )
+    assert created["candidates"][0]["status"] == "unsupported"
