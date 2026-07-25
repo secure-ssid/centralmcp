@@ -59,9 +59,16 @@ and `tests/unit/test_aos8_migration.py`). Item 7 is **RESOLVED** by the
 migration and orchestrator layers, verified by new regression tests in
 `tests/unit/test_aos8_migration.py` and `tests/unit/test_aos8_migration_orchestrator.py`).
 Item 2 is **partially resolved**: a
-bounded, fail-closed source-side security-intent signal now exists, but no
-adapter/target mapping has been implemented, so every §6.2 classification below is
-unchanged pending that follow-up work. Item 3 is unchanged by design (see below).
+bounded, fail-closed source-side security-intent signal now exists, and a New
+Central adapter mapping for `OPEN`/`WPA2_PERSONAL`/`WPA3_SAE`/`ENHANCED_OPEN` now
+exists in `pipeline/aos8_target_adapters.py` (added after this section was first
+written, by the `aos8-verification` todo). The `aos8-live-dryrun-eval` todo
+(2026-07-25, `docs/aos8-live-dryrun-evaluation.md`) confirmed this mapping live at
+the `preview()`/preflight-read level against a configured New Central tenant, with
+correct enum rendering and secret masking. §6.2's classifications are **unchanged**
+by this — WPA2 Personal/WPA3-SAE/Enhanced Open remain `conditional`, not `exact`,
+until a live `apply()` + secret read-back is performed (out of scope for a
+read-only evaluation). Item 3 is unchanged by design (see below).
 Item 8 is **RESOLVED** by the `aos8-companion-repo-fixes` todo (a read-only audit
 of a third-party same-owner migration tool that surfaced one classifier bug fixed
 here, plus corroborating secondary evidence for design decisions already made in
@@ -368,9 +375,16 @@ evidenced AOS8 `ssid_prof` fields (`opmode`, `wpa3_transition`, and
 presence-only `wpa_passphrase`/`wpa_hexkey` booleans) plus a cross-reference
 against the attached `aaa_profile`'s dot1x/MAC-auth chain. Any unverifiable
 combination reports `mode="unknown"` with an explicit warning rather than a
-guess. **No adapter/target mapping exists yet for any mode this enriches** —
-every classification below is unchanged; this is still the single gap
-blocking every secured-WLAN row beyond `OPEN` from becoming schema-mapped.
+guess. **A New Central adapter mapping now exists** for `OPEN`/`WPA2_PERSONAL`/
+`WPA3_SAE`/`ENHANCED_OPEN` (`pipeline/aos8_target_adapters.py`, added by the
+`aos8-verification` todo after this section was first written, and confirmed live
+at the `preview()`/preflight-read level by the `aos8-live-dryrun-eval` todo,
+2026-07-25 — see `docs/aos8-live-dryrun-evaluation.md`); Classic Central still has
+no verified WPA2-Personal payload, and no target has a live-confirmed apply +
+secret read-back for any secured mode. Every classification below is otherwise
+unchanged: MAC-auth/enterprise 802.1X and the WPA2/WPA3 transition mode remain
+blocked/unsupported, and WPA2 Personal/WPA3-SAE/Enhanced Open remain `conditional`
+(not `exact`) pending that live apply + read-back evidence.
 
 | Mode | AOS8 source signal (raw, unverified enum) | Classic target | New Central target | Classification |
 |---|---|---|---|---|
@@ -549,6 +563,7 @@ All of the following remain **read-only discovery and dry-run only**. No real wr
 ## 9. Related documentation
 
 - [`docs/product-workflows.md`](product-workflows.md) — AOS8 migration tool roadmap (`aos8_migration_plan`, `aos8_preview_migration_run`/`aos8_create_migration_run`/`aos8_apply_migration_run`, `aos8_verify_migration_run`) that this matrix gates.
+- [`docs/aos8-live-dryrun-evaluation.md`](aos8-live-dryrun-evaluation.md) — the `aos8-live-dryrun-eval` todo's sanitized, read-only live/fixture-backed evaluation record (2026-07-25) that corrected the two WLAN-security prose staleness findings above.
 - [`docs/capability-gap-matrix.md`](capability-gap-matrix.md) — ranked practical gap #1 ("Broader verified migration mappings and live evaluation") tracks the same scope at a summary level; this file is the detailed contract behind that ranked gap.
 - `pipeline/aos8_schema.py`, `pipeline/aos8_parsers.py`, `pipeline/aos8_migration.py`, `pipeline/aos8_target_adapters.py` — the implementation this matrix constrains.
 - `tests/unit/test_aos8_parsers.py`, `tests/unit/test_aos8_migration.py`, `tests/unit/test_aos8_target_adapters.py`, `tests/unit/test_aos8_migration_orchestrator.py`, `tests/unit/test_aos8_export_and_migration_tool.py` — current regression coverage; every row moved to `exact` in a future revision must gain a corresponding test here.
