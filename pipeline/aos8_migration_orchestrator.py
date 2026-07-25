@@ -13,7 +13,6 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any
 
 from pipeline.aos8_target_adapters import (
@@ -182,54 +181,18 @@ def _is_presence_metadata(key: Any, value: Any) -> bool:
     )
 
 
-# Fixed, generic marker substituted for every backend-originated string
-# leaf whenever `_sanitize` is called with a non-empty `secret_values`
-# (i.e. at least one real runtime credential -- a PSK, RADIUS/TACACS+
-# shared secret, LDAP bind password, ... -- was supplied for this call).
-# This is generated constant metadata, never echoed secret material: no
-# part of any original string ever survives in the output, so there is
-# nothing of the caller's choosing left in it to compare the marker
-# against, and no need to prove the marker text itself differs from an
-# arbitrary secret a caller might choose.
+# Fixed, generic marker substituted for *every* backend-originated value
+# -- of any type or shape -- whenever `_sanitize` is called with a
+# non-empty `secret_values` (i.e. at least one real runtime credential --
+# a PSK, RADIUS/TACACS+ shared secret, LDAP bind password, ... -- was
+# supplied for this call), except for the short list of safe primitive
+# scalars preserved unchanged (see `_sanitize`). This is generated
+# constant metadata, never echoed secret material: no part of any
+# original value ever survives in the output, so there is nothing of the
+# caller's choosing left in it to compare the marker against, and no
+# need to prove the marker text itself differs from an arbitrary secret
+# a caller might choose.
 _SECRET_CONTEXT_MARKER = "<redacted:runtime-secret-context>"
-
-# Fixed, static envelope substituted for an *entire* backend-originated
-# aggregate -- any `Mapping` (dict, custom `Mapping` subclass, ...) or any
-# non-string `Iterable`/`Iterator` (list, tuple, set, frozenset, deque,
-# range, generator, bytes, bytearray, memoryview, a custom `Sequence`/
-# `Iterable`/`Iterator`, ...) -- whenever `_sanitize` is called with a
-# non-empty `secret_values`. A backend response can name its own dict
-# keys or list/set/sequence items dynamically (e.g. echoing a submitted
-# value back verbatim as a mapping key, or as an item inside a list/
-# tuple/set/generator), so per-key/per-item redaction can never provably
-# rule out leakage the way the string-leaf marker above does: the only
-# way to make that leakage impossible is to never read a single key,
-# item, or element out of the aggregate in the first place -- not even
-# to call `len()`, iterate a generator, or otherwise consume it.
-#
-# `isinstance(value, (Mapping, Iterable))` alone is sufficient to route
-# every one of those aggregate categories here (str is excluded via an
-# explicit, earlier check -- see `_sanitize` -- since `str` is itself
-# `Iterable`); `Mapping`, `Iterable`, and `Iterator` participate in
-# Python's ABC virtual-subclass machinery via `__subclasshook__`
-# (`Iterable`/`Iterator`) or explicit registration (`Mapping`, `Set`,
-# `Sequence`, and the built-ins that implement them), so the check
-# matches by *shape* (the presence of `__iter__`/`__getitem__`/`keys`)
-# without invoking any of those methods on the instance.
-#
-# Every aggregate type collapses to this *one* identical envelope. There
-# is deliberately no `_kind`/type/count/shape field distinguishing a
-# collapsed mapping from a collapsed sequence: exposing which aggregate
-# type the backend actually returned is itself a (smaller, but real)
-# type leak, so the envelope carries nothing beyond the fixed marker.
-# `MappingProxyType` makes the module-level constant itself immutable
-# (assigning into it raises `TypeError`); every call site still returns
-# a *fresh* `dict(...)` copy of it below, so a caller mutating the
-# returned envelope can never corrupt this shared constant for any
-# other call.
-_SECRET_CONTEXT_AGGREGATE_ENVELOPE: Mapping[str, str] = MappingProxyType(
-    {"_redacted": _SECRET_CONTEXT_MARKER}
-)
 
 
 def _sanitize(
@@ -245,59 +208,39 @@ def _sanitize(
     - If `secret_values` is non-empty -- meaning at least one real
       runtime credential was supplied for this call -- `value` is never
       traversed key-by-key or item-by-item, iterated, consumed, `len()`-
-      measured, or passed to `repr()`/`str()`. Every category of value is
-      routed, by `isinstance` checks alone, to one of exactly two fixed
-      redaction outputs -- or preserved unchanged if (and only if) it is
-      one of a short list of safe primitive scalars:
-        * any `Mapping` (dict, a custom `Mapping` subclass, ...) or any
-          non-`str` `Iterable`/`Iterator` -- `list`, `tuple`, `set`,
-          `frozenset`, `deque`, `range`, a generator, `bytes`,
-          `bytearray`, `memoryview`, or a custom `Sequence`/`Iterable`/
-          `Iterator` -- collapses wholesale to the *same* fixed
-          `_SECRET_CONTEXT_AGGREGATE_ENVELOPE`, as a fresh copy, *before*
-          any key, value, element, or byte of the original aggregate is
-          ever read. This is what makes mapping-key leakage (a backend
-          echoing a submitted value back as a dict key rather than a
-          value) and element/byte leakage (via a set, generator, or raw
-          buffer) provably impossible: a key, element, or byte that is
-          never read can never appear in the output. `isinstance` against
-          `Mapping`/`Iterable`/`Iterator` matches by *shape* (ABC
-          `__subclasshook__`/registration checks for the presence of
-          `__iter__`/`__getitem__`/`keys`) without invoking any of those
-          methods, so even a generator is routed here without being
-          advanced a single step. There is deliberately no `_kind`/type/
-          count/shape distinction between a collapsed mapping and a
-          collapsed sequence -- every aggregate type produces
-          byte-identical JSON, so which aggregate type the backend
-          actually returned is never observable either.
-        * a `str` leaf, a `bytes`/`bytearray`/`memoryview` buffer (caught
-          by the aggregate check above, since all three are `Iterable`),
-          a non-finite `float` (`inf`/`-inf`/`nan`), and every other value
-          that is not one of the safe primitive scalars below -- a
-          `pathlib.Path`, a plain `Enum` member (one whose type is not
-          itself already a safe primitive, e.g. not an `IntEnum`), a
-          `dataclass` instance, a `complex`/`Decimal`, or any other custom
-          object, including one whose `__repr__`/`__str__` is itself
-          secret-shaped -- is replaced wholesale by the fixed
-          `_SECRET_CONTEXT_MARKER`. None of these is ever inspected,
-          scanned, matched, encoded/decoded, hashed, `repr()`/`str()`-ed,
-          or cached to decide *how* to redact it: the mere presence of a
-          real secret anywhere in this call's input is reason enough to
-          discard every non-primitive leaf outright, whether or not that
-          specific leaf happens to contain a secret. This makes leakage
-          of the secret -- raw, percent-/form-encoded, Unicode,
-          mixed-case, serialized (e.g. embedded in a JSON string), stored
-          in a custom object's `__repr__`, or prefixed with the marker
-          text itself -- provably impossible, because none of those forms
-          are ever read character-by-character, or even looked at, in the
-          first place.
-        * only the safe primitive scalars `None`, `bool`, `int`, and a
-          *finite* `float` passed *directly* to this call are preserved
-          unchanged -- there is nothing in one of these that could carry
-          a mapping key, sequence shape, or secret-shaped text, and no
-          string/repr to discard. (`bool` is a subtype of `int`; an
-          `IntEnum`/similar int-subtype member is preserved as its
-          underlying `int` value for the same reason.)
+      measured, or passed to `repr()`/`str()`. Exactly one `isinstance`
+      check decides the outcome, with no further classification of the
+      rejected value's category, type, or shape:
+        * `None`, `bool`, `int` (including an int-subtype `Enum` member,
+          e.g. `IntEnum`, which is already a plain `int`), and a *finite*
+          `float` passed *directly* to this call are preserved unchanged
+          -- there is nothing in one of these that could carry a mapping
+          key, sequence shape, or secret-shaped text.
+        * every other value -- a `str`, a `Mapping` (dict or custom
+          subclass), a `list`/`tuple`/`set`/`frozenset`/`deque`/`range`,
+          a generator or other iterator, `bytes`/`bytearray`/
+          `memoryview` or any other buffer provider, a custom `Sequence`/
+          `Iterable`/`Iterator`, a non-finite `float` (`inf`/`-inf`/
+          `nan`), a `pathlib.Path`, a plain `Enum` member, a `dataclass`
+          instance, a `complex`/`Decimal`, or any other custom object
+          (including one whose `__repr__`/`__str__` is itself
+          secret-shaped) -- is replaced by the exact same fixed
+          `_SECRET_CONTEXT_MARKER` scalar. None of these is ever
+          inspected, iterated, indexed, `len()`-measured, scanned,
+          matched, encoded/decoded, hashed, or `repr()`/`str()`-ed to
+          decide *how* to redact it, and no envelope, `_kind`, or other
+          field distinguishes one rejected category from another: the
+          mere presence of a real secret anywhere in this call's input is
+          reason enough to discard every non-primitive value outright as
+          one indistinguishable marker, whether or not that specific
+          value happens to contain a secret. This makes leakage of the
+          secret -- raw, percent-/form-encoded, Unicode, mixed-case,
+          serialized (e.g. embedded in a JSON string), stored as a
+          mapping key or set/sequence element, stored in a custom
+          object's `__repr__`, or prefixed with the marker text itself --
+          provably impossible, because none of those forms, nor even the
+          rejected value's type, is ever read or observable in the
+          output.
     - If `secret_values` is empty, mappings/sequences are traversed and
       bounded (`MAX_RESULT_ITEMS`) exactly as before, string leaves are
       returned unchanged (bounded only by `_OUTPUT_LIMIT`, to keep an
@@ -316,24 +259,16 @@ def _sanitize(
     if _depth >= max_depth:
         return "<bounded:max-depth>"
     if secrets:
-        # `str` is itself `Iterable`, so it must be checked -- and routed
-        # to the string marker, never the aggregate envelope -- before
-        # the generic `Mapping`/`Iterable` aggregate check below.
-        if isinstance(value, str):
-            return _SECRET_CONTEXT_MARKER
-        # Every Mapping and every non-string Iterable/Iterator -- list,
-        # tuple, set, frozenset, deque, range, a generator, bytes,
-        # bytearray, memoryview, or a custom Sequence/Iterable/Iterator --
-        # collapses to the identical fixed envelope without iterating,
-        # indexing, or measuring it.
-        if isinstance(value, (Mapping, Iterable)):
-            return dict(_SECRET_CONTEXT_AGGREGATE_ENVELOPE)
         # Only the safe primitive scalars remain unchanged: None, bool,
         # int (including int-subtype Enum members), and a finite float.
-        # Every other value -- a non-finite float, a Path, a plain Enum
+        # Every other value -- str, Mapping, list/tuple/set/frozenset/
+        # deque/range, a generator or other iterator, bytes/bytearray/
+        # memoryview or any other buffer provider, a custom Sequence/
+        # Iterable/Iterator, a non-finite float, a Path, a plain Enum
         # member, a dataclass instance, or any other unknown/custom
-        # object -- fails closed to the same string marker without ever
-        # calling repr()/str() on it.
+        # object -- fails closed to the same fixed marker without ever
+        # calling isinstance against Mapping/Iterable/Iterator, iterating,
+        # indexing, len()-ing, or calling repr()/str() on it.
         if value is None or isinstance(value, (bool, int)):
             return value
         if isinstance(value, float):
