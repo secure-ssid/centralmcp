@@ -341,11 +341,20 @@ def test_operator_context_maps_are_rejected_by_every_persistent_workflow(tmp_pat
         },
     }
 
-    # `preview()` is stateless -- nothing it returns is persisted -- so it
-    # may echo the caller's own just-supplied context back in this one
-    # live response.
+    # `preview()` is stateless -- nothing it returns is persisted -- but it
+    # must still never echo the caller's own just-supplied operator-context
+    # values back: every one of them is used only transiently to build the
+    # preview, then exact-match-redacted from the returned JSON (target
+    # echo, operations, payloads, blockers, warnings) and replaced with a
+    # stable, generic marker.
     preview = service.preview([wlan, ap_group], wpa3_target)
-    assert opaque_password in json.dumps(preview)
+    dumped_preview = json.dumps(preview)
+    for value in opaque_values:
+        assert value not in dumped_preview
+    assert "runtime mapping supplied" in dumped_preview
+    assert preview["target"]["external_object_references"] == "runtime mapping supplied"
+    assert preview["target"]["ap_group_target_map"] == "runtime mapping supplied"
+    assert preview["target"]["ap_group_device_serials"] == "runtime mapping supplied"
 
     # `create_run()` must reject the same target outright rather than
     # silently dropping, hashing, or fingerprinting the context.
@@ -1190,6 +1199,181 @@ def test_run_store_sanitizes_stale_fingerprint_metadata_on_disk_atomically(
         service.apply("stale-fp-06", dry_run=True, confirmation=False)
 
 
+def test_run_store_clears_candidate_artifacts_and_recomputes_fingerprint_on_stale_heal(
+    tmp_path,
+):
+    # A genuinely stale run may carry not just raw operator-context values
+    # on `target`, but candidate-level results/errors/history/verification
+    # recorded while that unsafe state was live, plus a `fingerprint`
+    # derived (directly or via the intermediate hash design) from it.
+    # Healing must clear all of that -- not just `target` -- mark the run
+    # and every candidate durably blocked/recreate-required with a
+    # generic message, and recompute the fingerprint so the stale,
+    # operator-derived one is gone.
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    stale_fingerprint = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    leaked_group_name = "Stale-Classic-Group-Leak"
+    leaked_serial = "CN0099LEAK"
+    stale_run = {
+        "schema_version": 1,
+        "run_id": "stale-artifacts-07",
+        "fingerprint": stale_fingerprint,
+        "status": "partial",
+        "created_at": "2025-01-03T00:00:00+00:00",
+        "updated_at": "2025-01-03T00:00:00+00:00",
+        "target": {
+            "type": "classic_central",
+            "scope_id": "1",
+            "scope_name": "Branch",
+            "persona": "CAMPUS_AP",
+            "conflict_policy": "fail",
+            "cluster_name": None,
+            "cluster_scope_id": None,
+            "gateway_name": None,
+            "gateway_scope_id": None,
+            "ap_group_target_map": {"ap-group-stale": leaked_group_name},
+            "ap_group_device_serials": {"ap-group-stale": [leaked_serial]},
+        },
+        "checkpoint_and_rollback": None,
+        "dry_run_attempted_at": "2025-01-03T00:05:00+00:00",
+        "last_apply_at": "2025-01-03T00:10:00+00:00",
+        "last_verification_at": "2025-01-03T00:15:00+00:00",
+        "candidates": [
+            {
+                "key": "ap_group:ap-group-stale",
+                "candidate": candidate("ap_group", "ap-group-stale"),
+                "status": "applied",
+                "retryable": False,
+                "attempts": 3,
+                "requires_secret_input": False,
+                "required_secret_names": [],
+                "dry_run_ok": True,
+                "last_error": None,
+                "last_result": {
+                    "moved_to_group": leaked_group_name,
+                    "serial_count": 1,
+                },
+                "attempt_history": [
+                    {"attempt": 1, "result": {"target_group": leaked_group_name}},
+                ],
+                "verification": {
+                    "status": "verified",
+                    "expected": {"group": leaked_group_name},
+                },
+            }
+        ],
+    }
+    path = store.path_for("stale-artifacts-07")
+    _write_raw_state_file(store, "stale-artifacts-07", stale_run)
+    assert leaked_group_name in path.read_text()
+
+    fetched = service.get_run("stale-artifacts-07", include_details=True)
+    dumped = json.dumps(fetched)
+    assert leaked_group_name not in dumped
+    assert leaked_serial not in dumped
+    assert stale_fingerprint not in dumped
+    entry = fetched["candidates"][0]
+    assert entry["status"] == "blocked"
+    assert entry["retryable"] is False
+    assert entry["last_result"] is None
+    assert entry["attempt_history"] == []
+    assert entry["verification"] is None
+    assert "recreate" in entry["last_error"].lower()
+    assert fetched["status"] == "blocked"
+    assert fetched["legacy_operator_context_sanitized"] is not None
+    assert fetched["fingerprint"] != stale_fingerprint
+
+    raw_state_after_load = path.read_text()
+    assert leaked_group_name not in raw_state_after_load
+    assert leaked_serial not in raw_state_after_load
+    assert stale_fingerprint not in raw_state_after_load
+    on_disk = json.loads(raw_state_after_load)
+    assert on_disk["fingerprint"] != stale_fingerprint
+    assert on_disk["candidates"][0]["status"] == "blocked"
+    assert on_disk["candidates"][0]["last_result"] is None
+    assert on_disk["candidates"][0]["attempt_history"] == []
+    assert on_disk["candidates"][0]["verification"] is None
+
+    listed = service.list_runs()
+    listed_dumped = json.dumps(listed)
+    assert leaked_group_name not in listed_dumped
+    assert stale_fingerprint not in listed_dumped
+
+    with pytest.raises(MigrationRunError, match="recreate"):
+        service.apply("stale-artifacts-07", dry_run=True, confirmation=False)
+
+
+def test_preview_redacts_known_operator_context_hash_and_accepts_secret_shaped_names(
+    tmp_path,
+):
+    # Legitimate secret-looking operator-context names (never actual
+    # secrets -- see `_bounded_operator_string`) must still be accepted
+    # transiently to build the preview, but the returned JSON must never
+    # contain the raw value, nor a well-known hash of it, anywhere --
+    # target echo, operations, payloads, blockers, warnings, results.
+    import hashlib
+
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    secret_shaped_auth_server = "sk-proj-legit-classic-auth-server-0123456789"
+    secret_shaped_group = "AKIAIOSFODNN7EXAMPLE"
+    secret_shaped_serial = "-----BEGIN PRIVATE KEY-----SERIALLOOKALIKE"
+    known_hash = hashlib.sha256(secret_shaped_auth_server.encode()).hexdigest()
+
+    wlan = _wpa3_enterprise_candidate("Enterprise-SecretShaped")
+    ap_group = _ap_group_candidate("ap-group-secret-shaped")
+    wpa3_target = {
+        **target("classic_central"),
+        "external_object_references": {
+            "wlan:Enterprise-SecretShaped": {
+                "auth_server1": secret_shaped_auth_server
+            }
+        },
+        "ap_group_target_map": {"ap-group-secret-shaped": secret_shaped_group},
+        "ap_group_device_serials": {
+            "ap-group-secret-shaped": [secret_shaped_serial]
+        },
+    }
+
+    # Accepted transiently: no rejection despite the secret-shaped content.
+    preview = service.preview([wlan, ap_group], wpa3_target)
+    wlan_op = next(
+        op for op in preview["operations"] if op["object_type"] == "wlan"
+    )
+    assert wlan_op["status"] == "ready"
+
+    dumped = json.dumps(preview)
+    assert secret_shaped_auth_server not in dumped
+    assert secret_shaped_group not in dumped
+    assert secret_shaped_serial not in dumped
+    assert known_hash not in dumped
+    assert "<runtime-context-redacted>" in dumped
+    assert preview["target"]["external_object_references"] == "runtime mapping supplied"
+    assert preview["target"]["ap_group_target_map"] == "runtime mapping supplied"
+    assert preview["target"]["ap_group_device_serials"] == "runtime mapping supplied"
+
+    # `create_run()` still fails closed for the same target.
+    with pytest.raises(MigrationRunError):
+        service.create_run([wlan, ap_group], wpa3_target, run_id="secret-shaped-ctx")
+    assert not store.path_for("secret-shaped-ctx").exists()
+
+
+def test_preview_target_marker_unchanged_when_no_operator_context_supplied(tmp_path):
+    # A normal preview with no operator-context maps at all must be
+    # unaffected by the new redaction/marker logic: the three fields show
+    # the "not supplied" marker and no candidate is scrubbed unnecessarily.
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    wlan = candidate("vlan", "vlan-100", payload={"vlan_id": 100, "name": "vlan-100"})
+
+    preview = service.preview([wlan], target("new_central"))
+    assert preview["target"]["external_object_references"] == "runtime mapping not supplied"
+    assert preview["target"]["ap_group_target_map"] == "runtime mapping not supplied"
+    assert preview["target"]["ap_group_device_serials"] == "runtime mapping not supplied"
+    assert preview["candidate_count"] == 1
+
+
 def test_apply_signature_has_no_operator_context_parameters(tmp_path):
     # Requirement: `apply()` (and the MCP `aos8_apply_migration_run` tool)
     # must not accept `external_object_references`/`ap_group_target_map`/
@@ -1387,9 +1571,13 @@ def test_wpa3_enterprise_reachable_only_via_stateless_preview_never_create_run(
     wlan = _wpa3_enterprise_candidate()
 
     preview = service.preview([wlan], wpa3_target)
-    # `preview()` is stateless -- it may echo the context back in this one
-    # response for operator review.
-    assert preview["target"]["external_object_references"] == refs
+    # `preview()` is stateless -- nothing it returns is persisted -- but the
+    # operator-supplied auth-server name must never be echoed back
+    # unredacted: the target echo shows only that a runtime mapping was
+    # supplied, and the value is exact-match-redacted everywhere else
+    # (including inside the WPA3-Enterprise create/update payloads).
+    assert preview["target"]["external_object_references"] == "runtime mapping supplied"
+    assert "InternalServer" not in json.dumps(preview)
     action = preview["operations"][0]
     assert action["status"] == "ready"
     assert action["dry_run_only"] is True
@@ -1449,9 +1637,10 @@ def test_wpa3_enterprise_mcp_preview_allows_context_create_run_rejects_it(
     )
     assert preview["operations"][0]["status"] == "ready"
     assert preview["operations"][0]["dry_run_only"] is True
-    assert preview["target"]["external_object_references"] == {
-        "wlan:Enterprise-Test": {"auth_server1": "InternalServer"}
-    }
+    # Stateless preview must never echo the raw operator-supplied
+    # auth-server name -- only that a runtime mapping was supplied.
+    assert preview["target"]["external_object_references"] == "runtime mapping supplied"
+    assert "InternalServer" not in json.dumps(preview)
 
     rejected = aos8.aos8_create_migration_run(
         "classic_central",

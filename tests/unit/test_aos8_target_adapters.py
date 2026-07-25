@@ -1826,6 +1826,14 @@ def test_classic_ap_group_requires_explicit_group_then_serials_then_stays_manual
     message = action["unsupported_warnings"][0].lower()
     assert "no verified classic central device-move" in message
     assert "never fabricated" in message
+    # Never leak the operator-supplied Classic-group name, the serial
+    # values, or a derived serial *count* into this message -- only that
+    # a runtime mapping was supplied.
+    assert "lobby-classic-group" not in message
+    assert "cnxxxx0001" not in message
+    assert "cnxxxx0002" not in message
+    assert "2 device serial" not in message
+    assert "runtime device serial mapping" in message
 
 
 # --------------------------------------------------------------------------

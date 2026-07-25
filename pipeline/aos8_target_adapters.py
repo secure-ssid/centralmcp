@@ -2158,6 +2158,11 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
                 key=key,
                 candidate=candidate,
                 compatibility_errors=[
+                    # Value-free/count-free on principle: this message can
+                    # reach a stateless `preview()` response, so it never
+                    # echoes the operator-supplied Classic-group name or
+                    # device serials -- only that a runtime mapping is
+                    # required and, once supplied, remains unsupported.
                     f"{key}: AOS8 AP groups are not Classic Central groups; no "
                     "automatic 1:1 group creation or membership is ever "
                     "inferred. Supply an explicit operator-provided mapping "
@@ -2180,8 +2185,8 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
                     # §5/§6.11), but this message can still reach a
                     # stateless `preview()` response, so it stays value-free
                     # on principle.
-                    f"{key}: an explicit Classic group mapping was supplied, "
-                    "but no explicit device serial number(s) were supplied "
+                    f"{key}: a runtime Classic-group mapping was supplied, "
+                    "but no runtime device serial number(s) were supplied "
                     f"via context.ap_group_device_serials[{ap_group_name!r}] "
                     "for a device-move operation; this candidate remains manual "
                     "until real serials are provided."
@@ -2191,14 +2196,14 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
             key=key,
             candidate=candidate,
             compatibility_errors=[
-                # Same rationale as above: report only that a mapping and a
-                # serial *count* were supplied, never the actual Classic
-                # group name or device serial values themselves.
-                f"{key}: an explicit Classic group mapping and "
-                f"{len(serials)} device serial(s) were supplied, but no "
-                "verified Classic Central device-move object REST exists in "
-                "this repository (contract matrix §5/§6.11). This candidate "
-                "remains manual/unsupported until a live-verified move-device "
+                # Report only that runtime Classic-group and device-serial
+                # mappings were supplied -- never the actual Classic group
+                # name, device serial values, or a derived serial count.
+                f"{key}: a runtime Classic-group mapping and runtime device "
+                "serial mapping were supplied, but no verified Classic "
+                "Central device-move object REST exists in this repository "
+                "(contract matrix §5/§6.11). This candidate remains "
+                "manual/unsupported until a live-verified move-device "
                 "endpoint is read and recorded in the migration contract "
                 "matrix — it is never fabricated."
             ],

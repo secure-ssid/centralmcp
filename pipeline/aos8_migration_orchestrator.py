@@ -174,6 +174,7 @@ def _sanitize(
     value: Any,
     *,
     secret_values: Iterable[str] = (),
+    redact_marker: str = "******",
     max_depth: int = 8,
     _depth: int = 0,
 ) -> Any:
@@ -192,6 +193,7 @@ def _sanitize(
                 else _sanitize(
                     item,
                     secret_values=secrets,
+                    redact_marker=redact_marker,
                     max_depth=max_depth,
                     _depth=_depth + 1,
                 )
@@ -208,6 +210,7 @@ def _sanitize(
             _sanitize(
                 item,
                 secret_values=secrets,
+                redact_marker=redact_marker,
                 max_depth=max_depth,
                 _depth=_depth + 1,
             )
@@ -225,8 +228,13 @@ def _sanitize(
         return bounded
     if isinstance(value, str):
         text = value
+        # `redact_marker` defaults to the same generic secret marker used
+        # for key-based redaction above, but callers scrubbing a distinct
+        # category of exact-match value (e.g. transient operator-context
+        # strings, never actual secrets) pass a different stable marker so
+        # the two redaction reasons stay distinguishable in the output.
         for secret in secrets:
-            text = text.replace(secret, "******")
+            text = text.replace(secret, redact_marker)
         if len(text) > 1000:
             return f"{text[:1000]}... [truncated {len(text) - 1000} chars]"
         return text
@@ -530,6 +538,61 @@ def _without_operator_context(target: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# Stable, distinct marker for a transiently-supplied operator-context value
+# (e.g. a WPA3-Enterprise auth-server reference, an AP-group target-group
+# name, or a device serial) that leaked into a stateless preview's
+# operations/payloads/blockers/warnings. Deliberately different from the
+# generic secret marker ("******") used for key-based redaction elsewhere
+# in `_sanitize`, so the two redaction reasons stay distinguishable.
+_RUNTIME_CONTEXT_REDACTED_MARKER = "<runtime-context-redacted>"
+# Generic, count-free/value-free markers used in place of the raw
+# `external_object_references`/`ap_group_target_map`/
+# `ap_group_device_serials` maps in a stateless preview's echoed
+# `target` -- they must show *that* a runtime mapping was (or was not)
+# supplied for structural/status purposes, never the map's keys, values,
+# or size.
+_RUNTIME_CONTEXT_SUPPLIED = "runtime mapping supplied"
+_RUNTIME_CONTEXT_NOT_SUPPLIED = "runtime mapping not supplied"
+
+
+def _operator_context_marker(mapping: Mapping[str, Any]) -> str:
+    return _RUNTIME_CONTEXT_SUPPLIED if mapping else _RUNTIME_CONTEXT_NOT_SUPPLIED
+
+
+def _operator_context_redaction_values(
+    external_object_references: Mapping[str, Mapping[str, str]],
+    ap_group_target_map: Mapping[str, str],
+    ap_group_device_serials: Mapping[str, Iterable[str]],
+) -> tuple[str, ...]:
+    """Collect every operator-*supplied* leaf string from the three
+    transient operator-context maps, to be used as exact-match redaction
+    input by `_sanitize(..., secret_values=...)`.
+
+    Deliberately excludes the maps' own keys: `ap_group_target_map`'s and
+    `ap_group_device_serials`' keys are AOS8 AP-group names that already
+    equal that candidate's own `identifier` (already shown elsewhere in
+    the same preview), and `external_object_references`'s top-level keys
+    are candidate keys (`object_type:identifier`), likewise already
+    public within the same response. Only the *values* -- an
+    already-existing Classic auth-server name, a Classic target-group
+    name, and device serial numbers -- are genuinely runtime-supplied,
+    potentially-identifying data that must never be echoed back.
+    """
+    values: list[str] = []
+    for refs in external_object_references.values():
+        for ref_value in refs.values():
+            if isinstance(ref_value, str) and ref_value:
+                values.append(ref_value)
+    for target_group in ap_group_target_map.values():
+        if isinstance(target_group, str) and target_group:
+            values.append(target_group)
+    for serials in ap_group_device_serials.values():
+        for serial in serials:
+            if isinstance(serial, str) and serial:
+                values.append(serial)
+    return tuple(values)
+
+
 def _run_fingerprint(
     candidates: list[dict[str, Any]],
     target: Mapping[str, Any],
@@ -544,6 +607,37 @@ def _run_fingerprint(
 
 
 _LEGACY_OPERATOR_CONTEXT_MARKER = "legacy_operator_context_sanitized"
+_LEGACY_CANDIDATE_BLOCKED_MESSAGE = (
+    "This candidate's prior result predates this run's operator-context "
+    "sanitization and cannot be trusted; recreate the run with "
+    "aos8_create_migration_run."
+)
+
+
+def _heal_legacy_candidate_entry(entry: Any) -> Any:
+    """Reset every field on one candidate entry that could carry a result,
+    error, attempt, or verification record computed while this run still
+    held (or was built from) unsafe operator-context state.
+
+    Unlike the raw `target` operator-context values, these cannot be
+    exact-match-redacted: the original operator-context values that may
+    have shaped a prior write's payload/result are already gone by the
+    time this runs, so there is nothing left to match against. They are
+    cleared outright, and the candidate is marked durably blocked with a
+    generic, value-free message, rather than left holding
+    possibly-tainted data.
+    """
+    if not isinstance(entry, Mapping):
+        return entry
+    healed = dict(entry)
+    healed["status"] = "blocked"
+    healed["retryable"] = False
+    healed["dry_run_ok"] = False
+    healed["last_error"] = _LEGACY_CANDIDATE_BLOCKED_MESSAGE
+    healed["last_result"] = None
+    healed["attempt_history"] = []
+    healed["verification"] = None
+    return healed
 
 
 def _sanitize_legacy_operator_context(
@@ -554,9 +648,17 @@ def _sanitize_legacy_operator_context(
     `external_object_references`/`ap_group_target_map`/
     `ap_group_device_serials` values directly on `target`, and/or the
     non-reversible `operator_context_metadata` fingerprint/count metadata
-    an earlier revision persisted instead of the raw values. Both are
-    removed entirely (no raw values, no hashes) and replaced with a
-    durable warning marker. Never mutates `value` in place; returns
+    an earlier revision persisted instead of the raw values.
+
+    Removing those two fields is not enough on its own: any candidate
+    result/error/attempt-history/verification record recorded while the
+    run held that unsafe state, and the run's own `fingerprint` (itself
+    derived from `target`+candidates and therefore potentially an
+    operator-derived hash), could still encode operator-supplied values
+    or counts. All of that is removed/reset here too -- never just the
+    two triggering fields -- and the run and every candidate are marked
+    durably blocked/recreate-required with a generic message. Never
+    mutates `value` in place; returns
     `(possibly-sanitized run, whether anything changed)`.
     """
     changed = False
@@ -571,6 +673,32 @@ def _sanitize_legacy_operator_context(
         del sanitized["operator_context_metadata"]
         changed = True
     if changed:
+        healed_target = (
+            sanitized["target"] if isinstance(sanitized.get("target"), dict) else {}
+        )
+        healed_candidates = [
+            _heal_legacy_candidate_entry(entry)
+            for entry in sanitized.get("candidates", [])
+        ]
+        sanitized["candidates"] = healed_candidates
+        sanitized["status"] = "blocked"
+        sanitized["updated_at"] = _now()
+        # The stored `fingerprint` (and the removed
+        # `operator_context_metadata`'s embedded hash, if present) may
+        # have been derived, directly or indirectly, from the now-removed
+        # raw operator-context values -- recompute it purely from the
+        # sanitized target/candidates so no operator-derived hash
+        # survives on disk; there is no raw value left to reuse, so this
+        # is a fresh, independent fingerprint, not the old one.
+        sanitized["fingerprint"] = _run_fingerprint(
+            [
+                entry.get("candidate", {})
+                for entry in healed_candidates
+                if isinstance(entry, Mapping)
+            ],
+            healed_target,
+            None,
+        )
         sanitized[_LEGACY_OPERATOR_CONTEXT_MARKER] = {
             "removed_at": _now(),
             "reason": (
@@ -578,11 +706,15 @@ def _sanitize_legacy_operator_context(
                 "that could persist operator-supplied "
                 "external_object_references/ap_group_target_map/"
                 "ap_group_device_serials values, or a resupply fingerprint "
-                "derived from them. Those fields have been removed from "
-                "this run's state. This run cannot be applied: recreate it "
-                "with aos8_create_migration_run, and use a fresh "
-                "aos8_preview_migration_run first for any context-dependent "
-                "mapping (e.g. WPA3-Enterprise, AP-group)."
+                "derived from them. Those fields, this run's fingerprint, "
+                "and every candidate's prior result/error/attempt-history/"
+                "verification record have been removed or reset -- none of "
+                "them can be trusted to be free of operator-derived values "
+                "or counts. This run is durably blocked and cannot be "
+                "applied: recreate it with aos8_create_migration_run, and "
+                "use a fresh aos8_preview_migration_run first for any "
+                "context-dependent mapping (e.g. WPA3-Enterprise, "
+                "AP-group)."
             ),
         }
     return sanitized, changed
@@ -881,13 +1013,49 @@ class AOS8MigrationOrchestrator:
         preview["candidate_count"] = len(operations)
         preview["secrets_persisted"] = False
         # `preview()` is stateless -- nothing it returns is written to disk
-        # -- so it may echo `external_object_references`/
-        # `ap_group_target_map`/`ap_group_device_serials` back in this one
-        # response for operator review (same "show the payload before you
-        # commit" rule as everything else in `preview`). They are still
-        # runtime-only: this flag documents that they are never persisted.
+        # -- but that does not mean the raw operator-context values (an
+        # already-existing Classic auth-server name, an AP-group target
+        # group name, device serials) are safe to echo back: they are
+        # still runtime-supplied, potentially-identifying data. This flag
+        # documents only that they are never *persisted*, not that they
+        # are shown unredacted below.
         preview["operator_context_persisted"] = False
-        return _sanitize(preview)
+        context = adapter.context
+        # Replace the raw `target.external_object_references`/
+        # `ap_group_target_map`/`ap_group_device_serials` echo with a
+        # generic, value-free/count-free marker: the caller can see
+        # *whether* a runtime mapping was supplied for this preview, never
+        # its keys, values, or size.
+        preview["target"] = {
+            **preview.get("target", {}),
+            "external_object_references": _operator_context_marker(
+                context.external_object_references
+            ),
+            "ap_group_target_map": _operator_context_marker(
+                context.ap_group_target_map
+            ),
+            "ap_group_device_serials": _operator_context_marker(
+                context.ap_group_device_serials
+            ),
+        }
+        # Defense in depth: the same raw operator-context values may still
+        # have been used transiently to construct operation payloads
+        # elsewhere in this preview (e.g. WPA3-Enterprise's `auth_server1`
+        # in a create/update payload). Scrub every exact occurrence
+        # recursively -- operations, payloads, blockers, warnings, and
+        # results alike -- and replace it with a stable, distinct marker
+        # rather than leaving the operator-supplied value (or a
+        # derived/identifying count) in the returned preview.
+        redaction_values = _operator_context_redaction_values(
+            context.external_object_references,
+            context.ap_group_target_map,
+            context.ap_group_device_serials,
+        )
+        return _sanitize(
+            preview,
+            secret_values=redaction_values,
+            redact_marker=_RUNTIME_CONTEXT_REDACTED_MARKER,
+        )
 
     def create_run(
         self,

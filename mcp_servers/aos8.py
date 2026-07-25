@@ -2331,10 +2331,19 @@ def aos8_preview_migration_run(
 
     This is the *only* migration-run tool that accepts these three fields:
     this call is stateless (nothing it returns is persisted), and it may
-    use them transiently to construct the returned preview.
-    `aos8_create_migration_run` rejects any non-empty value for them with a
-    clear error, and `aos8_apply_migration_run` does not accept them at
-    all -- see the fail-closed contract on
+    use them transiently to construct the returned preview. They are
+    never echoed back unredacted, though: the returned `target` shows
+    only a generic "runtime mapping supplied"/"runtime mapping not
+    supplied" marker for each of the three fields (never their keys,
+    values, or size), and the same raw values are exact-match-redacted
+    everywhere else they may have been used to build the preview
+    (operations, payloads, blockers, warnings, results) and replaced with
+    a stable marker -- so the preview still shows structure,
+    supported/blocked status, and which kind of runtime input is
+    required, without echoing operator-supplied or otherwise
+    identifying data. `aos8_create_migration_run` rejects any non-empty
+    value for them with a clear error, and `aos8_apply_migration_run`
+    does not accept them at all -- see the fail-closed contract on
     `pipeline.aos8_migration_orchestrator._reject_persisted_operator_context`.
     """
     try:
