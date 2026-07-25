@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, quote_plus
 
@@ -401,9 +402,12 @@ def test_apply_wholesale_redacts_every_adversarial_secret_embedding_end_to_end(
             assert quote(secret, safe="").lower() not in text
         assert entry["last_error"] in (None, orchestrator_module._SECRET_CONTEXT_MARKER)
         if entry.get("last_result") is not None:
-            for value in entry["last_result"].values():
-                if isinstance(value, str):
-                    assert value == orchestrator_module._SECRET_CONTEXT_MARKER
+            # The backend-originated result Mapping collapses wholesale
+            # to the fixed envelope -- never traversed key-by-key -- so
+            # nothing of its original keys/values ever survives.
+            assert entry["last_result"] == dict(
+                orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE
+            )
 
     # First real attempt fails with the secret embedded (in whichever
     # adversarial shape `backend_mode` selects) in the backend's error.
@@ -2056,31 +2060,124 @@ def test_sanitize_signature_has_no_structural_redaction_parameters():
     ],
 )
 def test_sanitize_secret_context_redacts_every_adversarial_string_shape_wholesale(wrap):
-    # Every adversarial way a real secret could appear in backend text --
-    # a bare substring, embedded in longer prose, percent-/form-encoded,
-    # hex-serialized, JSON-serialized, prefixed with the marker text
-    # itself, mixed with Unicode, or repeated -- must produce nothing but
-    # the fixed marker once any real secret is in scope for this call.
-    # `_sanitize` never inspects the string to decide this; it always
-    # replaces the whole leaf, so every one of these shapes collapses to
-    # the identical, provable outcome.
+    # Every adversarial way a real secret could appear in a backend
+    # string leaf -- a bare substring, embedded in longer prose,
+    # percent-/form-encoded, hex-serialized, JSON-serialized, prefixed
+    # with the marker text itself, mixed with Unicode, or repeated --
+    # must produce nothing but the fixed marker once any real secret is
+    # in scope for this call. `_sanitize` never inspects the string to
+    # decide this; it always replaces the whole leaf, so every one of
+    # these shapes collapses to the identical, provable outcome.
     secret = "P@ss/w?rd#x"
     text = wrap(secret)
-    payload = {"backend_message": text, "nested": {"list": [text, text]}}
-    sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
+    sanitized = orchestrator_module._sanitize(text, secret_values=(secret,))
     marker = orchestrator_module._SECRET_CONTEXT_MARKER
-    assert sanitized["backend_message"] == marker
-    assert sanitized["nested"]["list"] == [marker, marker]
+    assert sanitized == marker
+    assert secret not in sanitized
+    assert quote(secret, safe="") not in sanitized
+    assert quote(secret, safe="").lower() not in sanitized
+
+
+@pytest.mark.parametrize(
+    "wrap_key",
+    [
+        lambda secret: secret,
+        lambda secret: quote(secret, safe=""),
+        lambda secret: _mixed_case_percent_encode(secret),
+        lambda secret: secret.encode("utf-8").hex(),
+        lambda secret: f"{orchestrator_module._SECRET_CONTEXT_MARKER}{secret}",
+    ],
+)
+def test_sanitize_secret_context_collapses_mapping_regardless_of_key_shape(wrap_key):
+    # Mapping-key leakage regression: a backend-originated Mapping whose
+    # *key* (not value) is a raw, percent-encoded, hex-encoded, or
+    # marker-prefixed secret must never surface that key in the output.
+    # Because the whole Mapping collapses to the fixed envelope before a
+    # single key is ever read, every key shape produces the identical,
+    # provable outcome.
+    secret = "P@ss/w?rd#x"
+    key = wrap_key(secret)
+    sanitized = orchestrator_module._sanitize({key: "irrelevant"}, secret_values=(secret,))
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
     dumped = json.dumps(sanitized)
     assert secret not in dumped
     assert quote(secret, safe="") not in dumped
-    assert quote(secret, safe="").lower() not in dumped
 
 
-def test_sanitize_secret_context_preserves_non_string_scalars_and_masks_sensitive_keys():
-    # Numbers/bools/null must survive unchanged even when a real secret is
-    # in scope; only string leaves are ever replaced. Mapping keys are
-    # still redacted independently, by name, via `_is_sensitive_key`.
+def test_sanitize_secret_context_collapses_deeply_nested_mapping_key():
+    # A key holding the secret several levels deep must be exactly as
+    # safe as a top-level one: the outer Mapping collapses to the fixed
+    # envelope before any of its own keys/values -- including nested
+    # mappings -- are ever inspected, so the nested key is never reached.
+    secret = "nested-mapping-key-secret"
+    payload = {"a": {"b": {"c": {secret: "leak-if-reached"}}}}
+    sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
+    assert secret not in json.dumps(sanitized)
+
+
+def test_sanitize_secret_context_collapses_list_containing_mapping():
+    # A list/tuple/set containing a mapping whose key is the secret must
+    # collapse to the fixed sequence envelope before the mapping inside
+    # it, or its keys, are ever inspected.
+    secret = "list-of-mappings-secret"
+    payload = [{secret: "leak-if-reached"}, {"other": "value"}]
+    sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_SEQUENCE_ENVELOPE)
+    assert secret not in json.dumps(sanitized)
+
+
+def test_sanitize_secret_context_collapses_custom_mapping_key():
+    # A dict key can be an arbitrary hashable object, including a custom
+    # `Mapping` subclass whose `__str__`/`__repr__` embeds the secret --
+    # exactly the shape that leaked under `key = str(raw_key)` before
+    # this fix (any object stringifies, however sensitive its `__str__`
+    # happens to be). The collapse-before-read rule makes this
+    # impossible: the outer dict's keys are never read at all.
+    secret = "custom-mapping-key-secret"
+
+    class _SecretLeakingKey(Mapping):
+        def __getitem__(self, item):
+            raise KeyError(item)
+
+        def __iter__(self):
+            return iter(())
+
+        def __len__(self):
+            return 0
+
+        def __str__(self):
+            return secret
+
+        def __repr__(self):
+            return secret
+
+        def __hash__(self):
+            return hash(secret)
+
+        def __eq__(self, other):
+            return isinstance(other, _SecretLeakingKey)
+
+    payload = {_SecretLeakingKey(): "irrelevant"}
+    sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
+    assert secret not in json.dumps(sanitized)
+
+
+def test_sanitize_secret_context_preserves_directly_sanitized_scalars():
+    # Numbers/bools/null passed *directly* to `_sanitize` survive
+    # unchanged even when a real secret is in scope -- there is nothing
+    # in a bare scalar that could carry a mapping key or sequence shape.
+    assert orchestrator_module._sanitize(3, secret_values=("abc",)) == 3
+    assert orchestrator_module._sanitize(True, secret_values=("abc",)) is True
+    assert orchestrator_module._sanitize(None, secret_values=("abc",)) is None
+
+
+def test_sanitize_no_secret_context_still_masks_sensitive_keys_and_preserves_scalars():
+    # The no-secret-in-scope path is unchanged: mappings/sequences are
+    # still traversed, numbers/bools/null are preserved, ordinary strings
+    # survive verbatim, and mapping keys are still redacted by name via
+    # `_is_sensitive_key`.
     sanitized = orchestrator_module._sanitize(
         {
             "count": 3,
@@ -2088,15 +2185,13 @@ def test_sanitize_secret_context_preserves_non_string_scalars_and_masks_sensitiv
             "missing": None,
             "message": "backend rejected abc during dry run",
             "shared_secret": "raw-source-value-never-inspected",
-        },
-        secret_values=("abc",),
+        }
     )
-    marker = orchestrator_module._SECRET_CONTEXT_MARKER
     assert sanitized == {
         "count": 3,
         "ok": True,
         "missing": None,
-        "message": marker,
+        "message": "backend rejected abc during dry run",
         "shared_secret": "******",
     }
 
@@ -2105,16 +2200,15 @@ def test_sanitize_multiple_secrets_in_one_call_cannot_combine_or_recreate():
     # With the old substring/sentinel design, one secret's inserted
     # marker text sitting next to unredacted original characters could,
     # in principle, "recreate" a different secret in the same call. The
-    # wholesale design has no such risk by construction: every leaf that
-    # has any secret in scope becomes the exact same fixed marker,
-    # regardless of how many distinct secrets are supplied or in what
-    # order they are processed.
+    # wholesale/collapse design has no such risk by construction: every
+    # Mapping that has any secret in scope becomes the exact same fixed
+    # envelope, regardless of how many distinct secrets are supplied or
+    # in what order they are processed.
     payload = {"a": "contains-secret-one", "b": "contains-secret-two"}
     sanitized = orchestrator_module._sanitize(
         payload, secret_values=("secret-one", "secret-two")
     )
-    marker = orchestrator_module._SECRET_CONTEXT_MARKER
-    assert sanitized == {"a": marker, "b": marker}
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
 
 
 def test_sanitize_marker_is_generated_metadata_not_echoed_secret_material():
@@ -2126,10 +2220,10 @@ def test_sanitize_marker_is_generated_metadata_not_echoed_secret_material():
     # count, or length is ever present to compare it against.
     marker = orchestrator_module._SECRET_CONTEXT_MARKER
     sanitized = orchestrator_module._sanitize(
-        {"message": f"backend echoed {marker} back to the caller"},
+        f"backend echoed {marker} back to the caller",
         secret_values=(marker,),
     )
-    assert sanitized == {"message": marker}
+    assert sanitized == marker
 
 
 def test_sanitize_no_secret_context_leaves_ordinary_strings_unchanged():
@@ -2159,9 +2253,24 @@ def test_sanitize_secret_context_wholesale_replace_is_fast_regardless_of_text_le
     secret = "Tr@ck-M3-N0t/1f-Y0u-C@n?"
     huge_text = (secret + "-padding-") * 200_000  # a few MB
     started = time.monotonic()
-    sanitized = orchestrator_module._sanitize({"error": huge_text}, secret_values=(secret,))
+    sanitized = orchestrator_module._sanitize(huge_text, secret_values=(secret,))
     elapsed = time.monotonic() - started
-    assert sanitized == {"error": orchestrator_module._SECRET_CONTEXT_MARKER}
+    assert sanitized == orchestrator_module._SECRET_CONTEXT_MARKER
+    assert elapsed < 1.0
+
+
+def test_sanitize_secret_context_mapping_collapse_is_fast_regardless_of_size():
+    # Collapsing a Mapping/sequence to the fixed envelope never iterates
+    # its keys/items, so a huge backend-originated mapping costs the
+    # same (near-zero) time to sanitize as a tiny one.
+    import time
+
+    secret = "huge-mapping-collapse-secret"
+    huge_mapping = {f"key-{i}": f"value-{i}-{secret}" for i in range(200_000)}
+    started = time.monotonic()
+    sanitized = orchestrator_module._sanitize(huge_mapping, secret_values=(secret,))
+    elapsed = time.monotonic() - started
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
     assert elapsed < 1.0
 
 
@@ -2172,7 +2281,7 @@ def test_no_global_object_or_cache_retains_secret_material():
     secret = "no-global-retention-secret-999"
     payload = {"error": f"failed for {secret}"}
     result = orchestrator_module._sanitize(payload, secret_values=(secret,))
-    assert result == {"error": orchestrator_module._SECRET_CONTEXT_MARKER}
+    assert result == dict(orchestrator_module._SECRET_CONTEXT_MAPPING_ENVELOPE)
 
     # No module-level global (dict, list, set, or otherwise) in the
     # orchestrator module holds the raw secret anywhere.

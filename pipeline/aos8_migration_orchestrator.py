@@ -191,6 +191,27 @@ def _is_presence_metadata(key: Any, value: Any) -> bool:
 # arbitrary secret a caller might choose.
 _SECRET_CONTEXT_MARKER = "<redacted:runtime-secret-context>"
 
+# Fixed, static envelopes substituted for an *entire* backend-originated
+# Mapping/sequence whenever `_sanitize` is called with a non-empty
+# `secret_values`. A backend response can name its own dict keys or list
+# items dynamically (e.g. echoing a submitted value back verbatim as a
+# mapping key, or as an item inside a list/tuple/set), so per-key/per-item
+# redaction can never provably rule out leakage the way the string-leaf
+# marker above does: the only way to make that leakage impossible is to
+# never read a single key or item out of the aggregate in the first
+# place. Both envelopes are compile-time constants -- built from no part
+# of the original value (not its keys, values, item/key count, type, or
+# repr) -- so copying one always yields the exact same output regardless
+# of what the original Mapping/sequence contained.
+_SECRET_CONTEXT_MAPPING_ENVELOPE: Mapping[str, str] = {
+    "_redacted": _SECRET_CONTEXT_MARKER,
+    "_kind": "mapping",
+}
+_SECRET_CONTEXT_SEQUENCE_ENVELOPE: Mapping[str, str] = {
+    "_redacted": _SECRET_CONTEXT_MARKER,
+    "_kind": "sequence",
+}
+
 
 def _sanitize(
     value: Any,
@@ -203,36 +224,57 @@ def _sanitize(
     fail-closed rule:
 
     - If `secret_values` is non-empty -- meaning at least one real
-      runtime credential was supplied for this call -- every string leaf
-      anywhere in `value` (after mapping-key-based redaction below) is
-      replaced wholesale by the fixed `_SECRET_CONTEXT_MARKER`. No part
-      of the original string is ever inspected, scanned, matched,
-      encoded/decoded, hashed, or cached to decide *how* to redact it:
-      the mere presence of a real secret anywhere in this call's input is
-      reason enough to discard every string leaf outright, whether or not
-      that specific leaf happens to contain a secret. This makes leakage
-      of the secret -- raw, percent-/form-encoded, Unicode, mixed-case,
-      serialized (e.g. embedded in a JSON string), or prefixed with the
-      marker text itself -- provably impossible, because none of those
-      forms are ever read character-by-character in the first place.
-    - If `secret_values` is empty, string leaves are returned unchanged
-      (bounded only by `_OUTPUT_LIMIT`, to keep an oversized backend
-      diagnostic from growing the response/state file without limit).
-      This is the normal, no-secret-in-scope diagnostic path used by
-      `preview()`, `verify()`, and any `apply()` call that was not
-      supplied a real secret.
+      runtime credential was supplied for this call -- `value` is never
+      traversed key-by-key or item-by-item. Instead:
+        * a `Mapping` collapses wholesale to the fixed
+          `_SECRET_CONTEXT_MAPPING_ENVELOPE`, and a `list`/`tuple`/`set`
+          collapses wholesale to the fixed
+          `_SECRET_CONTEXT_SEQUENCE_ENVELOPE`, *before* any key, value,
+          or item of the original aggregate is ever read. This is what
+          makes mapping-key leakage (a backend echoing a submitted value
+          back as a dict key rather than a value) provably impossible:
+          a key that is never read can never appear in the output.
+        * a string leaf is replaced wholesale by the fixed
+          `_SECRET_CONTEXT_MARKER`. No part of the original string is
+          ever inspected, scanned, matched, encoded/decoded, hashed, or
+          cached to decide *how* to redact it: the mere presence of a
+          real secret anywhere in this call's input is reason enough to
+          discard every string leaf outright, whether or not that
+          specific leaf happens to contain a secret. This makes leakage
+          of the secret -- raw, percent-/form-encoded, Unicode,
+          mixed-case, serialized (e.g. embedded in a JSON string), or
+          prefixed with the marker text itself -- provably impossible,
+          because none of those forms are ever read character-by-
+          character in the first place.
+        * a number/bool/`None` scalar passed *directly* to this call is
+          preserved unchanged -- there is nothing in a bare scalar that
+          could carry a mapping key or sequence shape, and no string to
+          discard.
+    - If `secret_values` is empty, mappings/sequences are traversed and
+      bounded (`MAX_RESULT_ITEMS`) exactly as before, string leaves are
+      returned unchanged (bounded only by `_OUTPUT_LIMIT`, to keep an
+      oversized backend diagnostic from growing the response/state file
+      without limit), and mapping keys are still redacted by name via
+      `_is_sensitive_key` (e.g. a `shared_secret`/`admin_password` field
+      found in an arbitrary backend response). This is the normal,
+      no-secret-in-scope diagnostic path used by `preview()`, `verify()`,
+      and any `apply()` call that was not supplied a real secret.
 
-    Independently of `secret_values`, mapping keys are still redacted by
-    name via `_is_sensitive_key` (e.g. a `shared_secret`/`admin_password`
-    field found in an arbitrary backend response), and both mappings and
-    sequences remain bounded (`MAX_RESULT_ITEMS`) and depth-limited
-    (`max_depth`), exactly as before -- a huge or deeply-nested backend
-    payload cannot force unbounded work here regardless of whether a
-    secret is present.
+    Both branches remain depth-limited (`max_depth`) so a huge or
+    deeply-nested backend payload cannot force unbounded recursion here
+    regardless of whether a secret is present.
     """
     secrets = tuple(secret for secret in secret_values if secret)
     if _depth >= max_depth:
         return "<bounded:max-depth>"
+    if secrets:
+        if isinstance(value, Mapping):
+            return dict(_SECRET_CONTEXT_MAPPING_ENVELOPE)
+        if isinstance(value, (list, tuple, set)):
+            return dict(_SECRET_CONTEXT_SEQUENCE_ENVELOPE)
+        if isinstance(value, str):
+            return _SECRET_CONTEXT_MARKER
+        return value
     if isinstance(value, Mapping):
         out: dict[str, Any] = {}
         for raw_key, item in list(value.items())[:MAX_RESULT_ITEMS]:
@@ -244,7 +286,6 @@ def _sanitize(
                 if _is_sensitive_key(key)
                 else _sanitize(
                     item,
-                    secret_values=secrets,
                     max_depth=max_depth,
                     _depth=_depth + 1,
                 )
@@ -260,7 +301,6 @@ def _sanitize(
         bounded = [
             _sanitize(
                 item,
-                secret_values=secrets,
                 max_depth=max_depth,
                 _depth=_depth + 1,
             )
@@ -277,8 +317,6 @@ def _sanitize(
             )
         return bounded
     if isinstance(value, str):
-        if secrets:
-            return _SECRET_CONTEXT_MARKER
         if len(value) > _OUTPUT_LIMIT:
             omitted = len(value) - _OUTPUT_LIMIT
             return f"{value[:_OUTPUT_LIMIT]}... [truncated {omitted} chars]"
