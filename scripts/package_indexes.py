@@ -42,7 +42,13 @@ def _sqlite_counts(path: Path) -> dict[str, int]:
         return {}
     counts: dict[str, int] = {}
     with sqlite3.connect(path) as conn:
-        for table in ("endpoints", "schemas", "fields"):
+        for table in (
+            "endpoints",
+            "schemas",
+            "fields",
+            "advisories",
+            "lifecycle_events",
+        ):
             try:
                 counts[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             except sqlite3.Error:

@@ -40,6 +40,7 @@ mid-poll would restart the whole ping instead of resuming.
 
 from __future__ import annotations
 
+from .audit_log import AuditLogMiddleware
 from .install import Middleware, install_middleware
 from .mac_normalizer import MacNormalizeMiddleware
 from .null_strip import NullStripMiddleware
@@ -50,6 +51,7 @@ from .unknown_tool_suggest import UnknownToolSuggestMiddleware
 
 __all__ = [
     "Middleware",
+    "AuditLogMiddleware",
     "MacNormalizeMiddleware",
     "NullStripMiddleware",
     "RateLimitMiddleware",

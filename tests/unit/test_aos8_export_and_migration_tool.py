@@ -338,6 +338,41 @@ def test_aos8_export_all_fans_out_and_shapes_result(monkeypatch):
                 "vrrp": [{"id": 20, "vrrp_ip": "10.0.20.1", "vrrp_vlan": 20}]
             },
             "/v1/configuration/object/vrrp6": {"vrrp6": []},
+            "/v1/configuration/object/netdst": {
+                "netdst": [
+                    {
+                        "dstname": "corp-servers",
+                        "netdst__network": "10.20.0.0/16",
+                    }
+                ]
+            },
+            "/v1/configuration/object/netdst6": {
+                "netdst6": [
+                    {
+                        "dstname": "corp-servers-v6",
+                        "netdst6__network": "2001:db8:20::/64",
+                    }
+                ]
+            },
+            "/v1/configuration/object/acl_eth": {
+                "acl_eth": [
+                    {
+                        "accname": "eth-200",
+                        "acl_eth__policy": [
+                            {
+                                "source": "any",
+                                "destination": "any",
+                                "action": "permit",
+                            }
+                        ],
+                    }
+                ]
+            },
+            "/v1/configuration/object/whitelist_rule": {
+                "whitelist_rule": [
+                    {"sipaddr": "10.0.0.1", "eipaddr": "10.0.0.50"}
+                ]
+            },
         }
     )
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
@@ -356,6 +391,10 @@ def test_aos8_export_all_fans_out_and_shapes_result(monkeypatch):
     assert out["aaa"]["radius_servers"][0]["rad_server_name"] == "rad1"
     assert out["routing"]["ipv4_routes"][0]["destip"] == "10.20.0.0"
     assert out["routing"]["vrrp"][0]["id"] == 20
+    assert out["netdst"][0]["dstname"] == "corp-servers"
+    assert out["netdst6"][0]["dstname"] == "corp-servers-v6"
+    assert out["acl_eth"][0]["accname"] == "eth-200"
+    assert out["whitelist_rule"][0]["sipaddr"] == "10.0.0.1"
     assert out["warnings"] == []
 
 
@@ -440,3 +479,126 @@ def test_aos8_migration_plan_builds_deterministic_plan_from_live_export(monkeypa
     assert "role" in classic_types
     assert any("opmode" in w for w in plan["warnings"])
     assert "verification_plan" in plan
+
+
+# ---------------------------------------------------------------------------
+# `aos8_migration_dependency_plan` -- bounded, read-only staged-readiness
+# summary over an already-built migration plan/candidate list.
+# ---------------------------------------------------------------------------
+
+_DEPENDENCY_PLAN_EXPORT = {
+    "config_path": "/md/lab",
+    "netdst": [{"dstname": "corp-servers", "netdst__network": "10.20.0.0/16"}],
+    "acl_eth": [
+        {
+            "accname": "eth-200",
+            "acl_eth__policy": [
+                {"source": "any", "destination": "any", "action": "permit"}
+            ],
+        }
+    ],
+    "whitelist_rule": [{"sipaddr": "10.0.0.1", "eipaddr": "10.0.0.50"}],
+    "policies": [
+        {
+            "accname": "corp-acl",
+            "acl_sess__v4policy": [
+                {
+                    "source": "user",
+                    "destination": "corp-servers",
+                    "service": "https",
+                    "action": "permit",
+                }
+            ],
+        }
+    ],
+    "roles": [{"role": "orphan", "acl": "missing-policy", "vlan": 10}],
+}
+
+
+def _build_dependency_plan_fixture():
+    from pipeline.aos8_migration import build_migration_plan
+
+    return build_migration_plan(_DEPENDENCY_PLAN_EXPORT)
+
+
+def test_aos8_migration_dependency_plan_requires_exactly_one_source():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_dependency_plan(
+        target_type="new_central",
+        migration_plan=plan,
+        candidates=plan["candidates"]["new_central"],
+    )
+    assert "error" in out
+    out_none = aos8.aos8_migration_dependency_plan(target_type="new_central")
+    assert "error" in out_none
+
+
+def test_aos8_migration_dependency_plan_groups_by_apply_order_stage():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_dependency_plan(
+        target_type="new_central", migration_plan=plan
+    )
+    stage_orders = [stage["apply_order"] for stage in out["stages"]]
+    assert stage_orders == sorted(stage_orders)
+    assert sum(stage["candidate_count"] for stage in out["stages"]) == (
+        out["summary"]["total_candidates"]
+    )
+
+
+def test_aos8_migration_dependency_plan_classifies_reference_only_families():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_dependency_plan(
+        target_type="new_central", migration_plan=plan
+    )
+    by_type = {c["object_type"]: c for c in out["candidates"]}
+    assert by_type["network_destination"]["status"] == "reference_only"
+    assert by_type["ethernet_acl"]["status"] == "reference_only"
+    assert by_type["whitelist_rule"]["status"] == "reference_only"
+    assert out["summary"]["reference_only"] == 3
+
+
+def test_aos8_migration_dependency_plan_flags_blocked_missing_dependency():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_dependency_plan(
+        target_type="new_central", migration_plan=plan
+    )
+    role = next(c for c in out["candidates"] if c["object_type"] == "role")
+    assert role["status"] == "blocked"
+    assert "policy:missing-policy" in role["dependencies"]
+    assert out["summary"]["blocked"] == 1
+
+
+def test_aos8_migration_dependency_plan_marks_ready_policy_with_resolved_dependency():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_dependency_plan(
+        target_type="new_central", migration_plan=plan
+    )
+    policy = next(c for c in out["candidates"] if c["object_type"] == "policy")
+    assert policy["status"] == "ready"
+    assert policy["dependencies"] == ["network_destination:ipv4:corp-servers"]
+
+
+def test_aos8_migration_dependency_plan_bounds_candidates_with_limit_offset():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_dependency_plan(
+        target_type="new_central", migration_plan=plan, limit=2, offset=0
+    )
+    assert len(out["candidates"]) == 2
+    assert out["limit"] == 2
+    assert out["summary"]["total_candidates"] == 5
+
+
+def test_aos8_migration_dependency_plan_accepts_raw_candidates_list():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_dependency_plan(
+        target_type="new_central", candidates=plan["candidates"]["new_central"]
+    )
+    assert out["summary"]["total_candidates"] == 5
+
+
+def test_aos8_migration_dependency_plan_rejects_unknown_target_type():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_dependency_plan(
+        target_type="not-a-real-target", migration_plan=plan
+    )
+    assert "error" in out

@@ -55,7 +55,8 @@ Do not run destructive tools unless the user explicitly asks and confirms."""
 Use `find_tool` and `invoke_read_tool` for read-only checks.
 Workflow:
 1. Find the client by MAC, IP, hostname, or username.
-2. Identify connected/last-connected AP, site/scope, status, RSSI/SNR, VLAN/SSID, and last seen time.
+2. Identify connected/last-connected AP, site/scope, status, RSSI/SNR,
+   VLAN/SSID, and last seen time.
 3. Check active alerts and site health for the same scope.
 4. Check the AP/device health and radios if available.
 5. If event tools are available, inspect events around last seen time +/- 2 hours.
@@ -103,7 +104,8 @@ Workflow:
 1. Pull active alerts, filtering to critical/high severity or priority when possible.
 2. Group alerts by site/scope, category, and impacted device type.
 3. For the top groups, pull scope/device context to avoid listing isolated noise.
-4. Return a compact action board: alert group, impacted scope, count, first seen, likely owner, next action.
+4. Return a compact action board: alert group, impacted scope, count,
+   first seen, likely owner, next action.
 Do not clear/defer/reactivate alerts unless the user explicitly asks and confirms."""
 
     @mcp.prompt(
@@ -120,3 +122,65 @@ Workflow:
 3. Group failed clients by SSID, VLAN, band, AP, and failure reason when available.
 4. Check the top 5 implicated APs/devices for health, radio, and alert signals.
 5. Return probable pattern, supporting evidence, and the safest next checks."""
+
+    @mcp.prompt(
+        name="aos8_migration_readiness",
+        description="Assess AOS8-to-Central migration readiness, flagging blockers/secrets.",
+    )
+    def aos8_migration_readiness(config_path: str = "/md") -> str:
+        return f"""Assess ArubaOS 8 -> Aruba Central migration readiness for node `{config_path}`.
+
+Use `find_tool`/`invoke_read_tool` (or the aos8 tool names directly, if known) for every step
+below -- this is read-only discovery and planning, never a write.
+Workflow:
+1. Confirm the AOS8 backend is reachable: call `aos8_status` (and `aos8_login` only if it
+   reports no active session).
+2. Export source configuration: call `aos8_export_all(config_path="{config_path}")`. Note any
+   `warnings` -- a partial export is still usable, but call out which object types failed.
+3. Build the deterministic plan: call `aos8_migration_plan(config_path="{config_path}")`. This
+   returns `candidates` for both `classic_central` and `new_central`, a per-object `diff`, and a
+   `warnings` list for every lossy/unsupported field.
+4. Summarize staged readiness: call `aos8_migration_dependency_plan(target_type="new_central",
+   migration_plan=<step 3 result>)` (repeat with `target_type="classic_central"` if that target
+   is also in scope). Report the `stages` (apply-order tiers) and `summary` counts: `ready`,
+   `blocked`, `reference_only`, `requires_secret_input`.
+5. Call out every `blocked` candidate's unresolved dependency, and every `reference_only` family
+   (currently network-destination aliases, Ethernet ACLs, and IP-classification whitelist rules
+   -- normalized and dependency-tracked, but with no automatic target write in this repository;
+   they must be recreated manually).
+6. Flag every candidate with `requires_secret_input=True` -- a human must supply the actual
+   secret at apply time; never invent or guess one.
+Return a compact readiness report: overall totals, the blocking dependencies to resolve first,
+the reference-only/manual-recreation list, and the safest next read-only step. Do not call
+`aos8_preview_migration_run`, `aos8_create_migration_run`, or `aos8_apply_migration_run` unless
+the user explicitly asks to proceed."""
+
+    @mcp.prompt(
+        name="aos8_staged_migration_plan",
+        description="Walk a dependency-ordered AOS8 migration through preview stages before write.",
+    )
+    def aos8_staged_migration_plan(
+        target_type: str = "new_central", config_path: str = "/md"
+    ) -> str:
+        return f"""Walk through a staged, dependency-ordered ArubaOS 8 -> `{target_type}`
+migration for hierarchy node `{config_path}`, preview-only.
+
+Workflow:
+1. Build (or reuse) a migration plan: `aos8_migration_plan(config_path="{config_path}")`.
+2. Call `aos8_migration_dependency_plan(target_type="{target_type}", migration_plan=<plan>)` to
+   get ordered `stages` (by `apply_order`) and each candidate's `status`
+   (`ready`/`blocked`/`reference_only`).
+3. Process stages in ascending `apply_order` order, lowest first -- never skip ahead, since a
+   later stage's candidates may depend on an earlier stage's objects (e.g. a `policy` candidate
+   that depends on a `network_destination` alias, or a `role` that depends on a `policy`).
+4. For each stage's `ready` candidates only, call `aos8_preview_migration_run(
+   target_type="{target_type}", migration_plan=<plan>, selected_candidates=[...], scope_id=...,
+   scope_name=..., persona=...)` to preview the operations without persisting anything. Never
+   include `blocked` candidates in a preview batch until their dependency is resolved.
+5. Review each preview's compatibility errors/blockers, required secret inputs, and dry-run
+   payloads before moving to the next stage.
+6. Summarize which stages are fully previewable now, which are blocked and on what, and which
+   candidates are `reference_only` and must be recreated manually on the target instead.
+This prompt only walks through read-only planning and stateless preview; it never calls
+`aos8_create_migration_run` or `aos8_apply_migration_run` -- creating or applying a real
+migration run requires the user's explicit, separate confirmation naming the exact target."""

@@ -4,27 +4,24 @@ Low-token Model Context Protocol tooling for HPE Aruba Central, HPE GreenLake
 Platform, embedded docs/API lookup, and optional ClearPass, Mist, Apstra,
 ArubaOS 8, EdgeConnect, UXI, and Axis backends.
 
-![centralmcp 0.5.0](assets/centralmcp-hero.svg)
+![centralmcp 0.6.0](assets/centralmcp-hero.svg)
 
-## Version 0.5.0 project snapshot
+## Version 0.6.0 project snapshot
 
 | Area | Current snapshot |
 |---|---|
-| Tool catalog | 5,703 generated operations (5,686 active) / 480 curated / 6,166 backend tools / 6,169 direct-all |
-| Capability totals | 2,815 read, 164 diagnostic, 2,383 write, 804 destructive |
+| Tool catalog | 6,056 generated operations (6,039 active) / 506 curated / 6,545 backend tools / 6,548 direct-all |
+| Capability totals | 3,056 read, 164 diagnostic, 2,501 write, 824 destructive |
 | RAG | 51,737 prose chunks in LanceDB |
-| Exact API lookup | 239 specs, 3,465 endpoints, 10,297 schemas, 57,131 fields |
+| Structured lookup | 244 specs, 3,796 endpoints, 11,293 schemas, 60,568 fields, 102 advisories, 346 lifecycle records |
 | API provenance | Aruba ReadMe registries, official Mist/Apstra sources, pinned GLP and EdgeConnect snapshots, SHA-pinned Axis generator |
 | Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis Atmos Cloud |
 | Safety | Per-platform gates, dry-run writes, confirmation, HTTP host/origin and bearer controls |
 
-Read the [0.5.0 release notes](release-notes-0.5.0.md) for the verified AOS8
-migration expansion: hardened source parsing, a bounded Classic Central
-`full_wlan` write lifecycle, expanded (still fail-closed) New Central secured
-WLAN mappings, a six-state verification taxonomy, and a read-only live/dry-run
-evaluation. The [0.4.0 release notes](release-notes-0.4.0.md) and
-[0.3.0 release notes](release-notes-0.3.0.md) remain available for historical
-context.
+Read the [0.6.0 release notes](release-notes-0.6.0.md) for expanded Central,
+GLP, AOS8, Axis, Mist, structured advisory/lifecycle RAG, provenance checks,
+router auditing, and migration reporting. Earlier release notes remain
+available for historical context.
 
 See the [capability gap matrix](capability-gap-matrix.md) for reproducible
 executable-tool, generated-operation, benchmark, and practical-gap comparisons.
@@ -101,7 +98,8 @@ flowchart TD
 | Plan typed product-specific workflows | [Typed product workflow roadmap](product-workflows.md) |
 | Fix setup, credentials, HTTP, or catalog issues | [Troubleshooting](troubleshooting.md) |
 | Download or package prebuilt RAG/OpenAPI indexes | [Prebuilt RAG/OpenAPI indexes](release-indexes.md) |
-| Review the complete 0.5.0 AOS8 migration expansion | [0.5.0 release notes](release-notes-0.5.0.md) |
+| Review the complete 0.6.0 expansion | [0.6.0 release notes](release-notes-0.6.0.md) |
+| Review the prior 0.5.0 AOS8 migration expansion | [0.5.0 release notes](release-notes-0.5.0.md) |
 | Review the AOS8 migration contract matrix and live evaluation | [Contract matrix](aos8-migration-contract-matrix.md), [live/dry-run evaluation](aos8-live-dryrun-evaluation.md) |
 | Review the prior 0.4.0 expansion (historical) | [0.4.0 release notes](release-notes-0.4.0.md) |
 | Review the prior 0.3.0 expansion (historical) | [0.3.0 release notes](release-notes-0.3.0.md) |

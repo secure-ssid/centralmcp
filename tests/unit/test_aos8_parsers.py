@@ -9,14 +9,17 @@ from pipeline.aos8_parsers import (
     parse_auth_profiles,
     parse_auth_servers,
     parse_controllers,
+    parse_ethernet_acls,
     parse_export,
     parse_export_report,
+    parse_network_destinations,
     parse_policies,
     parse_roles,
     parse_routes,
     parse_server_groups,
     parse_vlans,
     parse_vrrp,
+    parse_whitelist_rules,
     parse_wlans,
 )
 
@@ -449,6 +452,9 @@ def test_parse_export_returns_all_object_types():
         "auth_servers",
         "routes",
         "vrrp",
+        "network_destinations",
+        "ethernet_acls",
+        "whitelist_rules",
     }
     assert len(parsed["wlans"]) == 3
     assert len(parsed["roles"]) == 2
@@ -492,3 +498,178 @@ def test_parse_export_report_warns_for_malformed_partial_objects():
     assert any("expected a list of rules" in warning for warning in warnings)
     assert any("has no destination" in warning for warning in warnings)
     assert any("has no VRRP ID" in warning for warning in warnings)
+
+
+# ---------------------------------------------------------------------------
+# Network destination aliases (netdst/netdst6), Ethernet ACLs (acl_eth), and
+# IP-classification whitelist rules (whitelist_rule) -- new source families.
+# ---------------------------------------------------------------------------
+
+_NETDST_EXPORT = {
+    "netdst": [
+        {
+            "dstname": "corp-servers",
+            "netdst__desc": "Corp servers",
+            "netdst__network": "10.20.0.0/16",
+        },
+        {
+            "dstname": "voip-dest",
+            "netdst__host": "10.30.0.5",
+            "netdst__invert": "1",
+        },
+    ],
+    "netdst6": [
+        {"dstname": "corp-servers-v6", "netdst6__network": "2001:db8::/64"},
+    ],
+}
+
+
+def test_parse_network_destinations_reads_ipv4_and_ipv6_prefixed_fields():
+    destinations = parse_network_destinations(_NETDST_EXPORT)
+    assert len(destinations) == 3
+    corp = next(d for d in destinations if d.name == "corp-servers")
+    assert corp.address_family == "ipv4"
+    assert corp.description == "Corp servers"
+    assert corp.network == "10.20.0.0/16"
+
+    voip = next(d for d in destinations if d.name == "voip-dest")
+    assert voip.host == "10.30.0.5"
+    assert voip.invert is True
+
+    corp_v6 = next(d for d in destinations if d.name == "corp-servers-v6")
+    assert corp_v6.address_family == "ipv6"
+    assert corp_v6.network == "2001:db8::/64"
+
+
+def test_parse_network_destinations_warns_on_missing_identifier():
+    warnings: list[str] = []
+    destinations = parse_network_destinations(
+        {"netdst": [{"netdst__desc": "no name"}]}, warnings
+    )
+    assert destinations[0].name == "unknown-0"
+    assert any("netdst[0]" in warning for warning in warnings)
+
+
+def test_parse_network_destinations_tolerates_entirely_absent_sections():
+    """Older saved exports may omit these sections without being malformed."""
+    warnings: list[str] = []
+    destinations = parse_network_destinations({}, warnings)
+    assert destinations == []
+    assert warnings == []
+
+
+def test_parse_network_destinations_still_warns_when_section_is_malformed():
+    warnings: list[str] = []
+    destinations = parse_network_destinations({"netdst": "not-a-list"}, warnings)
+    assert destinations == []
+    assert any("netdst section is missing or malformed" in warning for warning in warnings)
+
+
+_ACL_ETH_EXPORT = {
+    "acl_eth": [
+        {
+            "accname": "eth-200",
+            "acl_eth__policy": [
+                {
+                    "source": "any",
+                    "destination": "any",
+                    "ethertype": "0x0800",
+                    "action": "permit",
+                    "priority": 5,
+                },
+                {"src": "host-a", "dst": "host-b", "type": "0x86dd", "deny": True},
+            ],
+        }
+    ]
+}
+
+
+def test_parse_ethernet_acls_counts_rules_and_probes_aliases():
+    acls = parse_ethernet_acls(_ACL_ETH_EXPORT)
+    assert len(acls) == 1
+    acl = acls[0]
+    assert acl.name == "eth-200"
+    assert acl.rule_count == 2
+    assert acl.rules[0].ethertype == "0x0800"
+    assert acl.rules[0].action == "permit"
+    assert acl.rules[0].unsupported_fields == {"priority": 5}
+    assert acl.rules[1].source == "host-a"
+    assert acl.rules[1].destination == "host-b"
+    assert acl.rules[1].ethertype == "0x86dd"
+
+
+def test_parse_ethernet_acls_tolerates_entirely_absent_section():
+    warnings: list[str] = []
+    acls = parse_ethernet_acls({}, warnings)
+    assert acls == []
+    assert warnings == []
+
+
+def test_parse_ethernet_acls_warns_on_malformed_rule_list():
+    warnings: list[str] = []
+    acls = parse_ethernet_acls(
+        {"acl_eth": [{"accname": "bad", "acl_eth__policy": "not-a-list"}]}, warnings
+    )
+    assert acls[0].rule_count == 1
+    assert acls[0].rules[0].unsupported_fields == {"raw_rule": "not-a-list"}
+    assert any("expected a list of rules" in warning for warning in warnings)
+
+
+_WHITELIST_RULE_EXPORT = {
+    "whitelist_rule": [
+        {"sipaddr": "10.0.0.1", "eipaddr": "10.0.0.50"},
+        {"sipaddr": "10.0.1.1"},
+    ]
+}
+
+
+def test_parse_whitelist_rules_reads_start_and_end_ip():
+    rules = parse_whitelist_rules(_WHITELIST_RULE_EXPORT)
+    assert len(rules) == 2
+    assert rules[0].start_ip == "10.0.0.1"
+    assert rules[0].end_ip == "10.0.0.50"
+
+
+def test_parse_whitelist_rules_warns_when_end_ip_is_missing():
+    warnings: list[str] = []
+    rules = parse_whitelist_rules(_WHITELIST_RULE_EXPORT, warnings)
+    assert rules[1].start_ip == "10.0.1.1"
+    assert rules[1].end_ip is None
+    assert any("missing a start or end IP address" in warning for warning in warnings)
+
+
+def test_parse_whitelist_rules_tolerates_entirely_absent_section():
+    warnings: list[str] = []
+    rules = parse_whitelist_rules({}, warnings)
+    assert rules == []
+    assert warnings == []
+
+
+def test_parse_export_report_never_warns_for_new_families_when_absent():
+    """Regression: the new-family parsers must not add noise to every
+    existing export that predates `aos8_export_all()` fetching them."""
+    _, warnings = parse_export_report(
+        {
+            "wlans": {"ssid_profiles": [], "virtual_aps": []},
+            "roles": [],
+            "vlans": [],
+            "ap_groups": [],
+            "controllers": [],
+            "policies": [],
+            "aaa": {
+                "aaa_profiles": [],
+                "dot1x_auth_profiles": [],
+                "mac_auth_profiles": [],
+                "server_groups": [],
+                "radius_servers": [],
+                "ldap_servers": [],
+                "tacacs_servers": [],
+            },
+            "routing": {"ipv4_routes": [], "ipv6_routes": [], "vrrp": [], "vrrp6": []},
+        }
+    )
+    assert not any(
+        family in warning
+        for warning in warnings
+        for family in ("netdst", "acl_eth", "whitelist_rule")
+    )

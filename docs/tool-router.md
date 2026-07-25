@@ -113,13 +113,13 @@ If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and inclu
 |---|---:|
 | Minimal router | 3 client-visible tools |
 | Default router | 12 client-visible tools |
-| Complete backend index | 6,166 tools |
-| Direct-all router | 6,169 client-visible tools |
+| Complete backend index | 6,545 tools |
+| Direct-all router | 6,548 client-visible tools |
 
 The complete catalog spans nine platform surfaces plus RAG. Its nine generated
-manifests contain 5,703 reproducible operations (5,686 register as active
-generated tools; 480 curated tools bring the executable backend total to
-6,166). Minimal mode does not expose that schema surface to the MCP client; it
+manifests contain 6,056 reproducible operations (6,039 register as active
+generated tools; 506 curated tools bring the executable backend total to
+6,545). Minimal mode does not expose that schema surface to the MCP client; it
 searches the catalog on demand.
 
 ## Toolsets

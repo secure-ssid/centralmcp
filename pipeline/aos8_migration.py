@@ -20,11 +20,14 @@ from pipeline.aos8_schema import (
     AOS8AuthProfile,
     AOS8AuthServer,
     AOS8Controller,
+    AOS8EthernetACL,
+    AOS8NetworkDestination,
     AOS8Policy,
     AOS8Role,
     AOS8Route,
     AOS8ServerGroup,
     AOS8Vlan,
+    AOS8WhitelistRule,
     AOS8Wlan,
     ClassicCentralCandidate,
     NewCentralCandidate,
@@ -33,10 +36,13 @@ from pipeline.aos8_schema import (
 APPLY_ORDER = {
     "vlan": 10,
     "auth_server": 10,
+    "network_destination": 15,
+    "whitelist_rule": 15,
     "dot1x_auth_profile": 20,
     "mac_auth_profile": 20,
     "server_group": 20,
     "policy": 20,
+    "ethernet_acl": 20,
     "role": 30,
     "aaa_profile": 40,
     "wlan": 50,
@@ -45,6 +51,18 @@ APPLY_ORDER = {
     "vrrp": 80,
     "controller": 90,
 }
+
+# Explicit "no deterministic target mapping" candidate warning text for the
+# reference-only families in `pipeline.aos8_schema.REFERENCE_ONLY_OBJECT_TYPES`.
+# Threaded through `_append_for_both`'s `warnings=` so it lands on every
+# candidate for these families (unlike the controller family's message,
+# which is only appended to the plan-level `warnings` list because
+# controllers are Classic-only and never reach `_append_for_both`).
+_REFERENCE_ONLY_WARNING = (
+    "{object_type}:{identifier}: no deterministic Classic/New Central adapter "
+    "mapping exists in this repository for this AOS8 object family; the "
+    "candidate is retained for dependency tracking and operator review only."
+)
 
 _SECRET_MARKER = "<redacted:present>"
 _EMPTY_SECRET_MARKER = "<redacted:empty>"
@@ -664,6 +682,122 @@ def _policy_payload(
     )
 
 
+def _network_destination_payload(
+    destination: AOS8NetworkDestination,
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+    prefix = "netdst" if destination.address_family == "ipv4" else "netdst6"
+    payload = {
+        "address_family": destination.address_family,
+        "name": destination.name,
+        "description": destination.description,
+        "host": destination.host,
+        "network": destination.network,
+        "range": destination.range,
+        "invert": destination.invert,
+    }
+    unsupported = _remaining(
+        destination.raw,
+        {
+            "dstname",
+            f"{prefix}__name",
+            f"{prefix}__desc",
+            f"{prefix}__host",
+            f"{prefix}__network",
+            f"{prefix}__range",
+            f"{prefix}__invert",
+            "name",
+            "description",
+        },
+    )
+    warnings: list[str] = []
+    if destination.invert:
+        identifier = f"{destination.address_family}:{destination.name}"
+        warnings.append(
+            f"network_destination:{identifier}: "
+            f"{UNSUPPORTED_FIELDS['network_destination']['invert']}"
+        )
+    return payload, warnings, unsupported
+
+
+def _ethernet_acl_payload(
+    acl: AOS8EthernetACL,
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+    rules: list[dict[str, Any]] = []
+    unsupported = _remaining(
+        acl.raw,
+        {"accname", "name", "profile-name", "rule", "rules", "acl_eth__policy"},
+    )
+    warnings: list[str] = []
+    for index, rule in enumerate(acl.rules):
+        rules.append(
+            {
+                "source": rule.source,
+                "destination": rule.destination,
+                "ethertype": rule.ethertype,
+                "vlan": rule.vlan,
+                "action": rule.action,
+                "log": rule.log,
+            }
+        )
+        for key, value in rule.unsupported_fields.items():
+            field = f"rules[{index}].{key}"
+            unsupported[field] = value
+            warnings.append(
+                f"ethernet_acl:{acl.name}: {field}: "
+                f"{UNSUPPORTED_FIELDS['ethernet_acl']['unsupported_rule_field']}"
+            )
+    return (
+        {"name": acl.name, "rule_count": acl.rule_count, "rules": rules},
+        warnings,
+        unsupported,
+    )
+
+
+def _whitelist_rule_identifier(rule: AOS8WhitelistRule, index: int) -> str:
+    start = rule.start_ip or f"unknown-{index}"
+    end = rule.end_ip or "unknown"
+    return f"{start}-{end}"
+
+
+def _whitelist_rule_payload(
+    rule: AOS8WhitelistRule,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    payload = {"start_ip": rule.start_ip, "end_ip": rule.end_ip}
+    unsupported = _remaining(
+        rule.raw,
+        {"sipaddr", "eipaddr", "start-ip", "start_ip", "end-ip", "end_ip"},
+    )
+    return payload, unsupported
+
+
+def _policy_network_destination_dependencies(
+    policy: AOS8Policy,
+    network_destination_ids: dict[tuple[str, str], str],
+) -> list[str]:
+    """Resolve policy-rule `destination` values that exactly match a parsed
+    `netdst`/`netdst6` alias name into an explicit
+    `network_destination:{address_family}:{name}` dependency, type-aware by
+    the rule's own IPv4/IPv6 family (same family-keyed lookup pattern as
+    `server_ids_by_name` in `build_migration_plan`). A `destination` value
+    that is not a string, or does not match a parsed alias, is left alone --
+    it may legitimately be `any`, a role name, or a literal address, none of
+    which this function guesses at.
+    """
+    dependencies: set[str] = set()
+    for family_rules, family in (
+        (policy.ipv4_rules, "ipv4"),
+        (policy.ipv6_rules, "ipv6"),
+    ):
+        for rule in family_rules:
+            destination = rule.destination
+            if not isinstance(destination, str):
+                continue
+            identifier = network_destination_ids.get((family, destination))
+            if identifier:
+                dependencies.add(_dependency("network_destination", identifier))
+    return _dependencies(*dependencies)
+
+
 def _aaa_payload(profile: AOS8AAAProfile) -> dict[str, Any]:
     return {
         "name": profile.profile_name,
@@ -822,6 +956,55 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
         )
         diff[f"vlan:{identifier}"] = _diff_entry(vlan.to_dict(), payload)
 
+    network_destination_ids: dict[tuple[str, str], str] = {}
+    for destination in parsed["network_destinations"]:
+        assert isinstance(destination, AOS8NetworkDestination)
+        identifier = f"{destination.address_family}:{destination.name}"
+        payload, local_warnings, unsupported = _network_destination_payload(destination)
+        local_warnings = [
+            *local_warnings,
+            _REFERENCE_ONLY_WARNING.format(
+                object_type="network_destination", identifier=identifier
+            ),
+        ]
+        warnings.extend(
+            _append_for_both(
+                classic,
+                new,
+                "network_destination",
+                identifier,
+                payload,
+                warnings=local_warnings,
+                unsupported_fields=unsupported,
+            )
+        )
+        network_destination_ids[(destination.address_family, destination.name)] = identifier
+        diff[f"network_destination:{identifier}"] = _diff_entry(
+            destination.to_dict(), payload
+        )
+
+    for index, rule in enumerate(parsed["whitelist_rules"]):
+        assert isinstance(rule, AOS8WhitelistRule)
+        identifier = _whitelist_rule_identifier(rule, index)
+        payload, unsupported = _whitelist_rule_payload(rule)
+        local_warnings = [
+            _REFERENCE_ONLY_WARNING.format(
+                object_type="whitelist_rule", identifier=identifier
+            )
+        ]
+        warnings.extend(
+            _append_for_both(
+                classic,
+                new,
+                "whitelist_rule",
+                identifier,
+                payload,
+                warnings=local_warnings,
+                unsupported_fields=unsupported,
+            )
+        )
+        diff[f"whitelist_rule:{identifier}"] = _diff_entry(rule.to_dict(), payload)
+
     for profile in parsed["dot1x_auth_profiles"] + parsed["mac_auth_profiles"]:
         assert isinstance(profile, AOS8AuthProfile)
         object_type = f"{profile.auth_type}_auth_profile"
@@ -899,6 +1082,9 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
     for policy in parsed["policies"]:
         assert isinstance(policy, AOS8Policy)
         payload, local_warnings, unsupported = _policy_payload(policy)
+        dependencies = _policy_network_destination_dependencies(
+            policy, network_destination_ids
+        )
         warnings.extend(
             _append_for_both(
                 classic,
@@ -907,10 +1093,33 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
                 policy.name,
                 payload,
                 warnings=local_warnings,
+                dependencies=dependencies,
                 unsupported_fields=unsupported,
             )
         )
         diff[f"policy:{policy.name}"] = _diff_entry(policy.to_dict(), payload)
+
+    for acl in parsed["ethernet_acls"]:
+        assert isinstance(acl, AOS8EthernetACL)
+        payload, local_warnings, unsupported = _ethernet_acl_payload(acl)
+        local_warnings = [
+            *local_warnings,
+            _REFERENCE_ONLY_WARNING.format(
+                object_type="ethernet_acl", identifier=acl.name
+            ),
+        ]
+        warnings.extend(
+            _append_for_both(
+                classic,
+                new,
+                "ethernet_acl",
+                acl.name,
+                payload,
+                warnings=local_warnings,
+                unsupported_fields=unsupported,
+            )
+        )
+        diff[f"ethernet_acl:{acl.name}"] = _diff_entry(acl.to_dict(), payload)
 
     policy_names = {
         policy.name for policy in parsed["policies"] if isinstance(policy, AOS8Policy)

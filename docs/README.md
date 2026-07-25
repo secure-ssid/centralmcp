@@ -17,6 +17,7 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | [aos8-migration-contract-matrix.md](aos8-migration-contract-matrix.md) | Authoritative AOS8-to-Classic/New Central migration contract matrix gating 0.5.0 implementation |
 | [aos8-live-dryrun-evaluation.md](aos8-live-dryrun-evaluation.md) | Read-only live/fixture-backed evaluation record of the AOS8 migration pipeline against the contract matrix |
 | [release-indexes.md](release-indexes.md) | Download, package, and release prebuilt RAG/OpenAPI indexes |
+| [release-notes-0.6.0.md](release-notes-0.6.0.md) | Security/lifecycle RAG, expanded Central/GLP/AOS8/Axis/Mist coverage, provenance, audit logging, and migration reports |
 | [release-notes-0.5.0.md](release-notes-0.5.0.md) | Verified AOS8 migration expansion: source hardening, bounded Classic Central write lifecycle, expanded fail-closed New Central mappings, verification taxonomy, and read-only live/dry-run evaluation |
 | [release-notes-0.4.0.md](release-notes-0.4.0.md) | Complete 0.4.0 migration execution, Mist diagnostics, EdgeConnect compatibility, GLP, and Axis changes |
 | [release-notes-0.3.0.md](release-notes-0.3.0.md) | Prior 0.3.0 platform, migration, safety, and API-source changes (historical) |
@@ -78,7 +79,7 @@ uv run python scripts/ingest_tools.py
 # Include optional product starters in the tool catalog
 uv run python scripts/ingest_tools.py --products all
 
-# Include every guarded optional write tool (6,166 backend tools)
+# Include every guarded optional write tool (6,545 backend tools)
 CENTRALMCP_PRODUCT_ACCESS=read-write CENTRALMCP_GLP_GENERATED_TOOLS=1 uv run python scripts/ingest_tools.py --products all
 
 # Start the model-agnostic HTTP MCP router

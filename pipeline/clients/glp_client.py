@@ -587,10 +587,14 @@ class GLPClient:
     ) -> dict[str, Any]:
         """Add one or more subscription keys to the workspace in a single call.
 
-        Body shape and the ``dryRun`` query parameter follow the same
-        create-with-preview convention GLP uses elsewhere (e.g. device add
-        validation) — not independently re-verified against the
-        Subscriptions v1 spec text for this exact operation. Guarded by
+        The ``dry-run`` query parameter matches the committed manifest entry
+        for ``POST /subscriptions/v1/subscriptions`` (postSubscriptionsV1) —
+        confirmed against ``mcp_servers/openapi_gen/manifests/glp.json``,
+        which documents the parameter name as ``dry-run`` (not ``dryRun``).
+        The nested ``subscriptions[].key`` body shape is not independently
+        re-verified against the Subscriptions v1 spec text for this exact
+        operation (the manifest only documents the top-level
+        ``subscriptions`` property, not its item schema). Guarded by
         ``CENTRALMCP_GLP_V2BETA1_WRITES=1`` even when ``dry_run=True`` is
         requested through the live API (server-side dry-run still reaches
         the tenant); local-only preview should be done by the caller before
@@ -602,7 +606,7 @@ class GLPClient:
                 f"Payload that would have been sent: keys={subscription_keys} dry_run={dry_run}"
             )
         body = {"subscriptions": [{"key": key} for key in subscription_keys]}
-        params = {"dryRun": "true"} if dry_run else None
+        params = {"dry-run": "true"} if dry_run else None
         resp = self._client._request(
             "POST", "/subscriptions/v1/subscriptions", json=body, params=params
         )
@@ -610,6 +614,377 @@ class GLPClient:
             raise RuntimeError(
                 f"GLP POST subscriptions returned HTTP {resp.status_code}: "
                 f"{resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    # ------------------------------------------------------------------
+    # GLP write — RBAC role assignments / scope groups, user lifecycle,
+    # auto-subscription settings (identity v1, authorization v1beta1,
+    # subscriptions v1). All confirmed against the committed manifest at
+    # mcp_servers/openapi_gen/manifests/glp.json (createRoleAssignmentV1beta1,
+    # updateRoleAssignmentV1beta1, deleteRoleAssignmentV1beta1,
+    # createScopeGroupV1beta1, updateScopeGroupV1beta1, deleteScopeGroupV1beta1,
+    # addScopeGroupScopesV1beta1, deleteScopeGroupScopesV1beta1,
+    # invite_user_to_account_identity_v1_users_post,
+    # update_user_preferences_identity_v1_users__id__put,
+    # disassociate_platform_user_identity_v1_users__id__delete,
+    # updateAutoSubscriptionsV1). Gated by the same _V2BETA1_WRITES_FLAG as
+    # the writes above — one flag for all "sandbox-validate before firing"
+    # GLP writes.
+    # ------------------------------------------------------------------
+
+    def create_role_assignment(self, role_assignment: dict[str, Any]) -> dict[str, Any]:
+        """POST /authorization/v1beta1/role-assignments.
+
+        Body is passed through as-is; per the spec it must include
+        ``principal``, ``role``, and ``scope`` (see the developer guide
+        linked from get_glp_role_assignment for how to find those
+        identifiers). Guarded by ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP role-assignment create is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Payload that would have been sent: {role_assignment}"
+            )
+        resp = self._client._request(
+            "POST", "/authorization/v1beta1/role-assignments", json=role_assignment
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP POST role-assignments returned HTTP {resp.status_code}: "
+                f"{resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def update_role_assignment(
+        self, role_assignment_id: str, role_assignment: dict[str, Any]
+    ) -> dict[str, Any]:
+        """PUT /authorization/v1beta1/role-assignments/{id}.
+
+        Per the spec, the body must still include the immutable ``id``,
+        ``principal``, and ``role`` attributes alongside the updated
+        ``scope``. Guarded by ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP role-assignment update is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Payload that would have been sent: {role_assignment}"
+            )
+        resp = self._client._request(
+            "PUT",
+            f"/authorization/v1beta1/role-assignments/{role_assignment_id}",
+            json=role_assignment,
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP PUT role-assignments/{role_assignment_id} returned "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def delete_role_assignment(self, role_assignment_id: str) -> dict[str, Any]:
+        """DELETE /authorization/v1beta1/role-assignments/{id}.
+
+        Guarded by ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP role-assignment delete is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Would have deleted id={role_assignment_id}"
+            )
+        resp = self._client._request(
+            "DELETE", f"/authorization/v1beta1/role-assignments/{role_assignment_id}"
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP DELETE role-assignments/{role_assignment_id} returned "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def create_scope_group(self, scope_group: dict[str, Any]) -> dict[str, Any]:
+        """POST /authorization/v1beta1/scope-groups.
+
+        Body is passed through as-is; per the spec it must include ``name``
+        (a scope group cannot nest another scope group). Guarded by
+        ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP scope-group create is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Payload that would have been sent: {scope_group}"
+            )
+        resp = self._client._request(
+            "POST", "/authorization/v1beta1/scope-groups", json=scope_group
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP POST scope-groups returned HTTP {resp.status_code}: "
+                f"{resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def update_scope_group(
+        self, scope_group_id: str, scope_group: dict[str, Any]
+    ) -> dict[str, Any]:
+        """PUT /authorization/v1beta1/scope-groups/{id}.
+
+        Per the spec, the body must still include the immutable ``id``
+        attribute. Guarded by ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP scope-group update is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Payload that would have been sent: {scope_group}"
+            )
+        resp = self._client._request(
+            "PUT",
+            f"/authorization/v1beta1/scope-groups/{scope_group_id}",
+            json=scope_group,
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP PUT scope-groups/{scope_group_id} returned "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def delete_scope_group(self, scope_group_id: str) -> dict[str, Any]:
+        """DELETE /authorization/v1beta1/scope-groups/{id}.
+
+        Guarded by ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP scope-group delete is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Would have deleted id={scope_group_id}"
+            )
+        resp = self._client._request(
+            "DELETE", f"/authorization/v1beta1/scope-groups/{scope_group_id}"
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP DELETE scope-groups/{scope_group_id} returned "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def add_scope_group_scopes(
+        self, scope_group_id: str, items: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """POST /authorization/v1beta1/scope-groups/{id}/scopes/batch.
+
+        ``items`` is required by the spec (``{"items": [...]}``). This
+        operation is synchronous and non-atomic per the spec. Guarded by
+        ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP scope-group add-scopes is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Payload that would have been sent: items={items}"
+            )
+        resp = self._client._request(
+            "POST",
+            f"/authorization/v1beta1/scope-groups/{scope_group_id}/scopes/batch",
+            json={"items": items},
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP POST scope-groups/{scope_group_id}/scopes/batch returned "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def delete_scope_group_scopes(
+        self, scope_group_id: str, items: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """DELETE /authorization/v1beta1/scope-groups/{id}/scopes/bulk.
+
+        ``items`` is required by the spec (``{"items": [...]}``) — this is a
+        DELETE with a request body, so it goes through ``_request`` directly
+        rather than the bodyless ``CentralClient.delete`` helper. This
+        operation is synchronous and non-atomic per the spec. Guarded by
+        ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP scope-group delete-scopes is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Payload that would have been sent: items={items}"
+            )
+        resp = self._client._request(
+            "DELETE",
+            f"/authorization/v1beta1/scope-groups/{scope_group_id}/scopes/bulk",
+            json={"items": items},
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP DELETE scope-groups/{scope_group_id}/scopes/bulk returned "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def invite_user(
+        self, email: str, send_welcome_email: bool | None = None
+    ) -> dict[str, Any]:
+        """POST /identity/v1/users — invite a user to the workspace.
+
+        Guarded by ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        body: dict[str, Any] = {"email": email}
+        if send_welcome_email is not None:
+            body["sendWelcomeEmail"] = send_welcome_email
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP user invite is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Payload that would have been sent: {body}"
+            )
+        resp = self._client._request("POST", "/identity/v1/users", json=body)
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP POST identity/v1/users returned HTTP {resp.status_code}: "
+                f"{resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def update_user_preferences(
+        self, user_id: str, idle_timeout: int, language: str
+    ) -> dict[str, Any]:
+        """PUT /identity/v1/users/{id} — update a user's preferences.
+
+        Both ``idleTimeout`` and ``language`` are the only two properties
+        documented for this operation, and PUT semantics mean the full
+        preference set is replaced — both are required here rather than
+        left as optional partial-update fields. Guarded by
+        ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        body = {"idleTimeout": idle_timeout, "language": language}
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP user-preferences update is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Payload that would have been sent: {body}"
+            )
+        resp = self._client._request(
+            "PUT", f"/identity/v1/users/{user_id}", json=body
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP PUT identity/v1/users/{user_id} returned "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def disassociate_user(self, user_id: str) -> dict[str, Any]:
+        """DELETE /identity/v1/users/{id} — remove a user from the workspace.
+
+        Guarded by ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                f"GLP user disassociate is gated behind {_V2BETA1_WRITES_FLAG}=1. "
+                f"Would have deleted user_id={user_id}"
+            )
+        resp = self._client._request("DELETE", f"/identity/v1/users/{user_id}")
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP DELETE identity/v1/users/{user_id} returned "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "completed", "rawResponse": resp.text[:500]}
+
+    def list_auto_subscription_settings(self) -> list[dict[str, Any]]:
+        """GET /subscriptions/v1/auto-subscription-settings.
+
+        Lists all configured auto-subscription settings in the workspace.
+        """
+        try:
+            result = self._client.get("/subscriptions/v1/auto-subscription-settings")
+            return result.get("items", result.get("autoSubscriptionSettings", []))
+        except Exception as exc:
+            logger.warning("GLP list_auto_subscription_settings failed: %s", exc)
+            raise RuntimeError(
+                f"GLP list_auto_subscription_settings failed: {exc}"
+            ) from exc
+
+    def get_auto_subscription_setting(self, setting_id: str) -> Optional[dict[str, Any]]:
+        """GET /subscriptions/v1/auto-subscription-settings/{id}."""
+        try:
+            return self._client.get(
+                f"/subscriptions/v1/auto-subscription-settings/{setting_id}"
+            )
+        except Exception as exc:
+            logger.warning(
+                "GLP get_auto_subscription_setting failed for %s: %s", setting_id, exc
+            )
+            return None
+
+    def update_auto_subscription_settings(
+        self, setting_id: str, settings: dict[str, Any]
+    ) -> dict[str, Any]:
+        """PATCH /subscriptions/v1/auto-subscription-settings/{id}.
+
+        Content-Type is ``application/merge-patch+json`` per the spec. The
+        manifest's declared request-body property (``autoSubscriptionSettings``)
+        and required property (``autoSubscriptions``) don't match each other —
+        not independently re-verified against the Subscriptions v1 spec text
+        for this exact operation, so ``settings`` is passed through as-is
+        rather than guessing the correct wrapper key; treat a 400/422 here as
+        "shape not confirmed on this tenant" and fall back to glp_get to
+        inspect current settings first. To remove a configured
+        deviceType/tier combination, pass ``tier`` as null for that
+        deviceType per the spec. Guarded by
+        ``CENTRALMCP_GLP_V2BETA1_WRITES=1``.
+        """
+        if not _writes_enabled():
+            raise NotImplementedError(
+                "GLP auto-subscription-settings update is gated behind "
+                f"{_V2BETA1_WRITES_FLAG}=1. Payload that would have been sent: {settings}"
+            )
+        resp = self._client._request(
+            "PATCH",
+            f"/subscriptions/v1/auto-subscription-settings/{setting_id}",
+            json=settings,
+            headers={"Content-Type": "application/merge-patch+json"},
+        )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"GLP PATCH auto-subscription-settings/{setting_id} returned "
+                f"HTTP {resp.status_code}: {resp.text[:300]}"
             )
         try:
             return resp.json()

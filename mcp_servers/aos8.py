@@ -1,4 +1,4 @@
-"""ArubaOS 8 MCP server (49 curated + 258 generated OpenAPI tools).
+"""ArubaOS 8 MCP server (50 curated + 258 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=aos8
@@ -1847,10 +1847,10 @@ async def aos8_export_all(
     """Export the AOS8 objects used for Classic/New Central migration planning.
 
     Fans out to WLANs, roles, VLANs, AP groups, controllers, session ACLs,
-    AAA/authentication profiles and servers, IPv4/IPv6 routes, and VRRP.
-    A failed or malformed response for any single object type is collected in
-    `warnings` instead of aborting the whole export, so a partial export is
-    still usable. Feed the result to
+    AAA/authentication profiles and servers, destination aliases, Ethernet
+    ACLs, whitelist rules, IPv4/IPv6 routes, and VRRP. A failed or malformed
+    response for any single object type is collected in `warnings` instead of
+    aborting the whole export, so a partial export is still usable. Feed the result to
     `aos8_migration_plan()` (or `pipeline.aos8_migration.build_migration_plan`
     directly) for a deterministic migration plan.
     """
@@ -1918,6 +1918,10 @@ async def aos8_export_all(
         "ipv6_routes": "ipv6_route",
         "vrrp": "vrrp",
         "vrrp6": "vrrp6",
+        "netdst": "netdst",
+        "netdst6": "netdst6",
+        "acl_eth": "acl_eth",
+        "whitelist_rule": "whitelist_rule",
     }
     extended: dict[str, list[Any]] = {}
     for label, object_name in object_names.items():
@@ -1957,6 +1961,10 @@ async def aos8_export_all(
             key: extended[key]
             for key in ("ipv4_routes", "ipv6_routes", "vrrp", "vrrp6")
         },
+        "netdst": extended["netdst"],
+        "netdst6": extended["netdst6"],
+        "acl_eth": extended["acl_eth"],
+        "whitelist_rule": extended["whitelist_rule"],
         "warnings": warnings,
     }
 
@@ -1995,6 +2003,119 @@ def _aos8_migration_candidates(
             f"migration_plan.candidates[{target_type!r}] must be a candidate list."
         )
     return selected
+
+
+@mcp.tool(annotations=READ_ONLY)
+def aos8_migration_dependency_plan(
+    target_type: str = "new_central",
+    migration_plan: dict[str, Any] | None = None,
+    candidates: list[dict[str, Any]] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Summarize a migration plan's dependency-ordered apply stages and readiness, read-only.
+
+    Groups an already-built `aos8_migration_plan()`/
+    `pipeline.aos8_migration.build_migration_plan` candidate list (from
+    `migration_plan`, or a raw `candidates` list -- provide exactly one, same
+    contract as `aos8_preview_migration_run`) by each candidate's own
+    precomputed `apply_order`. This never re-derives or re-sorts the
+    dependency graph itself: `build_migration_plan` already produces a
+    stable `(apply_order, object_type, identifier)` sort and per-candidate
+    `dependencies`/`warnings`, so this tool only reads and summarizes that
+    existing ordering.
+
+    A candidate is classified per this precomputed data, never by a fresh
+    lookup: `reference_only` if its `object_type` has no deterministic
+    Classic/New Central adapter mapping in this repository (currently
+    `network_destination`, `ethernet_acl`, `whitelist_rule` -- normalized
+    and dependency-tracked, but never target-writable); `blocked` if one of
+    its own `warnings` reports an unresolved dependency ("... is not present
+    in this export ..."); otherwise `ready` (which still may carry other
+    lossy-field warnings or `requires_secret_input=True` -- staging
+    readiness is about dependency order, not zero warnings).
+
+    Args:
+        target_type: "classic_central" or "new_central" -- selects which
+            candidate list to summarize when `migration_plan` is supplied.
+        migration_plan: a full `aos8_migration_plan()`/
+            `build_migration_plan()` result. Mutually exclusive with
+            `candidates`.
+        candidates: a raw candidate list (e.g. an already-filtered subset
+            from a prior plan). Mutually exclusive with `migration_plan`.
+        limit/offset: bounds the flattened `candidates` entries returned
+            (already sorted apply-order/object_type/identifier); `stages`
+            and `summary` always reflect the complete candidate list.
+
+    Never calls a target account or another MCP tool -- pure, bounded
+    summarization of an existing plan.
+    """
+    try:
+        selected = _aos8_migration_candidates(
+            target_type, migration_plan=migration_plan, candidates=candidates
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    from pipeline.aos8_schema import REFERENCE_ONLY_OBJECT_TYPES
+
+    page_size = clamp_limit(limit, default=100)
+    offset = max(0, offset)
+
+    stage_counts: dict[int, int] = {}
+    entries: list[dict[str, Any]] = []
+    ready = blocked = reference_only = requires_secret_input = 0
+    for candidate in selected:
+        apply_order = candidate.get("apply_order", 100)
+        stage_counts[apply_order] = stage_counts.get(apply_order, 0) + 1
+        candidate_warnings = candidate.get("warnings", [])
+        missing_dependency = any(
+            "dependency" in warning and "is not present in this export" in warning
+            for warning in candidate_warnings
+        )
+        is_reference_only = candidate.get("object_type") in REFERENCE_ONLY_OBJECT_TYPES
+        secret_input = bool(candidate.get("requires_secret_input"))
+        if is_reference_only:
+            status = "reference_only"
+            reference_only += 1
+        elif missing_dependency:
+            status = "blocked"
+            blocked += 1
+        else:
+            status = "ready"
+            ready += 1
+        if secret_input:
+            requires_secret_input += 1
+        entries.append(
+            {
+                "object_type": candidate.get("object_type"),
+                "identifier": candidate.get("identifier"),
+                "apply_order": apply_order,
+                "status": status,
+                "dependencies": candidate.get("dependencies", []),
+                "warning_count": len(candidate_warnings),
+                "unsupported_field_count": len(candidate.get("unsupported_fields", {})),
+                "requires_secret_input": secret_input,
+            }
+        )
+
+    return {
+        "target_type": target_type,
+        "stages": [
+            {"apply_order": order, "candidate_count": count}
+            for order, count in sorted(stage_counts.items())
+        ],
+        "candidates": entries[offset : offset + page_size],
+        "summary": {
+            "total_candidates": len(entries),
+            "ready": ready,
+            "blocked": blocked,
+            "reference_only": reference_only,
+            "requires_secret_input": requires_secret_input,
+        },
+        "limit": page_size,
+        "offset": offset,
+    }
 
 
 def _aos8_migration_target(

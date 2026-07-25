@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "platform": "apstra",
+  "generator": "scripts/build_optional_product_manifests.py",
+  "source_sha256": "a110c94901732f05730fcf807d9edcbab45dc68932d23d7ebd65f33c01c03b5d",
+  "manifest_sha256": "7f8213750693c3c8502666abd18f176762ed12c94f29331b6e22ccd5ae7f1ade",
+  "operation_count": 48,
+  "registry_ids": [],
+  "source": {
+    "acquired_from": "Pinned official Juniper aos-sdk-api 6.1.2.post1 endpoint mappings.",
+    "source_url": "https://pypi.org/project/aos-sdk-api/6.1.2.post1/"
+  }
+}

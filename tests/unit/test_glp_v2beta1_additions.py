@@ -173,6 +173,10 @@ class TestSubscriptionBulkAdd:
         )
 
     def test_dry_run_sets_query_param(self, clean_env, writes_on):
+        """Regression test: the manifest (postSubscriptionsV1) documents this
+        query parameter as ``dry-run``, not ``dryRun`` — a prior version of
+        this client sent the wrong key, which a live GLP tenant would have
+        silently ignored (falling through to a real, non-dry-run POST)."""
         glp_client, inner = _make_glp_client()
         resp = MagicMock()
         resp.is_success = True
@@ -182,7 +186,24 @@ class TestSubscriptionBulkAdd:
         glp_client.add_subscriptions(["KEY-1"], dry_run=True)
 
         call = inner._request.call_args
-        assert call.kwargs["params"] == {"dryRun": "true"}
+        assert call.kwargs["params"] == {"dry-run": "true"}
+        assert "dryRun" not in call.kwargs["params"]
+
+    def test_dry_run_query_param_matches_committed_manifest(self):
+        """Guard against re-drifting: the query param name for
+        POST /subscriptions/v1/subscriptions must always match whatever the
+        committed manifest documents, not a hardcoded literal."""
+        from mcp_servers.openapi_gen.manifest import load_manifest
+
+        manifest = load_manifest("glp")
+        operation = next(
+            op
+            for op in manifest["operations"]
+            if op["method"] == "POST" and op["path"] == "/subscriptions/v1/subscriptions"
+        )
+        param_names = {p["name"] for p in operation.get("parameters", [])}
+        assert "dry-run" in param_names
+        assert "dryRun" not in param_names
 
 
 # ---------------------------------------------------------------------------

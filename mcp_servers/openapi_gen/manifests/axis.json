@@ -8,7 +8,7 @@
     "license": "MIT",
     "official_openapi": false,
     "sha256": "79cc5e50d202497558a779a7ca4be272ce3b93e27ff27a9c859a4c5c6dee893b",
-    "operation_count": 25,
+    "operation_count": 47,
     "files": [
       {
         "file": "src/hpe_networking_mcp/platforms/axis/__init__.py",
@@ -111,36 +111,67 @@
       ]
     },
     {
-      "name": "axis_manage_application_group",
-      "key": "CRUD /Tags",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_application_group",
+      "key": "POST /Tags",
+      "method": "POST",
       "path": "/Tags",
-      "kind": "manage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis application group; changes are staged until commit.",
+      "kind": "create",
+      "capability": "write",
+      "summary": "Create an Axis application group; changes are staged until commit.",
+      "source_name": "axis_manage_application_group",
       "id_arg": "application_group_id",
       "label": "application group",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
         {
-          "name": "action_type",
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_application_group",
+      "key": "PUT /Tags/{application_group_id}",
+      "method": "PUT",
+      "path": "/Tags",
+      "kind": "update",
+      "capability": "write",
+      "summary": "Update an Axis application group; changes are staged until commit.",
+      "source_name": "axis_manage_application_group",
+      "id_arg": "application_group_id",
+      "label": "application group",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "application_group_id",
           "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
+          "required": true
         },
         {
           "name": "payload",
           "type": "object",
-          "required": false
-        },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_application_group",
+      "key": "DELETE /Tags/{application_group_id}",
+      "method": "DELETE",
+      "path": "/Tags",
+      "kind": "delete",
+      "capability": "destructive",
+      "summary": "Delete an Axis application group; changes are staged until commit.",
+      "source_name": "axis_manage_application_group",
+      "id_arg": "application_group_id",
+      "label": "application group",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
         {
           "name": "application_group_id",
           "type": "string",
-          "required": false
+          "required": true
         }
       ]
     },
@@ -174,36 +205,67 @@
       ]
     },
     {
-      "name": "axis_manage_application",
-      "key": "CRUD /Applications",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_application",
+      "key": "POST /Applications",
+      "method": "POST",
       "path": "/Applications",
-      "kind": "manage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis application; changes are staged until commit.",
+      "kind": "create",
+      "capability": "write",
+      "summary": "Create an Axis application; changes are staged until commit.",
+      "source_name": "axis_manage_application",
       "id_arg": "application_id",
       "label": "application",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
         {
-          "name": "action_type",
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_application",
+      "key": "PUT /Applications/{application_id}",
+      "method": "PUT",
+      "path": "/Applications",
+      "kind": "update",
+      "capability": "write",
+      "summary": "Update an Axis application; changes are staged until commit.",
+      "source_name": "axis_manage_application",
+      "id_arg": "application_id",
+      "label": "application",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "application_id",
           "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
+          "required": true
         },
         {
           "name": "payload",
           "type": "object",
-          "required": false
-        },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_application",
+      "key": "DELETE /Applications/{application_id}",
+      "method": "DELETE",
+      "path": "/Applications",
+      "kind": "delete",
+      "capability": "destructive",
+      "summary": "Delete an Axis application; changes are staged until commit.",
+      "source_name": "axis_manage_application",
+      "id_arg": "application_id",
+      "label": "application",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
         {
           "name": "application_id",
           "type": "string",
-          "required": false
+          "required": true
         }
       ]
     },
@@ -237,36 +299,67 @@
       ]
     },
     {
-      "name": "axis_manage_connector_zone",
-      "key": "CRUD /ConnectorZones",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_connector_zone",
+      "key": "POST /ConnectorZones",
+      "method": "POST",
       "path": "/ConnectorZones",
-      "kind": "manage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis connector zone; changes are staged until commit.",
+      "kind": "create",
+      "capability": "write",
+      "summary": "Create an Axis connector zone; changes are staged until commit.",
+      "source_name": "axis_manage_connector_zone",
       "id_arg": "connector_zone_id",
       "label": "connector zone",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
         {
-          "name": "action_type",
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_connector_zone",
+      "key": "PUT /ConnectorZones/{connector_zone_id}",
+      "method": "PUT",
+      "path": "/ConnectorZones",
+      "kind": "update",
+      "capability": "write",
+      "summary": "Update an Axis connector zone; changes are staged until commit.",
+      "source_name": "axis_manage_connector_zone",
+      "id_arg": "connector_zone_id",
+      "label": "connector zone",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "connector_zone_id",
           "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
+          "required": true
         },
         {
           "name": "payload",
           "type": "object",
-          "required": false
-        },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_connector_zone",
+      "key": "DELETE /ConnectorZones/{connector_zone_id}",
+      "method": "DELETE",
+      "path": "/ConnectorZones",
+      "kind": "delete",
+      "capability": "destructive",
+      "summary": "Delete an Axis connector zone; changes are staged until commit.",
+      "source_name": "axis_manage_connector_zone",
+      "id_arg": "connector_zone_id",
+      "label": "connector zone",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
         {
           "name": "connector_zone_id",
           "type": "string",
-          "required": false
+          "required": true
         }
       ]
     },
@@ -300,36 +393,67 @@
       ]
     },
     {
-      "name": "axis_manage_connector",
-      "key": "CRUD /Connectors",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_connector",
+      "key": "POST /Connectors",
+      "method": "POST",
       "path": "/Connectors",
-      "kind": "manage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis connector; changes are staged until commit.",
+      "kind": "create",
+      "capability": "write",
+      "summary": "Create an Axis connector; changes are staged until commit.",
+      "source_name": "axis_manage_connector",
       "id_arg": "connector_id",
       "label": "connector",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
         {
-          "name": "action_type",
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_connector",
+      "key": "PUT /Connectors/{connector_id}",
+      "method": "PUT",
+      "path": "/Connectors",
+      "kind": "update",
+      "capability": "write",
+      "summary": "Update an Axis connector; changes are staged until commit.",
+      "source_name": "axis_manage_connector",
+      "id_arg": "connector_id",
+      "label": "connector",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "connector_id",
           "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
+          "required": true
         },
         {
           "name": "payload",
           "type": "object",
-          "required": false
-        },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_connector",
+      "key": "DELETE /Connectors/{connector_id}",
+      "method": "DELETE",
+      "path": "/Connectors",
+      "kind": "delete",
+      "capability": "destructive",
+      "summary": "Delete an Axis connector; changes are staged until commit.",
+      "source_name": "axis_manage_connector",
+      "id_arg": "connector_id",
+      "label": "connector",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
         {
           "name": "connector_id",
           "type": "string",
-          "required": false
+          "required": true
         }
       ]
     },
@@ -380,36 +504,67 @@
       ]
     },
     {
-      "name": "axis_manage_group",
-      "key": "CRUD /Groups",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_group",
+      "key": "POST /Groups",
+      "method": "POST",
       "path": "/Groups",
-      "kind": "manage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis group; changes are staged until commit.",
+      "kind": "create",
+      "capability": "write",
+      "summary": "Create an Axis group; changes are staged until commit.",
+      "source_name": "axis_manage_group",
       "id_arg": "group_id",
       "label": "group",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
         {
-          "name": "action_type",
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_group",
+      "key": "PUT /Groups/{group_id}",
+      "method": "PUT",
+      "path": "/Groups",
+      "kind": "update",
+      "capability": "write",
+      "summary": "Update an Axis group; changes are staged until commit.",
+      "source_name": "axis_manage_group",
+      "id_arg": "group_id",
+      "label": "group",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "group_id",
           "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
+          "required": true
         },
         {
           "name": "payload",
           "type": "object",
-          "required": false
-        },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_group",
+      "key": "DELETE /Groups/{group_id}",
+      "method": "DELETE",
+      "path": "/Groups",
+      "kind": "delete",
+      "capability": "destructive",
+      "summary": "Delete an Axis group; changes are staged until commit.",
+      "source_name": "axis_manage_group",
+      "id_arg": "group_id",
+      "label": "group",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
         {
           "name": "group_id",
           "type": "string",
-          "required": false
+          "required": true
         }
       ]
     },
@@ -443,36 +598,67 @@
       ]
     },
     {
-      "name": "axis_manage_location",
-      "key": "CRUD /Locations",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_location",
+      "key": "POST /Locations",
+      "method": "POST",
       "path": "/Locations",
-      "kind": "manage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis location; changes are staged until commit.",
+      "kind": "create",
+      "capability": "write",
+      "summary": "Create an Axis location; changes are staged until commit.",
+      "source_name": "axis_manage_location",
       "id_arg": "location_id",
       "label": "location",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
         {
-          "name": "action_type",
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_location",
+      "key": "PUT /Locations/{location_id}",
+      "method": "PUT",
+      "path": "/Locations",
+      "kind": "update",
+      "capability": "write",
+      "summary": "Update an Axis location; changes are staged until commit.",
+      "source_name": "axis_manage_location",
+      "id_arg": "location_id",
+      "label": "location",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "location_id",
           "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
+          "required": true
         },
         {
           "name": "payload",
           "type": "object",
-          "required": false
-        },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_location",
+      "key": "DELETE /Locations/{location_id}",
+      "method": "DELETE",
+      "path": "/Locations",
+      "kind": "delete",
+      "capability": "destructive",
+      "summary": "Delete an Axis location; changes are staged until commit.",
+      "source_name": "axis_manage_location",
+      "id_arg": "location_id",
+      "label": "location",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
         {
           "name": "location_id",
           "type": "string",
-          "required": false
+          "required": true
         }
       ]
     },
@@ -511,27 +697,18 @@
       ]
     },
     {
-      "name": "axis_manage_sub_location",
-      "key": "CRUD /Locations/{location_id}/SubLocations",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_sub_location",
+      "key": "POST /Locations/{location_id}/SubLocations",
+      "method": "POST",
       "path": "/Locations/{location_id}/SubLocations",
-      "kind": "submanage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis sub-location; changes are staged until commit.",
+      "kind": "subcreate",
+      "capability": "write",
+      "summary": "Create an Axis sub-location; changes are staged until commit.",
+      "source_name": "axis_manage_sub_location",
       "id_arg": "sub_location_id",
       "label": "sub-location",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
-        {
-          "name": "action_type",
-          "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
-        },
         {
           "name": "location_id",
           "type": "string",
@@ -540,12 +717,62 @@
         {
           "name": "payload",
           "type": "object",
-          "required": false
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_sub_location",
+      "key": "PUT /Locations/{location_id}/SubLocations/{sub_location_id}",
+      "method": "PUT",
+      "path": "/Locations/{location_id}/SubLocations",
+      "kind": "subupdate",
+      "capability": "write",
+      "summary": "Update an Axis sub-location; changes are staged until commit.",
+      "source_name": "axis_manage_sub_location",
+      "id_arg": "sub_location_id",
+      "label": "sub-location",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "location_id",
+          "type": "string",
+          "required": true
         },
         {
           "name": "sub_location_id",
           "type": "string",
-          "required": false
+          "required": true
+        },
+        {
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_sub_location",
+      "key": "DELETE /Locations/{location_id}/SubLocations/{sub_location_id}",
+      "method": "DELETE",
+      "path": "/Locations/{location_id}/SubLocations",
+      "kind": "subdelete",
+      "capability": "destructive",
+      "summary": "Delete an Axis sub-location; changes are staged until commit.",
+      "source_name": "axis_manage_sub_location",
+      "id_arg": "sub_location_id",
+      "label": "sub-location",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "location_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "sub_location_id",
+          "type": "string",
+          "required": true
         }
       ]
     },
@@ -579,36 +806,67 @@
       ]
     },
     {
-      "name": "axis_manage_ssl_exclusion",
-      "key": "CRUD /SslExclusions",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_ssl_exclusion",
+      "key": "POST /SslExclusions",
+      "method": "POST",
       "path": "/SslExclusions",
-      "kind": "manage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis SSL exclusion; changes are staged until commit.",
+      "kind": "create",
+      "capability": "write",
+      "summary": "Create an Axis SSL exclusion; changes are staged until commit.",
+      "source_name": "axis_manage_ssl_exclusion",
       "id_arg": "ssl_exclusion_id",
       "label": "SSL exclusion",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
         {
-          "name": "action_type",
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_ssl_exclusion",
+      "key": "PUT /SslExclusions/{ssl_exclusion_id}",
+      "method": "PUT",
+      "path": "/SslExclusions",
+      "kind": "update",
+      "capability": "write",
+      "summary": "Update an Axis SSL exclusion; changes are staged until commit.",
+      "source_name": "axis_manage_ssl_exclusion",
+      "id_arg": "ssl_exclusion_id",
+      "label": "SSL exclusion",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "ssl_exclusion_id",
           "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
+          "required": true
         },
         {
           "name": "payload",
           "type": "object",
-          "required": false
-        },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_ssl_exclusion",
+      "key": "DELETE /SslExclusions/{ssl_exclusion_id}",
+      "method": "DELETE",
+      "path": "/SslExclusions",
+      "kind": "delete",
+      "capability": "destructive",
+      "summary": "Delete an Axis SSL exclusion; changes are staged until commit.",
+      "source_name": "axis_manage_ssl_exclusion",
+      "id_arg": "ssl_exclusion_id",
+      "label": "SSL exclusion",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
         {
           "name": "ssl_exclusion_id",
           "type": "string",
-          "required": false
+          "required": true
         }
       ]
     },
@@ -642,36 +900,67 @@
       ]
     },
     {
-      "name": "axis_manage_tunnel",
-      "key": "CRUD /Tunnels",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_tunnel",
+      "key": "POST /Tunnels",
+      "method": "POST",
       "path": "/Tunnels",
-      "kind": "manage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis tunnel; changes are staged until commit.",
+      "kind": "create",
+      "capability": "write",
+      "summary": "Create an Axis tunnel; changes are staged until commit.",
+      "source_name": "axis_manage_tunnel",
       "id_arg": "tunnel_id",
       "label": "tunnel",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
         {
-          "name": "action_type",
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_tunnel",
+      "key": "PUT /Tunnels/{tunnel_id}",
+      "method": "PUT",
+      "path": "/Tunnels",
+      "kind": "update",
+      "capability": "write",
+      "summary": "Update an Axis tunnel; changes are staged until commit.",
+      "source_name": "axis_manage_tunnel",
+      "id_arg": "tunnel_id",
+      "label": "tunnel",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "tunnel_id",
           "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
+          "required": true
         },
         {
           "name": "payload",
           "type": "object",
-          "required": false
-        },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_tunnel",
+      "key": "DELETE /Tunnels/{tunnel_id}",
+      "method": "DELETE",
+      "path": "/Tunnels",
+      "kind": "delete",
+      "capability": "destructive",
+      "summary": "Delete an Axis tunnel; changes are staged until commit.",
+      "source_name": "axis_manage_tunnel",
+      "id_arg": "tunnel_id",
+      "label": "tunnel",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
         {
           "name": "tunnel_id",
           "type": "string",
-          "required": false
+          "required": true
         }
       ]
     },
@@ -705,36 +994,67 @@
       ]
     },
     {
-      "name": "axis_manage_user",
-      "key": "CRUD /Users",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_user",
+      "key": "POST /Users",
+      "method": "POST",
       "path": "/Users",
-      "kind": "manage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis user; changes are staged until commit.",
+      "kind": "create",
+      "capability": "write",
+      "summary": "Create an Axis user; changes are staged until commit.",
+      "source_name": "axis_manage_user",
       "id_arg": "user_id",
       "label": "user",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
         {
-          "name": "action_type",
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_user",
+      "key": "PUT /Users/{user_id}",
+      "method": "PUT",
+      "path": "/Users",
+      "kind": "update",
+      "capability": "write",
+      "summary": "Update an Axis user; changes are staged until commit.",
+      "source_name": "axis_manage_user",
+      "id_arg": "user_id",
+      "label": "user",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "user_id",
           "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
+          "required": true
         },
         {
           "name": "payload",
           "type": "object",
-          "required": false
-        },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_user",
+      "key": "DELETE /Users/{user_id}",
+      "method": "DELETE",
+      "path": "/Users",
+      "kind": "delete",
+      "capability": "destructive",
+      "summary": "Delete an Axis user; changes are staged until commit.",
+      "source_name": "axis_manage_user",
+      "id_arg": "user_id",
+      "label": "user",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
         {
           "name": "user_id",
           "type": "string",
-          "required": false
+          "required": true
         }
       ]
     },
@@ -768,36 +1088,67 @@
       ]
     },
     {
-      "name": "axis_manage_web_category",
-      "key": "CRUD /WebCategories",
-      "method": "POST|PUT|DELETE",
+      "name": "axis_create_web_category",
+      "key": "POST /WebCategories",
+      "method": "POST",
       "path": "/WebCategories",
-      "kind": "manage",
-      "capability": "destructive",
-      "summary": "Create, update, or delete an Axis web category; changes are staged until commit.",
+      "kind": "create",
+      "capability": "write",
+      "summary": "Create an Axis web category; changes are staged until commit.",
+      "source_name": "axis_manage_web_category",
       "id_arg": "web_category_id",
       "label": "web category",
       "next_step": "Call axis_commit_changes to apply these staged changes.",
       "parameters": [
         {
-          "name": "action_type",
+          "name": "payload",
+          "type": "object",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_update_web_category",
+      "key": "PUT /WebCategories/{web_category_id}",
+      "method": "PUT",
+      "path": "/WebCategories",
+      "kind": "update",
+      "capability": "write",
+      "summary": "Update an Axis web category; changes are staged until commit.",
+      "source_name": "axis_manage_web_category",
+      "id_arg": "web_category_id",
+      "label": "web category",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
+        {
+          "name": "web_category_id",
           "type": "string",
-          "required": true,
-          "enum": [
-            "create",
-            "update",
-            "delete"
-          ]
+          "required": true
         },
         {
           "name": "payload",
           "type": "object",
-          "required": false
-        },
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "axis_delete_web_category",
+      "key": "DELETE /WebCategories/{web_category_id}",
+      "method": "DELETE",
+      "path": "/WebCategories",
+      "kind": "delete",
+      "capability": "destructive",
+      "summary": "Delete an Axis web category; changes are staged until commit.",
+      "source_name": "axis_manage_web_category",
+      "id_arg": "web_category_id",
+      "label": "web category",
+      "next_step": "Call axis_commit_changes to apply these staged changes.",
+      "parameters": [
         {
           "name": "web_category_id",
           "type": "string",
-          "required": false
+          "required": true
         }
       ]
     },

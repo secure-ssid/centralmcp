@@ -218,13 +218,16 @@ def test_build_migration_plan_source_object_counts_match_input():
         "auth_servers": 3,
         "controllers": 1,
         "dot1x_auth_profiles": 1,
+        "ethernet_acls": 0,
         "mac_auth_profiles": 1,
+        "network_destinations": 0,
         "policies": 1,
         "roles": 1,
         "routes": 2,
         "server_groups": 1,
         "vlans": 1,
         "vrrp": 1,
+        "whitelist_rules": 0,
         "wlans": 1,
     }
 
@@ -512,13 +515,16 @@ def test_build_migration_plan_handles_empty_export():
         "auth_servers": 0,
         "controllers": 0,
         "dot1x_auth_profiles": 0,
+        "ethernet_acls": 0,
         "mac_auth_profiles": 0,
+        "network_destinations": 0,
         "policies": 0,
         "roles": 0,
         "routes": 0,
         "server_groups": 0,
         "vlans": 0,
         "vrrp": 0,
+        "whitelist_rules": 0,
         "wlans": 0,
     }
 
@@ -1148,3 +1154,161 @@ def test_role_warns_explicitly_on_missing_policy_dependency():
         "referenced policy 'missing-policy' was not present" in warning
         for warning in role["warnings"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Network destination aliases, Ethernet ACLs, and IP-classification
+# whitelist rules -- new, reference-only source families (no deterministic
+# Classic/New Central adapter mapping exists for any of these in this repo).
+# ---------------------------------------------------------------------------
+
+_NEW_FAMILIES_EXPORT = {
+    "config_path": "/md/lab",
+    "netdst": [
+        {
+            "dstname": "corp-servers",
+            "netdst__desc": "Corp servers",
+            "netdst__network": "10.20.0.0/16",
+        },
+        {"dstname": "voip-dest", "netdst__host": "10.30.0.5", "netdst__invert": True},
+    ],
+    "acl_eth": [
+        {
+            "accname": "eth-200",
+            "acl_eth__policy": [
+                {"source": "any", "destination": "any", "ethertype": "0x0800", "action": "permit"}
+            ],
+        }
+    ],
+    "whitelist_rule": [{"sipaddr": "10.0.0.1", "eipaddr": "10.0.0.50"}],
+    "policies": [
+        {
+            "accname": "corp-acl",
+            "acl_sess__v4policy": [
+                {
+                    "source": "user",
+                    "destination": "corp-servers",
+                    "service": "https",
+                    "action": "permit",
+                }
+            ],
+        }
+    ],
+}
+
+
+def _candidate(plan, target_type, object_type, identifier):
+    return next(
+        c
+        for c in plan["candidates"][target_type]
+        if c["object_type"] == object_type and c["identifier"] == identifier
+    )
+
+
+def test_network_destinations_are_emitted_for_both_targets_with_reference_only_warning():
+    plan = build_migration_plan(_NEW_FAMILIES_EXPORT)
+    for target_type in ("classic_central", "new_central"):
+        candidate = _candidate(
+            plan, target_type, "network_destination", "ipv4:corp-servers"
+        )
+        assert candidate["payload"] == {
+            "address_family": "ipv4",
+            "name": "corp-servers",
+            "description": "Corp servers",
+            "host": None,
+            "network": "10.20.0.0/16",
+            "range": None,
+            "invert": None,
+        }
+        assert any(
+            "no deterministic Classic/New Central adapter mapping" in warning
+            for warning in candidate["warnings"]
+        )
+
+
+def test_network_destination_invert_gets_explicit_lossy_warning():
+    plan = build_migration_plan(_NEW_FAMILIES_EXPORT)
+    candidate = _candidate(plan, "new_central", "network_destination", "ipv4:voip-dest")
+    assert candidate["payload"]["invert"] is True
+    assert any(
+        "match-polarity negation" in warning for warning in candidate["warnings"]
+    )
+
+
+def test_ethernet_acl_candidate_flattens_rules_and_flags_unsupported_fields():
+    plan = build_migration_plan(_NEW_FAMILIES_EXPORT)
+    candidate = _candidate(plan, "new_central", "ethernet_acl", "eth-200")
+    assert candidate["payload"]["rule_count"] == 1
+    assert candidate["payload"]["rules"] == [
+        {
+            "source": "any",
+            "destination": "any",
+            "ethertype": "0x0800",
+            "vlan": None,
+            "action": "permit",
+            "log": None,
+        }
+    ]
+    assert any(
+        "no deterministic Classic/New Central adapter mapping" in warning
+        for warning in candidate["warnings"]
+    )
+
+
+def test_whitelist_rule_candidate_uses_ip_range_identifier():
+    plan = build_migration_plan(_NEW_FAMILIES_EXPORT)
+    candidate = _candidate(
+        plan, "new_central", "whitelist_rule", "10.0.0.1-10.0.0.50"
+    )
+    assert candidate["payload"] == {"start_ip": "10.0.0.1", "end_ip": "10.0.0.50"}
+    assert any(
+        "no deterministic Classic/New Central adapter mapping" in warning
+        for warning in candidate["warnings"]
+    )
+
+
+def test_policy_destination_resolves_network_destination_dependency():
+    """Priority feature: a policy rule's `destination` that matches a parsed
+    `netdst` alias name becomes an explicit, type-aware
+    `network_destination:{family}:{name}` dependency -- reusing the existing
+    `_dependency`/`_dependencies` helpers rather than a new mechanism."""
+    plan = build_migration_plan(_NEW_FAMILIES_EXPORT)
+    policy = _candidate(plan, "new_central", "policy", "corp-acl")
+    assert policy["dependencies"] == ["network_destination:ipv4:corp-servers"]
+
+
+def test_policy_destination_without_matching_alias_has_no_dependency():
+    export = {
+        "config_path": "/md",
+        "policies": [
+            {
+                "accname": "no-alias",
+                "acl_sess__v4policy": [
+                    {"source": "any", "destination": "any", "action": "permit"}
+                ],
+            }
+        ],
+    }
+    plan = build_migration_plan(export)
+    policy = _candidate(plan, "new_central", "policy", "no-alias")
+    assert policy["dependencies"] == []
+
+
+def test_new_families_appear_in_source_object_counts_and_apply_order():
+    plan = build_migration_plan(_NEW_FAMILIES_EXPORT)
+    assert plan["source_object_counts"]["network_destinations"] == 2
+    assert plan["source_object_counts"]["ethernet_acls"] == 1
+    assert plan["source_object_counts"]["whitelist_rules"] == 1
+
+    net_dest = _candidate(plan, "new_central", "network_destination", "ipv4:corp-servers")
+    policy = _candidate(plan, "new_central", "policy", "corp-acl")
+    # network_destination must sort before the policy that depends on it.
+    assert net_dest["apply_order"] < policy["apply_order"]
+
+
+def test_new_families_never_carry_secrets_and_remain_deterministic():
+    first = build_migration_plan(_NEW_FAMILIES_EXPORT)
+    second = build_migration_plan(_NEW_FAMILIES_EXPORT)
+    assert first == second
+    serialized = json.dumps(first)
+    assert "10.0.0.1" in serialized  # non-secret data still visible

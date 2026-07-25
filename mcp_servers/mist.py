@@ -1,4 +1,4 @@
-"""MCP server — optional Juniper Mist backend (27 curated + 1050 generated OpenAPI tools).
+"""MCP server — optional Juniper Mist backend (28 curated + 1050 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=mist
@@ -14,9 +14,12 @@ tools for: NAC/Access Assurance (nactags/nacportals/usermacs, plus NAC IDP
 realm mappings read from org settings), Marvis AI (client telemetry, client
 experience insights, device event search, org Marvis settings), org
 inventory and device claims, Wired Assurance switch/port stats, WAN
-Assurance gateway (SRX/SSR) stats, and bounded authenticated regional
-WebSocket diagnostic-result collection (`mist_collect_diagnostic_results`,
-requires the `websockets` dependency). Endpoints and field names verified
+Assurance gateway (SRX/SSR) stats, a composite read-only site assurance
+snapshot workflow (`mist_get_site_assurance_snapshot`, concurrently
+combining the switch/gateway/alarm reads above for one site), and bounded
+authenticated regional WebSocket diagnostic-result collection
+(`mist_collect_diagnostic_results`, requires the `websockets` dependency).
+Endpoints and field names verified
 directly against the mistsys/mist_openapi spec (mist.openapi.yaml) at commit
 f374cffdd5a275c7954645a306fcab7f1227e7a3 (OpenAPI version 2606.1.1,
 2026-07-10).
@@ -1237,6 +1240,59 @@ async def mist_get_gateway(site_id: str, device_id: str) -> dict[str, Any]:
     if "data" in out:
         out["gateway"] = _compact_gateway(out.pop("data"))
     return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def mist_get_site_assurance_snapshot(
+    site_id: str,
+    include_switches: bool = True,
+    include_gateways: bool = True,
+    include_alarms: bool = True,
+    alarm_duration: str = "1d",
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Curated read workflow: one-call site health snapshot.
+
+    Concurrently composes three already-verified, curated read endpoints
+    for one site — no new endpoints are introduced:
+      - `GET /api/v1/sites/{site_id}/stats/devices?type=switch` (see
+        `mist_list_switches`)
+      - `GET /api/v1/sites/{site_id}/stats/devices?type=gateway` (see
+        `mist_list_gateways`)
+      - `GET /api/v1/sites/{site_id}/alarms/search` (see `mist_list_alarms`)
+
+    Each section is fetched independently, so a failure in one section
+    (e.g. an unsupported device type for the site) does not block the
+    others — check each section's own `error` key. Use the narrower
+    `mist_list_switches`/`mist_list_gateways`/`mist_list_alarms` tools for
+    paging beyond `limit` or for switch port-level detail.
+    """
+    safe_limit = clamp_limit(limit, default=50)
+    section_calls: dict[str, Any] = {}
+    if include_switches:
+        section_calls["switches"] = mist_list_switches(site_id, limit=safe_limit)
+    if include_gateways:
+        section_calls["gateways"] = mist_list_gateways(site_id, limit=safe_limit)
+    if include_alarms:
+        section_calls["alarms"] = mist_list_alarms(
+            site_id, duration=alarm_duration, limit=safe_limit
+        )
+    if not section_calls:
+        return {
+            "error": (
+                "At least one of include_switches/include_gateways/"
+                "include_alarms must be true."
+            )
+        }
+
+    results = await asyncio.gather(*section_calls.values())
+    snapshot: dict[str, Any] = {"site_id": site_id, "sections": {}}
+    for name, result in zip(section_calls.keys(), results, strict=True):
+        snapshot["sections"][name] = result
+    snapshot["degraded"] = any(
+        "error" in result for result in snapshot["sections"].values()
+    )
+    return snapshot
 
 
 @mcp.tool(annotations=DESTRUCTIVE)

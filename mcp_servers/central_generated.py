@@ -2,15 +2,16 @@
 
 This backend exposes *every* unique operation in the committed merged Central
 manifest (``mcp_servers/openapi_gen/manifests/central.json``) as a directly
-callable, typed FastMCP tool. The manifest is built from the whole Aruba
-ReadMe OpenAPI registry snapshot (hundreds of network-config specs), with each
-spec's server base path folded onto its operation paths so identical operations
-across sibling specs are deduplicated to one tool.
+callable, typed FastMCP tool. The manifest is built from the reviewed Aruba
+ReadMe OpenAPI registry snapshot: hundreds of network-config specs plus the
+Monitoring, Notifications, Reporting, Services, and Troubleshooting
+registries. Each spec's server base path is folded onto its operation paths so
+identical operations across sibling specs are deduplicated to one tool.
 
 Design notes:
 
 * This is a **separate** FastMCP server from the curated ``aruba-config`` /
-  ``aruba-monitoring`` / ``aruba-nac`` / ``aruba-ops`` backends, so the ~1.3k
+  ``aruba-monitoring`` / ``aruba-nac`` / ``aruba-ops`` backends, so the ~1.7k
   generated ``central_*`` tools never collide with (or replace) the curated,
   hand-tuned Central tools.
 * Reads (GET/HEAD) execute directly and are response-bounded.

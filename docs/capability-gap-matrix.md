@@ -12,19 +12,19 @@ Counts below describe the full read-write backend registration. Optional product
 
 | Platform | Manifest operations | Active generated tools | Curated tools | Executable total | Read | Diagnostic | Write | Destructive | Source / provenance |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| Aruba Central | 1,347 | 1,347 | 230 | **1,577** | 559 | 30 | 726 | 262 | official OpenAPI + curated; Official HPE APIs; OAuth token manager ready |
-| GreenLake Platform | 918 | 904 | 62 | **966** | 542 | 0 | 340 | 84 | official OpenAPI + curated; Official HPE APIs; Workspace OAuth ready |
-| RAG / API lookup | 0 | 0 | 3 | **3** | 3 | 0 | 0 | 0 | committed application code; Local indexes over cited sources; No platform auth |
+| Aruba Central | 1,678 | 1,678 | 238 | **1,916** | 794 | 30 | 814 | 278 | official OpenAPI + curated; Official HPE APIs; OAuth token manager ready |
+| GreenLake Platform | 918 | 904 | 76 | **980** | 544 | 0 | 348 | 88 | official OpenAPI + curated; Official HPE APIs; Workspace OAuth ready |
+| RAG / API lookup | 0 | 0 | 5 | **5** | 5 | 0 | 0 | 0 | committed application code; Local indexes over cited sources; No platform auth |
 | ClearPass | 816 | 815 | 14 | **829** | 272 | 0 | 410 | 147 | official OpenAPI + curated; Official HPE API; API credential ready |
-| Juniper Mist | 1,050 | 1,050 | 27 | **1,077** | 544 | 9 | 405 | 119 | official OpenAPI + curated; Official Juniper OpenAPI; REST token/session ready |
+| Juniper Mist | 1,050 | 1,050 | 28 | **1,078** | 545 | 9 | 405 | 119 | official OpenAPI + curated; Official Juniper OpenAPI; REST token/session ready |
 | Juniper Apstra | 48 | 46 | 22 | **68** | 46 | 2 | 14 | 6 | official SDK-derived + curated; Official Juniper SDK; Login/token session ready |
-| ArubaOS 8 | 258 | 258 | 49 | **307** | 129 | 2 | 114 | 62 | official OpenAPI + curated; Official HPE API; UIDARUBA/X-CSRF session ready |
+| ArubaOS 8 | 258 | 258 | 50 | **308** | 130 | 2 | 114 | 62 | official OpenAPI + curated; Official HPE API; UIDARUBA/X-CSRF session ready |
 | EdgeConnect | 1,216 | 1,216 | 49 | **1,265** | 684 | 121 | 357 | 103 | instance artifact + curated; Target Orchestrator Swagger; Token/session and doctor ready |
 | HPE Aruba UXI | 25 | 25 | 24 | **49** | 24 | 0 | 16 | 9 | official OpenAPI + curated; Official HPE API; OAuth client credentials ready |
-| Axis Atmos Cloud | 25 | 25 | 0 | **25** | 12 | 0 | 1 | 12 | reviewed benchmark-derived registry; Benchmark only; verify with Axis; Static bearer token ready |
-| **Total** | **5,703** | **5,686** | **480** | **6,166** | **2,815** | **164** | **2,383** | **804** | |
+| Axis Atmos Cloud | 47 | 47 | 0 | **47** | 12 | 0 | 23 | 12 | reviewed benchmark-derived registry; Benchmark only; verify with Axis; Static bearer token ready |
+| **Total** | **6,056** | **6,039** | **506** | **6,545** | **3,056** | **164** | **2,501** | **824** | |
 
-The 5,703 manifest records are provenance-bearing generated operations. Only 5,686 register as executable generated tools because 17 are intentionally excluded. Adding 480 curated tools yields 6,166 executable backend tools. The three minimal-router tools are a separate client-visible dispatch surface, not three additional backend capabilities.
+The 6,056 manifest records are provenance-bearing generated operations. Only 6,039 register as executable generated tools because 17 are intentionally excluded. Adding 506 curated tools yields 6,545 executable backend tools. The three minimal-router tools are a separate client-visible dispatch surface, not three additional backend capabilities.
 
 ### Intentional exclusions
 
@@ -70,8 +70,8 @@ The benchmark's 5,960 endpoint count was reproduced from the pinned tree with it
 
 ### Why the headline totals are non-equivalent
 
-- **6,166 vs. 4,109** compares executable backend registries, but generation strategy and curated overlap differ; it does not prove practical superiority.
-- **5,703 vs. 5,960** compares centralmcp generated operation records with the benchmark's documentation index. The latter includes endpoints that may have no callable tool, so this is not a tool-count comparison.
+- **6,545 vs. 4,109** compares executable backend registries, but generation strategy and curated overlap differ; it does not prove practical superiority.
+- **6,056 vs. 5,960** compares centralmcp generated operation records with the benchmark's documentation index. The latter includes endpoints that may have no callable tool, so this is not a tool-count comparison.
 - Router/code/dynamic surfaces intentionally expose only discovery and dispatch tools. A smaller top-level surface can still reach a much larger backend.
 - Capability quality depends on authentication, bounded responses, safe writes, async-result handling, and verified workflows—not raw endpoint quantity.
 

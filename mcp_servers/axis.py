@@ -1,10 +1,14 @@
 """MCP server — optional Axis Atmos Cloud backend.
 
-The 25-tool registry is a reviewed derivation of the current MIT-licensed
-``nowireless4u/hpe-networking-mcp`` Axis backend. Axis has not published a
-distributable OpenAPI document used by this project; provenance and the exact
-reviewed source digest are committed in
-``mcp_servers/openapi_gen/manifests/axis.json``.
+The 47-tool registry is a reviewed derivation of the current MIT-licensed
+``nowireless4u/hpe-networking-mcp`` Axis backend (25 upstream tools). Axis has
+not published a distributable OpenAPI document used by this project;
+provenance and the exact reviewed source digest are committed in
+``mcp_servers/openapi_gen/manifests/axis.json``. Upstream fuses create/
+update/delete for each entity behind one ``action_type``-driven function
+(see ``tools/_manage.py``); centralmcp splits each into distinct
+``axis_create_*``/``axis_update_*``/``axis_delete_*`` generated operations
+with exact write/destructive capability annotations per verb.
 
 Auth/env:
   AXIS_BASE_URL    defaults to https://admin-api.axissecurity.com/api/v1.0
@@ -261,24 +265,33 @@ async def _axis_query(operation: dict[str, Any], kwargs: dict[str, Any]) -> dict
     )
 
 
-async def _axis_manage(operation: dict[str, Any], kwargs: dict[str, Any]) -> dict[str, Any]:
-    action = str(kwargs["action_type"]).lower()
-    if action not in {"create", "update", "delete"}:
-        return {"error": "action_type must be one of: create, update, delete"}
-    item_id = kwargs.get(operation["id_arg"])
+_AXIS_VERB_METHODS = {"create": "POST", "update": "PUT", "delete": "DELETE"}
+
+
+async def _axis_manage(
+    operation: dict[str, Any], kwargs: dict[str, Any], verb: str
+) -> dict[str, Any]:
+    """Execute a single create/update/delete verb against ``operation['path']``.
+
+    The upstream ``manage_entity`` helper fuses these three verbs behind one
+    ``action_type`` argument; centralmcp generates a distinct tool per verb
+    (see ``scripts/generate_axis_manifest.py:_crud_operations``), so each
+    call here already knows its verb and only validates that verb's inputs.
+    """
+    item_id = kwargs.get(operation["id_arg"]) if operation.get("id_arg") else None
     payload = kwargs.get("payload")
-    if action in {"update", "delete"} and not item_id:
-        return {"error": f"{operation['id_arg']} is required for action {action!r}."}
-    if action in {"create", "update"} and not payload:
-        return {"error": f"payload is required for action {action!r}."}
+    if verb in {"update", "delete"} and not item_id:
+        return {"error": f"{operation['id_arg']} is required for this operation."}
+    if verb in {"create", "update"} and not payload:
+        return {"error": "payload is required for this operation."}
     path = operation["path"]
-    if item_id:
+    if verb in {"update", "delete"}:
         try:
             path = f"{path}/{_axis_path_segment(item_id, operation['id_arg'])}"
         except ValueError as exc:
             return {"error": str(exc)}
-    method = {"create": "POST", "update": "PUT", "delete": "DELETE"}[action]
-    body = None if action == "delete" else payload
+    method = _AXIS_VERB_METHODS[verb]
+    body = None if verb == "delete" else payload
     blocked = _axis_write_preview(
         operation["name"],
         method,
@@ -307,15 +320,17 @@ async def _axis_dispatch(operation: dict[str, Any], kwargs: dict[str, Any]) -> d
             return {"error": str(exc)}
         nested = {**operation, "path": f"/Locations/{parent}/SubLocations"}
         return await _axis_query(nested, kwargs)
-    if kind in {"manage", "submanage"}:
+    if kind in {"create", "update", "delete", "subcreate", "subupdate", "subdelete"}:
         target = operation
-        if kind == "submanage":
+        verb = kind
+        if kind.startswith("sub"):
             try:
                 parent = _axis_path_segment(kwargs["location_id"], "location_id")
             except ValueError as exc:
                 return {"error": str(exc)}
             target = {**operation, "path": f"/Locations/{parent}/SubLocations"}
-        return await _axis_manage(target, kwargs)
+            verb = kind.removeprefix("sub")
+        return await _axis_manage(target, kwargs, verb)
     if kind == "status":
         entity_type = str(kwargs["entity_type"]).lower()
         if entity_type not in {"connector", "tunnel"}:

@@ -577,6 +577,80 @@ applications, captive portal behavior, and other lossy rules remain
 | **Target method/path** | none — explicit warning appended: "AOS8 controllers/Mobility Conductors are not migrated as New Central objects; onboard replacement gateways/APs individually" (`:894-897`) | n/a |
 | **Classification** | **unsupported** (explicit, by design) | **unsupported** (no candidate emitted) |
 
+### 6.15 Network destination aliases, Ethernet ACLs, IP-classification whitelist rules (new, reference-only source families)
+
+These three AOS8 object families were added to the parser/schema/migration
+layers by the `aos8-source-coverage` 0.6 todo. All three are **normalized and
+emitted as migration candidates on both targets** (unlike controllers, which
+are Classic-only) purely for **dependency tracking and operator review** —
+every candidate for these families carries an explicit `"no deterministic
+Classic/New Central adapter mapping exists in this repository..."` warning
+(`pipeline/aos8_migration.py` `_REFERENCE_ONLY_WARNING`), and the single
+source-of-truth set of affected `object_type` values is
+`pipeline.aos8_schema.REFERENCE_ONLY_OBJECT_TYPES`. No adapter code in
+`pipeline/aos8_target_adapters.py` was changed to support this: since
+`NewCentralAdapter._map_candidate` already falls back to `_unsupported(...)`
+for any `object_type` without a matching `_map_<object_type>` method, and
+`ClassicCentralAdapter._map_candidate` already falls back to
+`_manual_guidance(...)` for any `object_type` other than `wlan`/`ap_group`,
+these new candidates are automatically treated as unsupported/manual by both
+adapters with zero adapter-layer changes.
+
+| | Network destination aliases | Ethernet ACLs | IP-classification whitelist rules |
+|---|---|---|---|
+| **AOS8 object(s)** | `netdst` (IPv4), `netdst6` (IPv6) | `acl_eth` (200-299 range) | `whitelist_rule` (the separate, global `whitelist` Activate-sync object is intentionally **not** parsed — see below) |
+| **Source dataclass** | `AOS8NetworkDestination` (`pipeline/aos8_schema.py`) | `AOS8EthernetACL`/`AOS8EthernetACLRule` | `AOS8WhitelistRule` |
+| **Parser** | `parse_network_destinations` — combines `netdst`/`netdst6` into one `address_family`-tagged list, reading the exact `netdst__*`/`netdst6__*` request-body property names from `aos8_post_object_netdst`/`aos8_post_object_netdst6` (`mcp_servers/openapi_gen/manifests/aos8.json`) | `parse_ethernet_acls` — same defensive alias + `unsupported_fields` catch-all pattern as `parse_policies`/`_parse_policy_rules`, since no nested `acl_eth__policy` rule schema is available locally beyond the property name (`aos8_post_object_acl_eth`) | `parse_whitelist_rules` — reads `sipaddr`/`eipaddr` per `aos8_post_object_whitelist_rule`'s required properties |
+| **Absent-section behavior** | No warning when the `netdst`/`netdst6`/`acl_eth`/`whitelist_rule` keys are entirely absent from the export (via `_optional_dict_items`) — deliberately different from every other family's `_dict_items`, because `mcp_servers.aos8.aos8_export_all()` does not fetch these object types yet, so their absence from every export today is expected, not a defect. A key that *is* present but malformed still warns, same as every other family. | same | same |
+| **Candidate object_type** | `network_destination` (identifier `{address_family}:{name}`) | `ethernet_acl` (identifier = `accname`) | `whitelist_rule` (identifier `{start_ip}-{end_ip}`, an index-based `unknown-{i}` fallback when an address is missing, same pattern as `_route_identifier`/`_vrrp_identifier`) |
+| **Apply order** | 15 (`APPLY_ORDER["network_destination"]`) — before `policy`/`ethernet_acl` (20), so a `policy` candidate that depends on a `network_destination` always sorts after it | 20 (alongside `policy`) | 15 |
+| **Dependency wiring** | n/a (destinations have no dependencies of their own) | none | none |
+| **Known-lossy fields** | `invert` (match-polarity negation) has no Central/New Central destination-alias equivalent; every candidate with `invert` truthy carries an explicit warning (`UNSUPPORTED_FIELDS["network_destination"]["invert"]`) | any per-rule field not matched by the bounded L2 alias set (source/destination MAC, ethertype, VLAN, action, log) is retained in `unsupported_fields` with an explicit warning (`UNSUPPORTED_FIELDS["ethernet_acl"]["unsupported_rule_field"]`), mirroring `policy`'s `unsupported_rule_field` | none — the two fields (`start_ip`/`end_ip`) fully map |
+| **Target method/path** | none — reference-only by design | none — reference-only by design | none — reference-only by design |
+| **Classification** | **unsupported** on both targets (candidates emitted for dependency tracking only) | **unsupported** on both targets | **unsupported** on both targets |
+
+**Cross-family dependency enhancement (policy → network destination):** a
+`policy` candidate's IPv4/IPv6 rule `destination` value that exactly matches
+a parsed `netdst`/`netdst6` alias `name`, in the *same* address family as the
+rule, now resolves to an explicit `network_destination:{address_family}:{name}`
+dependency (`_policy_network_destination_dependencies`,
+`pipeline/aos8_migration.py`) — reusing the existing `_dependency`/
+`_dependencies` helpers rather than a new mechanism, the same pattern as
+`server_group`'s type-aware `auth_server` dependency resolution (§3 item 4).
+A `destination` value that is not a string, or does not match any parsed
+alias (e.g. `any`, a role name, or a literal address), is left alone rather
+than guessed at.
+
+**`whitelist` (the global object, not `whitelist_rule`) is intentionally not
+parsed.** `aos8_get_object_whitelist`/`aos8_post_object_whitelist`
+(`mcp_servers/openapi_gen/manifests/aos8.json`) describe Mobility
+Master-to-Activate synchronization settings (a provisioning URL and
+credentials: `url`, `username`, `password`, `ca_cert`, `server_cert`,
+`provisionurl`), not a per-item list with a stable identifier. There is
+nothing here to normalize into a migration candidate, and — unlike
+`whitelist_rule` — no unambiguous non-secret identifier exists to key a
+candidate on. A future revision may model it as a single informational,
+fully-redacted candidate if a concrete migration need is identified; today it
+is out of scope, and no parser or migration code references it.
+
+**`aos8_migration_dependency_plan`** (`mcp_servers/aos8.py`) is the
+recommended bounded, read-only entry point for surfacing these reference-only
+families in context: it groups an existing plan's candidates by
+`apply_order` and classifies each candidate's `status` as `reference_only`
+(any `object_type` in `REFERENCE_ONLY_OBJECT_TYPES`), `blocked` (an
+unresolved-dependency warning), or `ready`, without re-deriving or
+duplicating `build_migration_plan`'s existing ordering/dependency logic.
+
+**Not yet wired:** `mcp_servers.aos8.aos8_export_all()` does not fetch
+`netdst`/`netdst6`/`acl_eth`/`whitelist_rule` from a live AOS8 node today —
+these object types are parsed and planned only when a caller supplies an
+export dict that already includes them (e.g. a test fixture, or a future
+increment that adds them to `aos8_export_all()`'s `object_names` fetch map
+via the same generic `_aos8_collect_object` helper already used for
+`aaa_profiles`/`server_groups`/routes/VRRP). This is a deliberate, minimal-
+blast-radius scoping choice for this increment — see the "Remaining
+blockers" note in the implementing changeset.
+
 ## 7. Implementation order (post-matrix)
 
 1. ~~Fix the §3 prerequisites (`mac_server_group` alias, `ldap_admindn` redaction split, server-group name+type dependency keying) in `pipeline/aos8_parsers.py`/`pipeline/aos8_migration.py`~~ — **done** by the `aos8-source-enrichment` todo (§3 items 1, 4, 5, 6); item 2 (WLAN security normalization) source-layer parsing is done, and adapter/target mappings for `open`/`wpa2_personal`/`wpa3_sae`/`enhanced_open` now exist on New Central (and `open`/`wpa3_sae`/WPA3-Enterprise on Classic) per §6.2. **Not all of these are `conditional`**: `open` is `exact` on both targets (implemented and tested end to end); Classic `wpa3_sae` and WPA3-Enterprise, and every New Central secured mode (`wpa2_personal`/`wpa3_sae`/`enhanced_open`), remain `conditional` pending live apply + secret read-back, not yet `exact` (see §6.2 rows/checklist).

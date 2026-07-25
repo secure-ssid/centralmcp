@@ -25,6 +25,7 @@ EMBEDDING_DIMS = 768
 MAX_SEARCH_TOP_K = 200
 
 _SOURCE_RE = re.compile(r"^[a-z0-9_]+$")
+_DOC_ID_RE = re.compile(r"^[0-9a-f-]{36}$")
 
 
 def _clamp_top_k(top_k: int) -> int:
@@ -49,6 +50,65 @@ def docs_table(db, table_name: str = DOCS_TABLE):
 def create_docs_table(db, rows: list[dict[str, Any]], table_name: str = DOCS_TABLE):
     """Create the docs table fresh from rows that already carry a 'vector' key."""
     return db.create_table(table_name, data=rows, mode="overwrite")
+
+
+def docs_columns(db, table_name: str = DOCS_TABLE) -> set[str]:
+    table = docs_table(db, table_name)
+    return set(table.schema.names) if table is not None else set()
+
+
+def docs_metadata(
+    db,
+    table_name: str = DOCS_TABLE,
+) -> list[dict[str, Any]]:
+    """Return lightweight row metadata used by incremental ingestion."""
+    table = docs_table(db, table_name)
+    if table is None:
+        return []
+    arrow = (
+        table.search()
+        .select(["id", "content_hash", "source", "file_path"])
+        .limit(table.count_rows())
+        .to_arrow()
+    )
+    return arrow.to_pylist()
+
+
+def merge_docs_rows(
+    db,
+    rows: list[dict[str, Any]],
+    table_name: str = DOCS_TABLE,
+) -> None:
+    """Upsert already-embedded document rows by stable chunk ID."""
+    if not rows:
+        return
+    table = docs_table(db, table_name)
+    if table is None:
+        create_docs_table(db, rows, table_name)
+        return
+    (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(rows)
+    )
+
+
+def delete_docs_ids(
+    db,
+    ids: list[str],
+    table_name: str = DOCS_TABLE,
+) -> None:
+    """Delete removed chunk IDs in bounded predicates."""
+    table = docs_table(db, table_name)
+    if table is None:
+        return
+    for start in range(0, len(ids), 200):
+        batch = ids[start : start + 200]
+        if not all(_DOC_ID_RE.fullmatch(value) for value in batch):
+            raise ValueError("invalid document id in incremental delete")
+        values = ", ".join(f"'{value}'" for value in batch)
+        table.delete(f"id IN ({values})")
 
 
 def build_fts_index(table) -> None:

@@ -1,6 +1,30 @@
 {
-  "generated_at": "2026-07-23T18:11:18+00:00",
+  "generated_at": "2026-07-25T17:24:26+00:00",
   "registries": {
+    "11dzpz39mqquwjy2": {
+      "fetched_at": "2026-07-25T17:24:25+00:00",
+      "output_path": "ingestion/sources/openapi_specs/reporting-11dzpz39mq.json",
+      "path_count": 6,
+      "portal_version": "v26.05",
+      "project": "aruba-new-central",
+      "registry_id": "11dzpz39mqquwjy2",
+      "sha256": "799b725af4b9825b386e561660d1431c7feeadf6c6495e58357c61a104ba5b97",
+      "source_url": "https://developer.arubanetworks.com/new-central/reference/createuserreportv1",
+      "spec_version": "0.0.1",
+      "title": "Reporting"
+    },
+    "11dzpz39mqquwpe3": {
+      "fetched_at": "2026-07-25T17:24:26+00:00",
+      "output_path": "ingestion/sources/openapi_specs/services-11dzpz39mq.json",
+      "path_count": 47,
+      "portal_version": "v26.05",
+      "project": "aruba-new-central",
+      "registry_id": "11dzpz39mqquwpe3",
+      "sha256": "4ef456d090485d11181e628d89548388b3673fe29b8cee5bcb08e2abae1bdf6a",
+      "source_url": "https://developer.arubanetworks.com/new-central/reference/getdevicelocationsv1",
+      "spec_version": "0.0.1",
+      "title": "Services"
+    },
     "18et1xmq0s2hjv": {
       "fetched_at": "2026-07-23T18:10:28+00:00",
       "output_path": "ingestion/sources/openapi_specs/central-nac-service-18et1xmq0s.json",
@@ -181,6 +205,30 @@
       "spec_version": "v1alpha1",
       "title": "Routing & Overlays"
     },
+    "5v41h1vmqquwwi3": {
+      "fetched_at": "2026-07-25T17:24:25+00:00",
+      "output_path": "ingestion/sources/openapi_specs/troubleshooting-5v41h1vmqq.json",
+      "path_count": 95,
+      "portal_version": "v26.05",
+      "project": "aruba-new-central",
+      "registry_id": "5v41h1vmqquwwi3",
+      "sha256": "45aa1e9d09a1489d90845f9ee685a15b05665703500d4a41e9c1d2663a4d4257",
+      "source_url": "https://developer.arubanetworks.com/new-central/reference/initiatecxpingv1",
+      "spec_version": "0.0.1",
+      "title": "Troubleshooting"
+    },
+    "7wjo8aumqquw9y2": {
+      "fetched_at": "2026-07-25T17:24:25+00:00",
+      "output_path": "ingestion/sources/openapi_specs/monitoring-7wjo8aumqq.json",
+      "path_count": 137,
+      "portal_version": "v26.05",
+      "project": "aruba-new-central",
+      "registry_id": "7wjo8aumqquw9y2",
+      "sha256": "2d0e33cc53171bf51b1de296ac00d31ef58681a834dc810f78cc1688190c31b0",
+      "source_url": "https://developer.arubanetworks.com/new-central/reference/getaccesspointsv1",
+      "spec_version": "1.0.0",
+      "title": "Monitoring"
+    },
     "9a25qv24mq0s3h9j": {
       "fetched_at": "2026-07-23T18:10:26+00:00",
       "output_path": "ingestion/sources/openapi_specs/central-nac-9a25qv24mq.json",
@@ -204,6 +252,18 @@
       "source_url": "https://developer.arubanetworks.com/new-central-config/reference/configuration-health",
       "spec_version": "0.0.1",
       "title": "Configuration Health"
+    },
+    "dpi09gmqquwgm4": {
+      "fetched_at": "2026-07-25T17:24:25+00:00",
+      "output_path": "ingestion/sources/openapi_specs/notifications-dpi09gmqqu.json",
+      "path_count": 12,
+      "portal_version": "v26.05",
+      "project": "aruba-new-central",
+      "registry_id": "dpi09gmqquwgm4",
+      "sha256": "7f0c98a8545d37e800cc10e1db7eff70b3be37e19e469eaf62abdda393aa0c7f",
+      "source_url": "https://developer.arubanetworks.com/new-central/reference/getalertlistv1",
+      "spec_version": "1.0.0",
+      "title": "Notifications"
     },
     "e2t121zmq0s2pj6": {
       "fetched_at": "2026-07-23T18:10:23+00:00",

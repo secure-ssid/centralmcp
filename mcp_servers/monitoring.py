@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central monitoring and operational health tools (77 tools).
+"""MCP server — Aruba Central monitoring and operational health tools (85 tools).
 
 Covers: sites, devices, clients, alerts, events, scopes, inventory,
 audit logs, device health/trends, switch ports/VLANs/PoE, AP radios/ports,
@@ -6,14 +6,19 @@ SLE metrics, WLANs, gateway clusters, anomaly detection (client flapping,
 SSH brute force), site health summary, client roaming history, switch stacking,
 rogue APs, AP neighbors, channel utilization, client signal history, air quality,
 SSID clients, client location, topology, swarm inventory, AP tunnel telemetry,
-application visibility, reporting (reports/report-runs/metadata/health),
-client onboarding events, and best-effort notification-rule CRUD.
+application visibility, reporting (reports/report-runs/metadata/health, plus
+manifest-confirmed report create/get/update/delete and report-run
+delete/download-link execution), client onboarding events, best-effort
+notification-rule CRUD, and a guarded read-only `central_get` escape hatch
+for the Monitoring/Notifications/Reporting/Services/Troubleshooting
+registries in the committed Central manifest.
 
 Cursor pagination note: clients/radios/gateways/WLANs/alerts/device-inventory
 paginate with a `next` cursor (not offset) per the v1 reference docs — list
 tools accept both `next_cursor` (preferred) and a legacy `offset` that is
 translated to an approximate starting cursor.
 """
+
 import time
 from typing import Any
 from urllib.parse import quote
@@ -25,12 +30,16 @@ from mcp_servers.shared import (
     DESTRUCTIVE,
     IDEMPOTENT_WRITE,
     READ_ONLY,
+    WRITE,
+    WriteResultError,
     bound_collection_response,
     clamp_limit,
     compact_http_error,
     get_client,
     get_mcp_client,
     maybe_bound,
+    safe_api_path,
+    validate_write_result,
 )
 
 mcp = FastMCP("aruba-monitoring")
@@ -74,7 +83,85 @@ def _translate_reboot_reason(device: dict) -> dict:
     return device
 
 
+# ── Guarded generic GET escape hatch ─────────────────────────────────────────
+#
+# Modeled on glp.py's `glp_get`: a bounded, allow-listed read-only GET for
+# the Monitoring, Notifications, Reporting, Services, and Troubleshooting
+# registries in the committed Central manifest
+# (mcp_servers/openapi_gen/manifests/central.json) that don't yet have a
+# dedicated curated tool in this module. `mcp_servers/central_generated.py`
+# already exposes every manifest operation as a typed `central_*` tool when
+# enabled; this tool exists for callers of the curated aruba-monitoring
+# backend who want the same documented-path exploration without depending
+# on that separate, much larger generated server.
+
+_CENTRAL_GET_PREFIXES = (
+    "/network-monitoring/v1/",
+    "/network-notifications/v1/",
+    "/network-reporting/v1/",
+    "/network-services/v1/",
+    "/network-troubleshooting/v1/",
+)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def central_get(
+    path: str,
+    params: dict[str, Any] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Perform a guarded read-only GET against reviewed Central API families.
+
+    Path must be relative and begin with one of the Monitoring,
+    Notifications, Reporting, Services, or Troubleshooting prefixes below
+    (see `list_central_get_prefixes`). List payloads are bounded with
+    `limit` (clamped to the shared MCP list-limit ceiling, currently 200)
+    and `offset`.
+    """
+    try:
+        safe_path = safe_api_path(path, _CENTRAL_GET_PREFIXES)
+    except ValueError as exc:
+        return {"error": f"Invalid path. {exc}"}
+    try:
+        data = get_client().get(safe_path, params=params or {})
+        data = bound_collection_response(data, limit=clamp_limit(limit), offset=max(0, offset))
+        return {"data": data, "endpoint_used": safe_path}
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": safe_path}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_central_get_prefixes() -> dict[str, Any]:
+    """List the guarded path-prefixes reachable via `central_get`.
+
+    Prefer the dedicated curated tools in this module for common workflows
+    (e.g. list_reports/list_report_runs/get_reports_metadata/get_report/
+    create_report/update_report/delete_report/delete_report_run/
+    get_report_run_download_link for reporting, list_active_alerts/
+    list_alert_configs for notifications). `central_get` covers documented
+    resources under these prefixes that don't have a named tool yet.
+    """
+    return {
+        "guarded_get_prefixes": list(_CENTRAL_GET_PREFIXES),
+        "manifest_source": "mcp_servers/openapi_gen/manifests/central.json",
+        "manifest_registries": [
+            "Monitoring",
+            "Notifications",
+            "Reporting",
+            "Services",
+            "Troubleshooting",
+        ],
+        "note": (
+            "For the full set of ~1.7k generated operations across every "
+            "reviewed registry (including network-config), see the separate "
+            "aruba-central-generated backend (mcp_servers/central_generated.py)."
+        ),
+    }
+
+
 # ── Sites ────────────────────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def list_sites(
@@ -113,6 +200,7 @@ def get_site(name: str) -> dict[str, Any] | None:
 
 
 # ── Devices ──────────────────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def list_devices(
@@ -171,6 +259,7 @@ def find_device(serial_number: str) -> dict[str, Any] | None:
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 
+
 @mcp.tool(annotations=READ_ONLY)
 def list_clients(
     site_id: str | None = None,
@@ -225,14 +314,18 @@ def list_clients(
     if os_contains:
         filters.append((os_contains, ("clientOperatingSystem", "osType")))
     if device_type_contains:
-        filters.append((device_type_contains, ("connectedDeviceType", "clientFunction", "clientCategory")))
+        filters.append(
+            (device_type_contains, ("connectedDeviceType", "clientFunction", "clientCategory"))
+        )
     if ssid_contains:
         filters.append((ssid_contains, ("network", "wlanName", "ssid", "SSID")))
     if site_contains:
         filters.append((site_contains, ("siteName", "site_name", "site", "scopeName")))
 
     if filters and isinstance(clients, list):
-        clients = [c for c in clients if all(_match(c, needle, fields) for needle, fields in filters)]
+        clients = [
+            c for c in clients if all(_match(c, needle, fields) for needle, fields in filters)
+        ]
 
     wrapped = maybe_bound(clients, limit=limit, offset=0)
     if isinstance(wrapped, dict) and "_pagination" in wrapped:
@@ -267,7 +360,12 @@ def get_client_details(mac_address: str) -> dict[str, Any]:
             if response.status_code not in (200, 201, 202):
                 errors.append(f"HTTP {response.status_code} at {endpoint}")
                 continue
-            return {"mac_address": mac_address, "details": response.json(), "endpoint_used": endpoint, "errors": errors}
+            return {
+                "mac_address": mac_address,
+                "details": response.json(),
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
@@ -333,7 +431,9 @@ def _items_from_collection(data: Any) -> list[dict[str, Any]]:
     return []
 
 
-async def _confirm_alert_action(ctx: Context, action: str, keys: list[str]) -> dict[str, Any] | None:
+async def _confirm_alert_action(
+    ctx: Context, action: str, keys: list[str]
+) -> dict[str, Any] | None:
     try:
         result = await ctx.elicit(
             message=f"Confirm alert {action} for {len(keys)} alert key(s): {keys}",
@@ -360,6 +460,7 @@ def _alert_action(action: str, body: dict[str, Any], submitted_message: str) -> 
     data.setdefault("endpoint_used", endpoint)
     return data
 
+
 @mcp.tool(annotations=READ_ONLY)
 def list_alerts(
     site_id: str | None = None,
@@ -377,8 +478,11 @@ def list_alerts(
     """
     off = max(0, offset)
     alerts = get_mcp_client().get_alerts(
-        site_id=site_id, severity=severity, limit=clamp_limit(limit),
-        offset=off, next_cursor=next_cursor,
+        site_id=site_id,
+        severity=severity,
+        limit=clamp_limit(limit),
+        offset=off,
+        next_cursor=next_cursor,
     )
     wrapped = maybe_bound(alerts, limit=limit, offset=0)
     if isinstance(wrapped, dict) and "_pagination" in wrapped:
@@ -567,7 +671,7 @@ def list_events(
     offset: int = 0,
     full_list: bool = False,
 ) -> dict[str, Any]:
-    """List events for a device over the past N hours (bounded by default). Auto-resolves device type + site."""
+    """List bounded device events and auto-resolve the device type and site."""
     events = get_mcp_client().get_events(serial_number, hours=hours)
     if full_list:
         return {
@@ -710,6 +814,7 @@ def get_tenant_health() -> dict[str, Any]:
 
 # ── Scopes ────────────────────────────────────────────────────────────────────
 
+
 @mcp.tool(annotations=READ_ONLY)
 def list_scopes(
     limit: int = 100,
@@ -766,12 +871,14 @@ def list_scopes(
     normalized: list[dict[str, Any]] = []
     for site in site_scopes:
         scope_id = (
-            site.get("scopeId")
-            or site.get("scope_id")
-            or site.get("siteId")
-            or site.get("id")
+            site.get("scopeId") or site.get("scope_id") or site.get("siteId") or site.get("id")
         )
-        scope_name = site.get("scopeName") or site.get("scope_name") or site.get("siteName") or site.get("name")
+        scope_name = (
+            site.get("scopeName")
+            or site.get("scope_name")
+            or site.get("siteName")
+            or site.get("name")
+        )
         if scope_id and scope_name:
             normalized.append(
                 {
@@ -814,6 +921,7 @@ def list_scopes(
 def get_global_scope_id() -> dict[str, Any]:
     """Return the org-wide global scope_id — use this for 'everywhere'/'all APs' config."""
     from pipeline.stages.s6_configure import _fetch_global_scope_id
+
     client = get_client()
     errors: list[str] = []
     try:
@@ -921,6 +1029,7 @@ def list_scope_devices(
 
 # ── Inventory ─────────────────────────────────────────────────────────────────
 
+
 @mcp.tool(annotations=READ_ONLY)
 def list_inventory(
     status: str | None = None,
@@ -972,6 +1081,7 @@ def list_inventory(
 
 # ── Audit Logs ────────────────────────────────────────────────────────────────
 
+
 @mcp.tool(annotations=READ_ONLY)
 def list_audit_logs(
     start_at: int | None = None,
@@ -1012,6 +1122,7 @@ def get_audit_log(audit_id: str) -> dict[str, Any]:
 
 
 # ── Device Health & Trends ────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def get_device_trends(
@@ -1090,11 +1201,23 @@ def get_device_trends(
             if response.status_code not in (200, 201, 202):
                 errors.append(f"HTTP {response.status_code} at {endpoint}")
                 continue
-            return {"serial_number": serial_number, "metric": metric, "trends": response.json(), "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "metric": metric,
+                "trends": response.json(),
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
-    return {"serial_number": serial_number, "metric": metric, "trends": None, "endpoint_used": None, "errors": errors}
+    return {
+        "serial_number": serial_number,
+        "metric": metric,
+        "trends": None,
+        "endpoint_used": None,
+        "errors": errors,
+    }
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1110,14 +1233,26 @@ def get_device_health(
         params: dict[str, Any] = {}
         if device_scope_id:
             params["scope-id"] = device_scope_id
-        response = client._request("GET", "/network-config/v1alpha1/config-health/devices", params=params or None)
+        response = client._request(
+            "GET", "/network-config/v1alpha1/config-health/devices", params=params or None
+        )
         if response.status_code == 200:
             data = response.json()
             items = data.get("items", data.get("devices", [data] if data else []))
             if serial_number and isinstance(items, list):
-                matches = [i for i in items if (i.get("serial") or i.get("serialNumber") or "").lower() == serial_number.lower()]
+                matches = [
+                    i
+                    for i in items
+                    if (i.get("serial") or i.get("serialNumber") or "").lower()
+                    == serial_number.lower()
+                ]
                 items = matches if matches else items
-            return {"serial_number": serial_number, "health": items, "endpoint_used": "/network-config/v1alpha1/config-health/devices", "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "health": items,
+                "endpoint_used": "/network-config/v1alpha1/config-health/devices",
+                "errors": errors,
+            }
         errors.append(f"config-health: HTTP {response.status_code}")
     except Exception as exc:
         errors.append(f"config-health: {exc}")
@@ -1133,7 +1268,12 @@ def get_device_health(
                     errors.append(f"404 at {endpoint}")
                     continue
                 if response.status_code == 200:
-                    return {"serial_number": serial_number, "health": response.json(), "endpoint_used": endpoint, "errors": errors}
+                    return {
+                        "serial_number": serial_number,
+                        "health": response.json(),
+                        "endpoint_used": endpoint,
+                        "errors": errors,
+                    }
                 errors.append(f"HTTP {response.status_code} at {endpoint}")
             except Exception as exc:
                 errors.append(str(exc))
@@ -1203,14 +1343,25 @@ def get_wireless_metrics(serial_number: str) -> dict[str, Any]:
             if response.status_code not in (200, 201, 202):
                 errors.append(f"HTTP {response.status_code} at {endpoint}")
                 continue
-            return {"serial_number": serial_number, "metrics": response.json(), "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "metrics": response.json(),
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
-    return {"serial_number": serial_number, "metrics": None, "endpoint_used": None, "errors": errors}
+    return {
+        "serial_number": serial_number,
+        "metrics": None,
+        "endpoint_used": None,
+        "errors": errors,
+    }
 
 
 # ── Switch Monitoring ─────────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def list_switch_ports(
@@ -1220,7 +1371,7 @@ def list_switch_ports(
     filter: str | None = None,
     search: str | None = None,
 ) -> dict[str, Any]:
-    """List switch interfaces (link state, speed, duplex, VLAN). filter: OData e.g. "speed eq '1000'"."""
+    """List switch interfaces with optional OData filtering."""
     client = get_client()
     errors: list[str] = []
     params: dict[str, Any] = {
@@ -1246,11 +1397,21 @@ def list_switch_ports(
                 continue
             data = response.json()
             interfaces = data.get("interfaces", data.get("items", data))
-            return {"serial_number": serial_number, "interfaces": interfaces, "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "interfaces": interfaces,
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
-    return {"serial_number": serial_number, "interfaces": None, "endpoint_used": None, "errors": errors}
+    return {
+        "serial_number": serial_number,
+        "interfaces": None,
+        "endpoint_used": None,
+        "errors": errors,
+    }
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1271,11 +1432,21 @@ def get_switch_details(serial_number: str) -> dict[str, Any]:
             if response.status_code not in (200, 201, 202):
                 errors.append(f"HTTP {response.status_code} at {endpoint}")
                 continue
-            return {"serial_number": serial_number, "details": response.json(), "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "details": response.json(),
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
-    return {"serial_number": serial_number, "details": None, "endpoint_used": None, "errors": errors}
+    return {
+        "serial_number": serial_number,
+        "details": None,
+        "endpoint_used": None,
+        "errors": errors,
+    }
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1309,7 +1480,12 @@ def get_switch_vlans(
                 continue
             data = response.json()
             vlans = data.get("vlans", data.get("items", data))
-            return {"serial_number": serial_number, "vlans": vlans, "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "vlans": vlans,
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
@@ -1342,7 +1518,12 @@ def get_switch_interface_poe(
                 continue
             data = response.json()
             poe = data.get("interfaces", data.get("items", data))
-            return {"serial_number": serial_number, "poe": poe, "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "poe": poe,
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
@@ -1384,7 +1565,12 @@ def get_switch_interface_trends(
             if response.status_code not in (200, 201, 202):
                 errors.append(f"HTTP {response.status_code} at {endpoint}")
                 continue
-            return {"serial_number": serial_number, "trends": response.json(), "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "trends": response.json(),
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
@@ -1392,6 +1578,7 @@ def get_switch_interface_trends(
 
 
 # ── AP Sub-Resources ──────────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def get_ap_radios(serial_number: str) -> dict[str, Any]:
@@ -1413,7 +1600,12 @@ def get_ap_radios(serial_number: str) -> dict[str, Any]:
                 continue
             data = response.json()
             radios = data.get("radios", data.get("items", data))
-            return {"serial_number": serial_number, "radios": radios, "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "radios": radios,
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
@@ -1440,7 +1632,12 @@ def get_ap_ports(serial_number: str) -> dict[str, Any]:
                 continue
             data = response.json()
             ports = data.get("ports", data.get("items", data))
-            return {"serial_number": serial_number, "ports": ports, "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "ports": ports,
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(str(exc))
 
@@ -1457,6 +1654,7 @@ def get_ap_ports(serial_number: str) -> dict[str, Any]:
 
 
 # ── WLANs ─────────────────────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def list_wlans(limit: int = 100, offset: int = 0, next_cursor: str | None = None) -> dict[str, Any]:
@@ -1502,6 +1700,7 @@ def list_ap_wlans(serial_number: str) -> dict[str, Any]:
 
 # ── Gateway Clusters ──────────────────────────────────────────────────────────
 
+
 @mcp.tool(annotations=READ_ONLY)
 def get_cluster_members(cluster_name: str) -> dict[str, Any]:
     """List members of a gateway cluster."""
@@ -1534,6 +1733,7 @@ def get_cluster_tunnel_health(cluster_name: str) -> dict[str, Any]:
 
 # ── Switch Extended Monitoring ───────────────────────────────────────────────
 
+
 @mcp.tool(annotations=READ_ONLY)
 def get_switch_stacking_info(serial_number: str) -> dict[str, Any]:
     """Get stacking status for a CX switch stack.
@@ -1560,14 +1760,27 @@ def get_switch_stacking_info(serial_number: str) -> dict[str, Any]:
                 errors.append(compact_http_error(resp, endpoint))
                 continue
             data = resp.json()
-            return {"serial_number": serial_number, "stack": data, "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "stack": data,
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(f"{endpoint}: {exc}")
-    return {"serial_number": serial_number, "stack": None, "errors": errors,
-            "_note": "Stack endpoint not found — switch may be standalone or endpoint not yet available"}
+    return {
+        "serial_number": serial_number,
+        "stack": None,
+        "errors": errors,
+        "_note": (
+            "Stack endpoint not found — switch may be standalone or the "
+            "endpoint may not be available"
+        ),
+    }
 
 
 # ── Wireless Extended Monitoring ─────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def get_channel_utilization(serial_number: str) -> dict[str, Any]:
@@ -1593,19 +1806,28 @@ def get_channel_utilization(serial_number: str) -> dict[str, Any]:
                 errors.append(compact_http_error(resp, endpoint))
                 continue
             data = resp.json()
-            radios = data.get("radios", data.get("items", data if isinstance(data, list) else [data]))
+            radios = data.get(
+                "radios", data.get("items", data if isinstance(data, list) else [data])
+            )
             summary = []
-            for r in (radios if isinstance(radios, list) else []):
-                summary.append({
-                    "band": r.get("band") or r.get("radio_band"),
-                    "channel": r.get("channel") or r.get("primary_channel"),
-                    "utilization_pct": r.get("utilization") or r.get("channel_utilization"),
-                    "noise_floor_dbm": r.get("noise") or r.get("noise_floor"),
-                    "tx_power_dbm": r.get("txPower") or r.get("tx_power"),
-                    "client_count": r.get("clientCount") or r.get("client_count"),
-                })
-            return {"serial_number": serial_number, "endpoint_used": endpoint,
-                    "radios": summary, "raw": data, "errors": errors}
+            for r in radios if isinstance(radios, list) else []:
+                summary.append(
+                    {
+                        "band": r.get("band") or r.get("radio_band"),
+                        "channel": r.get("channel") or r.get("primary_channel"),
+                        "utilization_pct": r.get("utilization") or r.get("channel_utilization"),
+                        "noise_floor_dbm": r.get("noise") or r.get("noise_floor"),
+                        "tx_power_dbm": r.get("txPower") or r.get("tx_power"),
+                        "client_count": r.get("clientCount") or r.get("client_count"),
+                    }
+                )
+            return {
+                "serial_number": serial_number,
+                "endpoint_used": endpoint,
+                "radios": summary,
+                "raw": data,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(f"{endpoint}: {exc}")
     return {"serial_number": serial_number, "radios": None, "errors": errors}
@@ -1646,7 +1868,11 @@ def list_rogue_aps(
             return bound_collection_response(items, limit=limit, offset=0)
         except Exception as exc:
             errors.append(f"{endpoint}: {exc}")
-    return {"items": [], "errors": errors, "_note": "Rogue AP endpoint not found or no rogues detected"}
+    return {
+        "items": [],
+        "errors": errors,
+        "_note": "Rogue AP endpoint not found or no rogues detected",
+    }
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1673,13 +1899,23 @@ def get_ap_neighbors(serial_number: str) -> dict[str, Any]:
                 errors.append(compact_http_error(resp, endpoint))
                 continue
             data = resp.json()
-            neighbors = data.get("neighbors", data.get("items", data if isinstance(data, list) else []))
-            return {"serial_number": serial_number, "neighbors": neighbors,
-                    "endpoint_used": endpoint, "errors": errors}
+            neighbors = data.get(
+                "neighbors", data.get("items", data if isinstance(data, list) else [])
+            )
+            return {
+                "serial_number": serial_number,
+                "neighbors": neighbors,
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(f"{endpoint}: {exc}")
-    return {"serial_number": serial_number, "neighbors": None, "errors": errors,
-            "_note": "Neighbor endpoint not found — may not be available in New Central yet"}
+    return {
+        "serial_number": serial_number,
+        "neighbors": None,
+        "errors": errors,
+        "_note": "Neighbor endpoint not found — may not be available in New Central yet",
+    }
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1713,12 +1949,23 @@ def get_client_signal_history(
                 errors.append(compact_http_error(resp, endpoint))
                 continue
             data = resp.json()
-            return {"mac_address": mac_address, "history": data,
-                    "endpoint_used": endpoint, "errors": errors}
+            return {
+                "mac_address": mac_address,
+                "history": data,
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(f"{endpoint}: {exc}")
-    return {"mac_address": mac_address, "history": None, "errors": errors,
-            "_note": "Signal history endpoint not found — use get_client_roaming_history for event-based history"}
+    return {
+        "mac_address": mac_address,
+        "history": None,
+        "errors": errors,
+        "_note": (
+            "Signal history endpoint not found — use "
+            "get_client_roaming_history for event-based history"
+        ),
+    }
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1766,12 +2013,20 @@ def locate_client(mac_address: str) -> dict[str, Any]:
             if resp.status_code not in (200, 201, 202):
                 errors.append(compact_http_error(resp, endpoint))
                 continue
-            return {"mac_address": mac_address, "location": resp.json(),
-                    "endpoint_used": endpoint, "errors": errors}
+            return {
+                "mac_address": mac_address,
+                "location": resp.json(),
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(f"{endpoint}: {exc}")
-    return {"mac_address": mac_address, "location": None, "errors": errors,
-            "_note": "Location endpoint not found — location services may require a separate licence"}
+    return {
+        "mac_address": mac_address,
+        "location": None,
+        "errors": errors,
+        "_note": "Location endpoint not found — location services may require a separate licence",
+    }
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1798,15 +2053,24 @@ def get_air_quality(serial_number: str) -> dict[str, Any]:
             if resp.status_code not in (200, 201, 202):
                 errors.append(compact_http_error(resp, endpoint))
                 continue
-            return {"serial_number": serial_number, "air_quality": resp.json(),
-                    "endpoint_used": endpoint, "errors": errors}
+            return {
+                "serial_number": serial_number,
+                "air_quality": resp.json(),
+                "endpoint_used": endpoint,
+                "errors": errors,
+            }
         except Exception as exc:
             errors.append(f"{endpoint}: {exc}")
-    return {"serial_number": serial_number, "air_quality": None, "errors": errors,
-            "_note": "Air quality endpoint not found — may not be available in New Central yet"}
+    return {
+        "serial_number": serial_number,
+        "air_quality": None,
+        "errors": errors,
+        "_note": "Air quality endpoint not found — may not be available in New Central yet",
+    }
 
 
 # ── Client History ───────────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def get_client_roaming_history(
@@ -1836,14 +2100,16 @@ def get_client_roaming_history(
         events = client.get_events(serial, hours=hours, api_limit=500)
         for e in events:
             if (e.get("clientMacAddress") or "").lower() == mac_lower:
-                history.append({
-                    "time": e.get("timeAt"),
-                    "event": e.get("eventName"),
-                    "device_name": device.get("deviceName") or serial,
-                    "device_serial": serial,
-                    "device_type": device.get("deviceType"),
-                    "description": e.get("description"),
-                })
+                history.append(
+                    {
+                        "time": e.get("timeAt"),
+                        "event": e.get("eventName"),
+                        "device_name": device.get("deviceName") or serial,
+                        "device_serial": serial,
+                        "device_type": device.get("deviceType"),
+                        "description": e.get("description"),
+                    }
+                )
 
     history.sort(key=lambda x: x.get("time") or "", reverse=True)
 
@@ -1857,6 +2123,7 @@ def get_client_roaming_history(
 
 
 # ── Intelligence / Anomaly Detection ─────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def detect_client_flapping(
@@ -1876,8 +2143,7 @@ def detect_client_flapping(
     events = get_mcp_client().get_events(serial_number, hours=hours, api_limit=1000)
 
     onboard_events = [
-        e for e in events
-        if e.get("eventName") == "Client Onboarding" and e.get("clientMacAddress")
+        e for e in events if e.get("eventName") == "Client Onboarding" and e.get("clientMacAddress")
     ]
 
     counts: dict[str, list[str]] = {}
@@ -1930,10 +2196,7 @@ def detect_ssh_brute_force(
 
     events = get_mcp_client().get_events(serial_number, hours=hours, api_limit=1000)
 
-    ssh_events = [
-        e for e in events
-        if str(e.get("eventId", "")) in ("5210", "5214")
-    ]
+    ssh_events = [e for e in events if str(e.get("eventId", "")) in ("5210", "5214")]
 
     _ip_re = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
 
@@ -1942,12 +2205,14 @@ def detect_ssh_brute_force(
         desc = e.get("description", "")
         match = _ip_re.search(desc)
         ip = match.group(1) if match else "unknown"
-        ip_failures.setdefault(ip, []).append({
-            "event_id": e.get("eventId"),
-            "event_name": e.get("eventName"),
-            "description": desc,
-            "time": e.get("timeAt"),
-        })
+        ip_failures.setdefault(ip, []).append(
+            {
+                "event_id": e.get("eventId"),
+                "event_name": e.get("eventName"),
+                "description": desc,
+                "time": e.get("timeAt"),
+            }
+        )
 
     flagged = [
         {
@@ -2014,8 +2279,13 @@ def get_site_health_summary(
         alert_severity[sev] = alert_severity.get(sev, 0) + 1
 
     notable_event_names = {
-        "INTERFACE", "Device Down", "Device Up", "Client Onboarding",
-        "SSH User Login Failure", "SSH Failure", "PoE",
+        "INTERFACE",
+        "Device Down",
+        "Device Up",
+        "Client Onboarding",
+        "SSH User Login Failure",
+        "SSH Failure",
+        "PoE",
     }
     recent_events: list[dict[str, Any]] = []
     switches = [d for d in devices if "SWITCH" in (d.get("deviceType") or "").upper()]
@@ -2026,12 +2296,14 @@ def get_site_health_summary(
         evts = client.get_events(serial, hours=24, api_limit=200)
         for e in evts:
             if e.get("eventName") in notable_event_names:
-                recent_events.append({
-                    "device": sw.get("deviceName") or serial,
-                    "event": e.get("eventName"),
-                    "description": e.get("description"),
-                    "time": e.get("timeAt"),
-                })
+                recent_events.append(
+                    {
+                        "device": sw.get("deviceName") or serial,
+                        "event": e.get("eventName"),
+                        "description": e.get("description"),
+                        "time": e.get("timeAt"),
+                    }
+                )
     recent_events.sort(key=lambda x: x.get("time") or "", reverse=True)
 
     return {
@@ -2055,6 +2327,7 @@ def get_site_health_summary(
 
 # ── Topology ──────────────────────────────────────────────────────────────────
 
+
 @mcp.tool(annotations=READ_ONLY)
 def get_topology(site_id: str) -> dict[str, Any]:
     """Fetch the network topology (nodes + links) for a site.
@@ -2072,6 +2345,7 @@ def get_topology(site_id: str) -> dict[str, Any]:
 
 
 # ── Swarm Inventory ───────────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def list_swarms(
@@ -2117,6 +2391,7 @@ def get_swarm(cluster_id: str) -> dict[str, Any]:
 
 
 # ── AP Tunnel Telemetry ───────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def list_ap_tunnels(
@@ -2194,6 +2469,7 @@ def get_ap_tunnel_throughput(
 
 # ── Application Visibility ────────────────────────────────────────────────────
 
+
 @mcp.tool(annotations=READ_ONLY)
 def list_applications(
     site_id: str,
@@ -2226,6 +2502,7 @@ def list_applications(
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def list_reports(
@@ -2299,7 +2576,224 @@ def get_reporting_service_health() -> dict[str, Any]:
         return {"error": str(exc), "endpoint_used": "/network-reporting/v1alpha1/reports/health"}
 
 
+# ── Report Lifecycle & Report-Run Execution (manifest-confirmed) ────────────
+#
+# Endpoint shapes below are read directly from the committed Central
+# manifest (mcp_servers/openapi_gen/manifests/central.json, source_file
+# reporting-11dzpz39mq.json: createUserReportV1, getUserReportV1,
+# updateUserReportV1, deleteUserReportV1, deleteReportRunV1,
+# downloadReportLinkV1) -- confirmed request/response shapes, unlike the
+# best-effort notification-rule CRUD group below. listReportsV1,
+# listReportRunsV1, and getReportsMetadataV1 are already covered by
+# list_reports/list_report_runs/get_reports_metadata above; the tools below
+# add the remaining report lifecycle and report-run execution operations
+# from that same manifest entry.
+
+_REPORTS_BASE = "/network-reporting/v1/reports"
+
+
+async def _confirm_report_action(
+    ctx: Context, action: str, report_id: str | None
+) -> dict[str, Any] | None:
+    try:
+        result = await ctx.elicit(
+            message=f"Confirm report {action}{f' for {report_id}' if report_id else ''}?",
+            schema=_ConfirmAction,
+        )
+    except Exception as exc:
+        return {
+            "status": "CONFIRMATION_UNAVAILABLE",
+            "error": f"client does not support elicitation; operation NOT performed: {exc}",
+        }
+    if result.action != "accept" or not result.data.confirm:
+        return {"status": "CANCELLED", "detail": "user declined confirmation"}
+    return None
+
+
+def _validated_write_result(response: Any, endpoint: str) -> dict[str, Any]:
+    """Validate an executed write response and body, returning a JSON dict or an error envelope.
+
+    Fails closed (via `validate_write_result`) on a non-2xx response or an
+    error-shaped envelope instead of returning a success-shaped result with
+    the failure buried in an `errors` list; unlike `validate_write_result`'s
+    default behavior of raising, both failure modes are caught here and
+    returned as `{"error": ..., "endpoint_used": ...}` to match this
+    module's existing non-raising tool contract.
+    """
+    try:
+        validate_write_result(response, context=endpoint)
+    except WriteResultError as exc:
+        return {"error": str(exc), "endpoint_used": endpoint}
+    data = _json_response(response)
+    try:
+        validate_write_result(data, context=endpoint)
+    except WriteResultError as exc:
+        return {"error": str(exc), "endpoint_used": endpoint}
+    return data | {"endpoint_used": endpoint}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_report(report_id: str) -> dict[str, Any]:
+    """Fetch a single saved report by ID.
+
+    GET /network-reporting/v1/reports/{report-id} (manifest-confirmed).
+    Report ID can be obtained from list_reports.
+    """
+    endpoint = f"{_REPORTS_BASE}/{quote(str(report_id), safe='')}"
+    try:
+        data = get_client().get(endpoint)
+        if isinstance(data, dict):
+            return data | {"endpoint_used": endpoint}
+        return {"data": data, "endpoint_used": endpoint}
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": endpoint}
+
+
+@mcp.tool(annotations=WRITE)
+async def create_report(
+    ctx: Context,
+    body: dict[str, Any],
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a saved report.
+
+    POST /network-reporting/v1/reports (manifest-confirmed). `body` must
+    match the Create Report schema: required `name`, `type`, `timeZone`
+    (IANA), `filters`, `reportPeriod`, and `reportSchedule`, plus optional
+    `email`. See get_reports_metadata for the report-type/KPI/filter catalog
+    and the createUserReportV1 manifest entry for the full field reference.
+    dry_run returns the payload without sending; otherwise requires
+    elicited confirmation.
+    """
+    if dry_run:
+        return {"dry_run": True, "endpoint": _REPORTS_BASE, "payload": body}
+    cancelled = await _confirm_report_action(ctx, "create", None)
+    if cancelled:
+        return cancelled
+    response = await get_client()._arequest("POST", _REPORTS_BASE, json=body)
+    return _validated_write_result(response, _REPORTS_BASE)
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def update_report(
+    ctx: Context,
+    report_id: str,
+    updates: dict[str, Any],
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Update a saved report's name and/or email settings.
+
+    PUT /network-reporting/v1/reports/{report-id} (manifest-confirmed;
+    documented request body properties are `name` and `email`). Report ID
+    can be obtained from list_reports. dry_run returns the payload without
+    sending; otherwise requires elicited confirmation.
+    """
+    endpoint = f"{_REPORTS_BASE}/{quote(str(report_id), safe='')}"
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": updates}
+    cancelled = await _confirm_report_action(ctx, "update", report_id)
+    if cancelled:
+        return cancelled
+    response = await get_client()._arequest("PUT", endpoint, json=updates)
+    return _validated_write_result(response, endpoint)
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def delete_report(
+    ctx: Context,
+    report_id: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete a saved report and its associated report runs.
+
+    DELETE /network-reporting/v1/reports/{report-id} (manifest-confirmed;
+    deletion cascades to the report's report runs per the manifest
+    description). Report ID can be obtained from list_reports. dry_run
+    returns the endpoint without sending; otherwise requires elicited
+    confirmation.
+    """
+    endpoint = f"{_REPORTS_BASE}/{quote(str(report_id), safe='')}"
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint}
+    cancelled = await _confirm_report_action(ctx, "delete", report_id)
+    if cancelled:
+        return cancelled
+    response = await get_client()._arequest("DELETE", endpoint)
+    result = _validated_write_result(response, endpoint)
+    if "error" in result:
+        return result
+    return result | {"deleted": True}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def delete_report_run(
+    ctx: Context,
+    report_id: str,
+    report_run_id: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete a single report-run by ID.
+
+    DELETE /network-reporting/v1/reports/{report-id}/report-runs/{report-run-id}
+    (manifest-confirmed). Report ID/report-run ID can be obtained from
+    list_reports/list_report_runs. dry_run returns the endpoint without
+    sending; otherwise requires elicited confirmation.
+    """
+    endpoint = (
+        f"{_REPORTS_BASE}/{quote(str(report_id), safe='')}"
+        f"/report-runs/{quote(str(report_run_id), safe='')}"
+    )
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint}
+    cancelled = await _confirm_report_action(ctx, "delete report-run", report_run_id)
+    if cancelled:
+        return cancelled
+    response = await get_client()._arequest("DELETE", endpoint)
+    result = _validated_write_result(response, endpoint)
+    if "error" in result:
+        return result
+    return result | {"deleted": True}
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def get_report_run_download_link(
+    ctx: Context,
+    report_id: str,
+    report_run_id: str,
+    export_type: str = "CSV",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Get a downloadable link for a completed report run.
+
+    POST .../reports/{report-id}/report-runs/{report-run-id}/download-link
+    (manifest-confirmed). `export_type` must be "CSV" or "PDF" (maps to the
+    required `exportType` request-body field); the response carries the
+    download URL, MIME type (application/zip for CSV, application/pdf for
+    PDF), and suggested file name. Report ID/report-run ID can be obtained
+    from list_reports/list_report_runs. dry_run returns the payload without
+    sending; otherwise requires elicited confirmation.
+    """
+    export_type_norm = str(export_type or "").strip().upper()
+    if export_type_norm not in {"CSV", "PDF"}:
+        return {"error": "export_type must be 'CSV' or 'PDF'"}
+    endpoint = (
+        f"{_REPORTS_BASE}/{quote(str(report_id), safe='')}"
+        f"/report-runs/{quote(str(report_run_id), safe='')}/download-link"
+    )
+    payload = {"exportType": export_type_norm}
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": payload}
+    cancelled = await _confirm_report_action(
+        ctx, f"generate a {export_type_norm} download link", report_run_id
+    )
+    if cancelled:
+        return cancelled
+    response = await get_client()._arequest("POST", endpoint, json=payload)
+    return _validated_write_result(response, endpoint)
+
+
 # ── Client Onboarding ─────────────────────────────────────────────────────────
+
 
 @mcp.tool(annotations=READ_ONLY)
 def list_client_onboarding_events(
@@ -2460,6 +2954,7 @@ if __name__ == "__main__":
         SecretTokenizeMiddleware,
         install_middleware,
     )
+
     stable_list_tools(mcp)
     install_middleware(
         mcp,
@@ -2470,4 +2965,5 @@ if __name__ == "__main__":
         ],
     )
     from mcp_servers.shared import run_server
+
     run_server(mcp)

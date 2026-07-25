@@ -160,6 +160,6 @@ def test_scim_reads_use_one_based_pagination_and_bound_redacted_output(monkeypat
     assert result["data"]["_pagination"]["limit"] == 2
 
 
-def test_curated_glp_tool_count_is_62():
+def test_curated_glp_tool_count_is_76():
     curated = set(glp.mcp._tool_manager._tools) - set(glp.GENERATED_GLP_TOOLS)
-    assert len(curated) == 62
+    assert len(curated) == 76

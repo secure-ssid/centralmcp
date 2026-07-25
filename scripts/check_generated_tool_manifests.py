@@ -14,6 +14,11 @@ if str(ROOT) not in sys.path:
 
 from mcp_servers.openapi_gen.classify import CAPABILITIES  # noqa: E402
 from mcp_servers.openapi_gen.manifest import MANIFEST_DIR, SCHEMA_VERSION  # noqa: E402
+from scripts.build_optional_product_manifests import (  # noqa: E402
+    SourcePinError,
+    check_committed_offline,
+    provenance_path,
+)
 from scripts.generate_axis_manifest import check_manifest as check_axis_manifest  # noqa: E402
 
 
@@ -68,6 +73,10 @@ def validate_all(manifest_dir: Path = MANIFEST_DIR) -> list[tuple[str, int]]:
     results = [validate_manifest(path) for path in paths]
     if (manifest_dir / "axis.json").exists():
         check_axis_manifest(manifest_dir / "axis.json")
+    if manifest_dir == MANIFEST_DIR:
+        for platform, _count in results:
+            if provenance_path(platform).exists() and platform != "edgeconnect":
+                check_committed_offline(platform)
     return results
 
 
@@ -77,7 +86,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         results = validate_all(args.manifest_dir)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError, SourcePinError) as exc:
         print(f"Generated manifest validation failed: {exc}", file=sys.stderr)
         return 1
     for platform, count in results:

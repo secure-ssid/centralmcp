@@ -18,6 +18,8 @@ def _write_index_inputs(tmp_path, monkeypatch):
         conn.execute("CREATE TABLE endpoints (id TEXT)")
         conn.execute("CREATE TABLE schemas (id TEXT)")
         conn.execute("CREATE TABLE fields (id TEXT)")
+        conn.execute("CREATE TABLE advisories (id TEXT)")
+        conn.execute("CREATE TABLE lifecycle_events (id TEXT)")
 
     source_manifest = tmp_path / "source_manifest.json"
     source_manifest.write_text(json.dumps([{"source": "docs"}]) + "\n")
@@ -58,6 +60,13 @@ def test_package_indexes_embeds_source_manifest(tmp_path, monkeypatch):
 
     assert source_data == [{"source": "docs"}]
     assert index_data["source_manifest"]["sources"] == ["docs"]
+    assert index_data["artifacts"]["specs.sqlite"]["counts"] == {
+        "endpoints": 0,
+        "schemas": 0,
+        "fields": 0,
+        "advisories": 0,
+        "lifecycle_events": 0,
+    }
     assert latest_archive.name == "centralmcp-rag-index-latest.tar.gz"
     assert latest_archive.read_bytes() == archive.read_bytes()
     assert latest_checksum.read_text().endswith("  centralmcp-rag-index-latest.tar.gz\n")

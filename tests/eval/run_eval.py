@@ -56,7 +56,11 @@ def load_questions() -> list[dict]:
 
 def run(k: int, verbose: bool) -> dict:
     search_docs = _resolve(("mcp_servers.rag", "search_docs"))
-    lookup_api = _resolve(("mcp_servers.rag", "lookup_api"))  # may not exist yet
+    lookup_api = _resolve(("mcp_servers.rag", "lookup_api"))
+    lookup_advisory = _resolve(("mcp_servers.rag", "lookup_advisory"))
+    check_product_lifecycle = _resolve(
+        ("mcp_servers.rag", "check_product_lifecycle")
+    )
     if search_docs is None:
         sys.exit("Could not import mcp_servers.rag.search_docs — is the backend reachable?")
 
@@ -74,6 +78,16 @@ def run(k: int, verbose: bool) -> dict:
             # to prose search (mirrors how an agent uses the two tools).
             if not results or all("error" in h for h in results if isinstance(h, dict)):
                 results = None
+        elif q["type"] == "advisory" and lookup_advisory is not None:
+            try:
+                results = lookup_advisory(**q["arguments"])
+            except Exception:
+                results = None
+        elif q["type"] == "lifecycle" and check_product_lifecycle is not None:
+            try:
+                results = check_product_lifecycle(**q["arguments"])
+            except Exception:
+                results = None
         if results is None:
             try:
                 results = search_docs(q["query"], top_k=k)
@@ -85,12 +99,17 @@ def run(k: int, verbose: bool) -> dict:
         # source_hit + mrr
         src_rank = 0
         for i, h in enumerate(hits[:k], start=1):
-            blob = f"{h.get('source','')} {h.get('file_path','')}".lower()
+            blob = (
+                f"{h.get('source', '')} {h.get('source_family', '')} "
+                f"{h.get('file_path', '')}"
+            ).lower()
             if any(s.lower() in blob for s in q.get("expect_sources", [])):
                 src_rank = i
                 break
         # keyword_hit across all returned text
-        text_all = " ".join(str(h.get("text", "")) for h in hits).lower()
+        text_all = " ".join(
+            json.dumps(h, sort_keys=True, default=str) for h in hits
+        ).lower()
         kw_hit = any(kw.lower() in text_all for kw in q.get("expect_keywords", []))
 
         rows.append({
@@ -123,6 +142,18 @@ def _aggregate(rows: list[dict]) -> dict:
         "mrr": round(sum(r["mrr"] for r in rows) / len(rows), 3) if rows else 0.0,
         "howto_recall@k": round(frac(lambda r: r["source_hit"], "howto"), 3),
         "api_exact": round(frac(lambda r: r["keyword_hit"], "api-lookup"), 3),
+        "structured_exact": round(
+            frac(
+                lambda r: r["source_hit"] and r["keyword_hit"],
+                "advisory",
+            )
+            + frac(
+                lambda r: r["source_hit"] and r["keyword_hit"],
+                "lifecycle",
+            ),
+            3,
+        )
+        / 2,
         "rows": rows,
     }
     return summary
@@ -133,6 +164,7 @@ _DEFAULT_THRESHOLDS = {
     "mrr": 0.85,
     "howto_recall@k": 0.85,
     "api_exact": 0.95,
+    "structured_exact": 1.0,
 }
 
 
@@ -155,12 +187,21 @@ def main():
     ap.add_argument("--min-mrr", type=float, default=None)
     ap.add_argument("--min-howto-recall", type=float, default=None)
     ap.add_argument("--min-api-exact", type=float, default=None)
+    ap.add_argument("--min-structured-exact", type=float, default=None)
     args = ap.parse_args()
 
     print(f"Running RAG eval (top_k={args.k})...")
     summary = run(args.k, args.verbose)
     print("\n=== RAG eval summary ===")
-    for key in ("n", "source_hit@k", "keyword_hit", "mrr", "howto_recall@k", "api_exact"):
+    for key in (
+        "n",
+        "source_hit@k",
+        "keyword_hit",
+        "mrr",
+        "howto_recall@k",
+        "api_exact",
+        "structured_exact",
+    ):
         print(f"  {key:<16} {summary[key]}")
     if args.json:
         Path(args.json).write_text(json.dumps(summary, indent=2))
@@ -178,6 +219,7 @@ def main():
         "mrr": args.min_mrr,
         "howto_recall@k": args.min_howto_recall,
         "api_exact": args.min_api_exact,
+        "structured_exact": args.min_structured_exact,
     }
     thresholds.update({metric: value for metric, value in explicit.items() if value is not None})
     if thresholds:

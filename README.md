@@ -7,7 +7,7 @@
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-0969da)](https://secure-ssid.github.io/centralmcp/)
 [![Release](https://img.shields.io/github/v/release/secure-ssid/centralmcp?display_name=tag)](https://github.com/secure-ssid/centralmcp/releases)
 
-![centralmcp 0.5.0 - low-token HPE Networking MCP toolkit](docs/assets/centralmcp-hero.svg)
+![centralmcp 0.6.0 - low-token HPE Networking MCP toolkit](docs/assets/centralmcp-hero.svg)
 
 **Low-token Model Context Protocol (MCP) server for HPE Networking automation: Aruba Central, HPE GreenLake Platform (GLP) automation, ClearPass, Juniper Mist, Apstra, ArubaOS 8 migration automation, EdgeConnect, HPE Aruba UXI, and Axis Atmos Cloud.**
 
@@ -15,10 +15,10 @@ centralmcp gives MCP-capable AI clients a low-token way to search Aruba/HPE docs
 
 It is built around direct REST calls with `httpx`.
 
-## Version 0.6.0 development highlights
+## Version 0.6.0 highlights
 
-The current 0.6 branch expands the executable backend catalog to 6,166 tools:
-295 core tools / 2454 read-only optional starters / 5262 read-write optional starters.
+The current 0.6 branch expands the executable backend catalog to 6,545 tools:
+319 core tools / 2712 read-only optional starters / 5641 read-write optional starters.
 It also adds fail-closed AAA server-group lifecycle tools and AOS8 adapter
 wiring, corrects New Central config-assignment and device-auth profile request
 shapes, and grows the RAG corpus to 51,737 prose chunks with official HPE Aruba
@@ -75,10 +75,9 @@ complete backend index to 6,162.
   6,162-tool backend catalog and 5,703-operation generated manifest count
   both reconfirmed unchanged.
 
-See the [complete 0.5.0 release notes](docs/release-notes-0.5.0.md). The
-[0.4.0 release notes](docs/release-notes-0.4.0.md) and
-[0.3.0 release notes](docs/release-notes-0.3.0.md) remain available for
-historical context.
+See the [complete 0.6.0 release notes](docs/release-notes-0.6.0.md). The
+[0.5.0 release notes](docs/release-notes-0.5.0.md) and earlier notes remain
+available for historical context.
 
 ```mermaid
 flowchart LR
@@ -145,7 +144,8 @@ EdgeConnect link integrity diagnostics, low-token MCP router.
 | See the architecture diagrams | [docs/architecture/system-overview.md](docs/architecture/system-overview.md) |
 | Browse the documentation map | [docs/README.md](docs/README.md) |
 | Review the RAG design | [docs/architecture/RAG-ARCHITECTURE.md](docs/architecture/RAG-ARCHITECTURE.md) |
-| Review everything added in 0.5.0 | [docs/release-notes-0.5.0.md](docs/release-notes-0.5.0.md) |
+| Review everything added in 0.6.0 | [docs/release-notes-0.6.0.md](docs/release-notes-0.6.0.md) |
+| Review the prior 0.5.0 AOS8 expansion | [docs/release-notes-0.5.0.md](docs/release-notes-0.5.0.md) |
 | Review the AOS8 migration contract matrix and live evaluation | [docs/aos8-migration-contract-matrix.md](docs/aos8-migration-contract-matrix.md), [docs/aos8-live-dryrun-evaluation.md](docs/aos8-live-dryrun-evaluation.md) |
 | Review the prior 0.4.0 expansion (historical) | [docs/release-notes-0.4.0.md](docs/release-notes-0.4.0.md) |
 | Review the prior 0.3.0 expansion (historical) | [docs/release-notes-0.3.0.md](docs/release-notes-0.3.0.md) |
@@ -159,7 +159,7 @@ EdgeConnect link integrity diagnostics, low-token MCP router.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 5,703 generated operations (5,686 active); 480 curated; 6,166 backend tools; 6,169 tools in direct-all router mode |
+| MCP tools | 6,056 generated operations (6,039 active); 506 curated; 6,545 backend tools; 6,548 tools in direct-all router mode |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |
@@ -173,21 +173,21 @@ EdgeConnect link integrity diagnostics, low-token MCP router.
 
 | Backend | Read-only annotated | Registered total |
 |---|---:|---:|
-| Central generated configuration | 448 | 1,347 |
+| Central generated configuration | 680 | 1,678 |
 | Central configuration | 26 | 75 |
-| Central monitoring | 68 | 77 |
-| Central NAC | 13 | 34 |
+| Central monitoring | 71 | 85 |
+| Central NAC | 15 | 38 |
 | Central operations | 2 | 40 |
-| GreenLake Platform | 542 | 966 |
-| RAG/OpenAPI | 3 | 3 |
+| GreenLake Platform | 544 | 980 |
+| RAG/OpenAPI | 5 | 5 |
 | ClearPass | 272 | 829 |
-| Juniper Mist | 544 | 1,077 |
+| Juniper Mist | 545 | 1,078 |
 | Apstra | 46 | 68 |
-| ArubaOS 8 | 129 | 307 |
+| ArubaOS 8 | 130 | 308 |
 | EdgeConnect | 684 | 1,265 |
 | HPE Aruba UXI | 24 | 49 |
-| Axis Atmos Cloud | 12 | 25 |
-| **Backend total** | **2,815** | **6,166** |
+| Axis Atmos Cloud | 12 | 47 |
+| **Backend total** | **3,056** | **6,545** |
 
 ## Why the router matters
 
@@ -256,7 +256,7 @@ For optional product starters too:
 uv run python scripts/ingest_tools.py --products all
 ```
 
-That default hides optional write tools. To index all 6,166 backend tools, set
+That default hides optional write tools. To index all 6,545 backend tools, set
 `CENTRALMCP_PRODUCT_ACCESS=read-write` (and `CENTRALMCP_GLP_GENERATED_TOOLS=1`
 to include generated GLP tools) while rebuilding.
 
@@ -408,7 +408,7 @@ mcp_servers/
   ops.py                Ping, traceroute, show, reboot, PoE, cable test
   nac.py                MAC reg, MPSK, visitors, AAA, auth policies
   glp.py                GreenLake Platform tools
-  rag.py                ask_docs, search_docs, lookup_api
+  rag.py                Docs, exact API, advisory, and lifecycle lookup
   clearpass.py          Optional ClearPass starter backend
   mist.py               Optional Mist starter backend
   apstra.py             Optional Apstra starter backend
@@ -448,7 +448,7 @@ The default RAG stack is embedded:
 | Index | File | Tool | Purpose |
 |---|---|---|---|
 | Docs | `data/docs.lance` | `search_docs`, `ask_docs` | Hybrid retrieval over Aruba/HPE docs |
-| API specs | `data/specs.sqlite` | `lookup_api` | Exact endpoint/schema/enum lookup |
+| Structured data | `data/specs.sqlite` | `lookup_api`, `lookup_advisory`, `check_product_lifecycle` | Exact API, security advisory, and product lifecycle lookup |
 | Tools | `data/tools.lance` | `find_tool` | Semantic router tool discovery |
 
 Current rebuilt index snapshot:
@@ -456,10 +456,12 @@ Current rebuilt index snapshot:
 | Content | Count |
 |---|---:|
 | Prose chunks | 51,737 |
-| OpenAPI specs | 239 |
-| Exact endpoints | 3,465 |
-| Schemas | 10,297 |
-| Fields | 57,131 |
+| OpenAPI specs | 244 |
+| Exact endpoints | 3,796 |
+| Schemas | 11,293 |
+| Fields | 60,568 |
+| Security advisories | 102 |
+| Lifecycle records | 346 |
 
 Measured on the bundled eval set:
 

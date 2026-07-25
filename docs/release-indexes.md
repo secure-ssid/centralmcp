@@ -8,12 +8,14 @@ larger, so public releases can include a prebuilt archive.
 | Artifact content | Count |
 |---|---:|
 | LanceDB prose chunks | 51,737 |
-| SQLite OpenAPI specs | 239 |
-| Exact endpoints | 3,465 |
-| Schemas | 10,297 |
-| Fields | 57,131 |
-| Generated operation manifests | 5,703 |
-| Complete backend tool catalog | 6,166 |
+| SQLite OpenAPI specs | 244 |
+| Exact endpoints | 3,796 |
+| Schemas | 11,293 |
+| Fields | 60,568 |
+| Security advisories | 102 |
+| Lifecycle records | 346 |
+| Generated operation manifests | 6,056 |
+| Complete backend tool catalog | 6,545 |
 
 OpenAPI documents are parsed only into SQLite exact lookup. They are not
 embedded into LanceDB, which keeps prose retrieval smaller and avoids lossy

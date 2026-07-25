@@ -1,12 +1,14 @@
 """MCP server — GreenLake Platform (GLP): inventory, licensing, users, and
-service catalog (62 curated + 904 active generated tools; 918 in provenance manifest).
+service catalog (76 curated + 904 active generated tools; 918 in provenance manifest).
 
 Covers: GLP device lifecycle (v1 + v2beta1), device grouping summaries,
-subscription assignment/bulk-add, audit logs (v1 + v2beta1), users, workspaces
-(incl. contact PATCH), reporting statuses, service-catalog reads, and a guarded
-read-only GLP GET. Curated workflows also cover RBAC role/scope inspection,
-event webhooks/subscriptions/deliveries, workspace tags/locations, and SCIM
-user/group membership reads (see list_glp_api_families).
+subscription assignment/bulk-add, auto-subscription-setting reads/updates,
+audit logs (v1 + v2beta1), users, workspaces (incl. contact PATCH), reporting
+statuses, service-catalog reads, and a guarded read-only GLP GET. Curated
+workflows also cover RBAC role-assignment and scope-group lifecycle
+(create/update/delete), identity user lifecycle (invite/update-preferences/
+disassociate), event webhooks/subscriptions/deliveries, workspace tags/
+locations, and SCIM user/group membership reads (see list_glp_api_families).
 Uses the target_account (glp_account) credentials.
 """
 import asyncio
@@ -68,6 +70,20 @@ def glp_write_status() -> dict[str, Any]:
             "glp_add_device",
             "glp_add_devices_bulk",
             "glp_archive_device",
+            "update_glp_workspace_contact",
+            "glp_add_subscriptions",
+            "create_glp_role_assignment",
+            "update_glp_role_assignment",
+            "delete_glp_role_assignment",
+            "create_glp_scope_group",
+            "update_glp_scope_group",
+            "delete_glp_scope_group",
+            "add_glp_scope_group_scopes",
+            "delete_glp_scope_group_scopes",
+            "invite_glp_user",
+            "update_glp_user_preferences",
+            "disassociate_glp_user",
+            "update_glp_auto_subscription_settings",
         ],
         "message": (
             "GLP write tools can execute."
@@ -287,6 +303,65 @@ def get_glp_subscription(subscription_id: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_ONLY)
+def list_glp_auto_subscription_settings() -> dict[str, Any]:
+    """List all configured auto-subscription settings in the GLP workspace."""
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        items = glp.list_auto_subscription_settings()
+        return {"items": items, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"items": [], "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_glp_auto_subscription_setting(setting_id: str) -> dict[str, Any]:
+    """Fetch one configured auto-subscription setting by ID."""
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        setting = glp.get_auto_subscription_setting(setting_id)
+        return {"setting": setting, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"setting": None, "errors": errors}
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def update_glp_auto_subscription_settings(
+    setting_id: str, settings: dict[str, Any]
+) -> dict[str, Any]:
+    """PATCH the configured auto-subscription settings for a workspace.
+
+    Pass a list of deviceType/tier combinations to create or update in
+    `settings`; per the spec, pass `tier` as null for a deviceType to
+    remove its auto-subscription setting. The manifest's declared body
+    property and required property don't agree with each other for this
+    operation (not independently re-verified against the Subscriptions v1
+    spec text) — `settings` is sent through as-is, so treat a 400/422 as
+    "shape not confirmed on this tenant" and inspect
+    list_glp_auto_subscription_settings / get_glp_auto_subscription_setting
+    first. Gated behind the same guardrail as other GLP v2beta1-style
+    writes — see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "update_glp_auto_subscription_settings",
+        {"setting_id": setting_id, "settings": settings},
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.update_auto_subscription_settings(setting_id, settings)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=READ_ONLY)
 def list_glp_users(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     """List users with access to the GLP workspace using `limit` / `offset` pagination."""
     glp = get_glp_client()
@@ -305,6 +380,75 @@ def get_glp_user(user_id: str) -> dict[str, Any]:
     return _glp_read(f"/identity/v1/users/{_path_part(user_id)}")
 
 
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def invite_glp_user(email: str, send_welcome_email: bool | None = None) -> dict[str, Any]:
+    """Invite a user to the GLP workspace by email.
+
+    Gated behind the same guardrail as other GLP v2beta1-style writes —
+    see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "invite_glp_user",
+        {"email": redact_sensitive(email), "send_welcome_email": send_welcome_email},
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.invite_user(email, send_welcome_email=send_welcome_email)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def update_glp_user_preferences(
+    user_id: str, idle_timeout: int, language: str
+) -> dict[str, Any]:
+    """Update a GLP user's preferences (idle timeout, language).
+
+    This is a full PUT replace of the user's preferences — both
+    `idle_timeout` and `language` are required. Gated behind the same
+    guardrail as other GLP v2beta1-style writes — see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "update_glp_user_preferences",
+        {"user_id": user_id, "idle_timeout": idle_timeout, "language": language},
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.update_user_preferences(user_id, idle_timeout, language)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def disassociate_glp_user(user_id: str) -> dict[str, Any]:
+    """Remove (disassociate) a user from the GLP workspace.
+
+    Gated behind the same guardrail as other GLP v2beta1-style writes —
+    see glp_write_status.
+    """
+    disabled = _write_disabled("disassociate_glp_user", {"user_id": user_id})
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.disassociate_user(user_id)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
 @mcp.tool(annotations=READ_ONLY)
 def list_glp_audit_logs(
     limit: int = 100,
@@ -560,6 +704,204 @@ def list_glp_scope_group_scopes(
         limit=bounded_limit,
     )
 
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def create_glp_role_assignment(role_assignment: dict[str, Any]) -> dict[str, Any]:
+    """Create an RBAC role assignment.
+
+    `role_assignment` is passed through as-is; per the spec it must include
+    `principal`, `role`, and `scope` (see get_glp_role_assignment /
+    list_glp_role_assignments for the shape returned by this same API, and
+    the GLP authorization developer guide for how to find those
+    identifiers). Gated behind the same guardrail as other GLP v2beta1-style
+    writes — see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "create_glp_role_assignment", {"role_assignment": role_assignment}
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.create_role_assignment(role_assignment)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def update_glp_role_assignment(
+    role_assignment_id: str, role_assignment: dict[str, Any]
+) -> dict[str, Any]:
+    """Update the scope(s) of an existing RBAC role assignment by ID.
+
+    Per the spec, `role_assignment` must still include the immutable `id`,
+    `principal`, and `role` attributes alongside the updated `scope`. Gated
+    behind the same guardrail as other GLP v2beta1-style writes — see
+    glp_write_status.
+    """
+    disabled = _write_disabled(
+        "update_glp_role_assignment",
+        {"role_assignment_id": role_assignment_id, "role_assignment": role_assignment},
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.update_role_assignment(role_assignment_id, role_assignment)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def delete_glp_role_assignment(role_assignment_id: str) -> dict[str, Any]:
+    """Delete an RBAC role assignment by ID.
+
+    Gated behind the same guardrail as other GLP v2beta1-style writes —
+    see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "delete_glp_role_assignment", {"role_assignment_id": role_assignment_id}
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.delete_role_assignment(role_assignment_id)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def create_glp_scope_group(scope_group: dict[str, Any]) -> dict[str, Any]:
+    """Create an RBAC scope group (a named collection of scopes for role assignments).
+
+    `scope_group` is passed through as-is; per the spec it must include
+    `name`, and a scope group cannot contain another scope group (no
+    nesting). Gated behind the same guardrail as other GLP v2beta1-style
+    writes — see glp_write_status.
+    """
+    disabled = _write_disabled("create_glp_scope_group", {"scope_group": scope_group})
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.create_scope_group(scope_group)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def update_glp_scope_group(
+    scope_group_id: str, scope_group: dict[str, Any]
+) -> dict[str, Any]:
+    """Update an RBAC scope group by ID.
+
+    Per the spec, `scope_group` must still include the immutable `id`
+    attribute. Gated behind the same guardrail as other GLP v2beta1-style
+    writes — see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "update_glp_scope_group",
+        {"scope_group_id": scope_group_id, "scope_group": scope_group},
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.update_scope_group(scope_group_id, scope_group)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def delete_glp_scope_group(scope_group_id: str) -> dict[str, Any]:
+    """Delete an RBAC scope group by ID.
+
+    Gated behind the same guardrail as other GLP v2beta1-style writes —
+    see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "delete_glp_scope_group", {"scope_group_id": scope_group_id}
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.delete_scope_group(scope_group_id)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def add_glp_scope_group_scopes(
+    scope_group_id: str, items: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Add scopes to an existing RBAC scope group.
+
+    `items` is required by the spec. This operation is synchronous and
+    non-atomic per the spec. Gated behind the same guardrail as other GLP
+    v2beta1-style writes — see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "add_glp_scope_group_scopes",
+        {"scope_group_id": scope_group_id, "items": items},
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.add_scope_group_scopes(scope_group_id, items)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def delete_glp_scope_group_scopes(
+    scope_group_id: str, items: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Delete scopes from an existing RBAC scope group.
+
+    `items` is required by the spec (the scope IDs to remove — see
+    list_glp_scope_group_scopes to find them). This operation is
+    synchronous and non-atomic per the spec. Gated behind the same
+    guardrail as other GLP v2beta1-style writes — see glp_write_status.
+    """
+    disabled = _write_disabled(
+        "delete_glp_scope_group_scopes",
+        {"scope_group_id": scope_group_id, "items": items},
+    )
+    if disabled:
+        return disabled
+    glp = get_glp_client()
+    errors: list[str] = []
+    try:
+        result = glp.delete_scope_group_scopes(scope_group_id, items)
+        return {"result": result, "errors": errors}
+    except Exception as exc:
+        errors.append(str(exc))
+        return {"result": None, "errors": errors}
 
 # ── Event webhooks v1beta1 ───────────────────────────────────────────────────
 
@@ -1031,13 +1373,13 @@ def update_glp_workspace_contact(workspace_id: str, contact: dict[str, Any]) -> 
 def glp_add_subscriptions(subscription_keys: list[str], dry_run: bool = False) -> dict[str, Any]:
     """Add one or more subscription keys to the GLP workspace, with an optional dry-run preview.
 
-    dry_run=True sends the request with a server-side dryRun flag when the
-    tenant supports it (validation only — no subscriptions are actually
-    added), rather than a purely local no-op. Body/param shape has not been
-    independently re-verified against live spec text — treat a 400/404 here
-    as "not confirmed on this tenant" and fall back to glp_get for
-    exploration. Gated behind the same guardrail as other GLP v2beta1-style
-    writes — see glp_write_status.
+    dry_run=True sends the request with the manifest-confirmed ``dry-run``
+    query parameter (postSubscriptionsV1; validation only — no subscriptions
+    are actually added), rather than a purely local no-op. The nested
+    subscription-item body shape has not been independently re-verified
+    against live spec text — treat a 400/404 here as "not confirmed on this
+    tenant" and fall back to glp_get for exploration. Gated behind the same
+    guardrail as other GLP v2beta1-style writes — see glp_write_status.
     """
     disabled = _write_disabled(
         "glp_add_subscriptions",
@@ -1066,14 +1408,20 @@ def list_glp_api_families() -> dict[str, Any]:
         "list_glp_devices", "get_glp_device", "get_glp_device_by_id",
         "list_glp_devices_v2", "get_glp_device_v2",
         "list_glp_subscriptions", "get_glp_subscription",
+        "list_glp_auto_subscription_settings", "get_glp_auto_subscription_setting",
+        "update_glp_auto_subscription_settings",
         "list_glp_users", "get_glp_user",
+        "invite_glp_user", "update_glp_user_preferences", "disassociate_glp_user",
         "list_glp_audit_logs", "get_glp_audit_log_detail",
         "list_glp_audit_logs_v2", "get_glp_audit_log_v2", "get_glp_audit_log_v2_detail",
         "get_glp_workspace", "get_glp_workspace_contact", "update_glp_workspace_contact",
         "list_glp_reporting_statuses", "get_glp_reporting_status",
         "list_glp_service_offers", "get_glp_service_offer",
         "list_glp_role_assignments", "get_glp_role_assignment",
+        "create_glp_role_assignment", "update_glp_role_assignment", "delete_glp_role_assignment",
         "list_glp_scope_groups", "get_glp_scope_group", "list_glp_scope_group_scopes",
+        "create_glp_scope_group", "update_glp_scope_group", "delete_glp_scope_group",
+        "add_glp_scope_group_scopes", "delete_glp_scope_group_scopes",
         "list_glp_event_webhooks", "get_glp_event_webhook",
         "list_glp_event_subscriptions", "list_glp_webhook_deliveries",
         "list_glp_locations", "get_glp_location", "reverse_geocode_glp_location",
@@ -1097,8 +1445,10 @@ def list_glp_api_families() -> dict[str, Any]:
         },
         "note": (
             "Named RBAC, event-webhook, tag, location, and SCIM reads are backed by "
-            "the committed GLP OpenAPI manifest. Use glp_get only for other documented "
-            "resources under an allowed prefix."
+            "the committed GLP OpenAPI manifest. RBAC role-assignment/scope-group "
+            "lifecycle, identity user lifecycle, and auto-subscription-setting writes "
+            "are also manifest-backed and gated behind glp_write_status. Use glp_get "
+            "only for other documented resources under an allowed prefix."
         ),
     }
 
@@ -1116,7 +1466,7 @@ def list_glp_api_families() -> dict[str, Any]:
 # _glp_generated_enabled below) except in `direct` router mode with the
 # `glp`/`all` toolset, so the default curated aruba-glp catalog stays small.
 #
-# The 62 curated GLP tools above are the confirmed-working, hand-tuned surface;
+# The 76 curated GLP tools above are the confirmed-working, hand-tuned surface;
 # the generated glp_* tools broaden coverage to the full workspace/inventory/
 # licensing/service-catalog/storage/compute surface. Generated writes stay
 # fail-closed behind the same CENTRALMCP_GLP_V2BETA1_WRITES gate and default to
@@ -1243,7 +1593,7 @@ def _glp_generated_enabled() -> bool:
 
     Opt-in and **default OFF**: unlike the optional-product starter backends,
     the ~918 generated GLP tools are a very large surface, so we keep the
-    default ``aruba-glp`` catalog to the 62 curated tools and only expand when
+    default ``aruba-glp`` catalog to the 76 curated tools and only expand when
     an operator sets ``CENTRALMCP_GLP_GENERATED_TOOLS`` truthy. (Central's
     generated tools live on a separate ``aruba-central-generated`` server, so
     they can default on without inflating a shared catalog; the GLP generated

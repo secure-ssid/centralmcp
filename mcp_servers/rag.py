@@ -1,4 +1,4 @@
-"""MCP server — Aruba/HPE documentation RAG tools (3 tools).
+"""MCP server — Aruba/HPE documentation RAG tools (5 tools).
 
 Covers: hybrid (vector + BM25) search over ingested Aruba Central developer
 docs, tech docs, NAC docs, VSG docs, and HTML tech docs; exact API
@@ -15,7 +15,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import READ_ONLY
-from pipeline.clients import specs_index
+from pipeline.clients import advisory_index, specs_index
 
 mcp = FastMCP("aruba-rag")
 
@@ -90,6 +90,7 @@ def _shape(rows: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
         {
             "text": r["text"][:600] + "…" if len(r["text"]) > 600 else r["text"],
             "source": r["source"],
+            "doc_type": r.get("doc_type"),
             "file_path": r["file_path"],
             "score": round(r["score"], 4),
         }
@@ -144,7 +145,9 @@ def search_docs(
         query:    Natural language question or keywords.
         top_k:    Results to return (default 5, range 1-20).
         source:   Filter by source folder — developer_docs, tech_docs, nac_docs,
-                  vsg_docs, techdocs_html, or aos_techdocs.
+                  vsg_docs, techdocs_html, aos_techdocs, security_advisories,
+                  lifecycle_notices, juniper_lifecycle, or
+                  juniper_security_advisories.
         doc_type: DEPRECATED — use source instead.
     """
     top_k = _clamp_top_k(top_k, 20)
@@ -180,6 +183,59 @@ def lookup_api(query: str, top_k: int = 10) -> list[dict[str, Any]]:
         return [{"error": str(exc)}]
 
 
+@mcp.tool(annotations=READ_ONLY)
+def lookup_advisory(
+    product: str | None = None,
+    cve: str | None = None,
+    advisory_id: str | None = None,
+    min_severity: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Look up exact security-advisory metadata from official indexed sources.
+
+    Filter by product text, CVE, or advisory ID. Unlike semantic search, this
+    returns structured severity, status, release dates, affected product names,
+    CVEs, and authoritative source paths. At least one identifier is required.
+
+    Args:
+        product: Product/model/version text contained in the advisory.
+        cve: Exact CVE identifier, such as CVE-2025-13914.
+        advisory_id: Exact vendor advisory ID, such as HPESBNW04987.
+        min_severity: Optional low, medium, high, or critical threshold.
+        limit: Results to return (default 20, range 1-200).
+    """
+    try:
+        return advisory_index.lookup_advisories(
+            product=product,
+            cve=cve,
+            advisory_id=advisory_id,
+            min_severity=min_severity,
+            limit=max(1, min(limit, 200)),
+        )
+    except FileNotFoundError as exc:
+        return [{"error": str(exc)}]
+
+
+@mcp.tool(annotations=READ_ONLY)
+def check_product_lifecycle(
+    product: str,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Find official end-of-sale/end-of-life records for a product or SKU.
+
+    Searches the structured HPE Networking and Juniper Mist/Apstra lifecycle
+    tables and returns notice IDs, dates, product/replacement SKUs, source
+    family, file path, and authoritative source URL.
+    """
+    try:
+        return advisory_index.lookup_lifecycle(
+            product,
+            limit=max(1, min(limit, 200)),
+        )
+    except FileNotFoundError as exc:
+        return [{"error": str(exc)}]
+
+
 def _is_api_question(question: str) -> bool:
     tokens = {
         tok.strip(".,:;?!()[]{}\"'").lower()
@@ -189,11 +245,23 @@ def _is_api_question(question: str) -> bool:
 
 
 def _citation(hit: dict[str, Any]) -> dict[str, Any]:
-    return {
+    citation = {
         "file_path": hit.get("file_path"),
-        "source": hit.get("source"),
+        "source": hit.get("source") or hit.get("source_family"),
+        "doc_type": hit.get("doc_type"),
         "score": hit.get("score"),
     }
+    for key in (
+        "source_url",
+        "advisory_id",
+        "severity",
+        "current_release",
+        "notice_id",
+        "published",
+    ):
+        if hit.get(key) is not None:
+            citation[key] = hit[key]
+    return citation
 
 
 @mcp.tool(annotations=READ_ONLY)

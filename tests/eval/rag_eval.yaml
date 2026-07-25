@@ -1,6 +1,8 @@
 # RAG evaluation set for centralmcp — run before/after any backend or retrieval change.
 # type: api-lookup  -> expects an exact field/enum/endpoint (ideally via lookup_api over the specs)
 #       howto       -> expects a relevant prose chunk (via search_docs)
+#       advisory    -> exact structured lookup via lookup_advisory
+#       lifecycle   -> exact structured lookup via check_product_lifecycle
 # expect_sources    -> substrings; at least one must appear in a top-k result's file_path/source
 # expect_keywords   -> substrings; at least one must appear in the returned text (case-insensitive)
 # See docs/architecture/RAG-ARCHITECTURE.md.
@@ -125,3 +127,35 @@ questions:
     query: "What is the recommended VLAN/overlay design for a campus wireless deployment?"
     expect_sources: ["vsg"]
     expect_keywords: ["VLAN", "overlay"]
+
+  - id: advisory-hpesbnw04987
+    type: advisory
+    query: "Look up advisory HPESBNW04987"
+    arguments:
+      advisory_id: "HPESBNW04987"
+    expect_sources: ["security_advisories"]
+    expect_keywords: ["HPESBNW04987", "CVE-2025-37168"]
+
+  - id: advisory-apstra-cve
+    type: advisory
+    query: "Which Apstra advisory covers CVE-2025-13914?"
+    arguments:
+      cve: "CVE-2025-13914"
+    expect_sources: ["juniper_security_advisories"]
+    expect_keywords: ["Apstra", "CVE-2025-13914"]
+
+  - id: lifecycle-mist-edge
+    type: lifecycle
+    query: "Show lifecycle milestones for Mist Edge"
+    arguments:
+      product: "Mist Edge"
+    expect_sources: ["juniper_lifecycle"]
+    expect_keywords: ["Mist Edge", "milestone"]
+
+  - id: lifecycle-aruba-hardware
+    type: lifecycle
+    query: "Find lifecycle records for HP 7500 Switch Chassis"
+    arguments:
+      product: "HP 7500 Switch Chassis"
+    expect_sources: ["lifecycle_notices"]
+    expect_keywords: ["HP 7500", "Product SKU"]

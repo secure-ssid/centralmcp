@@ -26,8 +26,8 @@ python3 scripts/setup_wizard.py --with-products
 | Axis Atmos Cloud | 12 / 25 | Reviewed application, connector, tunnel, location, policy, status, and commit workflows from the deterministic SHA-pinned manifest generator | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Writes dry-run by default |
 | **Optional subtotal** | **1,711 / 3,620** | Seven opt-in product backends | Product-specific | Hidden and blocked unless enabled |
 
-Combined with the Central/GLP/RAG surfaces, the backend catalog contains 2,815
-read-only-annotated tools and 6,166 registered tools. Diagnostic tools are
+Combined with the Central/GLP/RAG surfaces, the backend catalog contains 3,056
+read-only-annotated tools and 6,545 registered tools. Diagnostic tools are
 available in optional read-only mode but are not included in the read-only
 annotation count.
 

@@ -438,3 +438,71 @@ def test_mist_get_gateway_uses_unified_devices_endpoint(monkeypatch):
 
     assert calls[0]["url"] == "https://api.mist.com/api/v1/sites/site1/stats/devices/gw1"
     assert out["gateway"] == {"id": "gw1", "model": "SRX320", "status": "connected"}
+
+
+# ---------------------------------------------------------------------------
+# Curated read workflow: site assurance snapshot
+# ---------------------------------------------------------------------------
+
+
+def test_mist_get_site_assurance_snapshot_composes_existing_curated_reads(monkeypatch):
+    _configure(monkeypatch)
+    calls: list = []
+    monkeypatch.setattr(
+        mist.httpx,
+        "AsyncClient",
+        _fake_get_client([{"id": "x", "mac": "aa", "severity": "warn"}], calls),
+    )
+
+    out = asyncio.run(mist.mist_get_site_assurance_snapshot("site1", limit=25))
+
+    urls = {call["url"] for call in calls}
+    assert urls == {
+        "https://api.mist.com/api/v1/sites/site1/stats/devices",
+        "https://api.mist.com/api/v1/sites/site1/alarms/search",
+    }
+    assert set(out["sections"]) == {"switches", "gateways", "alarms"}
+    assert out["site_id"] == "site1"
+    assert out["degraded"] is False
+    assert out["sections"]["switches"]["switches"]["items"]
+    assert out["sections"]["gateways"]["gateways"]["items"]
+    assert out["sections"]["alarms"]["alarms"]["items"]
+
+
+def test_mist_get_site_assurance_snapshot_can_narrow_sections_and_flags_partial_errors(
+    monkeypatch,
+):
+    _configure(monkeypatch)
+    monkeypatch.setattr(
+        mist.httpx,
+        "AsyncClient",
+        _fake_get_client([{"id": "x"}]),
+    )
+
+    out = asyncio.run(
+        mist.mist_get_site_assurance_snapshot(
+            "site1", include_gateways=False, include_alarms=False
+        )
+    )
+    assert set(out["sections"]) == {"switches"}
+    assert out["degraded"] is False
+
+    none_selected = asyncio.run(
+        mist.mist_get_site_assurance_snapshot(
+            "site1",
+            include_switches=False,
+            include_gateways=False,
+            include_alarms=False,
+        )
+    )
+    assert "error" in none_selected
+
+
+def test_mist_get_site_assurance_snapshot_reports_degraded_on_section_error(monkeypatch):
+    monkeypatch.delenv("MIST_API_TOKEN", raising=False)
+    monkeypatch.setenv("MIST_HOST", "https://api.mist.com")
+
+    out = asyncio.run(mist.mist_get_site_assurance_snapshot("site1"))
+
+    assert out["degraded"] is True
+    assert all("error" in section for section in out["sections"].values())

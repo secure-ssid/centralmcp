@@ -293,6 +293,7 @@ def _execution_contract(
 
 def _discovery_metadata(tool: Any, server: str | None, schema: dict[str, Any]) -> dict[str, Any]:
     capability = _tool_capability(tool)
+    generated = _generated_records().get(str(getattr(tool, "name", "")))
     properties = schema.get("properties") or {}
     supports_confirm = "confirm" in properties
     metadata = {
@@ -308,8 +309,17 @@ def _discovery_metadata(tool: Any, server: str | None, schema: dict[str, Any]) -
         "supports_confirm": supports_confirm,
         "requires_confirmation": capability == "destructive"
         or (supports_confirm and capability == "write"),
+        "origin": "generated" if generated is not None else "curated",
         **_annotation_flags(tool),
     }
+    if generated is not None:
+        metadata.update(
+            {
+                key: value
+                for key, value in generated.items()
+                if value is not None
+            }
+        )
     contract = _execution_contract(tool, server, schema)
     if contract is not None:
         metadata["execution_contract"] = contract
@@ -322,12 +332,18 @@ def _matches_discovery_filters(
     platform: str | None,
     server: str | None,
     capability: str | None,
+    origin: str | None,
+    operation_id: str | None,
 ) -> bool:
     if platform and str(item.get("platform", "")).lower() != platform.strip().lower():
         return False
     if server and str(item.get("server", "")).lower() != server.strip().lower():
         return False
     if capability and item.get("capability") != capability:
+        return False
+    if origin and item.get("origin") != origin:
+        return False
+    if operation_id and str(item.get("operation_id", "")).lower() != operation_id.lower():
         return False
     return True
 
@@ -382,6 +398,32 @@ _BACKENDS = _build_backends()
 _tool_index: dict[str, Any] = {}  # name -> FastMCP Tool
 _tool_servers: dict[str, Any] = {}  # name -> owning FastMCP backend (for dispatch)
 _tool_backend_names: dict[str, str] = {}  # name -> owning server name
+_generated_tool_records: dict[str, dict[str, Any]] | None = None
+
+
+def _generated_records() -> dict[str, dict[str, Any]]:
+    """Map generated tool names to stable manifest provenance."""
+    global _generated_tool_records
+    if _generated_tool_records is not None:
+        return _generated_tool_records
+    from mcp_servers.openapi_gen.manifest import MANIFEST_DIR
+
+    records: dict[str, dict[str, Any]] = {}
+    for path in sorted(MANIFEST_DIR.glob("*.json")):
+        try:
+            manifest = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        for operation in manifest.get("operations") or []:
+            if not isinstance(operation, dict) or not operation.get("name"):
+                continue
+            records[str(operation["name"])] = {
+                "operation_id": operation.get("operation_id"),
+                "operation_key": operation.get("key"),
+                "manifest_platform": path.stem,
+            }
+    _generated_tool_records = records
+    return records
 
 
 def _load_all_backends() -> None:
@@ -493,6 +535,8 @@ def find_tool(
     platform: str | None = None,
     server: str | None = None,
     capability: Literal["read", "diagnostic", "write", "destructive"] | None = None,
+    origin: Literal["curated", "generated"] | None = None,
+    operation_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Find tools by query. Combines semantic search + tool-name keyword match.
 
@@ -502,8 +546,9 @@ def find_tool(
     name-overlap matches match='keyword', and safety flags mirror backend
     ToolAnnotations. Results are compact by default; set include_schema=True
     only when you need the full JSON schema for a selected tool. Optional
-    platform, server, and normalized capability filters apply to both keyword
-    and semantic matches.
+    platform, server, normalized capability, curated/generated origin, and
+    exact OpenAPI operation-ID filters apply to both keyword and semantic
+    matches.
 
     Args:
         query: What you want to do. e.g. "create a VLAN", "disconnect a client".
@@ -514,6 +559,8 @@ def find_tool(
             clearpass, or apstra.
         server: Filter by exact backend server name, such as aruba-monitoring.
         capability: Filter by read, diagnostic, write, or destructive.
+        origin: Filter by curated or generated implementation.
+        operation_id: Filter by an exact generated OpenAPI operationId.
     """
     top_k = max(1, min(top_k, 10))
     # Split the budget so one match type can't starve the other.
@@ -527,7 +574,12 @@ def find_tool(
     )
     for h in keyword_candidates:
         if not _matches_discovery_filters(
-            h, platform=platform, server=server, capability=capability
+            h,
+            platform=platform,
+            server=server,
+            capability=capability,
+            origin=origin,
+            operation_id=operation_id,
         ):
             continue
         by_name[h["name"]] = h
@@ -588,6 +640,8 @@ def find_tool(
                 platform=platform,
                 server=server,
                 capability=capability,
+                origin=origin,
+                operation_id=operation_id,
             ):
                 continue
             if added >= sem_budget + max(0, kw_budget - len(by_name)):
@@ -799,6 +853,7 @@ if _ROUTER_MODE == "direct":
 if __name__ == "__main__":
     from mcp_servers._cache_hygiene import stable_list_tools
     from mcp_servers._middleware import (
+        AuditLogMiddleware,
         MacNormalizeMiddleware,
         NullStripMiddleware,
         RateLimitMiddleware,
@@ -828,6 +883,7 @@ if __name__ == "__main__":
         ),
         ResponseEnvelopeMiddleware(),
         SecretTokenizeMiddleware(),
+        AuditLogMiddleware(),
     ]
     if os.getenv("CENTRALMCP_NORMALIZE_MACS", "").strip().lower() in {"1", "true", "yes"}:
         middlewares.append(MacNormalizeMiddleware())

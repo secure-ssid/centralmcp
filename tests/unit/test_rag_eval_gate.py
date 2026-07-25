@@ -20,6 +20,7 @@ def test_threshold_failures_reports_underperforming_metrics():
         "mrr": 0.7,
         "howto_recall@k": 1.0,
         "api_exact": 0.5,
+        "structured_exact": 1.0,
     }
 
     failures = run_eval._threshold_failures(
@@ -37,6 +38,7 @@ def test_threshold_failures_passes_when_metrics_meet_thresholds():
         "mrr": 0.9,
         "howto_recall@k": 0.9,
         "api_exact": 1.0,
+        "structured_exact": 1.0,
     }
 
     assert run_eval._threshold_failures(summary, run_eval._DEFAULT_THRESHOLDS) == []

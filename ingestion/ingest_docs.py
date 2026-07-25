@@ -81,6 +81,10 @@ def stable_id(path: Path, chunk_index: int) -> str:
     return _md5_uuid(f"{path}:{chunk_index}")
 
 
+def content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _schema_to_text(spec_name: str, schema_name: str, schema: dict) -> str | None:
     """Convert a single OpenAPI schema object to a human-readable text chunk."""
     lines = [f"API spec: {spec_name}", f"Schema: {schema_name}"]
@@ -207,6 +211,7 @@ def collect_points(source_dir: Path, doc_type: str) -> list[dict]:
                     "doc_type": doc_type,
                     "file_path": str(path.relative_to(SOURCES_DIR)),
                     "chunk_index": i,
+                    "content_hash": content_hash(chunk),
                 }
             )
     return records
@@ -312,20 +317,114 @@ def upload_lancedb(records: list[dict], ingested_sources: list[str],
         raise SystemExit(f"FAIL: sources with 0 indexed chunks: {empty}")
 
 
+def upload_lancedb_incremental(
+    records: list[dict],
+    ingested_sources: list[str],
+    parallel: int | None = None,
+) -> bool:
+    """Upsert changed chunks and delete removed chunks.
+
+    Returns ``False`` when the existing table predates content hashes so the
+    caller can perform one full rebuild and establish the incremental schema.
+    """
+    from pipeline.clients import lance_client
+    from pipeline.clients.embed_client import EmbedClient
+
+    db = lance_client.connect()
+    if "content_hash" not in lance_client.docs_columns(db):
+        print(
+            "  existing docs table has no content_hash column; "
+            "performing one full rebuild",
+            flush=True,
+        )
+        return False
+
+    existing = {
+        str(row["id"]): str(row.get("content_hash") or "")
+        for row in lance_client.docs_metadata(db)
+        if row.get("source") in ingested_sources
+    }
+    current_ids = {str(record["id"]) for record in records}
+    changed = [
+        record
+        for record in records
+        if existing.get(str(record["id"])) != record["content_hash"]
+    ]
+    removed = sorted(set(existing) - current_ids)
+    print(
+        f"  incremental diff: {len(changed)} changed/new, "
+        f"{len(removed)} removed, {len(records) - len(changed)} unchanged",
+        flush=True,
+    )
+
+    if changed:
+        embedder = EmbedClient()
+        vectors = embedder.iter_embed_documents(
+            (record["text"] for record in changed),
+            parallel=safe_parallel_workers(parallel),
+        )
+        batch: list[dict] = []
+        completed = 0
+        for record, vector in zip(changed, vectors):
+            batch.append({**record, "vector": vector})
+            if len(batch) >= WRITE_BATCH_LANCE:
+                lance_client.merge_docs_rows(db, batch)
+                completed += len(batch)
+                batch = []
+                print(
+                    f"    embedded+merged {completed}/{len(changed)}",
+                    flush=True,
+                )
+        if batch:
+            lance_client.merge_docs_rows(db, batch)
+            completed += len(batch)
+            print(f"    embedded+merged {completed}/{len(changed)}", flush=True)
+    if removed:
+        lance_client.delete_docs_ids(db, removed)
+
+    table = lance_client.docs_table(db)
+    if table is None:
+        raise SystemExit("LanceDB docs table disappeared during incremental ingest")
+    if changed or removed:
+        print("  rebuilding FTS index...", flush=True)
+        lance_client.build_fts_index(table)
+
+    counts = lance_client.source_counts(db)
+    empty = [source for source in ingested_sources if counts.get(source, 0) == 0]
+    if empty:
+        raise SystemExit(f"FAIL: sources with 0 indexed chunks: {empty}")
+    print(f"  per-source counts: {counts}")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=("lancedb", "redis"), default="lancedb")
     parser.add_argument("--source", help="Ingest one source folder only (redis backend)")
     parser.add_argument("--dry-run", action="store_true", help="Count chunks, no upload")
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="upsert changed LanceDB chunks instead of rebuilding every embedding",
+    )
     parser.add_argument("--index", default=DOCS_INDEX, dest="index")
-    parser.add_argument("--parallel", type=int, default=None,
-                        help="fastembed worker processes (Linux; macOS safely falls back in-process)")
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=None,
+        help=(
+            "fastembed worker processes "
+            "(Linux; macOS safely falls back in-process)"
+        ),
+    )
     args = parser.parse_args()
 
     if args.backend == "lancedb" and args.source:
         parser.error(
             "--source only applies to --backend redis; lancedb always rebuilds all sources"
         )
+    if args.backend == "redis" and args.incremental:
+        parser.error("--incremental applies only to the lancedb backend")
 
     sources = (
         {args.source: SOURCE_META.get(args.source, "unknown")}
@@ -358,11 +457,19 @@ def main():
 
     if args.backend == "lancedb":
         print("\nRebuilding embedded indexes (LanceDB + specs SQLite)...")
-        upload_lancedb(all_records, ingested_sources, parallel=args.parallel)
+        incremental_done = args.incremental and upload_lancedb_incremental(
+            all_records,
+            ingested_sources,
+            parallel=args.parallel,
+        )
+        if not incremental_done:
+            upload_lancedb(all_records, ingested_sources, parallel=args.parallel)
         if openapi_specs_present:
-            from pipeline.clients import specs_index
+            from pipeline.clients import advisory_index, specs_index
             print("  rebuilding specs.sqlite...")
             print(f"  {specs_index.build()}")
+            print("  rebuilding structured advisory/lifecycle tables...")
+            print(f"  {advisory_index.build()}")
     else:
         print("\nConnecting to Redis Stack + Ollama...")
         client = get_client()

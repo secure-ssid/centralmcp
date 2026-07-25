@@ -18,11 +18,16 @@ Usage::
 
     uv run python scripts/build_optional_product_manifests.py            # all
     uv run python scripts/build_optional_product_manifests.py --platform uxi
-    uv run python scripts/build_optional_product_manifests.py --check     # CI drift
+    uv run python scripts/build_optional_product_manifests.py --check     # live CI drift
+    uv run python scripts/build_optional_product_manifests.py --check --offline
 
 Network access to ``dash.readme.com`` is required for clearpass/uxi/aos8 (not
-for apstra). ``--check`` rebuilds in memory and fails if the committed manifest
-is stale, without writing.
+for apstra). Source and committed-manifest digests are pinned separately under
+``mcp_servers/openapi_gen/provenance``. A normal build or live ``--check``
+fails closed when upstream source content changes. ``--check --offline``
+validates the committed manifest against those pins without network access.
+After reviewing an intentional upstream change, ``--update-provenance`` writes
+the new manifest and pins together.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -41,6 +47,7 @@ from ingestion import readme_registry as rr  # noqa: E402
 from mcp_servers.openapi_gen import manifest as M  # noqa: E402
 
 PORTAL = "https://developer.arubanetworks.com"
+PROVENANCE_DIR = _REPO_ROOT / "mcp_servers" / "openapi_gen" / "provenance"
 
 # ClearPass 6.12.x groups its ~335-path surface into 16 ReadMe api-registry
 # categories. Discovered by walking the portal reference sidebar and reading
@@ -63,6 +70,10 @@ CPPM_REGISTRIES: dict[str, str] = {
     "at4cgf25ml85gob5": "Session Control",
     "at4cgf38ml85h0ju": "Tools And Utilities",
 }
+
+
+class SourcePinError(RuntimeError):
+    """Generated content no longer matches its reviewed source pins."""
 
 
 def _fetch(rid: str) -> dict:
@@ -94,7 +105,11 @@ def build_clearpass() -> dict:
                 "path_count": len(spec.get("paths", {})),
             }
         )
-    man = M.build_merged_manifest(docs, platform="clearpass", overrides=M.load_overrides("clearpass"))
+    man = M.build_merged_manifest(
+        docs,
+        platform="clearpass",
+        overrides=M.load_overrides("clearpass"),
+    )
     man["provenance"] = {
         "acquired_from": "Aruba developer portal ReadMe SuperHub API registries",
         "portal": f"{PORTAL}/cppm/reference",
@@ -106,7 +121,11 @@ def build_clearpass() -> dict:
 
 
 def build_single(
-    platform: str, rid: str, spec_version: str, portal_ref: str, strip_params: list[str] | None = None
+    platform: str,
+    rid: str,
+    spec_version: str,
+    portal_ref: str,
+    strip_params: list[str] | None = None,
 ) -> dict:
     spec = _fetch(rid)
     sha = _sha(spec)
@@ -163,28 +182,175 @@ _BUILDERS = {
 }
 
 
+def provenance_path(platform: str) -> Path:
+    return PROVENANCE_DIR / f"{platform}.json"
+
+
+def load_source_pin(platform: str) -> dict[str, Any]:
+    path = provenance_path(platform)
+    if not path.exists():
+        raise SourcePinError(f"missing source provenance pin: {path.relative_to(_REPO_ROOT)}")
+    try:
+        pin = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SourcePinError(
+            f"invalid source provenance pin {path.relative_to(_REPO_ROOT)}: {exc}"
+        ) from exc
+    if not isinstance(pin, dict):
+        raise SourcePinError(
+            f"invalid source provenance pin {path.relative_to(_REPO_ROOT)}: expected object"
+        )
+    return pin
+
+
+def _source_registry_ids(manifest: dict[str, Any]) -> list[str]:
+    provenance = manifest.get("provenance")
+    if not isinstance(provenance, dict):
+        return []
+    registries = provenance.get("registries")
+    if isinstance(registries, list):
+        return sorted(
+            str(item.get("registry_id"))
+            for item in registries
+            if isinstance(item, dict) and item.get("registry_id")
+        )
+    registry_id = provenance.get("registry_id")
+    return [str(registry_id)] if registry_id else []
+
+
+def build_source_pin(platform: str, manifest: dict[str, Any], rendered: str) -> dict[str, Any]:
+    source = manifest.get("source")
+    if not isinstance(source, dict) or not source.get("sha256"):
+        raise SourcePinError(f"{platform} manifest is missing source.sha256")
+    provenance = manifest.get("provenance")
+    provenance = provenance if isinstance(provenance, dict) else {}
+    return {
+        "schema_version": 1,
+        "platform": platform,
+        "generator": "scripts/build_optional_product_manifests.py",
+        "source_sha256": str(source["sha256"]),
+        "manifest_sha256": M.sha256_bytes(rendered.encode()),
+        "operation_count": len(manifest.get("operations") or []),
+        "registry_ids": _source_registry_ids(manifest),
+        "source": {
+            key: provenance[key]
+            for key in ("acquired_from", "portal", "source_url", "spec_version")
+            if provenance.get(key) is not None
+        },
+    }
+
+
+def validate_source_pin(
+    platform: str,
+    manifest: dict[str, Any],
+    rendered: str,
+    pin: dict[str, Any] | None = None,
+) -> None:
+    expected = pin or load_source_pin(platform)
+    actual = build_source_pin(platform, manifest, rendered)
+    mismatches = [
+        key
+        for key in ("platform", "source_sha256", "manifest_sha256", "operation_count")
+        if expected.get(key) != actual.get(key)
+    ]
+    if list(expected.get("registry_ids") or []) != actual["registry_ids"]:
+        mismatches.append("registry_ids")
+    if mismatches:
+        detail = ", ".join(mismatches)
+        raise SourcePinError(
+            f"{platform} generated content does not match reviewed provenance "
+            f"({detail}); inspect the upstream change, then rerun with "
+            "--update-provenance if it is intentional"
+        )
+
+
+def write_source_pin(platform: str, manifest: dict[str, Any], rendered: str) -> Path:
+    path = provenance_path(platform)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(build_source_pin(platform, manifest, rendered), indent=2) + "\n")
+    return path
+
+
+def check_committed_offline(platform: str) -> None:
+    out_path = M.manifest_path(platform)
+    if not out_path.exists():
+        raise SourcePinError(f"missing committed manifest: {out_path.relative_to(_REPO_ROOT)}")
+    try:
+        manifest = json.loads(out_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SourcePinError(
+            f"invalid committed manifest {out_path.relative_to(_REPO_ROOT)}: {exc}"
+        ) from exc
+    rendered = M.dumps(manifest)
+    if out_path.read_text() != rendered:
+        raise SourcePinError(
+            f"{platform} committed manifest is not in deterministic serialized form"
+        )
+    validate_source_pin(platform, manifest, rendered)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--platform", choices=sorted(_BUILDERS), help="build one platform (default: all)")
-    ap.add_argument("--check", action="store_true", help="verify committed manifests are current; do not write")
+    ap.add_argument(
+        "--platform",
+        choices=sorted(_BUILDERS),
+        help="build one platform (default: all)",
+    )
+    ap.add_argument(
+        "--check",
+        action="store_true",
+        help="verify committed manifests are current; do not write",
+    )
+    ap.add_argument(
+        "--offline",
+        action="store_true",
+        help="with --check, validate committed manifests against pins without network access",
+    )
+    ap.add_argument(
+        "--update-provenance",
+        action="store_true",
+        help="after reviewing upstream changes, write manifests and provenance pins together",
+    )
     args = ap.parse_args()
+    if args.offline and not args.check:
+        ap.error("--offline requires --check")
+    if args.update_provenance and (args.check or args.offline):
+        ap.error("--update-provenance cannot be combined with --check or --offline")
 
     platforms = [args.platform] if args.platform else list(_BUILDERS)
     rc = 0
     for platform in platforms:
-        man = _BUILDERS[platform]()
-        rendered = M.dumps(man)
-        out_path = M.manifest_path(platform)
-        count = len(man["operations"])
-        if args.check:
-            if not out_path.exists() or out_path.read_text() != rendered:
-                print(f"DRIFT: {platform} manifest is missing or stale ({count} ops).", file=sys.stderr)
-                rc = 1
+        try:
+            if args.offline:
+                check_committed_offline(platform)
+                count = len(M.load_manifest(platform).get("operations") or [])
+                print(f"OK: {platform} manifest and provenance pins valid ({count} ops, offline).")
+                continue
+
+            man = _BUILDERS[platform]()
+            rendered = M.dumps(man)
+            out_path = M.manifest_path(platform)
+            count = len(man["operations"])
+            if not args.update_provenance:
+                validate_source_pin(platform, man, rendered)
+            if args.check:
+                if not out_path.exists() or out_path.read_text() != rendered:
+                    print(
+                        f"DRIFT: {platform} manifest is missing or stale ({count} ops).",
+                        file=sys.stderr,
+                    )
+                    rc = 1
+                else:
+                    print(f"OK: {platform} manifest current ({count} ops).")
             else:
-                print(f"OK: {platform} manifest current ({count} ops).")
-        else:
-            M.write_manifest(platform, man)
-            print(f"Wrote {out_path.relative_to(_REPO_ROOT)} ({count} operations).")
+                M.write_manifest(platform, man)
+                if args.update_provenance:
+                    pin_path = write_source_pin(platform, man, rendered)
+                    print(f"Wrote {pin_path.relative_to(_REPO_ROOT)}.")
+                print(f"Wrote {out_path.relative_to(_REPO_ROOT)} ({count} operations).")
+        except SourcePinError as exc:
+            print(f"DRIFT: {exc}", file=sys.stderr)
+            rc = 1
     return rc
 
 

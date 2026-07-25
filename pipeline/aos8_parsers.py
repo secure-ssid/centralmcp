@@ -16,12 +16,16 @@ from pipeline.aos8_schema import (
     AOS8AuthProfile,
     AOS8AuthServer,
     AOS8Controller,
+    AOS8EthernetACL,
+    AOS8EthernetACLRule,
+    AOS8NetworkDestination,
     AOS8Policy,
     AOS8PolicyRule,
     AOS8Role,
     AOS8Route,
     AOS8ServerGroup,
     AOS8Vlan,
+    AOS8WhitelistRule,
     AOS8Wlan,
 )
 
@@ -46,6 +50,26 @@ def _dict_items(
         else:
             _warn(warnings, f"export: {path}[{index}] is not an object and was not parsed.")
     return out
+
+
+def _optional_dict_items(
+    export: dict[str, Any],
+    key: str,
+    warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Like `_dict_items`, but tolerant of a section that is simply absent.
+
+    `netdst`/`netdst6`/`acl_eth`/`whitelist_rule` are not yet fetched by
+    `mcp_servers.aos8.aos8_export_all()` (see
+    `docs/aos8-migration-contract-matrix.md`), so an export missing these
+    keys entirely is the expected, common case today -- not a malformed
+    export. A key that *is* present but the wrong shape is still reported via
+    `_dict_items`'s existing "section is missing or malformed" warning,
+    matching every other AOS8 object family.
+    """
+    if key not in export:
+        return []
+    return _dict_items(export.get(key), key, warnings)
 
 
 def _first(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -723,6 +747,143 @@ def parse_vrrp(
     return out
 
 
+_NETDST_FAMILIES: tuple[tuple[str, str, str], ...] = (
+    ("netdst", "ipv4", "netdst"),
+    ("netdst6", "ipv6", "netdst6"),
+)
+
+
+def parse_network_destinations(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8NetworkDestination]:
+    """Parse AOS8 IPv4/IPv6 destination aliases (`netdst`/`netdst6`) into a
+    single combined, `address_family`-tagged list (same pattern as
+    `parse_routes`/`parse_vrrp` for their IPv4/IPv6 section pairs).
+    """
+    out: list[AOS8NetworkDestination] = []
+    for section, family, prefix in _NETDST_FAMILIES:
+        items = _optional_dict_items(export, section, warnings)
+        name_keys = ("dstname", f"{prefix}__name", "name")
+        for index, item in enumerate(items):
+            name = _identifier(item, name_keys, section, index, warnings)
+            out.append(
+                AOS8NetworkDestination(
+                    address_family=family,  # type: ignore[arg-type]
+                    name=name,
+                    description=_first(item, (f"{prefix}__desc", "description")),
+                    host=item.get(f"{prefix}__host"),
+                    network=item.get(f"{prefix}__network"),
+                    range=item.get(f"{prefix}__range"),
+                    invert=_normalize_optional_bool(item.get(f"{prefix}__invert")),
+                    raw=item,
+                )
+            )
+    return out
+
+
+def _parse_ethernet_acl_rules(
+    value: Any,
+    path: str,
+    warnings: list[str] | None,
+) -> list[AOS8EthernetACLRule]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        _warn(warnings, f"export: {path} is malformed; expected a list of rules.")
+        return [AOS8EthernetACLRule(unsupported_fields={"raw_rule": value}, raw=value)]
+    aliases = {
+        "source": ("source", "src", "source-mac", "smac", "source-address"),
+        "destination": (
+            "destination",
+            "dst",
+            "destination-mac",
+            "dmac",
+            "destination-address",
+        ),
+        "ethertype": ("ethertype", "ether-type", "frame-type", "type"),
+        "vlan": ("vlan", "vlan-id"),
+        "action": ("action", "permit", "deny"),
+        "log": ("log", "logging"),
+    }
+    consumed = {key for values in aliases.values() for key in values}
+    rules: list[AOS8EthernetACLRule] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            _warn(warnings, f"export: {path}[{index}] is not an object.")
+            rules.append(
+                AOS8EthernetACLRule(unsupported_fields={"raw_rule": item}, raw=item)
+            )
+            continue
+        rules.append(
+            AOS8EthernetACLRule(
+                source=_first(item, aliases["source"]),
+                destination=_first(item, aliases["destination"]),
+                ethertype=_first(item, aliases["ethertype"]),
+                vlan=_first(item, aliases["vlan"]),
+                action=_first(item, aliases["action"]),
+                log=_first(item, aliases["log"]),
+                unsupported_fields=_remaining(item, consumed),
+                raw=item,
+            )
+        )
+    return rules
+
+
+def parse_ethernet_acls(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8EthernetACL]:
+    """Parse AOS8 Ethernet ACLs (`acl_eth`, 200-299 range) the same
+    defensive way `parse_policies` handles `acl_sess`: a flexible per-rule
+    alias set plus an `unsupported_fields` catch-all, since no nested
+    `acl_eth__policy` rule schema is available locally beyond the property
+    name (`mcp_servers/openapi_gen/manifests/aos8.json`
+    `aos8_post_object_acl_eth`).
+    """
+    items = _optional_dict_items(export, "acl_eth", warnings)
+    out: list[AOS8EthernetACL] = []
+    for index, item in enumerate(items):
+        name = _identifier(
+            item, ("accname", "name", "profile-name"), "acl_eth", index, warnings
+        )
+        legacy_rules = item.get("rule", item.get("rules"))
+        rule_value = item.get("acl_eth__policy", legacy_rules)
+        rules = _parse_ethernet_acl_rules(
+            rule_value, f"acl_eth[{index}].rules", warnings
+        )
+        out.append(
+            AOS8EthernetACL(name=name, rule_count=len(rules), rules=rules, raw=item)
+        )
+    return out
+
+
+def parse_whitelist_rules(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8WhitelistRule]:
+    """Parse AOS8 IP-classification whitelist rules (`whitelist_rule`):
+    start/end IP address ranges (`sipaddr`/`eipaddr`). The separate, global
+    `whitelist` object (Activate-sync provisioning URL/credentials) has no
+    per-item shape to normalize and is intentionally not parsed here; see
+    `AOS8WhitelistRule`'s docstring and
+    `docs/aos8-migration-contract-matrix.md`.
+    """
+    items = _optional_dict_items(export, "whitelist_rule", warnings)
+    out: list[AOS8WhitelistRule] = []
+    for index, item in enumerate(items):
+        start_ip = _first(item, ("sipaddr", "start-ip", "start_ip"))
+        end_ip = _first(item, ("eipaddr", "end-ip", "end_ip"))
+        if start_ip is None or end_ip is None:
+            _warn(
+                warnings,
+                f"export: whitelist_rule[{index}] is missing a start or end "
+                "IP address.",
+            )
+        out.append(AOS8WhitelistRule(start_ip=start_ip, end_ip=end_ip, raw=item))
+    return out
+
+
 def parse_export_report(
     export: dict[str, Any],
 ) -> tuple[dict[str, list[Any]], list[str]]:
@@ -744,6 +905,9 @@ def parse_export_report(
         "auth_servers": parse_auth_servers(export, warnings),
         "routes": parse_routes(export, warnings),
         "vrrp": parse_vrrp(export, warnings),
+        "network_destinations": parse_network_destinations(export, warnings),
+        "ethernet_acls": parse_ethernet_acls(export, warnings),
+        "whitelist_rules": parse_whitelist_rules(export, warnings),
     }
     return parsed, sorted(set(warnings))
 
@@ -763,6 +927,9 @@ def _empty_parse() -> dict[str, list[Any]]:
         "auth_servers": [],
         "routes": [],
         "vrrp": [],
+        "network_destinations": [],
+        "ethernet_acls": [],
+        "whitelist_rules": [],
     }
 
 

@@ -52,7 +52,7 @@ GitHub Actions job checks Aruba registry hashes and whether the Mist source file
 has advanced.
 
 Generated tool manifests extend this provenance model beyond the exact RAG
-index. The current catalog records 5,703 operations across Aruba Central, GLP,
+index. The current catalog records 6,056 operations across Aruba Central, GLP,
 Mist, ClearPass, AOS8, EdgeConnect, UXI, Apstra, and Axis. Central/GLP preserve
 per-source digests, Mist and EdgeConnect have deterministic pinned generators,
 and Apstra records the official `aos-sdk-api==6.1.2.post1` wheel URL and
@@ -99,7 +99,8 @@ These are correctness/quality fixes; most are inherited or simplified by the Lan
 - **R1 — Cosine math (Redis only).** Resolved for the optional Redis backend: `redis_client.py` converts RediSearch COSINE distance to similarity with `clamp(1 - distance, 0, 1)`, and `tests/unit/test_redis_client.py` covers both document and tool search scoring. *N/A under LanceDB* — it returns distance/score directly.
 - **R2 — OpenAPI specs missing from the index.** Resolved by design: specs go
   to SQLite structured lookup, not the vector index. The current exact index
-  contains 239 specs, 3,465 endpoints, 10,297 schemas, and 57,131 fields.
+  contains 244 specs, 3,796 endpoints, 11,293 schemas, and 60,568 fields,
+  plus 102 advisories and 346 lifecycle records.
 - **R3 — nomic task prefixes.** Resolved in `embed_document()` and
   `embed_query()`: passages use `search_document:` and queries use
   `search_query:` consistently.
@@ -174,11 +175,12 @@ final scores:
 **Current evaluated corpus (2026-07-25):** 51,737 prose chunks across the
 released documentation sources. The 5,419 OpenAPI vector records from the
 previous build were intentionally removed because structured API lookup is
-authoritative. The rebuilt SQLite index contains 239 specs, 3,465 endpoints,
-10,297 schemas, and 57,131 fields. The rebuilt router index contains 6,166 backend tools. Minimal mode keeps this
+authoritative. The rebuilt SQLite index contains 244 specs, 3,796 endpoints,
+11,293 schemas, 60,568 fields, 102 advisories, and 346 lifecycle records. The
+rebuilt router index contains 6,545 backend tools. Minimal mode keeps this
 catalog behind the three-tool discovery/dispatch surface; direct-all mode
-exposes 6,169 tools including the router itself. 18/20 eval questions hit at
-rank 1. Standard catalog profiles contain 295 core tools / 2454 read-only optional starters / 5262 read-write optional starters; the complete index also enables generated GLP.
+exposes 6,548 tools including the router itself. 22/24 eval questions hit at
+rank 1. Standard catalog profiles contain 319 core tools / 2712 read-only optional starters / 5641 read-write optional starters; the complete index also enables generated GLP.
 
 Tracked RAG refresh targets live in `ingestion/source_manifest.json`. The
 current manifest covers 13 rebuild sources, including DevHub, Switching Feature

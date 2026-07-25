@@ -534,6 +534,7 @@ def test_find_tool_filters_keyword_results_and_reports_write_contract(monkeypatc
     assert item["read_only"] is False
     assert item["destructive"] is False
     assert item["idempotent"] is True
+    assert item["origin"] == "curated"
     assert item["execution_contract"] == {
         "platform": "central",
         "capability": "write",
@@ -550,6 +551,52 @@ def test_find_tool_filters_keyword_results_and_reports_write_contract(monkeypatc
             "dry_run=true to preview."
         ),
     }
+
+
+def test_find_tool_filters_generated_origin_and_operation_id(monkeypatch):
+    backend = FastMCP("discovery-generated")
+
+    @backend.tool(annotations=router.READ_ONLY)
+    def generated_widget(widget_id: str) -> dict:
+        return {"widget_id": widget_id}
+
+    tools = dict(backend._tool_manager._tools)
+    monkeypatch.setattr(router, "_BACKENDS", {"aruba-monitoring": "demo.monitoring"})
+    monkeypatch.setattr(router, "_tool_index", tools)
+    monkeypatch.setattr(
+        router,
+        "_tool_backend_names",
+        {"generated_widget": "aruba-monitoring"},
+    )
+    monkeypatch.setattr(router, "_load_all_backends", lambda: None)
+    monkeypatch.setattr(
+        router,
+        "_generated_tool_records",
+        {
+            "generated_widget": {
+                "operation_id": "getGeneratedWidget",
+                "operation_key": "GET /widgets/{widget_id}",
+                "manifest_platform": "central",
+            }
+        },
+    )
+    monkeypatch.setattr(router, "_BACKEND", "lancedb")
+    monkeypatch.setattr(router._embedder, "embed_query", lambda query: [0.0])
+    monkeypatch.setattr(router._lance, "connect", lambda: object())
+    monkeypatch.setattr(router._lance, "search_tools", lambda *args, **kwargs: [])
+
+    result = router.find_tool(
+        "generated widget",
+        origin="generated",
+        operation_id="getGeneratedWidget",
+    )
+
+    assert [item["name"] for item in result] == ["generated_widget"]
+    assert result[0]["origin"] == "generated"
+    assert result[0]["operation_id"] == "getGeneratedWidget"
+    assert result[0]["operation_key"] == "GET /widgets/{widget_id}"
+
+    assert router.find_tool("generated widget", origin="curated") == []
 
 
 def test_find_tool_filters_semantic_results_by_diagnostic_capability(monkeypatch):

@@ -16,7 +16,7 @@ import mcp_servers.central_generated as cg
 import mcp_servers.openapi_gen.http_exec as http_exec
 from mcp_servers.openapi_gen import manifest_operation_count
 
-EXPECTED_OPERATION_COUNT = 1347
+EXPECTED_OPERATION_COUNT = 1678
 
 READ_TOOL = "central_read_bcn_rpt_req_profiles"
 POST_TOOL = "central_create_bcn_rpt_req_profiles_profile_by_id"
@@ -102,6 +102,24 @@ def test_direct_registration_exposes_typed_tools_on_dedicated_server():
     # Read is read-only; delete is destructive/non-idempotent-visible.
     assert tools[READ_TOOL].annotations.readOnlyHint is True
     assert tools[DELETE_TOOL].annotations.readOnlyHint is not True
+
+
+def test_broader_central_api_families_are_registered():
+    tools = cg.mcp._tool_manager._tools
+
+    assert "central_get_access_points_v1" in tools
+    assert "central_get_alert_list_v1" in tools
+    assert "central_list_reports_v1" in tools
+    assert "central_get_device_locations_v1" in tools
+    assert "central_initiate_cx_ping_v1" in tools
+    assert cg._central_allowed_prefixes() == (
+        "/network-config/",
+        "/network-monitoring/",
+        "/network-notifications/",
+        "/network-reporting/",
+        "/network-services/",
+        "/network-troubleshooting/",
+    )
 
 
 def test_read_tool_signature_hides_auth_and_exposes_params():

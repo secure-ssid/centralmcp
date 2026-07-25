@@ -116,7 +116,7 @@ If `find_tool` cannot locate expected optional product tools, confirm
 `CENTRALMCP_PRODUCTS` and the catalog were built with the same selected
 products.
 
-The complete read-write backend catalog contains 6,166 tools. If release
+The complete read-write backend catalog contains 6,545 tools. If release
 validation expects that full catalog, rebuild with:
 
 ```bash

@@ -249,6 +249,84 @@ def _parameter(
     return record
 
 
+def _crud_operations(
+    manage_name: str,
+    path: str,
+    id_arg: str,
+    label: str,
+    *,
+    parent_id_arg: str | None = None,
+    kind_prefix: str = "",
+) -> list[dict[str, Any]]:
+    """Split the single upstream fused ``manage_entity`` dispatch (POST create,
+    PUT update, DELETE delete — see the pinned ``tools/_manage.py`` helper)
+    into three distinct, separately annotated generated operations.
+
+    All three share ``source_name`` (the single upstream ``axis_manage_*``
+    function) for source-provenance validation, since the split is purely a
+    generated-surface decision — the upstream fused signature is unchanged.
+    """
+    slug = manage_name.removeprefix("axis_manage_")
+    next_step = "Call axis_commit_changes to apply these staged changes."
+    parent_params = (
+        [_parameter(parent_id_arg, "string", required=True)] if parent_id_arg else []
+    )
+    return [
+        {
+            "name": f"axis_create_{slug}",
+            "key": f"POST {path}",
+            "method": "POST",
+            "path": path,
+            "kind": f"{kind_prefix}create",
+            "capability": "write",
+            "summary": f"Create an Axis {label}; changes are staged until commit.",
+            "source_name": manage_name,
+            "id_arg": id_arg,
+            "label": label,
+            "next_step": next_step,
+            "parameters": [
+                *parent_params,
+                _parameter("payload", "object", required=True),
+            ],
+        },
+        {
+            "name": f"axis_update_{slug}",
+            "key": f"PUT {path}/{{{id_arg}}}",
+            "method": "PUT",
+            "path": path,
+            "kind": f"{kind_prefix}update",
+            "capability": "write",
+            "summary": f"Update an Axis {label}; changes are staged until commit.",
+            "source_name": manage_name,
+            "id_arg": id_arg,
+            "label": label,
+            "next_step": next_step,
+            "parameters": [
+                *parent_params,
+                _parameter(id_arg, "string", required=True),
+                _parameter("payload", "object", required=True),
+            ],
+        },
+        {
+            "name": f"axis_delete_{slug}",
+            "key": f"DELETE {path}/{{{id_arg}}}",
+            "method": "DELETE",
+            "path": path,
+            "kind": f"{kind_prefix}delete",
+            "capability": "destructive",
+            "summary": f"Delete an Axis {label}; changes are staged until commit.",
+            "source_name": manage_name,
+            "id_arg": id_arg,
+            "label": label,
+            "next_step": next_step,
+            "parameters": [
+                *parent_params,
+                _parameter(id_arg, "string", required=True),
+            ],
+        },
+    ]
+
+
 def _entity_operations(
     get_name: str,
     manage_name: str,
@@ -273,31 +351,7 @@ def _entity_operations(
                 _parameter("page_size", "integer", required=False, default=50),
             ],
         },
-        {
-            "name": manage_name,
-            "key": f"CRUD {path}",
-            "method": "POST|PUT|DELETE",
-            "path": path,
-            "kind": "manage",
-            "capability": "destructive",
-            "summary": (
-                f"Create, update, or delete an Axis {label}; changes are staged "
-                "until commit."
-            ),
-            "id_arg": id_arg,
-            "label": label,
-            "next_step": "Call axis_commit_changes to apply these staged changes.",
-            "parameters": [
-                _parameter(
-                    "action_type",
-                    "string",
-                    required=True,
-                    enum=["create", "update", "delete"],
-                ),
-                _parameter("payload", "object", required=False),
-                _parameter(id_arg, "string", required=False),
-            ],
-        },
+        *_crud_operations(manage_name, path, id_arg, label),
     ]
 
 
@@ -354,36 +408,14 @@ def reviewed_operations() -> list[dict[str, Any]]:
                             ),
                         ],
                     },
-                    {
-                        "name": "axis_manage_sub_location",
-                        "key": "CRUD /Locations/{location_id}/SubLocations",
-                        "method": "POST|PUT|DELETE",
-                        "path": "/Locations/{location_id}/SubLocations",
-                        "kind": "submanage",
-                        "capability": "destructive",
-                        "summary": (
-                            "Create, update, or delete an Axis sub-location; changes "
-                            "are staged until commit."
-                        ),
-                        "id_arg": "sub_location_id",
-                        "label": "sub-location",
-                        "next_step": (
-                            "Call axis_commit_changes to apply these staged changes."
-                        ),
-                        "parameters": [
-                            _parameter(
-                                "action_type",
-                                "string",
-                                required=True,
-                                enum=["create", "update", "delete"],
-                            ),
-                            _parameter("location_id", "string", required=True),
-                            _parameter("payload", "object", required=False),
-                            _parameter(
-                                "sub_location_id", "string", required=False
-                            ),
-                        ],
-                    },
+                    *_crud_operations(
+                        "axis_manage_sub_location",
+                        "/Locations/{location_id}/SubLocations",
+                        "sub_location_id",
+                        "sub-location",
+                        parent_id_arg="location_id",
+                        kind_prefix="sub",
+                    ),
                 ]
             )
     operations.extend(
@@ -598,10 +630,18 @@ def _function_metadata(source: bytes) -> dict[str, dict[str, Any]]:
 
 
 def _expected_source_parameters(operation: dict[str, Any]) -> list[str]:
+    """Return the expected upstream function signature for ``operation``.
+
+    Generated operations produced by :func:`_crud_operations` carry a
+    ``source_name`` pointing at the single upstream fused
+    ``manage_entity``-backed function (``action_type``/``payload``/id/
+    ``confirmed``); the create/update/delete split is a generated-surface
+    decision only and does not change the upstream signature being verified.
+    """
+    if "source_name" in operation:
+        return ["ctx", "action_type", "payload", operation["id_arg"], "confirmed"]
     names = [parameter["name"] for parameter in operation["parameters"]]
-    if operation["name"] == "axis_commit_changes":
-        names.append("confirmed")
-    elif operation["capability"] != "read":
+    if operation["capability"] != "read":
         names.append("confirmed")
     return ["ctx", *names]
 
@@ -627,40 +667,40 @@ def validate_reviewed_sources(sources: Mapping[str, bytes]) -> None:
             f"unexpected={sorted(actual_names - expected_names)}"
         )
 
-    upstream_capabilities = {
-        operation["name"]: (
-            "READ"
-            if operation["capability"] == "read"
-            else "OPERATIONAL"
-            if operation["name"]
-            in {"axis_regenerate_connector", "axis_commit_changes"}
-            else "WRITE_DELETE"
-        )
-        for operation in reviewed_operations()
-    }
+    upstream_capabilities: dict[str, str] = {}
+    for operation in reviewed_operations():
+        source_key = operation.get("source_name", operation["name"])
+        if operation["capability"] == "read":
+            upstream_capabilities[source_key] = "READ"
+        elif source_key in {"axis_regenerate_connector", "axis_commit_changes"}:
+            upstream_capabilities[source_key] = "OPERATIONAL"
+        else:
+            upstream_capabilities[source_key] = "WRITE_DELETE"
+
     status_paths = {"/Connectors/{entity_id}/status", "/Tunnels/{entity_id}/status"}
     for operation in reviewed_operations():
         name = operation["name"]
-        found = metadata[name]
+        source_key = operation.get("source_name", name)
+        found = metadata[source_key]
         expected_parameters = _expected_source_parameters(operation)
         if found["parameters"] != expected_parameters:
             raise AxisSourceError(
-                f"Axis signature changed for {name}: expected {expected_parameters}, "
-                f"received {found['parameters']}"
+                f"Axis signature changed for {source_key} (generated as {name}): "
+                f"expected {expected_parameters}, received {found['parameters']}"
             )
-        expected_capability = upstream_capabilities[name]
+        expected_capability = upstream_capabilities[source_key]
         if found["capability"] != expected_capability:
             raise AxisSourceError(
-                f"Axis capability changed for {name}: expected {expected_capability}, "
-                f"received {found['capability']}"
+                f"Axis capability changed for {source_key} (generated as {name}): "
+                f"expected {expected_capability}, received {found['capability']}"
             )
         if name == "axis_get_status":
             if not status_paths.issubset(found["paths"]):
                 raise AxisSourceError(f"Axis status paths changed: {found['paths']}")
         elif operation["path"] not in found["paths"]:
             raise AxisSourceError(
-                f"Axis path changed for {name}: expected {operation['path']}, "
-                f"received {sorted(found['paths'])}"
+                f"Axis path changed for {source_key} (generated as {name}): "
+                f"expected {operation['path']}, received {sorted(found['paths'])}"
             )
 
 

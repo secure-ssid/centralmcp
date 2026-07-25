@@ -34,7 +34,7 @@ from pipeline.clients.token_manager import TokenManager
 from pipeline.config import build_account_contexts
 from pipeline.csv_loader import CSVValidationError, load_csv
 from pipeline.models import AccountContext, DeviceRecord, StageStatus
-from pipeline.reporter import write_report
+from pipeline.reporter import write_reports
 from pipeline.stages.s1_discover import DiscoverStage
 from pipeline.stages.s2_validate import ValidateStage
 from pipeline.stages.s3_offboard import OffboardStage
@@ -147,6 +147,11 @@ def main() -> None:
         help="Run S6 only (group/persona/site) on already-provisioned devices",
     )
     parser.add_argument("--output-dir", default="outputs", help="Output directory")
+    parser.add_argument(
+        "--report-formats",
+        default="csv",
+        help="Comma-separated report formats: csv,json,html (default: csv)",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     args = parser.parse_args()
 
@@ -227,11 +232,17 @@ def main() -> None:
     state.complete_run(run_id)
 
     # Write report
-    report_path = write_report(
+    report_formats = tuple(
+        item.strip()
+        for item in args.report_formats.split(",")
+        if item.strip()
+    )
+    report_paths = write_reports(
         records, run_id, state,
         output_dir=args.output_dir,
         started_at=started_at,
         ended_at=ended_at,
+        formats=report_formats,
     )
 
     # Summary table
@@ -256,7 +267,10 @@ def main() -> None:
     table.add_row("[red]Failed[/red]", str(failed))
     table.add_row("[yellow]Partial/Skipped[/yellow]", str(skipped))
     console.print(table)
-    console.print(f"\nReport: [cyan]{report_path}[/cyan]")
+    for report_format, report_path in report_paths.items():
+        console.print(
+            f"\n{report_format.upper()} report: [cyan]{report_path}[/cyan]"
+        )
     console.print(f"State DB: [cyan]{db_path}[/cyan]")
     console.print(
         "\nTo resume failed devices: "

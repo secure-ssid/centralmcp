@@ -121,6 +121,90 @@ class AOS8PolicyRule:
 
 
 @dataclass
+class AOS8NetworkDestination:
+    """A named IPv4/IPv6 destination alias (AOS8 `netdst`/`netdst6`).
+
+    Fields mirror the `netdst__*`/`netdst6__*` request-body properties from
+    `mcp_servers/openapi_gen/manifests/aos8.json`
+    (`aos8_post_object_netdst`/`aos8_post_object_netdst6`): a name, an
+    optional description, and one (or more) of a single host, a
+    network/prefix, or a range, plus an optional match-polarity `invert`
+    flag. AOS8 does not document which of host/network/range are mutually
+    exclusive, so all three are carried through verbatim rather than
+    normalized into one canonical shape.
+    """
+
+    address_family: Literal["ipv4", "ipv6"]
+    name: str
+    description: str | None = None
+    host: Any = None
+    network: Any = None
+    range: Any = None
+    invert: bool | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AOS8EthernetACLRule:
+    """Normalized details from one AOS8 Ethernet ACL (`acl_eth`) rule.
+
+    Bounded and alias-based like `AOS8PolicyRule`, but there is no local
+    OpenAPI evidence for the nested `acl_eth__policy` rule schema beyond the
+    named request-body property (`mcp_servers/openapi_gen/manifests/aos8.json`
+    `aos8_post_object_acl_eth`) -- every field not matched by a known L2
+    alias (source/destination MAC, ethertype, VLAN, action, log) is retained
+    verbatim in `unsupported_fields` rather than guessed.
+    """
+
+    source: Any = None
+    destination: Any = None
+    ethertype: Any = None
+    vlan: Any = None
+    action: Any = None
+    log: Any = None
+    unsupported_fields: dict[str, Any] = field(default_factory=dict)
+    raw: Any = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AOS8EthernetACL:
+    """An AOS8 Ethernet ACL (`acl_eth`), numbered in the 200-299 range."""
+
+    name: str
+    rule_count: int | None = None
+    rules: list["AOS8EthernetACLRule"] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AOS8WhitelistRule:
+    """An AOS8 IP-classification whitelist rule (`whitelist_rule`): a start/end
+    IP address range (`sipaddr`/`eipaddr` in
+    `aos8_post_object_whitelist_rule`'s request body). This models
+    `whitelist_rule` only -- the separate, global `whitelist` object
+    (Activate-sync provisioning URL/credentials) has no per-item shape to
+    normalize and is intentionally not parsed as a migration candidate; see
+    `docs/aos8-migration-contract-matrix.md`.
+    """
+
+    start_ip: str | None = None
+    end_ip: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class AOS8AAAProfile:
     profile_name: str
     default_user_role: str | None = None
@@ -284,4 +368,33 @@ UNSUPPORTED_FIELDS: dict[str, dict[str, str]] = {
             "mapping and is retained in `unsupported_fields` for adapter/manual review."
         ),
     },
+    "network_destination": {
+        "invert": (
+            "AOS8 destination-alias match-polarity negation (`invert`) has no "
+            "direct Central/New Central destination-alias equivalent; verify "
+            "match polarity manually after migration."
+        ),
+    },
+    "ethernet_acl": {
+        "unsupported_rule_field": (
+            "This AOS8 Ethernet ACL rule field has no deterministic target-neutral "
+            "mapping and is retained in `unsupported_fields` for adapter/manual review."
+        ),
+    },
 }
+
+
+# ---------------------------------------------------------------------------
+# Reference-only object families (candidates emitted for dependency tracking
+# and operator review, no adapter write mapping exists in this repository).
+# ---------------------------------------------------------------------------
+
+# `object_type` values for which `pipeline/aos8_migration.py` always emits an
+# explicit "no deterministic Classic/New Central adapter mapping exists"
+# warning on every candidate (see `_append_for_both` callers for these
+# families). This is the single source of truth other modules key off of
+# (e.g. `mcp_servers/aos8.py`'s `aos8_migration_dependency_plan`) instead of
+# re-deriving or duplicating the same set from candidate warning text.
+REFERENCE_ONLY_OBJECT_TYPES: frozenset[str] = frozenset(
+    {"network_destination", "ethernet_acl", "whitelist_rule"}
+)
