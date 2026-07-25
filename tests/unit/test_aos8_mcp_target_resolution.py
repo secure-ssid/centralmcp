@@ -79,6 +79,102 @@ def test_read_invoker_returns_response_on_success(monkeypatch):
     assert response.status_code == 200
 
 
+def test_policy_tools_are_exposed_by_production_migration_dispatchers(monkeypatch):
+    monkeypatch.setattr(
+        "mcp_servers.config.list_gw_policies",
+        lambda **arguments: {"read": arguments},
+    )
+    monkeypatch.setattr(
+        "mcp_servers.config.create_gw_policy",
+        lambda **arguments: {"dry_run": True, "create": arguments},
+    )
+    monkeypatch.setattr(
+        "mcp_servers.config.delete_gw_policy",
+        lambda **arguments: {"dry_run": True, "delete": arguments},
+    )
+
+    read_result = aos8._aos8_migration_read_invoker(
+        Operation(
+            invocation="tool",
+            name="list_gw_policies",
+            arguments={"limit": 50, "offset": 0},
+        )
+    )
+    create_result = aos8._aos8_migration_write_invoker(
+        Operation(
+            invocation="tool",
+            name="create_gw_policy",
+            arguments={
+                "name": "centralmcp-lab-policy",
+                "rules": [],
+                "dry_run": True,
+            },
+        ),
+        confirmation=False,
+    )
+    delete_result = aos8._aos8_migration_write_invoker(
+        Operation(
+            invocation="tool",
+            name="delete_gw_policy",
+            arguments={"name": "centralmcp-lab-policy", "dry_run": True},
+        ),
+        confirmation=False,
+    )
+
+    assert read_result["read"] == {"limit": 50, "offset": 0}
+    assert create_result["create"]["name"] == "centralmcp-lab-policy"
+    assert delete_result["delete"]["name"] == "centralmcp-lab-policy"
+
+
+def test_server_group_tools_are_exposed_by_production_migration_dispatchers(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "mcp_servers.nac.get_server_group",
+        lambda **arguments: {"read": arguments},
+    )
+    monkeypatch.setattr(
+        "mcp_servers.nac.create_server_group",
+        lambda **arguments: {"dry_run": True, "create": arguments},
+    )
+    monkeypatch.setattr(
+        "mcp_servers.nac.delete_server_group",
+        lambda **arguments: {"dry_run": True, "delete": arguments},
+    )
+
+    read_result = aos8._aos8_migration_read_invoker(
+        Operation(
+            invocation="tool",
+            name="get_server_group",
+            arguments={"name": "centralmcp-lab-sg"},
+        )
+    )
+    create_result = aos8._aos8_migration_write_invoker(
+        Operation(
+            invocation="tool",
+            name="create_server_group",
+            arguments={
+                "name": "centralmcp-lab-sg",
+                "server_names": ["radius-1"],
+                "dry_run": True,
+            },
+        ),
+        confirmation=False,
+    )
+    delete_result = aos8._aos8_migration_write_invoker(
+        Operation(
+            invocation="tool",
+            name="delete_server_group",
+            arguments={"name": "centralmcp-lab-sg", "dry_run": True},
+        ),
+        confirmation=False,
+    )
+
+    assert read_result["read"]["name"] == "centralmcp-lab-sg"
+    assert create_result["create"]["server_names"] == ["radius-1"]
+    assert delete_result["delete"]["name"] == "centralmcp-lab-sg"
+
+
 def _classic_context(scope_name: str) -> TargetContext:
     return TargetContext(
         target_type=TargetType.CLASSIC_CENTRAL,
@@ -335,6 +431,10 @@ def test_read_invoker_dispatches_list_config_assignments_production_path(
 
     result = aos8._aos8_migration_read_invoker(operation)
 
+    # profile_type is not a server-side query filter in the committed
+    # config-assignment spec (GET only accepts scope-id/device-function);
+    # `list_config_assignments` sends just those two through and applies
+    # profile_type client-side to the returned "config-assignment" list.
     assert fake_client.calls == [
         (
             "GET",
@@ -342,7 +442,6 @@ def test_read_invoker_dispatches_list_config_assignments_production_path(
             {
                 "scope-id": "100",
                 "device-function": "CAMPUS_AP",
-                "profile-type": "roles",
             },
         )
     ]
@@ -471,8 +570,9 @@ def test_role_assignment_verification_production_dispatcher_bounds_1000_item_bac
     reached: the real backend response is 1000 entries every single call
     (this endpoint has no server-side `limit`/`offset` support in
     production either -- `list_config_assignments` sends only
-    scope-id/device-function/profile-type as query params), so finding the
-    match at all would mean the cap was not enforced.
+    scope-id/device-function query params, per the committed
+    config-assignment spec; profile-type is filtered client-side), so
+    finding the match at all would mean the cap was not enforced.
     """
     from pipeline.aos8_migration_orchestrator import (
         MAX_VERIFICATION_EXTRA_PAGES,

@@ -1090,7 +1090,11 @@ def _verify_server_group_directly(tmp_path, backend, target_read):
         "candidate": sg_candidate,
         "last_result": {"ok": True},
     }
-    backend.read_values["central_api_read"] = target_read
+    action = adapter.candidate_action(sg_candidate)
+    backend.read_values[action.read_operation.name] = target_read
+    backend.read_values["list_config_assignments"] = {
+        "config-assignment": [dict(action.assignment_expected)]
+    }
     return service._verify_entry(adapter, entry)
 
 

@@ -1113,13 +1113,21 @@ def create_aaa_macauth_profile(
 
     Device-enforcement profile referenced by sw-port-profiles. Distinct from
     create_mac_auth_profile (Central NAC cloud-side). Omit body for shell.
+
+    Raises `WriteResultError` (via `validate_write_result`) on a non-2xx response
+    or an error-shaped envelope instead of returning a success-shaped result with
+    the failure buried in an `errors` list.
     """
-    endpoint = f"/network-config/v1/macauth/{quote(name, safe='')}"
+    endpoint = f"/network-config/v1alpha1/macauth/{quote(name, safe='')}"
     payload = body or {}
     if dry_run:
         return {"dry_run": True, "endpoint": endpoint, "payload": payload}
-    resp = get_client()._request("POST", endpoint, json=payload)
-    return resp_json(resp)
+    client = get_client()
+    resp = client._request("POST", endpoint, json=payload)
+    validate_write_result(resp, context=f"POST {endpoint}")
+    result = resp_json(resp)
+    validate_write_result(result, context=f"POST {endpoint}")
+    return result
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -1132,13 +1140,21 @@ def create_aaa_dot1xauth_profile(
 
     Device-enforcement counterpart to create_dot1x_auth_profile (cloud-side).
     Referenced by sw-port-profiles. Omit body for shell.
+
+    Raises `WriteResultError` (via `validate_write_result`) on a non-2xx response
+    or an error-shaped envelope instead of returning a success-shaped result with
+    the failure buried in an `errors` list.
     """
-    endpoint = f"/network-config/v1/dot1xauth/{quote(name, safe='')}"
+    endpoint = f"/network-config/v1alpha1/dot1xauth/{quote(name, safe='')}"
     payload = body or {}
     if dry_run:
         return {"dry_run": True, "endpoint": endpoint, "payload": payload}
-    resp = get_client()._request("POST", endpoint, json=payload)
-    return resp_json(resp)
+    client = get_client()
+    resp = client._request("POST", endpoint, json=payload)
+    validate_write_result(resp, context=f"POST {endpoint}")
+    result = resp_json(resp)
+    validate_write_result(result, context=f"POST {endpoint}")
+    return result
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -1670,8 +1686,12 @@ def delete_role_acl(
         return {"dry_run": True, "name": name}
 
     client = get_client()
-    resp = client._request("DELETE", f"/network-config/v1alpha1/role-acls/{name}")
-    return resp_json(resp)
+    endpoint = f"/network-config/v1alpha1/role-acls/{quote(name, safe='')}"
+    resp = client._request("DELETE", endpoint)
+    validate_write_result(resp, context=f"DELETE {endpoint}")
+    result = resp_json(resp)
+    validate_write_result(result, context=f"DELETE {endpoint}")
+    return result
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1690,7 +1710,7 @@ def list_gw_policies(
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
 def create_gw_policy(
     name: str,
-    rules: list[dict] | None = None,
+    rules: list[dict[str, Any]] | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a POLICY_TYPE_SECURITY GW policy and register it in the policy group.
@@ -1727,16 +1747,27 @@ def create_gw_policy(
         return {"dry_run": True, "name": name, "payload": payload}
 
     client = get_client()
-    resp = client._request("POST", f"/network-config/v1alpha1/policies/{quote(name, safe='')}", json=payload)
-    result: dict[str, Any] = {"policy": resp_json(resp)}
+    endpoint = f"/network-config/v1alpha1/policies/{quote(name, safe='')}"
+    resp = client._request("POST", endpoint, json=payload)
+    validate_write_result(resp, context=f"POST {endpoint}")
+    policy_result = resp_json(resp)
+    validate_write_result(policy_result, context=f"POST {endpoint}")
+    result: dict[str, Any] = {"policy": policy_result}
 
     # Add to policy group (required before scope-mapping)
+    policy_group_endpoint = "/network-config/v1alpha1/policy-groups"
     pg_resp = client._request(
         "PATCH",
-        "/network-config/v1alpha1/policy-groups",
+        policy_group_endpoint,
         json={"policy-group": {"policy-group-list": [{"name": name, "position": 3}]}},
     )
-    result["policy_group"] = {"status_code": pg_resp.status_code}
+    validate_write_result(pg_resp, context=f"PATCH {policy_group_endpoint}")
+    policy_group_result = resp_json(pg_resp)
+    validate_write_result(
+        policy_group_result,
+        context=f"PATCH {policy_group_endpoint}",
+    )
+    result["policy_group"] = policy_group_result
 
     return result
 
@@ -1751,8 +1782,12 @@ def delete_gw_policy(
         return {"dry_run": True, "name": name}
 
     client = get_client()
-    resp = client._request("DELETE", f"/network-config/v1alpha1/policies/{quote(name, safe='')}")
-    return resp_json(resp)
+    endpoint = f"/network-config/v1alpha1/policies/{quote(name, safe='')}"
+    resp = client._request("DELETE", endpoint)
+    validate_write_result(resp, context=f"DELETE {endpoint}")
+    result = resp_json(resp)
+    validate_write_result(result, context=f"DELETE {endpoint}")
+    return result
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -1797,19 +1832,31 @@ def create_config_assignment(
     Binds library profile (role, ssid, vlan, policy, port-profile, etc.) to where
     it applies. Config-authoring tools produce orphans without this.
     profile_type: API endpoint segment ('roles', 'wlan-ssids', 'named-vlans',
-    'sw-port-profiles', 'policies', etc.). profile_instance: profile name/ID.
+    'sw-port-profiles', 'policies', 'auth-servers', 'server-groups',
+    'aaa-profile', 'dot1xauth', 'macauth', etc.). profile_instance: profile
+    name/ID.
 
     Raises `WriteResultError` (via `validate_write_result`) on a non-2xx response
     or an error-shaped envelope instead of returning a success-shaped result with
     the failure buried in an `errors` list.
     """
-    endpoint = f"/network-config/v1alpha1/config-assignments/{scope_id}/{device_function}/{profile_type}/{profile_instance}"
+    endpoint = "/network-config/v1alpha1/config-assignments"
+    payload = {
+        "config-assignment": [
+            {
+                "scope-id": scope_id,
+                "device-function": device_function,
+                "profile-type": profile_type,
+                "profile-instance": profile_instance,
+            }
+        ]
+    }
 
     if dry_run:
-        return {"dry_run": True, "endpoint": endpoint}
+        return {"dry_run": True, "endpoint": endpoint, "payload": payload}
 
     client = get_client()
-    resp = client._request("POST", endpoint)
+    resp = client._request("POST", endpoint, json=payload)
     validate_write_result(resp, context=f"POST {endpoint}")
     result = resp_json(resp)
     validate_write_result(result, context=f"POST {endpoint}")
@@ -1827,19 +1874,32 @@ def list_config_assignments(
 ) -> dict[str, Any]:
     """List config assignments (library profiles bound to scopes, bounded by default).
 
-    Optional filters: scope / device-function / profile-type. Paginated
-    client-side via limit/offset; full_list=True returns everything.
+    scope_id and device_function are server-side query filters
+    (GET /config-assignments?scope-id=...&device-function=...) per the
+    config-assignment spec. The API does not support a profile-type query
+    filter, so profile_type is applied client-side to the returned
+    "config-assignment" list. Paginated client-side via limit/offset;
+    full_list=True returns everything (post profile_type filtering).
     """
     params: dict[str, Any] = {}
     if scope_id is not None:
         params["scope-id"] = scope_id
     if device_function is not None:
         params["device-function"] = device_function
-    if profile_type is not None:
-        params["profile-type"] = profile_type
     client = get_client()
     resp = client._request("GET", "/network-config/v1alpha1/config-assignments", params=params or None)
     data = resp_json(resp)
+    if profile_type is not None and isinstance(data, dict):
+        assignments = data.get("config-assignment")
+        if isinstance(assignments, list):
+            data = {
+                **data,
+                "config-assignment": [
+                    item
+                    for item in assignments
+                    if isinstance(item, dict) and item.get("profile-type") == profile_type
+                ],
+            }
     if full_list:
         return data
     return bound_collection_response(data, limit=limit, offset=offset)
@@ -2216,13 +2276,26 @@ _NETWORK_PROFILE_TYPES: dict[str, str] = {
     "config-checkpoint": "config-checkpoint",
 }
 
+_READ_ONLY_NETWORK_PROFILE_TYPES: dict[str, str] = {
+    **_NETWORK_PROFILE_TYPES,
+    # Read-only evidence surfaces for unresolved AOS8 migration contracts.
+    # Keep these out of _NETWORK_PROFILE_TYPES so set/delete_network_profile
+    # cannot write them until their live payload and attachment semantics are
+    # proven (docs/aos8-migration-contract-matrix.md SS6.12-SS6.13).
+    "static-route": "static-route",
+    "vrrp-interface": "vrrp",
+}
 
-def _profile_base(profile_type: str) -> str:
+
+def _profile_base(profile_type: str, *, read_only: bool = False) -> str:
     key = profile_type.strip().lower()
-    if key not in _NETWORK_PROFILE_TYPES:
-        allowed = ", ".join(sorted(_NETWORK_PROFILE_TYPES))
+    profile_types = (
+        _READ_ONLY_NETWORK_PROFILE_TYPES if read_only else _NETWORK_PROFILE_TYPES
+    )
+    if key not in profile_types:
+        allowed = ", ".join(sorted(profile_types))
         raise ValueError(f"profile_type must be one of: {allowed}")
-    return f"/network-config/v1alpha1/{_NETWORK_PROFILE_TYPES[key]}"
+    return f"/network-config/v1alpha1/{profile_types[key]}"
 
 
 def _profile_write_params(
@@ -2317,7 +2390,10 @@ def get_network_profile(
     """Read a network-config library profile: list all, or fetch one by name.
 
     profile_type: bgp | ospfv2 | ospfv3 | vrf | vsx | vsx-pair | vrrp |
-    telemetry | app-bandwidth-contract | app-recognition | config-checkpoint.
+    telemetry | app-bandwidth-contract | app-recognition | config-checkpoint |
+    static-route | vrrp-interface. The last two are read-only evidence
+    surfaces; set/delete_network_profile intentionally reject them until their
+    AOS8 migration write contracts are verified live.
     Backs the routing-overlay (BGP/OSPF/VRF), high-availability (vsx/vrrp),
     telemetry, application-experience, and config-checkpoint domains.
     Omit `name` to list (bounded by default); provide `name` to fetch one.
@@ -2325,7 +2401,7 @@ def get_network_profile(
     the read query params documented for every resource in this family
     (see list_passpoint_profiles for the same pattern).
     """
-    base = _profile_base(profile_type)
+    base = _profile_base(profile_type, read_only=True)
     if name:
         client = get_client()
         params = _passpoint_read_params(

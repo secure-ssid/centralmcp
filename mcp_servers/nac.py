@@ -1,9 +1,9 @@
-"""MCP server — Aruba Central NAC and authentication tools (34 tools).
+"""MCP server — Aruba Central NAC and authentication tools (38 tools).
 
 Covers: CNAC MAC registrations, Named MPSK registrations (list/add/update/delete),
-visitor accounts (list/add/update/delete), RADIUS/auth server profiles, AAA
-profiles, AAA connectivity testing, authorization policies, and static
-classification tags. MPSK/visitor reads are bounded by default
+visitor accounts (list/add/update/delete), RADIUS/auth server profiles, auth
+server groups, AAA profiles, AAA connectivity testing, authorization policies,
+and static classification tags. MPSK/visitor reads are bounded by default
 (bound_collection_response); all writes support dry_run.
 """
 import uuid
@@ -22,6 +22,7 @@ from mcp_servers.shared import (
     get_client,
     resp_json,
     troubleshooting_endpoint_candidates,
+    validate_write_result,
 )
 
 mcp = FastMCP("aruba-nac")
@@ -398,9 +399,12 @@ def create_auth_server(
 ) -> dict[str, Any]:
     """Create a RADIUS auth server profile.
 
-    The endpoint only supports type=RADIUS. RadSec is a RADIUS variant enabled
-    via enable_radsec + cert fields (not a distinct `type`). LDAP / TACACS are
-    NOT supported on this endpoint.
+    This tool only builds a `type=RADIUS` payload. RadSec is a RADIUS variant
+    enabled via enable_radsec + cert fields (not a distinct `type`). The
+    committed auth-server schema also defines LDAP, TACACS, WINDOWS, RFC3576,
+    XMLAPI, and LOCAL server types (support varies by device: AP allows
+    RADIUS/LDAP/TACACS/XMLAPI, CX/PVOS allow RADIUS/TACACS, GW allows
+    RADIUS/TACACS/WINDOWS/LDAP) — this tool does not expose those types yet.
 
     Args:
         auth_server_address: IP or hostname of the RADIUS server.
@@ -446,9 +450,9 @@ def create_auth_server(
     endpoint = f"{_CNAC_BASE}/auth-servers/{name}"
     client = get_client()
     resp = client._request("POST", endpoint, json=payload)
+    validate_write_result(resp, context=f"POST {endpoint}")
     result = resp_json(resp)
-    if not resp.is_success:
-        result["errors"] = [compact_http_error(resp, endpoint)]
+    validate_write_result(result, context=f"POST {endpoint}")
     return result
 
 
@@ -464,9 +468,105 @@ def delete_auth_server(
     endpoint = f"{_CNAC_BASE}/auth-servers/{name}"
     client = get_client()
     resp = client._request("DELETE", endpoint)
+    validate_write_result(resp, context=f"DELETE {endpoint}")
     result = resp_json(resp)
-    if not resp.is_success:
-        result["errors"] = [compact_http_error(resp, endpoint)]
+    validate_write_result(result, context=f"DELETE {endpoint}")
+    return result
+
+
+# ── Auth Server Groups ────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+def list_server_groups(
+    limit: int = 50,
+    offset: int = 0,
+    full_list: bool = False,
+) -> dict[str, Any]:
+    """List RADIUS/TACACS auth server groups (bounded by default)."""
+    data = get_client().get(f"{_CNAC_BASE}/server-groups")
+    if full_list:
+        return data
+    return bound_collection_response(data, limit=limit, offset=offset)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def get_server_group(name: str) -> dict[str, Any]:
+    """Get a single auth server group by name."""
+    try:
+        return get_client().get(f"{_CNAC_BASE}/server-groups/{name}")
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def create_server_group(
+    name: str,
+    server_names: list[str],
+    group_type: str = "RADIUS",
+    fail_through: bool = False,
+    load_balance: bool = False,
+    description: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create an auth server group (ordered list of auth-server references).
+
+    Referenced by aaa-profile's acct-server-group and by dot1xauth/macauth
+    profiles' server-group bindings. CX supports at most 32 groups total (4
+    reserved defaults: local/none/radius/tacacs); a RADIUS group on CX allows
+    up to 4 servers, a TACACS group allows 1.
+
+    Args:
+        server_names: Existing create_auth_server names, in priority order
+            (first = highest priority / position 1).
+        group_type: RADIUS or TACACS (CX-supported types; mandatory on CX).
+        fail_through: If True, try the next server in the group on auth
+            failure with the current one (Gateway/AP).
+        load_balance: If True, load-balance requests across group servers
+            (Gateway/AP).
+        dry_run: If True, return payload without sending.
+    """
+    payload: dict[str, Any] = {
+        "name": name,
+        "type": group_type,
+        "servers": [{"server-name": server_name, "position": idx + 1} for idx, server_name in enumerate(server_names)],
+        "fail-through": fail_through,
+        "load-balance": load_balance,
+    }
+    if description:
+        payload["description"] = description
+
+    endpoint = f"{_CNAC_BASE}/server-groups/{name}"
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": payload}
+
+    client = get_client()
+    resp = client._request("POST", endpoint, json=payload)
+    validate_write_result(resp, context=f"POST {endpoint}")
+    result = resp_json(resp)
+    validate_write_result(result, context=f"POST {endpoint}")
+    return result
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def delete_server_group(
+    name: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete an auth server group by name.
+
+    Pre-reqs: remove any aaa-profile / dot1xauth / macauth references to this
+    group first (delete_config_assignment / update the referencing profile),
+    or the API will reject the delete.
+    """
+    if dry_run:
+        return {"dry_run": True, "name": name}
+
+    endpoint = f"{_CNAC_BASE}/server-groups/{name}"
+    client = get_client()
+    resp = client._request("DELETE", endpoint)
+    validate_write_result(resp, context=f"DELETE {endpoint}")
+    result = resp_json(resp)
+    validate_write_result(result, context=f"DELETE {endpoint}")
     return result
 
 
@@ -500,10 +600,22 @@ def create_aaa_profile(
     auth_role: str | None = None,
     fallback_role: str | None = None,
     acct_server_group: str | None = None,
+    dot1x_auth_profile: str | None = None,
+    mac_auth_profile: str | None = None,
     description: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create an AAA profile. fallback_role applies when auth server unreachable."""
+    """Create an AAA profile. fallback_role applies when auth server unreachable.
+
+    Args:
+        dot1x_auth_profile: Name of a device-side 802.1X profile (created via
+            create_aaa_dot1xauth_profile) to bind as this AAA profile's
+            `authentication.dot1x-auth` reference. Gateway/Switch CX only.
+        mac_auth_profile: Name of a device-side MAC-auth (MAB) profile
+            (created via create_aaa_macauth_profile) to bind as this AAA
+            profile's `authentication.mac-auth` reference. Gateway/Switch CX
+            only.
+    """
     payload: dict[str, Any] = {"name": name}
     if description:
         payload["description"] = description
@@ -515,6 +627,12 @@ def create_aaa_profile(
             payload["authorization"]["fallback-role"] = fallback_role
     if acct_server_group:
         payload["acct-server-group"] = acct_server_group
+    if dot1x_auth_profile or mac_auth_profile:
+        payload["authentication"] = {}
+        if dot1x_auth_profile:
+            payload["authentication"]["dot1x-auth"] = dot1x_auth_profile
+        if mac_auth_profile:
+            payload["authentication"]["mac-auth"] = mac_auth_profile
 
     if dry_run:
         return {"dry_run": True, "name": name, "payload": payload}
@@ -522,9 +640,9 @@ def create_aaa_profile(
     endpoint = f"{_CNAC_BASE}/aaa-profile/{name}"
     client = get_client()
     resp = client._request("POST", endpoint, json=payload)
+    validate_write_result(resp, context=f"POST {endpoint}")
     result = resp_json(resp)
-    if not resp.is_success:
-        result["errors"] = [compact_http_error(resp, endpoint)]
+    validate_write_result(result, context=f"POST {endpoint}")
     return result
 
 
@@ -540,9 +658,9 @@ def delete_aaa_profile(
     endpoint = f"{_CNAC_BASE}/aaa-profile/{name}"
     client = get_client()
     resp = client._request("DELETE", endpoint)
+    validate_write_result(resp, context=f"DELETE {endpoint}")
     result = resp_json(resp)
-    if not resp.is_success:
-        result["errors"] = [compact_http_error(resp, endpoint)]
+    validate_write_result(result, context=f"DELETE {endpoint}")
     return result
 
 

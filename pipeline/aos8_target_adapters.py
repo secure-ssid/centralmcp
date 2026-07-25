@@ -171,7 +171,7 @@ class CandidateAction:
     read_back_expectations: Mapping[str, Any] = field(default_factory=dict)
     # Bounded, read-only lookup for a SHARED library object's independent
     # scope+device-function config-assignment binding (see
-    # `_unverified_assignment_blocker` and docs/aos8-migration-contract-
+    # `_assignment_write_blocker` and docs/aos8-migration-contract-
     # matrix.md §1.2/§2.1). `None` means this mapping has no SHARED
     # assignment concept to verify at all (e.g. a LOCAL object, or a
     # mapping with no verified assignment read path yet) -- distinct from
@@ -1162,8 +1162,8 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             match_identifier=match_identifier,
         )
 
-    def _unverified_assignment_blocker(self, profile_type: str) -> str:
-        """Explain why a SHARED profile's config-assignment step is blocked.
+    def _assignment_write_blocker(self, profile_type: str) -> str:
+        """Explain why a SHARED profile's config-assignment write is blocked.
 
         `object-type=SHARED` New Central library profiles must be bound to a
         scope + device-function through a separate
@@ -1171,32 +1171,56 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
         (docs/aos8-migration-contract-matrix.md SS1.2); creating the library
         object alone is not a complete, usable migration.
 
-        Only "roles" is independently evidenced as the correct
-        `profile-type` literal for this call -- the generated manifest's own
-        parameter description gives it as the worked example ("If a config
-        is a role called Role1, the profile type would be roles";
-        mcp_servers/openapi_gen/manifests/central.json, PUT
-        /network-config/v1alpha1/config-assignments/{scope-id}/{device-
-        function}/{profile-type}/{profile-instance} `profile-type` parameter
-        description). No equivalent citation exists locally for
-        {profile_type!r} -- it is only an endpoint-path-segment convention
-        (auth-servers/aaa-profile/dot1xauth/macauth/server-groups all share
-        this same *unverified* status). Per docs/aos8-migration-contract-
-        matrix.md SS2.1/SS5, this divergence must be resolved against a live
-        read before any such config-assignment write is authorized, so no
-        assignment write is attempted and this candidate cannot be applied
-        as a complete migration until that literal is confirmed.
+        Vendor documentation defines `profile-type` as the resource endpoint
+        segment. The 0.6 live GET-only evaluation observed the target literal
+        in returned config-assignment tuples, which proves the literal and
+        enables bounded assignment reads. It does not prove collection POST,
+        returned-tuple read-back, instance DELETE, and object cleanup as one
+        controlled lifecycle, so assignment writes stay blocked.
         """
         return (
-            f"the New Central library-object contract for profile-type "
-            f"{profile_type!r} is verified (create/update/delete/read "
-            "operations below), but the SHARED config-assignment binding "
-            f"for {profile_type!r} is not independently evidenced locally "
-            "(only inferred by endpoint-path convention, same as the other "
-            "non-'roles' profile types); no config-assignment write will be "
-            "attempted, and this candidate is not executable as a complete "
-            "migration until that literal is confirmed against a live read "
-            "(docs/aos8-migration-contract-matrix.md §2.1/§5)."
+            f"the New Central library-object contract and profile-type literal "
+            f"{profile_type!r} are verified for bounded reads, including a "
+            "live config-assignment GET, but the disposable "
+            "create/assign/read-back/unassign/delete lifecycle has not been "
+            "completed; no config-assignment write will be attempted until "
+            "that controlled lab round trip passes "
+            "(docs/aos8-live-lab-evaluation-0.6.md)."
+        )
+
+    def _assignment_read(
+        self,
+        profile_type: str,
+        profile_instance: str,
+    ) -> tuple[Operation, dict[str, Any]]:
+        expected = {
+            "scope-id": self.context.scope_id,
+            "device-function": self.context.persona,
+            "profile-type": profile_type,
+            "profile-instance": profile_instance,
+        }
+        return (
+            Operation(
+                invocation="tool",
+                name="list_config_assignments",
+                arguments={
+                    "scope_id": self.context.scope_id,
+                    "device_function": self.context.persona,
+                    # The committed GET schema omits this filter, but the 0.6
+                    # live A/B read confirmed the service honors it. Exact
+                    # tuple matching is still performed client-side.
+                    "profile_type": profile_type,
+                    "limit": VERIFICATION_READ_PAGE_SIZE,
+                    "offset": 0,
+                },
+                provenance=(
+                    "mcp_servers.config.list_config_assignments; bounded "
+                    "scope/persona read with exact tuple matching"
+                ),
+                dry_run_field=None,
+                match_identifier=profile_instance,
+            ),
+            expected,
         )
 
     def _map_vlan(self, candidate: Mapping[str, Any]) -> CandidateAction:
@@ -1332,6 +1356,9 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                 "delete_role_acl then delete_config_assignment for all scopes"
             ),
         )
+        assignment_read, assignment_expected = self._assignment_read(
+            "roles", str(candidate["identifier"])
+        )
         return CandidateAction(
             key=_candidate_key(candidate),
             candidate=candidate,
@@ -1360,28 +1387,114 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             # `create_config_assignment`/`delete_config_assignment` (used
             # by `assignment`/`delete_assignment` above) has a matching
             # read counterpart for.
-            assignment_read_operation=Operation(
-                invocation="tool",
-                name="list_config_assignments",
-                arguments={
-                    "scope_id": self.context.scope_id,
-                    "device_function": self.context.persona,
-                    "profile_type": "roles",
-                    # Explicit bounded page, never `full_list=True` -- same
-                    # reasoning as `read_operation` above.
-                    "limit": VERIFICATION_READ_PAGE_SIZE,
-                    "offset": 0,
-                },
-                provenance="mcp_servers.config.list_config_assignments",
-                dry_run_field=None,
-                match_identifier=str(candidate["identifier"]),
+            assignment_read_operation=assignment_read,
+            assignment_expected=assignment_expected,
+        )
+
+    def _map_policy(self, candidate: Mapping[str, Any]) -> CandidateAction:
+        key = _candidate_key(candidate)
+        _require_persona_family(
+            key,
+            str(self.context.persona),
+            {"gateway"},
+            concept="a Gateway security policy",
+        )
+        self._reject_unmapped(candidate)
+        payload = dict(candidate.get("payload", {}))
+        name = str(candidate["identifier"])
+        if any(char.isspace() for char in name):
+            raise AdapterError(f"{key}: Gateway policy names cannot contain spaces")
+        source_rules = payload.get("rules")
+        if not isinstance(source_rules, list) or not source_rules:
+            raise AdapterError(f"{key}: at least one normalized policy rule is required")
+        if payload.get("rule_count") not in (None, len(source_rules)):
+            raise AdapterError(
+                f"{key}: rule_count does not match the normalized rule list"
+            )
+
+        target_rules: list[dict[str, Any]] = []
+        for index, raw_rule in enumerate(source_rules):
+            if not isinstance(raw_rule, Mapping):
+                raise AdapterError(f"{key}: rule {index} is not an object")
+            address_family = str(raw_rule.get("address_family") or "").lower()
+            if address_family != "ipv4":
+                raise AdapterError(
+                    f"{key}: rule {index} address_family={address_family!r} "
+                    "has no live-verified Gateway policy mapping"
+                )
+            source = str(raw_rule.get("source") or "").strip().lower()
+            destination = str(raw_rule.get("destination") or "").strip().lower()
+            service = str(raw_rule.get("service") or "").strip().lower()
+            if source != "any" or destination != "any" or service not in {"", "any"}:
+                raise AdapterError(
+                    f"{key}: rule {index} is outside the verified any-to-any "
+                    "service subset; source/destination aliases and named "
+                    "services remain manual"
+                )
+            log_value = raw_rule.get("log")
+            if log_value not in (None, False, "", "false", "no", "disable", "disabled"):
+                raise AdapterError(
+                    f"{key}: rule {index} logging has no verified target field"
+                )
+            action = str(raw_rule.get("action") or "").strip().lower()
+            target_action = {
+                "allow": "ACTION_ALLOW",
+                "permit": "ACTION_ALLOW",
+                "deny": "ACTION_DENY",
+            }.get(action)
+            if target_action is None:
+                raise AdapterError(
+                    f"{key}: rule {index} action {action!r} is not a verified "
+                    "permit/allow/deny mapping"
+                )
+            target_rules.append(
+                {
+                    "position": index + 1,
+                    "description": f"Migrated AOS8 rule {index + 1}",
+                    "condition": {
+                        "type": "CONDITION_DEFAULT",
+                        "rule-type": "RULE_ANY",
+                        "source": {"type": "ADDRESS_ANY"},
+                        "destination": {"type": "ADDRESS_ANY"},
+                    },
+                    "action": {"type": target_action},
+                }
+            )
+
+        create = Operation(
+            invocation="tool",
+            name="create_gw_policy",
+            arguments={"name": name, "rules": target_rules, "dry_run": True},
+            provenance=(
+                "mcp_servers.config.create_gw_policy; live 0.6 GET evidence "
+                "confirmed policy/security-policy/policy-rule shape"
             ),
-            assignment_expected={
-                "scope-id": self.context.scope_id,
-                "device-function": self.context.persona,
-                "profile-type": "roles",
-                "profile-instance": str(candidate["identifier"]),
-            },
+        )
+        delete = Operation(
+            invocation="tool",
+            name="delete_gw_policy",
+            arguments={"name": name, "dry_run": True},
+            provenance="mcp_servers.config.delete_gw_policy",
+        )
+        return CandidateAction(
+            key=key,
+            candidate=candidate,
+            operations=[create],
+            delete_operations=[delete],
+            read_operation=Operation(
+                invocation="tool",
+                name="list_gw_policies",
+                arguments={"limit": VERIFICATION_READ_PAGE_SIZE, "offset": 0},
+                provenance="mcp_servers.config.list_gw_policies",
+                dry_run_field=None,
+                match_identifier=name,
+            ),
+            dry_run_only=True,
+            dry_run_only_reason=(
+                "Gateway policy mapping is limited to a live-read-confirmed "
+                "any-to-any IPv4 permit/deny subset and remains dry-run-only "
+                "until a disposable create/read-back/delete lifecycle passes."
+            ),
         )
 
     def _auth_server_body(
@@ -1519,12 +1632,9 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             dry_run_field=None,
             match_identifier=name,
         )
-        # Finding #1 (fail-closed): the SHARED config-assignment
-        # profile-type "auth-servers" is not independently evidenced
-        # locally (see `_unverified_assignment_blocker`); the object-level
-        # operations below are verified and kept for reference, but this
-        # candidate is blocked -- never "ready" -- until the assignment
-        # literal is confirmed.
+        assignment_read, assignment_expected = self._assignment_read(
+            "auth-servers", str(name)
+        )
         return CandidateAction(
             key=key,
             candidate=candidate,
@@ -1532,8 +1642,10 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             update_operations=[update_operation],
             delete_operations=[delete_operation],
             read_operation=read_operation,
+            assignment_read_operation=assignment_read,
+            assignment_expected=assignment_expected,
             blockers=[
-                f"{key}: {self._unverified_assignment_blocker('auth-servers')}"
+                f"{key}: {self._assignment_write_blocker('auth-servers')}"
             ],
         )
 
@@ -1550,10 +1662,8 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
         unsupported_fields = [
             name
             for name in (
-                "dot1x_auth_profile",
                 "dot1x_default_role",
                 "dot1x_server_group",
-                "mac_auth_profile",
                 "mac_default_role",
                 "mac_server_group",
             )
@@ -1569,6 +1679,8 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             "auth_role": payload.get("default_user_role"),
             "fallback_role": None,
             "acct_server_group": payload.get("accounting_server_group"),
+            "dot1x_auth_profile": payload.get("dot1x_auth_profile"),
+            "mac_auth_profile": payload.get("mac_auth_profile"),
             "description": None,
             "dry_run": True,
         }
@@ -1590,6 +1702,16 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             update_body["authorization"] = {"auth-role": arguments["auth_role"]}
         if arguments["acct_server_group"]:
             update_body["acct-server-group"] = arguments["acct_server_group"]
+        if arguments["dot1x_auth_profile"] or arguments["mac_auth_profile"]:
+            update_body["authentication"] = {}
+            if arguments["dot1x_auth_profile"]:
+                update_body["authentication"]["dot1x-auth"] = arguments[
+                    "dot1x_auth_profile"
+                ]
+            if arguments["mac_auth_profile"]:
+                update_body["authentication"]["mac-auth"] = arguments[
+                    "mac_auth_profile"
+                ]
         update_operation = self._spec_endpoint_operation(
             "PATCH",
             f"/network-config/v1alpha1/aaa-profile/{quote(name, safe='')}",
@@ -1605,12 +1727,9 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             arguments={"name": name, "dry_run": True},
             provenance="mcp_servers.nac.delete_aaa_profile",
         )
-        # Finding #1 (fail-closed): the SHARED config-assignment
-        # profile-type "aaa-profile" is not independently evidenced locally
-        # (see `_unverified_assignment_blocker`); the object-level
-        # operations below are verified and kept for reference, but this
-        # candidate is blocked -- never "ready" -- until the assignment
-        # literal is confirmed.
+        assignment_read, assignment_expected = self._assignment_read(
+            "aaa-profile", name
+        )
         return CandidateAction(
             key=key,
             candidate=candidate,
@@ -1625,8 +1744,10 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                 dry_run_field=None,
                 match_identifier=name,
             ),
+            assignment_read_operation=assignment_read,
+            assignment_expected=assignment_expected,
             blockers=[
-                f"{key}: {self._unverified_assignment_blocker('aaa-profile')}"
+                f"{key}: {self._assignment_write_blocker('aaa-profile')}"
             ],
         )
 
@@ -1675,13 +1796,7 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
         read_operation = self._spec_endpoint_read(
             endpoint, provenance=f"{resource}.json GET {endpoint}", match_identifier=name
         )
-        # Finding #1 (fail-closed): the SHARED config-assignment
-        # profile-type for this resource (dot1xauth/macauth) is not
-        # independently evidenced locally (see
-        # `_unverified_assignment_blocker`); the object-level operations
-        # above are verified and kept for reference, but this candidate is
-        # blocked -- never "ready" -- until the assignment literal is
-        # confirmed.
+        assignment_read, assignment_expected = self._assignment_read(resource, name)
         return CandidateAction(
             key=key,
             candidate=candidate,
@@ -1689,7 +1804,9 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             update_operations=[update_operation],
             delete_operations=[delete_operation],
             read_operation=read_operation,
-            blockers=[f"{key}: {self._unverified_assignment_blocker(resource)}"],
+            assignment_read_operation=assignment_read,
+            assignment_expected=assignment_expected,
+            blockers=[f"{key}: {self._assignment_write_blocker(resource)}"],
         )
 
     def _map_dot1x_auth_profile(self, candidate: Mapping[str, Any]) -> CandidateAction:
@@ -1810,33 +1927,50 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             body["load-balance"] = bool(payload["load_balance"])
 
         endpoint = f"/network-config/v1alpha1/server-groups/{quote(name, safe='')}"
-        create_operation = self._spec_endpoint_operation(
-            "POST",
-            endpoint,
-            body,
+        create_operation = Operation(
+            invocation="tool",
+            name="create_server_group",
+            arguments={
+                "name": name,
+                "server_names": [server["server-name"] for server in servers],
+                "group_type": server_type.upper(),
+                "fail_through": bool(payload.get("fail_through")),
+                "load_balance": bool(payload.get("load_balance")),
+                "description": None,
+                "dry_run": True,
+            },
+            payload=body,
             provenance=(
-                f"auth-server-group.json POST {endpoint}; no curated server-group "
-                "tool exists in mcp_servers"
+                "mcp_servers.nac.create_server_group; "
+                f"auth-server-group.json POST {endpoint}"
             ),
         )
         update_operation = self._spec_endpoint_operation(
             "PATCH", endpoint, body, provenance=f"auth-server-group.json PATCH {endpoint}"
         )
-        delete_operation = self._spec_endpoint_operation(
-            "DELETE", endpoint, {}, provenance=f"auth-server-group.json DELETE {endpoint}"
+        delete_operation = Operation(
+            invocation="tool",
+            name="delete_server_group",
+            arguments={"name": name, "dry_run": True},
+            provenance=(
+                "mcp_servers.nac.delete_server_group; "
+                f"auth-server-group.json DELETE {endpoint}"
+            ),
         )
-        read_operation = self._spec_endpoint_read(
-            endpoint,
-            provenance=f"auth-server-group.json GET {endpoint}",
+        read_operation = Operation(
+            invocation="tool",
+            name="get_server_group",
+            arguments={"name": name},
+            provenance=(
+                "mcp_servers.nac.get_server_group; "
+                f"auth-server-group.json GET {endpoint}"
+            ),
+            dry_run_field=None,
             match_identifier=name,
         )
-        # Finding #1 (fail-closed): the SHARED config-assignment
-        # profile-type "server-groups" is not independently evidenced
-        # locally (see `_unverified_assignment_blocker`) -- unlike "roles",
-        # no manifest parameter-description worked example names it. The
-        # object-level operations above are verified and kept for
-        # reference, but this candidate is blocked -- never "ready" --
-        # until the assignment literal is confirmed.
+        assignment_read, assignment_expected = self._assignment_read(
+            "server-groups", name
+        )
         return CandidateAction(
             key=key,
             candidate=candidate,
@@ -1844,8 +1978,10 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             update_operations=[update_operation],
             delete_operations=[delete_operation],
             read_operation=read_operation,
+            assignment_read_operation=assignment_read,
+            assignment_expected=assignment_expected,
             blockers=[
-                f"{key}: {self._unverified_assignment_blocker('server-groups')}"
+                f"{key}: {self._assignment_write_blocker('server-groups')}"
             ],
         )
 

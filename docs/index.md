@@ -10,9 +10,9 @@ ArubaOS 8, EdgeConnect, UXI, and Axis backends.
 
 | Area | Current snapshot |
 |---|---|
-| Tool catalog | 5,703 generated operations (5,686 active) / 476 curated / 6,162 backend tools / 6,165 direct-all |
-| Capability totals | 2,813 read, 164 diagnostic, 2,382 write, 803 destructive |
-| RAG | 47,633 prose chunks in LanceDB |
+| Tool catalog | 5,703 generated operations (5,686 active) / 480 curated / 6,166 backend tools / 6,169 direct-all |
+| Capability totals | 2,815 read, 164 diagnostic, 2,383 write, 804 destructive |
+| RAG | 51,737 prose chunks in LanceDB |
 | Exact API lookup | 239 specs, 3,465 endpoints, 10,297 schemas, 57,131 fields |
 | API provenance | Aruba ReadMe registries, official Mist/Apstra sources, pinned GLP and EdgeConnect snapshots, SHA-pinned Axis generator |
 | Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis Atmos Cloud |

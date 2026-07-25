@@ -65,6 +65,7 @@ OpenAPI JSON URLs. Refresh through the ReadMe registry flow:
 uv run python ingestion/scrape_openapi.py
 uv run python ingestion/scrape_cnac_spec.py
 uv run python ingestion/fetch_mist_openapi.py
+uv run python ingestion/scrape_security_lifecycle.py
 uv run python scripts/check_openapi_drift.py
 uv run python scripts/check_mist_openapi_drift.py
 uv run python ingestion/ingest_docs.py
@@ -75,8 +76,9 @@ uv run python ingestion/ingest_docs.py
 | Drift checker exits 2 | No `ingestion/openapi_registry_manifest.json` exists yet; run the OpenAPI scrapers first. |
 | Drift checker exits 1 | Vendor specs or page pointers changed; refresh sources, rebuild indexes, and rerun the checker. |
 | `lookup_api` returns an older path/version | Rebuild `data/specs.sqlite` after refreshing the registry specs. |
+| `ask_docs` misses a security advisory or end-of-sale notice | Run `ingestion/scrape_security_lifecycle.py`, then rebuild `data/docs.lance`. Aruba advisories refresh incrementally from the official CSAF `changes.csv`; HPE lifecycle notices come from the all-product End of Sale XML feed. |
 | macOS docs rebuild stalls in fastembed multiprocessing | Current `ingest_docs.py` automatically disables subprocess parallelism on macOS. Stop any older stale rebuild by exact PID, update the checkout, and rerun the command. |
-| Docs index is larger because OpenAPI JSON was embedded | Rebuild with the current ingestion path. OpenAPI records now remain in SQLite only; the released prose corpus contains 47,633 chunks. |
+| Docs index is larger because OpenAPI JSON was embedded | Rebuild with the current ingestion path. OpenAPI records now remain in SQLite only; the current prose corpus contains 51,737 chunks. |
 
 ## Optional product compatibility
 
@@ -114,7 +116,7 @@ If `find_tool` cannot locate expected optional product tools, confirm
 `CENTRALMCP_PRODUCTS` and the catalog were built with the same selected
 products.
 
-The complete read-write backend catalog contains 6,162 tools. If release
+The complete read-write backend catalog contains 6,166 tools. If release
 validation expects that full catalog, rebuild with:
 
 ```bash

@@ -215,6 +215,54 @@ def test_config_assignment_dry_run_never_calls_client(monkeypatch, tool_name):
     assert result["dry_run"] is True
 
 
+def test_create_config_assignment_uses_collection_body_contract(monkeypatch):
+    fake_client = FakeClient(FakeResponse(201, {"status": "success"}))
+    monkeypatch.setattr(config, "get_client", lambda: fake_client)
+
+    result = config.create_config_assignment(**_ASSIGNMENT_KWARGS)
+
+    assert result["status"] == "success"
+    assert fake_client.calls == [
+        (
+            "POST",
+            "/network-config/v1alpha1/config-assignments",
+            {
+                "config-assignment": [
+                    {
+                        "scope-id": "1",
+                        "device-function": "CAMPUS_AP",
+                        "profile-type": "roles",
+                        "profile-instance": "employee",
+                    }
+                ]
+            },
+            None,
+        )
+    ]
+
+
+def test_create_config_assignment_dry_run_previews_collection_body():
+    result = config.create_config_assignment(
+        dry_run=True,
+        **_ASSIGNMENT_KWARGS,
+    )
+
+    assert result == {
+        "dry_run": True,
+        "endpoint": "/network-config/v1alpha1/config-assignments",
+        "payload": {
+            "config-assignment": [
+                {
+                    "scope-id": "1",
+                    "device-function": "CAMPUS_AP",
+                    "profile-type": "roles",
+                    "profile-instance": "employee",
+                }
+            ]
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # delete_overlay_ssid
 # ---------------------------------------------------------------------------

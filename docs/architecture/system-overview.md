@@ -44,7 +44,7 @@ Optional products are disabled until explicitly enabled:
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 ```
 
-The current catalog contains 5,703 generated operations and 6,162 backend tools
+The current catalog contains 5,703 generated operations and 6,166 backend tools
 when every platform and guarded write is indexed. Minimal
 router mode exposes only the compact discovery/dispatch surface to the client.
 
@@ -175,4 +175,4 @@ OpenAPI inputs are reproducible:
   `mistsys/mist_openapi` repository and SHA-256 verified.
 - Weekly CI checks detect registry hash or Mist upstream drift.
 - Structured OpenAPI records are stored only in `data/specs.sqlite`; the
-  47,633-row LanceDB table remains a prose retrieval corpus.
+  51,737-row LanceDB table remains a prose retrieval corpus.

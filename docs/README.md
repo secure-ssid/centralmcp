@@ -41,7 +41,7 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | `mcp_servers/` | FastMCP servers, low-token router, prompts, middleware, optional product starters |
 | `pipeline/` | Migration pipeline, typed clients, credentials loading, state store, SSID helpers |
 | `ingestion/` | Docs/API ingestion into LanceDB and SQLite |
-| `ingestion/source_manifest.json` | RAG source seed URLs for DevHub, New Central techdocs, Feature Navigator, and developer references |
+| `ingestion/source_manifest.json` | RAG source seeds for product docs, OpenAPI, security advisories, and end-of-sale/end-of-life lifecycle notices |
 | `scripts/setup_wizard.py` | Guided install, Central region, credentials, optional products, MCP configs, catalog, and doctor |
 | `scripts/download_indexes.py` | Restore prebuilt docs/API/tool indexes from GitHub Releases |
 | `scripts/package_indexes.py` | Package local indexes for a GitHub Release asset |
@@ -78,7 +78,7 @@ uv run python scripts/ingest_tools.py
 # Include optional product starters in the tool catalog
 uv run python scripts/ingest_tools.py --products all
 
-# Include every guarded optional write tool (6,162 backend tools)
+# Include every guarded optional write tool (6,166 backend tools)
 CENTRALMCP_PRODUCT_ACCESS=read-write CENTRALMCP_GLP_GENERATED_TOOLS=1 uv run python scripts/ingest_tools.py --products all
 
 # Start the model-agnostic HTTP MCP router

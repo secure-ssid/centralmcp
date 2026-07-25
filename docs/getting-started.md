@@ -141,7 +141,7 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 ```
 
 This exposes only the router discovery/dispatch surface and keeps tool-list token cost low.
-The router can search 6,162 backend tools when all platforms and guarded writes
+The router can search 6,166 backend tools when all platforms and guarded writes
 are indexed, while minimal mode exposes only three client-visible tools.
 
 ### Streamable HTTP instead of stdio
@@ -196,7 +196,7 @@ Include optional product starters:
 uv run python scripts/ingest_tools.py --products all
 ```
 
-The safe default hides optional write tools. Build all 6,162 backend tools only
+The safe default hides optional write tools. Build all 6,166 backend tools only
 for an intentional lab read/write profile:
 
 ```bash
@@ -224,6 +224,7 @@ LanceDB prose corpus.
 uv run python ingestion/scrape_openapi.py
 uv run python ingestion/scrape_cnac_spec.py
 uv run python ingestion/fetch_mist_openapi.py
+uv run python ingestion/scrape_security_lifecycle.py
 uv run python scripts/check_openapi_drift.py
 uv run python scripts/check_mist_openapi_drift.py
 uv run python ingestion/ingest_docs.py
@@ -231,7 +232,7 @@ uv run python ingestion/ingest_docs.py
 
 Built indexes live under `data/` and are git-ignored.
 
-The current rebuilt snapshot contains 47,633 prose chunks and an exact API
+The current rebuilt snapshot contains 51,737 prose chunks and an exact API
 index with 239 specs, 3,465 endpoints, 10,297 schemas, and 57,131 fields.
 
 ## 6. Validate

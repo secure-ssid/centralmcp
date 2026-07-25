@@ -32,6 +32,7 @@ scrapers share this implementation.
 uv run python ingestion/scrape_openapi.py
 uv run python ingestion/scrape_cnac_spec.py
 uv run python ingestion/fetch_mist_openapi.py
+uv run python ingestion/scrape_security_lifecycle.py
 uv run python scripts/check_openapi_drift.py
 uv run python scripts/check_mist_openapi_drift.py
 uv run python ingestion/ingest_docs.py
@@ -170,21 +171,21 @@ final scores:
 | `mrr` | 0.339 | 0.679 | **0.90** | ≥ 0.50 ✅ |
 | `keyword_hit` | — | 0.80 | **1.00** | — |
 
-**Current evaluated corpus (2026-07-24):** 47,633 prose chunks across the
+**Current evaluated corpus (2026-07-25):** 51,737 prose chunks across the
 released documentation sources. The 5,419 OpenAPI vector records from the
 previous build were intentionally removed because structured API lookup is
 authoritative. The rebuilt SQLite index contains 239 specs, 3,465 endpoints,
-10,297 schemas, and 57,131 fields. The rebuilt router index contains 6,162 backend tools. Minimal mode keeps this
+10,297 schemas, and 57,131 fields. The rebuilt router index contains 6,166 backend tools. Minimal mode keeps this
 catalog behind the three-tool discovery/dispatch surface; direct-all mode
-exposes 6,165 tools including the router itself. 18/20 eval questions hit at
-rank 1. Standard catalog profiles contain 291 core tools / 2450 read-only optional starters / 5258 read-write optional starters; the complete index also enables generated GLP.
+exposes 6,169 tools including the router itself. 18/20 eval questions hit at
+rank 1. Standard catalog profiles contain 295 core tools / 2454 read-only optional starters / 5262 read-write optional starters; the complete index also enables generated GLP.
 
 Tracked RAG refresh targets live in `ingestion/source_manifest.json`. The
-current manifest covers 9 rebuild sources: the evaluated default source set plus
-DevHub (`https://devhub.arubanetworks.com`) and Switching Feature Navigator
-(`https://feature-navigator.arubanetworking.hpe.com/wired?mode=explore`). Keep
-those inputs represented in local `ingestion/sources/` before packaging public
-RAG indexes.
+current manifest covers 13 rebuild sources, including DevHub, Switching Feature
+Navigator, the complete HPE Aruba Networking CSAF advisory archive, HPE
+Networking end-of-sale notices, and official Mist/Apstra lifecycle and
+security-advisory pages. Keep those inputs represented in local
+`ingestion/sources/` before packaging public RAG indexes.
 
 The API-lookup rows almost all missed the spec sources at baseline — direct empirical evidence of **R2** (OpenAPI specs absent from the active index). `howto` retrieval is already decent, confirming the redesign's value is concentrated in (a) structured API lookup and (b) hybrid+rerank for exact identifiers, not in replacing vector search wholesale. Re-run `uv run --with pyyaml python tests/eval/run_eval.py` after each change.
 

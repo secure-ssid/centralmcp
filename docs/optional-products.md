@@ -26,8 +26,8 @@ python3 scripts/setup_wizard.py --with-products
 | Axis Atmos Cloud | 12 / 25 | Reviewed application, connector, tunnel, location, policy, status, and commit workflows from the deterministic SHA-pinned manifest generator | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Writes dry-run by default |
 | **Optional subtotal** | **1,711 / 3,620** | Seven opt-in product backends | Product-specific | Hidden and blocked unless enabled |
 
-Combined with the Central/GLP/RAG surfaces, the backend catalog contains 2,813
-read-only-annotated tools and 6,162 registered tools. Diagnostic tools are
+Combined with the Central/GLP/RAG surfaces, the backend catalog contains 2,815
+read-only-annotated tools and 6,166 registered tools. Diagnostic tools are
 available in optional read-only mode but are not included in the read-only
 annotation count.
 
@@ -78,7 +78,9 @@ Migration-verified mappings are gated by the authoritative
 [AOS8 migration contract matrix](aos8-migration-contract-matrix.md); a
 read-only [live/dry-run evaluation](aos8-live-dryrun-evaluation.md) records
 exactly what was and was not exercised live in one prior evaluation
-environment. To reproduce or extend that evaluation against your own
+environment. The in-progress
+[0.6 live-lab evaluation](aos8-live-lab-evaluation-0.6.md) records evidence
+from the stricter multi-surface harness below. To reproduce or extend that evaluation against your own
 ArubaOS 8 estate:
 
 | Requirement | Variable(s) | Notes |
@@ -96,6 +98,69 @@ suite (`tests/unit/test_aos8_parsers.py`, `test_aos8_migration.py`,
 live controller. New Central preflight reads and stateless `preview()` calls
 can be exercised live with only `central_account` configured, independent of
 AOS8 access.
+
+### AOS8 0.6 live-lab evidence harness
+
+`scripts/evaluate_aos8_060_lab.py` extends the 0.5 read-only evaluator with
+independent AOS8, Classic Central, and New Central evidence modes plus a
+strictly gated controlled-write workflow. Read-only Central mode may perform
+the OAuth token POST needed to authenticate, then installs a data-plane guard
+that permits only `GET`/`HEAD`/`OPTIONS`. AOS8 mode permits session login and
+logout but blocks any non-GET export request.
+
+```bash
+# Fully offline, fixture-backed baseline
+uv run python scripts/evaluate_aos8_060_lab.py --offline
+
+# Bounded live AOS8 export evidence; output contains counts and a sanitized
+# digest, not raw configuration values
+uv run python scripts/evaluate_aos8_060_lab.py \
+  --live-aos8-readonly \
+  --config-path /md \
+  --limit 100 \
+  --max-items-per-type 1000
+
+# Explicit Classic or New Central target; candidate JSON contains a list or
+# {"candidates": [...]} and no real secrets
+uv run python scripts/evaluate_aos8_060_lab.py \
+  --live-central-readonly \
+  --target-type new_central \
+  --scope-name "Disposable Lab" \
+  --persona CAMPUS_AP \
+  --candidates inputs/aos8-lab-candidates.json
+```
+
+Controlled writes are a mandatory two-phase process. Candidate identifiers
+must start with `centralmcp-lab-`; numeric VLANs require an explicit
+`--lab-vlan-id`. Plan generation performs live preflight reads and refuses
+existing targets, blocked/dry-run-only mappings, or candidates without a
+verified cleanup operation.
+
+```bash
+uv run python scripts/evaluate_aos8_060_lab.py \
+  --prepare-write-plan \
+  --target-type new_central \
+  --scope-name "Disposable Lab" \
+  --persona CAMPUS_AP \
+  --candidates inputs/aos8-lab-candidates.json \
+  --output outputs/aos8-lab-plan.json
+
+export CENTRALMCP_CENTRAL_WRITES=1
+uv run python scripts/evaluate_aos8_060_lab.py \
+  --execute-write-plan outputs/aos8-lab-plan.json \
+  --confirm-digest "<preview_sha256 from the reviewed plan>" \
+  --confirm-target "Disposable Lab" \
+  --allow-lab-writes \
+  --cleanup-after-write \
+  --secret-inputs inputs/aos8-lab-secrets.json
+```
+
+The secret-input file must be readable only by its owner (`chmod 600`) and is
+never copied into the plan or output. Execution recomputes the live preview
+and refuses to continue if its digest changed after review. Cleanup is
+mandatory, runs in reverse candidate order, refuses candidates without a
+verified delete path, and verifies target absence. This is disposable-lab
+cleanup, not general migration rollback.
 
 EdgeConnect API generations differ materially. Run
 `edgeconnect_doctor` against the target Orchestrator before using operational

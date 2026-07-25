@@ -2155,7 +2155,9 @@ def _aos8_migration_read_invoker(operation: Any) -> Any:
     tools = {
         "get_aaa_profile": nac_tools.get_aaa_profile,
         "get_auth_server": nac_tools.get_auth_server,
+        "get_server_group": nac_tools.get_server_group,
         "get_ssid": config_tools.get_ssid,
+        "list_gw_policies": config_tools.list_gw_policies,
         "list_roles": config_tools.list_roles,
         # Required for `NewCentralAdapter._map_role`'s independent
         # `assignment_read_operation` (item 4 of the aos8-verification
@@ -2234,12 +2236,16 @@ def _aos8_migration_write_invoker(
         "build_underlay_ssid": config_tools.build_underlay_ssid,
         "create_aaa_profile": nac_tools.create_aaa_profile,
         "create_auth_server": nac_tools.create_auth_server,
+        "create_server_group": nac_tools.create_server_group,
         "create_role": config_tools.create_role,
+        "create_gw_policy": config_tools.create_gw_policy,
         "create_vlan": config_tools.create_vlan,
         "update_role": config_tools.update_role,
         "delete_auth_server": nac_tools.delete_auth_server,
         "delete_aaa_profile": nac_tools.delete_aaa_profile,
+        "delete_server_group": nac_tools.delete_server_group,
         "delete_role": config_tools.delete_role,
+        "delete_gw_policy": config_tools.delete_gw_policy,
         "delete_config_assignment": config_tools.delete_config_assignment,
         "delete_underlay_ssid": config_tools.delete_underlay_ssid,
         "delete_overlay_ssid": config_tools.delete_overlay_ssid,

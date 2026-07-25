@@ -48,6 +48,10 @@ SOURCE_META = {
     "feature_navigator": "feature-navigator",
     "openapi_specs": "openapi",
     "aos_techdocs": "aos-techdocs",
+    "security_advisories": "security-advisory",
+    "lifecycle_notices": "lifecycle",
+    "juniper_lifecycle": "lifecycle",
+    "juniper_security_advisories": "security-advisory",
 }
 
 UPLOAD_BATCH = 100

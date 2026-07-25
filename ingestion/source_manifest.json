@@ -91,5 +91,51 @@
     ],
     "output_dir": "ingestion/sources/aos_techdocs",
     "notes": "Discover URLs with ingestion/discover_aos_urls.py and refresh with ingestion/scrape_aos_pw.py."
+  },
+  {
+    "source": "security_advisories",
+    "doc_type": "security-advisory",
+    "purpose": "Official HPE Aruba Networking CSAF security advisories across hardware, software, cloud, NAC, SD-WAN, and management products.",
+    "seed_urls": [
+      "https://csaf.arubanetworking.hpe.com/changes.csv",
+      "https://csaf.arubanetworking.hpe.com/index.txt"
+    ],
+    "output_dir": "ingestion/sources/security_advisories",
+    "notes": "Refresh with ingestion/scrape_security_lifecycle.py. The incremental changes.csv feed covers the complete official Aruba advisory archive and preserves advisory IDs, CVEs, severity, affected products, fixed versions, and remediation text."
+  },
+  {
+    "source": "lifecycle_notices",
+    "doc_type": "lifecycle",
+    "purpose": "Official HPE Networking end-of-sale, replacement-product, and support-lifecycle notices across all networking product categories.",
+    "seed_urls": [
+      "https://support.hpe.com/docs/display/public/hpe-networking-eos/data/xml/eos/eos.xml",
+      "https://support.hpe.com/docs/display/public/hpe-networking-eos/information.html",
+      "https://asp-documents.arubanetworks.com/portals/0/el/Aruba-Hardware-End-of-Sale-List.pdf"
+    ],
+    "output_dir": "ingestion/sources/lifecycle_notices",
+    "notes": "Refresh with ingestion/scrape_security_lifecycle.py. The XML feed is the data source behind HPE's historical all-product End of Sale archive; the official hardware PDF adds SKU-level dates and replacements. HPE does not publish a current crawlable index for every individual modern notice, so answers must cite the notice date and avoid implying the archive is exhaustive beyond its published entries."
+  },
+  {
+    "source": "juniper_lifecycle",
+    "doc_type": "lifecycle",
+    "purpose": "Official Juniper lifecycle milestone tables for the Mist and Apstra product families exposed by centralmcp's optional backends.",
+    "seed_urls": [
+      "https://support.juniper.net/support/eol/product/juniper_ap_series/",
+      "https://support.juniper.net/support/eol/product/apstra/",
+      "https://support.juniper.net/support/eol/software/apstra/"
+    ],
+    "output_dir": "ingestion/sources/juniper_lifecycle",
+    "notes": "Refresh with ingestion/scrape_security_lifecycle.py. Juniper publishes these as server-rendered lifecycle tables rather than a public structured feed."
+  },
+  {
+    "source": "juniper_security_advisories",
+    "doc_type": "security-advisory",
+    "purpose": "Official Juniper security bulletins for the Mist and Apstra product families exposed by centralmcp's optional backends.",
+    "seed_urls": [
+      "https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml",
+      "https://supportportal.juniper.net/s/sitemap-topicarticle-weekly.xml"
+    ],
+    "output_dir": "ingestion/sources/juniper_security_advisories",
+    "notes": "Refresh with ingestion/scrape_security_lifecycle.py. The official sitemap discovers Mist/Apstra Security Bulletin articles; Playwright renders the Salesforce article body because plain HTTP receives only the application shell."
   }
 ]

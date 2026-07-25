@@ -6,6 +6,7 @@ import pytest
 
 from pipeline.aos8_target_adapters import (
     MAX_SECRET_LENGTH,
+    VERIFICATION_READ_PAGE_SIZE,
     ClassicCentralAdapter,
     ConflictPolicy,
     ContextValidationError,
@@ -379,6 +380,36 @@ def test_simple_aaa_profile_maps_only_verified_fields():
     assert operation["tool_or_endpoint"] == "create_aaa_profile"
     assert operation["arguments"]["auth_role"] == "guest"
     assert operation["arguments"]["acct_server_group"] == "acct-group"
+
+
+def test_aaa_profile_maps_device_auth_profile_bindings():
+    aaa = candidate(
+        "aaa_profile",
+        "corp-aaa",
+        payload={
+            "name": "corp-aaa",
+            "default_user_role": "employee",
+            "dot1x_auth_profile": "corp-dot1x",
+            "mac_auth_profile": "corp-mac",
+        },
+        dependencies=[
+            "dot1x_auth_profile:corp-dot1x",
+            "mac_auth_profile:corp-mac",
+        ],
+    )
+
+    action = new_adapter(
+        FakeBackend(), persona="MOBILITY_GW"
+    ).candidate_action(aaa)
+
+    create = action.operations[0]
+    assert create.name == "create_aaa_profile"
+    assert create.arguments["dot1x_auth_profile"] == "corp-dot1x"
+    assert create.arguments["mac_auth_profile"] == "corp-mac"
+    assert action.update_operations[0].payload["authentication"] == {
+        "dot1x-auth": "corp-dot1x",
+        "mac-auth": "corp-mac",
+    }
 
 
 def test_aaa_profile_rejects_ap_persona_and_exposes_update_delete_operations():
@@ -815,7 +846,8 @@ def test_server_group_builds_ordered_servers_array_from_dependencies():
     assert entry["status"] == "blocked"
     assert len(entry["operations"]) == 1
     create_op = entry["operations"][0]
-    assert create_op["tool_or_endpoint"] == "/network-config/v1alpha1/server-groups/corp-sg"
+    assert create_op["tool_or_endpoint"] == "create_server_group"
+    assert create_op["arguments"]["server_names"] == ["rad1", "rad2"]
     servers = create_op["payload"]["servers"]
     assert servers == [
         {"server-name": "rad1", "position": 1},
@@ -823,9 +855,7 @@ def test_server_group_builds_ordered_servers_array_from_dependencies():
     ]
     assert create_op["payload"]["type"] == "RADIUS"
     assert create_op["payload"]["fail-through"] is True
-    assert entry["delete_operations"][0]["tool_or_endpoint"] == (
-        "/network-config/v1alpha1/server-groups/corp-sg"
-    )
+    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_server_group"
     assert len(entry["delete_operations"]) == 1
     assert entry["rollback_supported"] is False
     assert any("server-groups" in blocker for blocker in entry["blockers"])
@@ -928,6 +958,38 @@ def test_server_group_ldap_type_rejected_on_switch_persona():
     assert "device-function" in entry["unsupported_warnings"][0]
 
 
+def test_server_group_uses_curated_lifecycle_tools():
+    group = candidate(
+        "server_group",
+        "corp-sg",
+        payload={
+            "name": "corp-sg",
+            "auth_server_entries": [
+                {"name": "rad2", "position": 2},
+                {"name": "rad1", "position": 1},
+            ],
+            "fail_through": True,
+        },
+        dependencies=["auth_server:radius:rad1", "auth_server:radius:rad2"],
+    )
+
+    action = new_adapter(
+        FakeBackend(), persona="MOBILITY_GW"
+    ).candidate_action(group)
+
+    create = action.operations[0]
+    assert create.invocation == "tool"
+    assert create.name == "create_server_group"
+    assert create.arguments["server_names"] == ["rad1", "rad2"]
+    assert create.arguments["fail_through"] is True
+    assert create.payload["servers"] == [
+        {"server-name": "rad1", "position": 1},
+        {"server-name": "rad2", "position": 2},
+    ]
+    assert action.read_operation.name == "get_server_group"
+    assert action.delete_operations[0].name == "delete_server_group"
+
+
 # ---------------------------------------------------------------------------
 # Gateway/switch-only dot1x/macauth device profiles (item 3).
 # ---------------------------------------------------------------------------
@@ -961,6 +1023,193 @@ def test_bare_dot1x_and_macauth_profiles_map_on_gateway_switch_only():
             assert len(entry["delete_operations"]) == 1
             assert entry["rollback_supported"] is False
             assert any(resource in blocker for blocker in entry["blockers"])
+
+
+def test_blocked_shared_profiles_expose_exact_assignment_reads():
+    cases = [
+        (
+            candidate(
+                "auth_server",
+                "radius:rad1",
+                payload={
+                    "name": "rad1",
+                    "server_type": "radius",
+                    "host": "10.0.0.10",
+                },
+            ),
+            "auth-servers",
+            "rad1",
+            {"auth_server:radius:rad1": {"shared_secret": "secret"}},
+        ),
+        (
+            candidate(
+                "aaa_profile",
+                "aaa1",
+                payload={"name": "aaa1", "default_user_role": "employee"},
+            ),
+            "aaa-profile",
+            "aaa1",
+            {},
+        ),
+        (
+            candidate(
+                "dot1x_auth_profile",
+                "dot1x1",
+                payload={"name": "dot1x1"},
+            ),
+            "dot1xauth",
+            "dot1x1",
+            {},
+        ),
+        (
+            candidate(
+                "mac_auth_profile",
+                "mac1",
+                payload={"name": "mac1"},
+            ),
+            "macauth",
+            "mac1",
+            {},
+        ),
+        (
+            candidate(
+                "server_group",
+                "sg1",
+                payload={
+                    "name": "sg1",
+                    "auth_server_entries": [{"name": "rad1", "position": 1}],
+                },
+                dependencies=["auth_server:radius:rad1"],
+            ),
+            "server-groups",
+            "sg1",
+            {},
+        ),
+    ]
+
+    for object_candidate, profile_type, profile_instance, secrets in cases:
+        action = new_adapter(
+            FakeBackend(),
+            persona="MOBILITY_GW",
+            secrets=secrets or None,
+        ).candidate_action(object_candidate)
+
+        assert action.assignment_read_operation is not None
+        assert action.assignment_read_operation.name == "list_config_assignments"
+        assert action.assignment_read_operation.arguments == {
+            "scope_id": "100",
+            "device_function": "MOBILITY_GW",
+            "profile_type": profile_type,
+            "limit": VERIFICATION_READ_PAGE_SIZE,
+            "offset": 0,
+        }
+        assert action.assignment_expected == {
+            "scope-id": "100",
+            "device-function": "MOBILITY_GW",
+            "profile-type": profile_type,
+            "profile-instance": profile_instance,
+        }
+        assert action.blockers
+
+
+def test_gateway_policy_maps_verified_any_to_any_subset_dry_run_only():
+    policy = candidate(
+        "policy",
+        "centralmcp-lab-policy",
+        payload={
+            "name": "centralmcp-lab-policy",
+            "rule_count": 2,
+            "rules": [
+                {
+                    "address_family": "ipv4",
+                    "source": "any",
+                    "destination": "any",
+                    "service": "any",
+                    "action": "permit",
+                    "log": False,
+                },
+                {
+                    "address_family": "ipv4",
+                    "source": "any",
+                    "destination": "any",
+                    "service": None,
+                    "action": "deny",
+                    "log": None,
+                },
+            ],
+        },
+    )
+
+    preview = new_adapter(FakeBackend(), persona="MOBILITY_GW").preview([policy])
+    entry = preview["operations"][0]
+
+    assert entry["status"] == "ready"
+    assert entry["dry_run_only"] is True
+    assert entry["operations"][0]["tool_or_endpoint"] == "create_gw_policy"
+    rules = entry["operations"][0]["arguments"]["rules"]
+    assert [rule["position"] for rule in rules] == [1, 2]
+    assert [rule["action"]["type"] for rule in rules] == [
+        "ACTION_ALLOW",
+        "ACTION_DENY",
+    ]
+    assert all(rule["condition"]["source"] == {"type": "ADDRESS_ANY"} for rule in rules)
+    assert entry["delete_operations"][0]["tool_or_endpoint"] == "delete_gw_policy"
+
+
+@pytest.mark.parametrize("persona", ["CAMPUS_AP", "ACCESS_SWITCH"])
+def test_gateway_policy_rejects_non_gateway_personas(persona):
+    policy = candidate(
+        "policy",
+        "centralmcp-lab-policy",
+        payload={
+            "rule_count": 1,
+            "rules": [
+                {
+                    "address_family": "ipv4",
+                    "source": "any",
+                    "destination": "any",
+                    "service": "any",
+                    "action": "permit",
+                    "log": False,
+                }
+            ],
+        },
+    )
+
+    preview = new_adapter(FakeBackend(), persona=persona).preview([policy])
+
+    assert preview["operations"][0]["status"] == "unsupported"
+    assert "device-function" in preview["operations"][0]["unsupported_warnings"][0]
+
+
+@pytest.mark.parametrize(
+    "rule_update",
+    [
+        {"service": "https"},
+        {"source": "employee"},
+        {"log": True},
+        {"address_family": "ipv6"},
+    ],
+)
+def test_gateway_policy_rejects_unverified_rule_semantics(rule_update):
+    rule = {
+        "address_family": "ipv4",
+        "source": "any",
+        "destination": "any",
+        "service": "any",
+        "action": "permit",
+        "log": False,
+    }
+    rule.update(rule_update)
+    policy = candidate(
+        "policy",
+        "centralmcp-lab-policy",
+        payload={"rule_count": 1, "rules": [rule]},
+    )
+
+    preview = new_adapter(FakeBackend(), persona="MOBILITY_GW").preview([policy])
+
+    assert preview["operations"][0]["status"] == "unsupported"
 
 
 def test_rich_dot1x_and_macauth_profiles_are_rejected_not_guessed():

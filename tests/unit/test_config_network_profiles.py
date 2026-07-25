@@ -37,6 +37,38 @@ def test_profile_base_resolves_known_type():
     assert config._profile_base("app-recognition") == "/network-config/v1alpha1/arc"
 
 
+def test_read_only_profile_base_exposes_route_and_interface_vrrp():
+    assert config._profile_base(
+        "static-route", read_only=True
+    ) == "/network-config/v1alpha1/static-route"
+    assert config._profile_base(
+        "vrrp-interface", read_only=True
+    ) == "/network-config/v1alpha1/vrrp"
+
+
+@pytest.mark.parametrize("profile_type", ["static-route", "vrrp-interface"])
+def test_unverified_evidence_profiles_remain_blocked_for_writes(profile_type):
+    with pytest.raises(ValueError, match="profile_type must be one of"):
+        config.set_network_profile(
+            profile_type,
+            "lab-profile",
+            {"name": "lab-profile"},
+            object_type="LOCAL",
+            scope_id="scope-1",
+            device_function="GATEWAY",
+            dry_run=True,
+        )
+    with pytest.raises(ValueError, match="profile_type must be one of"):
+        config.delete_network_profile(
+            profile_type,
+            "lab-profile",
+            object_type="LOCAL",
+            scope_id="scope-1",
+            device_function="GATEWAY",
+            dry_run=True,
+        )
+
+
 def test_local_object_type_requires_scope_id():
     with pytest.raises(ValueError, match="scope_id is required"):
         config._profile_write_params("LOCAL", None, "GATEWAY")
@@ -72,6 +104,26 @@ def test_get_network_profile_fetches_one_by_name(monkeypatch):
         "GET", "/network-config/v1alpha1/bgp/bgp-1",
         params={"object-type": "LOCAL", "scope-id": "s1"},
     )
+
+
+@pytest.mark.parametrize(
+    ("profile_type", "endpoint"),
+    [
+        ("static-route", "/network-config/v1alpha1/static-route"),
+        ("vrrp-interface", "/network-config/v1alpha1/vrrp"),
+    ],
+)
+def test_get_network_profile_lists_unverified_evidence_surfaces(
+    monkeypatch, profile_type, endpoint
+):
+    client = MagicMock()
+    client.get.return_value = {"profile": []}
+    monkeypatch.setattr(config, "get_client", lambda: client)
+
+    result = config.get_network_profile(profile_type, limit=10)
+
+    assert result["profile"] == []
+    client.get.assert_called_once_with(endpoint, params={"limit": 10, "offset": 0})
 
 
 # ---------------------------------------------------------------------------

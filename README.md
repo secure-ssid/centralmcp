@@ -15,14 +15,24 @@ centralmcp gives MCP-capable AI clients a low-token way to search Aruba/HPE docs
 
 It is built around direct REST calls with `httpx`.
 
+## Version 0.6.0 development highlights
+
+The current 0.6 branch expands the executable backend catalog to 6,166 tools:
+295 core tools / 2454 read-only optional starters / 5262 read-write optional starters.
+It also adds fail-closed AAA server-group lifecycle tools and AOS8 adapter
+wiring, corrects New Central config-assignment and device-auth profile request
+shapes, and grows the RAG corpus to 51,737 prose chunks with official HPE Aruba
+and Juniper security advisories plus HPE/Mist/Apstra lifecycle notices.
+
 ## Version 0.5.0 highlights
 
 Version 0.5.0 is a verified ArubaOS 8 (AOS8) migration release: it does not
 change tool counts, add new platforms, or claim exact secured-WLAN apply
 parity between Classic Central and New Central. Investigation effort was
 equal across both targets; the honest result is narrower than "parity."
-Standard catalog profiles contain 291 core tools / 2450 read-only optional starters / 5258 read-write optional starters; enabling generated GLP expands
-the complete backend index to 6,162.
+The 0.5.0 catalog contained 291 core tools, 2,450 read-only optional starters,
+and 5,258 read-write optional starters; enabling generated GLP expanded the
+complete backend index to 6,162.
 
 - **Hardened AOS8 source foundation:** normalized WLAN security intent,
   role-only AAA handling, type-aware auth-server dependencies, redaction
@@ -149,7 +159,7 @@ EdgeConnect link integrity diagnostics, low-token MCP router.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 5,703 generated operations (5,686 active); 476 curated; 6,162 backend tools; 6,165 tools in direct-all router mode |
+| MCP tools | 5,703 generated operations (5,686 active); 480 curated; 6,166 backend tools; 6,169 tools in direct-all router mode |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |
@@ -177,7 +187,7 @@ EdgeConnect link integrity diagnostics, low-token MCP router.
 | EdgeConnect | 684 | 1,265 |
 | HPE Aruba UXI | 24 | 49 |
 | Axis Atmos Cloud | 12 | 25 |
-| **Backend total** | **2,813** | **6,162** |
+| **Backend total** | **2,815** | **6,166** |
 
 ## Why the router matters
 
@@ -246,7 +256,7 @@ For optional product starters too:
 uv run python scripts/ingest_tools.py --products all
 ```
 
-That default hides optional write tools. To index all 6,162 backend tools, set
+That default hides optional write tools. To index all 6,166 backend tools, set
 `CENTRALMCP_PRODUCT_ACCESS=read-write` (and `CENTRALMCP_GLP_GENERATED_TOOLS=1`
 to include generated GLP tools) while rebuilding.
 
@@ -265,6 +275,7 @@ registry rather than the retired internal-UI JSON URLs:
 uv run python ingestion/scrape_openapi.py
 uv run python ingestion/scrape_cnac_spec.py
 uv run python ingestion/fetch_mist_openapi.py
+uv run python ingestion/scrape_security_lifecycle.py
 uv run python ingestion/ingest_docs.py
 ```
 
@@ -275,7 +286,9 @@ official `mistsys/mist_openapi` snapshot. Both checks run weekly in CI.
 
 RAG source targets are tracked in
 [`ingestion/source_manifest.json`](ingestion/source_manifest.json), including
-DevHub, New Central techdocs, and the Switching Feature Navigator seeds.
+DevHub, New Central techdocs, the Switching Feature Navigator, the complete
+HPE Aruba Networking CSAF advisory archive, HPE Networking end-of-sale
+notices, and official Mist/Apstra lifecycle and security-advisory pages.
 
 Check the local setup without making API calls:
 
@@ -442,7 +455,7 @@ Current rebuilt index snapshot:
 
 | Content | Count |
 |---|---:|
-| Prose chunks | 47,633 |
+| Prose chunks | 51,737 |
 | OpenAPI specs | 239 |
 | Exact endpoints | 3,465 |
 | Schemas | 10,297 |
