@@ -75,16 +75,27 @@ class TargetContext:
     # narrow set of conditional/dry-run-only mappings (e.g. an already-existing
     # Classic auth-server profile name for WPA3-Enterprise). Never a secret;
     # never used to invent/auto-provision a missing dependency.
+    #
+    # Runtime-only, exactly like `secret_inputs` above: this field (and
+    # `ap_group_target_map`/`ap_group_device_serials` below) is populated
+    # freshly by the orchestrator for the duration of one
+    # preview/create_run/apply call and is never written into persisted run
+    # state, history, fingerprints, candidate snapshots, or returned by a
+    # later get/list call. See
+    # `pipeline.aos8_migration_orchestrator._strip_operator_context` /
+    # `_reconcile_operator_context`.
     external_object_references: Mapping[str, Mapping[str, str]] = field(
         default_factory=dict
     )
     # Explicit, operator-provided AOS8 ap_group name -> Classic Central group
     # name mapping. AOS8 AP groups are never automatically translated into a
     # Classic group; the operator must name the target group themselves.
+    # Runtime-only -- see the note on `external_object_references` above.
     ap_group_target_map: Mapping[str, str] = field(default_factory=dict)
     # Explicit, operator-provided AOS8 ap_group name -> device serial numbers
     # to move into the mapped Classic group. Never inferred from the AOS8
-    # export (which carries no device/serial data today).
+    # export (which carries no device/serial data today). Runtime-only --
+    # see the note on `external_object_references` above.
     ap_group_device_serials: Mapping[str, tuple[str, ...]] = field(
         default_factory=dict
     )
@@ -2164,9 +2175,15 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
                 key=key,
                 candidate=candidate,
                 compatibility_errors=[
-                    f"{key}: an explicit Classic group mapping ({target_group!r}) "
-                    "was supplied, but no explicit device serial number(s) were "
-                    f"supplied via context.ap_group_device_serials[{ap_group_name!r}] "
+                    # Never echo `target_group` (the operator-supplied
+                    # Classic-group name) into a persisted message --
+                    # `ap_group_target_map`/`ap_group_device_serials` are
+                    # runtime-only operator context, exactly like
+                    # `secret_inputs`, and are never written into run state
+                    # (contract matrix §5/§6.11).
+                    f"{key}: an explicit Classic group mapping was supplied, "
+                    "but no explicit device serial number(s) were supplied "
+                    f"via context.ap_group_device_serials[{ap_group_name!r}] "
                     "for a device-move operation; this candidate remains manual "
                     "until real serials are provided."
                 ],
@@ -2175,8 +2192,11 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
             key=key,
             candidate=candidate,
             compatibility_errors=[
-                f"{key}: an explicit Classic group mapping ({target_group!r}) and "
-                f"device serial(s) ({list(serials)!r}) were supplied, but no "
+                # Same rationale as above: report only that a mapping and a
+                # serial *count* were supplied, never the actual Classic
+                # group name or device serial values themselves.
+                f"{key}: an explicit Classic group mapping and "
+                f"{len(serials)} device serial(s) were supplied, but no "
                 "verified Classic Central device-move object REST exists in "
                 "this repository (contract matrix §5/§6.11). This candidate "
                 "remains manual/unsupported until a live-verified move-device "

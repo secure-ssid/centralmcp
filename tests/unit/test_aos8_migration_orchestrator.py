@@ -289,6 +289,98 @@ def test_malformed_state_and_path_traversal_fail_cleanly(tmp_path):
     assert listed["runs"] == []
 
 
+def _ap_group_candidate(identifier="ap-group-hq"):
+    return candidate("ap_group", identifier, payload={"name": identifier})
+
+
+def test_operator_context_opaque_secret_values_never_persisted_or_returned(tmp_path):
+    """Production-path regression for the review finding: opaque
+    passwords/API keys/Base64/PEM material pasted into
+    `external_object_references`/`ap_group_target_map`/
+    `ap_group_device_serials` must never appear in the on-disk state file,
+    `get_run`/`list_runs` output, or attempt history -- at any point across
+    preview, create_run, and apply (dry-run and blocked real-apply)."""
+    import base64
+
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+
+    opaque_password = "hunter2"
+    opaque_api_key = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH"
+    opaque_aws_key = "AKIAIOSFODNN7EXAMPLE"
+    opaque_base64 = base64.b64encode(b"super-secret-payload-material").decode()
+    opaque_pem = (
+        "-----BEGIN PRIVATE KEY-----\n"
+        "MIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEA\n"
+        "-----END PRIVATE KEY-----"
+    )
+    opaque_values = [
+        opaque_password,
+        opaque_api_key,
+        opaque_aws_key,
+        opaque_base64,
+        opaque_pem,
+    ]
+
+    wlan = _wpa3_enterprise_candidate("Enterprise-Opaque")
+    ap_group = _ap_group_candidate("ap-group-opaque")
+    wpa3_target = {
+        **target("classic_central"),
+        "external_object_references": {
+            "wlan:Enterprise-Opaque": {
+                "auth_server1": opaque_password,
+                "cert_ref": opaque_pem,
+            }
+        },
+        "ap_group_target_map": {"ap-group-opaque": opaque_api_key},
+        "ap_group_device_serials": {
+            "ap-group-opaque": [opaque_aws_key, opaque_base64]
+        },
+    }
+
+    preview = service.preview([wlan, ap_group], wpa3_target)
+    created = service.create_run(
+        [wlan, ap_group], wpa3_target, run_id="opaque-ctx"
+    )
+
+    raw_state = store.path_for("opaque-ctx").read_text()
+    for value in opaque_values:
+        assert value not in raw_state
+        assert value not in json.dumps(created)
+
+    dry_run = service.apply(
+        "opaque-ctx",
+        dry_run=True,
+        confirmation=False,
+        external_object_references=wpa3_target["external_object_references"],
+        ap_group_target_map=wpa3_target["ap_group_target_map"],
+        ap_group_device_serials=wpa3_target["ap_group_device_serials"],
+    )
+    blocked = service.apply(
+        "opaque-ctx",
+        dry_run=False,
+        confirmation=True,
+        external_object_references=wpa3_target["external_object_references"],
+        ap_group_target_map=wpa3_target["ap_group_target_map"],
+        ap_group_device_serials=wpa3_target["ap_group_device_serials"],
+    )
+    fetched = service.get_run("opaque-ctx", include_details=True)
+    listed = service.list_runs()
+
+    raw_state_after_apply = store.path_for("opaque-ctx").read_text()
+    for value in opaque_values:
+        assert value not in raw_state_after_apply
+        assert value not in json.dumps(dry_run)
+        assert value not in json.dumps(blocked)
+        assert value not in json.dumps(fetched)
+        assert value not in json.dumps(listed)
+
+    # `preview()` is stateless (nothing it returns is persisted); it is
+    # therefore allowed to echo the caller's own just-supplied context back
+    # in this one live response, unlike everything asserted above.
+    assert opaque_password in json.dumps(preview)
+
+
 def test_verification_records_mismatch_and_unsupported_unverifiable(tmp_path):
     backend = FakeBackend()
     service, _ = orchestrator(tmp_path, backend)
@@ -896,6 +988,148 @@ def test_target_context_backward_compatible_with_pre_operator_context_state():
     assert context.ap_group_device_serials == {}
 
 
+def test_run_store_loads_legacy_0_4_state_without_operator_context_metadata(tmp_path):
+    # A 0.4-era run file has neither the three operator-context keys on
+    # `target` nor an `operator_context_metadata` key at all. Loading,
+    # summarizing, and listing it must not crash, and must report empty/
+    # absent metadata rather than raising.
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    legacy_run = {
+        "schema_version": 1,
+        "run_id": "legacy-04",
+        "fingerprint": "deadbeef",
+        "status": "pending",
+        "created_at": "2024-01-01T00:00:00+00:00",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+        "target": {
+            "type": "classic_central",
+            "scope_id": "1",
+            "scope_name": "Branch",
+            "persona": "CAMPUS_AP",
+            "conflict_policy": "fail",
+            "cluster_name": None,
+            "cluster_scope_id": None,
+            "gateway_name": None,
+            "gateway_scope_id": None,
+        },
+        "checkpoint_and_rollback": None,
+        "dry_run_attempted_at": None,
+        "last_apply_at": None,
+        "last_verification_at": None,
+        "candidates": [],
+    }
+    store.save(legacy_run)
+
+    fetched = service.get_run("legacy-04")
+    assert fetched["operator_context_metadata"] == {}
+    assert "external_object_references" not in fetched["target"]
+
+    listed = service.list_runs()
+    assert listed["runs"][0]["run_id"] == "legacy-04"
+    assert listed["runs"][0]["operator_context_metadata"] == {}
+
+
+def test_run_store_sanitizes_stale_operator_context_on_read_without_crashing(
+    tmp_path,
+):
+    # Simulate a state file written before this fix (or hand-edited) that
+    # still carries raw operator-context values directly on `target`. A
+    # read must sanitize -- never crash, and never continue serving the
+    # raw value back out through get_run/list_runs.
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    stale_secret_lookalike = "sk-proj-stale-leaked-value-0123456789"
+    stale_run = {
+        "schema_version": 1,
+        "run_id": "stale-05",
+        "fingerprint": "deadbeef",
+        "status": "pending",
+        "created_at": "2025-01-01T00:00:00+00:00",
+        "updated_at": "2025-01-01T00:00:00+00:00",
+        "target": {
+            "type": "classic_central",
+            "scope_id": "1",
+            "scope_name": "Branch",
+            "persona": "CAMPUS_AP",
+            "conflict_policy": "fail",
+            "cluster_name": None,
+            "cluster_scope_id": None,
+            "gateway_name": None,
+            "gateway_scope_id": None,
+            "external_object_references": {
+                "wlan:Stale": {"auth_server1": stale_secret_lookalike}
+            },
+            "ap_group_target_map": {"ap-group-stale": "Stale-Group"},
+            "ap_group_device_serials": {"ap-group-stale": ["CN0001"]},
+        },
+        "checkpoint_and_rollback": None,
+        "dry_run_attempted_at": None,
+        "last_apply_at": None,
+        "last_verification_at": None,
+        "candidates": [],
+    }
+    store.save(stale_run)
+    # `save()` itself sanitizes defensively -- the stale value must not
+    # even have reached disk from this call.
+    assert stale_secret_lookalike not in store.path_for("stale-05").read_text()
+
+    fetched = service.get_run("stale-05")
+    assert "external_object_references" not in fetched["target"]
+    assert "ap_group_target_map" not in fetched["target"]
+    assert "ap_group_device_serials" not in fetched["target"]
+    assert stale_secret_lookalike not in json.dumps(fetched)
+
+    listed = service.list_runs()
+    assert stale_secret_lookalike not in json.dumps(listed)
+
+
+def test_apply_requires_matching_ap_group_context_resupply(tmp_path):
+    # Same bounded-resupply contract as the WPA3-Enterprise end-to-end test,
+    # exercised for `ap_group_target_map`/`ap_group_device_serials` instead
+    # of `external_object_references`.
+    backend = FakeBackend()
+    service, store = orchestrator(tmp_path, backend)
+    ap_group = _ap_group_candidate("ap-group-resupply")
+    ap_group_target = {
+        **target("classic_central"),
+        "ap_group_target_map": {"ap-group-resupply": "Resupply-Group"},
+        "ap_group_device_serials": {"ap-group-resupply": ["CN1111", "CN2222"]},
+    }
+    service.create_run([ap_group], ap_group_target, run_id="ap-group-resupply-run")
+
+    # Omitting the resupply entirely is a bounded-resupply failure, not a
+    # silent fallback to empty context.
+    with pytest.raises(MigrationRunError, match="ap_group_target_map"):
+        service.apply(
+            "ap-group-resupply-run", dry_run=True, confirmation=False
+        )
+
+    # Resupplying a different mapping is also rejected.
+    with pytest.raises(MigrationRunError, match="ap_group_target_map"):
+        service.apply(
+            "ap-group-resupply-run",
+            dry_run=True,
+            confirmation=False,
+            ap_group_target_map={"ap-group-resupply": "Different-Group"},
+            ap_group_device_serials={"ap-group-resupply": ["CN1111", "CN2222"]},
+        )
+
+    # An exact resupply is accepted (the candidate still remains
+    # unsupported/manual either way -- contract matrix §5/§6.11 -- but the
+    # call itself must not be rejected for a matching resupply).
+    result = service.apply(
+        "ap-group-resupply-run",
+        dry_run=True,
+        confirmation=False,
+        ap_group_target_map={"ap-group-resupply": "Resupply-Group"},
+        ap_group_device_serials={"ap-group-resupply": ["CN1111", "CN2222"]},
+    )
+    assert result["candidates"][0]["status"] == "unsupported"
+    assert "Resupply-Group" not in store.path_for("ap-group-resupply-run").read_text()
+    assert "CN1111" not in store.path_for("ap-group-resupply-run").read_text()
+
+
 def test_target_context_rejects_oversized_external_object_references():
     too_many = {f"wlan:candidate-{i}": {"auth_server1": "Server"} for i in range(200)}
     bad_target = {**target("classic_central"), "external_object_references": too_many}
@@ -909,17 +1143,6 @@ def test_target_context_rejects_oversized_string_in_ap_group_target_map():
         "ap_group_target_map": {"ap-group-hq": "x" * 500},
     }
     with pytest.raises(MigrationRunError, match="ap_group_target_map"):
-        _target_context(bad_target)
-
-
-def test_target_context_rejects_secret_looking_reference_name():
-    bad_target = {
-        **target("classic_central"),
-        "external_object_references": {
-            "wlan:Corp": {"radius_shared_secret": "hunter2"}
-        },
-    }
-    with pytest.raises(MigrationRunError, match="secret"):
         _target_context(bad_target)
 
 
@@ -947,75 +1170,33 @@ def test_target_context_accepts_bounded_operator_context_and_converts_serials_to
     assert context.ap_group_device_serials == {"ap-group-hq": ("CN1234", "CN5678")}
 
 
-def test_target_context_rejects_secret_looking_reference_value():
-    # `_is_sensitive_key`/`_looks_like_credential_material` are applied to
-    # *values*, not just names -- a caller accidentally pasting an actual
-    # secret-shaped string into a reference value must be rejected the same
-    # way a secret-named reference key already is.
-    bad_target = {
+def test_target_context_accepts_legitimate_identifiers_with_secret_shaped_words():
+    # Regression guard for the review finding this replaces: field-name
+    # secret heuristics (`_is_sensitive_key`) must never be applied to
+    # arbitrary operator-supplied identifier values. "Token-Group" and
+    # "private-key-infra" are ordinary Classic-group/AP-group names that
+    # happen to contain the words "token"/"key" -- they must be accepted,
+    # not rejected as secret-looking.
+    good_target = {
         **target("classic_central"),
         "external_object_references": {
-            "wlan:Corp": {"auth_server1": "Bearer sk-abcdef0123456789"}
+            "wlan:Corp": {"auth_server1": "Token-Group"}
         },
+        "ap_group_target_map": {"private-key-infra": "Token-Group"},
+        "ap_group_device_serials": {"private-key-infra": ["CN1234"]},
     }
-    with pytest.raises(MigrationRunError, match="credential material"):
-        _target_context(bad_target)
-
-
-def test_target_context_rejects_pem_material_in_reference_value():
-    bad_target = {
-        **target("classic_central"),
-        "external_object_references": {
-            "wlan:Corp": {"auth_server1": "-----BEGIN PRIVATE KEY-----abc"}
-        },
+    context = _target_context(good_target)
+    assert context.external_object_references == {
+        "wlan:Corp": {"auth_server1": "Token-Group"}
     }
-    with pytest.raises(MigrationRunError, match="credential material"):
-        _target_context(bad_target)
-
-
-def test_target_context_rejects_secret_named_ap_group_target_map_key():
-    bad_target = {
-        **target("classic_central"),
-        "ap_group_target_map": {"shared_secret": "HQ-Group"},
-    }
-    with pytest.raises(MigrationRunError, match="secret"):
-        _target_context(bad_target)
-
-
-def test_target_context_rejects_secret_looking_ap_group_target_map_value():
-    bad_target = {
-        **target("classic_central"),
-        "ap_group_target_map": {"ap-group-hq": "password=hunter2"},
-    }
-    with pytest.raises(MigrationRunError, match="credential material"):
-        _target_context(bad_target)
-
-
-def test_target_context_rejects_secret_named_ap_group_device_serials_key():
-    bad_target = {
-        **target("classic_central"),
-        "ap_group_device_serials": {"api_token": ["CN1234"]},
-    }
-    with pytest.raises(MigrationRunError, match="secret"):
-        _target_context(bad_target)
-
-
-def test_target_context_rejects_credential_shaped_device_serial_entry():
-    # JWT-shaped (three dot-separated base64url segments), but short enough
-    # to stay under the per-serial length bound so the credential-material
-    # rejection -- not the length bound -- is what actually fires here.
-    jwt_like = "eyJhbGciOi.eyJzdWIiOi.MTIzNDU2Nz"
-    bad_target = {
-        **target("classic_central"),
-        "ap_group_device_serials": {"ap-group-hq": [jwt_like]},
-    }
-    with pytest.raises(MigrationRunError, match="credential material"):
-        _target_context(bad_target)
+    assert context.ap_group_target_map == {"private-key-infra": "Token-Group"}
+    assert context.ap_group_device_serials == {"private-key-infra": ("CN1234",)}
 
 
 def test_target_context_accepts_ordinary_looking_operator_context_values():
     # Regression guard: legitimate group names, GUIDs, and device serials
-    # must never trip the secret-like value heuristics.
+    # must never trip a secret-like value heuristic (there is none left --
+    # only structural bounds apply to these free-form identifier maps).
     good_target = {
         **target("classic_central"),
         "external_object_references": {
@@ -1070,21 +1251,22 @@ def test_wpa3_enterprise_reachable_end_to_end_via_orchestrator_preview_and_creat
     # Full propagation path: operator-context supplied at `preview()`/
     # `create_run()` reaches `TargetContext.external_object_references`,
     # which is what makes WPA3-Enterprise's conditional dry-run reachable
-    # instead of permanently "unsupported" for missing auth_server1.
+    # instead of permanently "unsupported" for missing auth_server1. The
+    # context is runtime-only throughout -- never persisted -- so `apply()`
+    # must resupply the exact same value on every call that needs it.
     backend = FakeBackend()
-    service, _ = orchestrator(tmp_path, backend)
+    service, store = orchestrator(tmp_path, backend)
+    refs = {"wlan:Enterprise-Test": {"auth_server1": "InternalServer"}}
     wpa3_target = {
         **target("classic_central"),
-        "external_object_references": {
-            "wlan:Enterprise-Test": {"auth_server1": "InternalServer"}
-        },
+        "external_object_references": refs,
     }
     wlan = _wpa3_enterprise_candidate()
 
     preview = service.preview([wlan], wpa3_target)
-    assert preview["target"]["external_object_references"] == {
-        "wlan:Enterprise-Test": {"auth_server1": "InternalServer"}
-    }
+    # `preview()` is stateless -- it may echo the context back in this one
+    # response for operator review.
+    assert preview["target"]["external_object_references"] == refs
     action = preview["operations"][0]
     assert action["status"] == "ready"
     assert action["dry_run_only"] is True
@@ -1096,13 +1278,54 @@ def test_wpa3_enterprise_reachable_end_to_end_via_orchestrator_preview_and_creat
     # reference would produce).
     assert created["candidates"][0]["status"] == "pending"
     assert created["candidates"][0]["retryable"] is True
+    # The runtime-only context itself must never be persisted: it is absent
+    # from `create_run`'s own response target, absent from the on-disk
+    # state file, but its presence is still recorded via non-reversible
+    # count/fingerprint metadata (never the value "InternalServer" itself).
+    assert "external_object_references" not in created["target"]
+    assert created["operator_context_metadata"]["external_object_references"][
+        "count"
+    ] == 1
+    raw_state = store.path_for("wpa3-ent").read_text()
+    assert "InternalServer" not in raw_state
+    assert "external_object_references" not in json.loads(raw_state)["target"]
 
-    dry_run = service.apply("wpa3-ent", dry_run=True, confirmation=False)
+    # Without resupplying the same operator context, apply() fails closed
+    # rather than silently proceeding without it.
+    with pytest.raises(MigrationRunError, match="external_object_references"):
+        service.apply("wpa3-ent", dry_run=True, confirmation=False)
+
+    # Resupplying a *different* value is also rejected (it would silently
+    # change which auth-server the candidate maps to from what was
+    # reviewed at create_run time).
+    with pytest.raises(MigrationRunError, match="external_object_references"):
+        service.apply(
+            "wpa3-ent",
+            dry_run=True,
+            confirmation=False,
+            external_object_references={
+                "wlan:Enterprise-Test": {"auth_server1": "SomeOtherServer"}
+            },
+        )
+
+    dry_run = service.apply(
+        "wpa3-ent",
+        dry_run=True,
+        confirmation=False,
+        external_object_references=refs,
+    )
     assert dry_run["candidates"][0]["dry_run_ok"] is True
+    assert "InternalServer" not in json.dumps(dry_run)
+    assert "InternalServer" not in store.path_for("wpa3-ent").read_text()
 
     # Real (non-dry-run) execution stays refused -- WPA3-Enterprise remains
     # conditional/dry-run-only even with the auth-server reference supplied.
-    blocked = service.apply("wpa3-ent", dry_run=False, confirmation=True)
+    blocked = service.apply(
+        "wpa3-ent",
+        dry_run=False,
+        confirmation=True,
+        external_object_references=refs,
+    )
     assert blocked["candidates"][0]["status"] == "blocked"
 
 
