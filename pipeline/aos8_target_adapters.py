@@ -237,6 +237,33 @@ _REDACTED_MARKERS = {
 # legitimate secret anywhere near the limit.
 MAX_SECRET_LENGTH = 1024
 
+# Production migration-verification reads (`list_roles`,
+# `list_config_assignments`) must always request an explicit, bounded
+# `limit`/`offset` page -- never `full_list=True`, which would make the
+# curated tool return an entire, unbounded collection to this process in
+# one call regardless of how large the target account's collection is.
+# `aos8_migration_orchestrator._pageable_operation` only recognizes an
+# operation as safely pageable when its arguments declare numeric
+# `limit`/`offset` (and no `full_list`); only then does its own bounded
+# extra-page logic (`MAX_VERIFICATION_EXTRA_PAGES`/
+# `MAX_VERIFICATION_TOTAL_ITEMS`) own fetching any subsequent pages, each
+# one still individually bounded to this same page size. Kept well under
+# the 200-item ceiling every curated list tool's own `limit` accepts.
+#
+# Note this bounds what crosses the MCP-tool -> orchestrator boundary per
+# call, not necessarily backend HTTP cost: `list_roles`/
+# `list_config_assignments` currently fetch the whole backend collection
+# on every call and slice it client-side (`bound_collection_response`),
+# since Central's `/roles`/`/config-assignments` endpoints have no
+# server-side `limit`/`offset` support of their own -- so an extra
+# verification page still means an extra full backend GET, up to
+# `1 + MAX_VERIFICATION_EXTRA_PAGES` of them, trading backend request
+# count for a hard, predictable cap on this process's own memory/
+# comparison cost. If either endpoint gains real server-side pagination,
+# this bounding continues to work unchanged and additionally reduces
+# backend transfer per page.
+VERIFICATION_READ_PAGE_SIZE = 50
+
 
 def _mask_mapping(value: Mapping[str, Any], sensitive_fields: Iterable[str]) -> dict[str, Any]:
     """Mask top-level sensitive keys plus one level of dotted-path nesting.
@@ -1314,7 +1341,13 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
             read_operation=Operation(
                 invocation="tool",
                 name="list_roles",
-                arguments={"full_list": True},
+                # Explicit bounded page, never `full_list=True` -- see
+                # `VERIFICATION_READ_PAGE_SIZE`. `offset=0` (not merely
+                # implied by the tool's own default) so
+                # `_pageable_operation` recognizes this as pageable and
+                # verification's own bounded paging can advance it forward
+                # a page at a time if the first page is truncated.
+                arguments={"limit": VERIFICATION_READ_PAGE_SIZE, "offset": 0},
                 provenance="mcp_servers.config.list_roles",
                 dry_run_field=None,
                 match_identifier=str(candidate["identifier"]),
@@ -1334,7 +1367,10 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
                     "scope_id": self.context.scope_id,
                     "device_function": self.context.persona,
                     "profile_type": "roles",
-                    "full_list": True,
+                    # Explicit bounded page, never `full_list=True` -- same
+                    # reasoning as `read_operation` above.
+                    "limit": VERIFICATION_READ_PAGE_SIZE,
+                    "offset": 0,
                 },
                 provenance="mcp_servers.config.list_config_assignments",
                 dry_run_field=None,

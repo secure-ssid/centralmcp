@@ -301,7 +301,12 @@ def test_read_invoker_dispatches_list_config_assignments_production_path(
     just the test-only `FakeBackend`), route it to the real curated tool,
     and pass scope/device-function/profile-type through to the real
     `CentralClient` boundary unchanged, bounded/parsed the same way
-    `list_roles` already is."""
+    `list_roles` already is.
+
+    aos8-verification-final-fixes item 1: the production mapping declares
+    an explicit bounded `limit`/`offset` page -- never `full_list=True` --
+    so this exercises the same arguments
+    `aos8_target_adapters.NewCentralAdapter._map_role` actually sends."""
     fake_client = _FakeConfigAssignmentsClient(
         {
             "items": [
@@ -322,7 +327,8 @@ def test_read_invoker_dispatches_list_config_assignments_production_path(
             "scope_id": "100",
             "device_function": "CAMPUS_AP",
             "profile_type": "roles",
-            "full_list": True,
+            "limit": 50,
+            "offset": 0,
         },
         match_identifier="employee",
     )
@@ -438,4 +444,105 @@ def test_role_assignment_verification_production_dispatcher_reports_mismatch(
 
     result = _verify_assignment(adapter, action)
 
+    assert result["status"] != "verified"
+
+
+# --------------------------------------------------------------------------
+# aos8-verification-final-fixes item 1: production role/config-assignment
+# verification reads must never request `full_list=True` -- only an
+# explicit bounded `limit`/`offset` page, with verification's own paging
+# (`MAX_VERIFICATION_EXTRA_PAGES`/`MAX_VERIFICATION_TOTAL_ITEMS`) owning
+# any subsequent pages under a hard cap.
+# --------------------------------------------------------------------------
+
+
+def test_role_assignment_verification_production_dispatcher_bounds_1000_item_backend(
+    monkeypatch,
+):
+    """A production account whose config-assignment collection has 1000
+    entries must never be requested/materialized in a single call: the
+    real `NewCentralAdapter` mapping, the real `_aos8_migration_read_invoker`
+    dispatcher, and the real `config_tools.list_config_assignments` curated
+    tool must together request only bounded pages (`limit`/`offset`, never
+    `full_list=True`), with the number of backend calls capped at
+    `1 + MAX_VERIFICATION_EXTRA_PAGES` and the total items inspected capped
+    at `MAX_VERIFICATION_TOTAL_ITEMS` -- proven here by placing the
+    candidate's own matching entry beyond that cap, which must never be
+    reached: the real backend response is 1000 entries every single call
+    (this endpoint has no server-side `limit`/`offset` support in
+    production either -- `list_config_assignments` sends only
+    scope-id/device-function/profile-type as query params), so finding the
+    match at all would mean the cap was not enforced.
+    """
+    from pipeline.aos8_migration_orchestrator import (
+        MAX_VERIFICATION_EXTRA_PAGES,
+        MAX_VERIFICATION_TOTAL_ITEMS,
+        _verify_assignment,
+    )
+
+    _stub_list_scopes(monkeypatch)
+    # The candidate's own identity ("employee") is placed at index 500,
+    # deep beyond any page/cap this process could safely fetch, so a
+    # correct, bounded implementation can never report it "verified".
+    body = {
+        "items": [
+            {
+                "scope-id": "100",
+                "device-function": "CAMPUS_AP",
+                "profile-type": "roles",
+                "profile-instance": "employee" if i == 500 else f"role-{i}",
+            }
+            for i in range(1000)
+        ]
+    }
+    fake_client = _FakeConfigAssignmentsClient(body)
+    monkeypatch.setattr("mcp_servers.config.get_client", lambda: fake_client)
+
+    from mcp_servers import config as config_tools
+
+    real_list_config_assignments = config_tools.list_config_assignments
+    page_item_counts: list[int] = []
+
+    def _counting_list_config_assignments(*args, **kwargs):
+        result = real_list_config_assignments(*args, **kwargs)
+        page_item_counts.append(len(result.get("items", [])))
+        return result
+
+    monkeypatch.setattr(
+        "mcp_servers.config.list_config_assignments", _counting_list_config_assignments
+    )
+
+    service = aos8._aos8_migration_orchestrator()
+    adapter = service.adapter_factory(_new_central_context())
+    role_candidate = {
+        "object_type": "role",
+        "identifier": "employee",
+        "payload": {"policies": ["allowall"], "vlan": 20},
+    }
+    action = adapter._map_candidate(role_candidate)
+
+    # The production mapping itself must declare an explicit bounded page,
+    # never full_list=True.
+    assignment_arguments = action.assignment_read_operation.arguments
+    assert assignment_arguments.get("full_list") is not True
+    page_size = assignment_arguments["limit"]
+    assert isinstance(page_size, int) and 0 < page_size <= 200
+
+    result = _verify_assignment(adapter, action)
+
+    max_calls = 1 + MAX_VERIFICATION_EXTRA_PAGES
+    # Only a bounded number of backend calls total -- never one call per
+    # entry, and never a single `full_list=True`-shaped call that received
+    # (and had to inspect) all 1000 entries at once.
+    assert len(fake_client.calls) <= max_calls
+    assert len(page_item_counts) == len(fake_client.calls)
+    # Every individual call returned only its own bounded page -- never
+    # the whole 1000-item backend response.
+    assert all(count <= page_size for count in page_item_counts)
+    # The aggregate across every page this process actually read never
+    # exceeds the hard total-items cap.
+    assert sum(page_item_counts) <= MAX_VERIFICATION_TOTAL_ITEMS
+    # The match was never reached (it sits beyond the cap), so this must
+    # never be reported as a definitive "verified" -- absence/uniqueness
+    # cannot be concluded from a still-truncated collection.
     assert result["status"] != "verified"

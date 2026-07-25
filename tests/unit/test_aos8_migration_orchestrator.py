@@ -174,6 +174,40 @@ class FakeBackend:
         return result
 
 
+def _paginated_collection_response(entries: list, *, list_key: str):
+    """Build a `FakeBackend.read_values[...]` callable that models a
+    realistically-paginated backend for `list_roles`/
+    `list_config_assignments`-shaped reads: it slices `entries` by the
+    real `operation.arguments["offset"]`/`["limit"]` the production
+    `aos8_target_adapters` mapping now declares (bounded, never
+    `full_list=True`), and reports `bound_collection_response`'s own
+    `_pagination` envelope shape (`offset`/`limit`/`total`/`truncated`)
+    so `_pagination_metadata_truncated` sees exactly what a real backend
+    would declare for each page -- required now that
+    `aos8_migration_orchestrator._pageable_operation` recognizes this
+    mapping as pageable and actually advances `offset` across calls
+    (a static, non-offset-aware fixture would make every "next page"
+    request re-return the same entries, which is not how a real backend
+    behaves and would spuriously look like duplicate/ambiguous matches).
+    """
+
+    def _respond(operation):
+        offset = int(operation.arguments.get("offset", 0))
+        limit = int(operation.arguments.get("limit", len(entries)))
+        page = entries[offset : offset + limit]
+        return {
+            list_key: page,
+            "_pagination": {
+                "offset": offset,
+                "limit": limit,
+                "total": len(entries),
+                "truncated": len(entries) > offset + len(page),
+            },
+        }
+
+    return _respond
+
+
 def target(target_type: str = "new_central", policy: str = "fail") -> dict:
     return {
         "type": target_type,
@@ -3055,6 +3089,54 @@ def test_classic_flat_full_wlan_response_reports_genuine_mismatch(tmp_path):
     assert fields["wlan.essid"]["actual"] == "WrongSSID"
 
 
+def test_classic_nested_mismatch_not_masked_by_matching_bare_sibling(tmp_path):
+    """aos8-verification-final-fixes item 2: alias precedence. When the
+    exact qualified expected path (e.g. `wlan.essid`) is itself present in
+    the actual flattened response, it must be compared exclusively -- a
+    bare/stripped alias (`_field_aliases`' Classic `wlan.`/`access_rule.`
+    bare-remainder alias) must never also be consulted, even when an
+    unrelated sibling container happens to carry a bare key of the same
+    stripped name whose value coincidentally equals the expected value.
+
+    Before this fix, `matches` unconditionally unioned the exact qualified
+    hit with every alias hit and accepted any of them
+    (`any(_comparable_equal(...) for actual in matches)`), so a genuine
+    `wlan.essid` mismatch was silently masked by an unrelated sibling
+    container's bare `essid` (`_flatten_fields`'s first-seen-wins bare
+    key) that happened to equal the expected value -- reporting a false
+    "match"/"verified" for a candidate whose real, qualified field
+    disagreed with the target."""
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    wlan = _classic_open_wlan_candidate()
+    run_id = "classic-nested-mismatch-bare-sibling"
+    service.create_run([wlan], target("classic_central"), run_id=run_id)
+    service.apply(run_id, dry_run=True, confirmation=False)
+    backend.read_values["central_api_read_back"] = {
+        "wlan": {"name": "Open1", "essid": "Open1", "opmode": "opensystem", "vlan": "20"}
+    }
+    service.apply(run_id, dry_run=False, confirmation=True)
+
+    # "decoy" is an unrelated top-level container with no relationship to
+    # this WLAN's own identity/fields, processed before "wlan" (Python
+    # dict/JSON insertion order) so `_flatten_fields`'s first-seen-wins
+    # bare key ends up "Open1" -- the *expected* value -- even though the
+    # real, qualified `wlan.essid` (the exact expected path) disagrees
+    # ("WrongSSID"). The exact qualified path must win regardless.
+    backend.read_values["central_api_read"] = {
+        "decoy": {"essid": "Open1"},
+        "wlan": {"name": "Open1", "essid": "WrongSSID", "opmode": "opensystem", "vlan": "20"},
+    }
+    result = service.verify(run_id)
+    comparison = result["comparisons"][0]
+    fields = {item["field"]: item for item in comparison["field_comparison"]}
+    assert fields["wlan.essid"]["status"] == "mismatch"
+    assert fields["wlan.essid"]["expected"] == "Open1"
+    assert fields["wlan.essid"]["actual"] == "WrongSSID"
+    assert comparison["verification_status"] == "failed"
+    assert "wlan.essid" in comparison["reason"]
+
+
 def test_classic_flat_full_wlan_response_partial_when_fields_missing(tmp_path):
     """Item 3, partial case: a flat response that legitimately omits
     several expected fields (rather than conflicting with them) must
@@ -3374,13 +3456,20 @@ def test_role_verification_downgrades_verified_to_partial_when_collection_trunca
     service.apply("role-dup-beyond", dry_run=True, confirmation=False)
     service.apply("role-dup-beyond", dry_run=False, confirmation=True)
 
-    # 51 total entries (1 match + 50 padding) exceeds MAX_RESULT_ITEMS, so
-    # `_sanitize` truncates and appends its bounding marker -- even though
-    # the match itself is visible (first of the 51).
-    padding = [{"name": f"other-role-{i}", "vlan-id": i} for i in range(50)]
-    backend.read_values["list_roles"] = {
-        "roles": [{"name": "employee", "vlan-id": 20, "allow-all": True}, *padding]
-    }
+    # 250 total, unique entries (1 match at the front + 249 distinct
+    # padding entries) -- large enough that even after verification's own
+    # bounded extra paging (`MAX_VERIFICATION_EXTRA_PAGES`/
+    # `MAX_VERIFICATION_TOTAL_ITEMS` -- 4 pages of 50 = 200 entries
+    # inspected) the collection remains truncated: the match itself is
+    # visible (first entry, first page), but 50 further entries are never
+    # read at all, so uniqueness can never be concluded.
+    entries = [
+        {"name": "employee", "vlan-id": 20, "allow-all": True},
+        *[{"name": f"other-role-{i}", "vlan-id": i} for i in range(249)],
+    ]
+    backend.read_values["list_roles"] = _paginated_collection_response(
+        entries, list_key="roles"
+    )
     backend.read_values["list_config_assignments"] = {
         "items": [
             {
@@ -3401,9 +3490,10 @@ def test_role_verification_detects_backend_pagination_metadata_truncation(tmp_pa
     """Item 8: backend-declared pagination metadata (`total`/`count`/next
     cursor, e.g. `bound_collection_response`'s own `_pagination` shape)
     must be detected as a truncation signal independent of `_sanitize`'s
-    own 50-item bound -- a small returned page whose own metadata says
-    more entries exist must never be treated as a complete, definitive
-    collection read."""
+    own 50-item bound -- across several realistically-paginated reads
+    (each individual page well under the 50-item bound), a persistently
+    truncated collection must never be treated as a complete, definitive
+    read."""
     backend = FakeBackend()
     service, _ = orchestrator(tmp_path, backend)
     role = candidate("role", "employee", payload={"policies": ["allowall"], "vlan": 20})
@@ -3411,10 +3501,13 @@ def test_role_verification_detects_backend_pagination_metadata_truncation(tmp_pa
     service.apply("role-pagination-meta", dry_run=True, confirmation=False)
     service.apply("role-pagination-meta", dry_run=False, confirmation=True)
 
-    backend.read_values["list_roles"] = {
-        "roles": [{"name": "employee", "vlan-id": 20, "allow-all": True}],
-        "_pagination": {"offset": 0, "limit": 1, "total": 200, "truncated": True},
-    }
+    entries = [
+        {"name": "employee", "vlan-id": 20, "allow-all": True},
+        *[{"name": f"other-role-{i}", "vlan-id": i} for i in range(249)],
+    ]
+    backend.read_values["list_roles"] = _paginated_collection_response(
+        entries, list_key="roles"
+    )
     backend.read_values["list_config_assignments"] = {
         "items": [
             {
@@ -3448,21 +3541,31 @@ def test_role_assignment_verification_downgrades_when_pagination_metadata_trunca
     backend.read_values["list_roles"] = {
         "roles": [{"name": "employee", "vlan-id": 20, "allow-all": True}]
     }
-    backend.read_values["list_config_assignments"] = {
-        "items": [
+    assignment_entries = [
+        {
+            "scope-id": "100",
+            "device-function": "CAMPUS_AP",
+            "profile-type": "roles",
+            "profile-instance": "employee",
+        },
+        *[
             {
                 "scope-id": "100",
                 "device-function": "CAMPUS_AP",
                 "profile-type": "roles",
-                "profile-instance": "employee",
+                "profile-instance": f"other-role-{i}",
             }
+            for i in range(249)
         ],
-        "_pagination": {"offset": 0, "limit": 1, "total": 30, "truncated": True},
-    }
+    ]
+    backend.read_values["list_config_assignments"] = _paginated_collection_response(
+        assignment_entries, list_key="items"
+    )
     result = service.verify("assignment-pagination-meta")
     comparison = result["comparisons"][0]
     assert comparison["assignment_verification"]["status"] == "partially_verified"
     assert comparison["verification_status"] == "partially_verified"
+
 
 
 def test_role_verification_exact_boundary_not_falsely_flagged_truncated(tmp_path):

@@ -1914,12 +1914,28 @@ class AOS8MigrationOrchestrator:
         verified_fields: list[str] = []
         unverifiable_fields: list[str] = []
         for field, expected_value in expected.items():
-            aliases = _field_aliases(field)
-            matches = [
-                target_fields[alias]
-                for alias in aliases
-                if alias in target_fields
-            ]
+            if field in target_fields:
+                # The exact qualified expected path is itself present in
+                # the actual flattened response -- compare it exclusively,
+                # whether it matches or not. A bare/stripped alias (e.g.
+                # `_field_aliases`' Classic `wlan.`/`access_rule.`
+                # bare-remainder alias) must never be consulted once the
+                # exact path is present: an unrelated sibling field that
+                # happens to share the same bare remainder name (e.g. a
+                # different container's `essid`) could otherwise silently
+                # paper over a genuine mismatch in the exact expected path.
+                # Aliases are only ever a fallback for when the exact
+                # qualified path itself was not returned at all (e.g. a
+                # flat Classic response with no `wlan`/`access_rule`
+                # wrapper) -- see the `else` branch below.
+                matches = [target_fields[field]]
+            else:
+                aliases = _field_aliases(field)
+                matches = [
+                    target_fields[alias]
+                    for alias in aliases
+                    if alias in target_fields
+                ]
             if not matches:
                 # Explicitly reported, not silently skipped: the target read
                 # simply did not return this field (e.g. it is write-only, or
@@ -2298,12 +2314,15 @@ def _pageable_operation(operation: Any) -> bool:
     """True when `operation` explicitly declares numeric `limit`/`offset`
     arguments (and not `full_list=True`), so an additional bounded page can
     safely be requested with the same tool by advancing `offset` -- never
-    guessed for an operation whose arguments give no such signal (e.g. the
-    current `list_roles`/`list_config_assignments` mappings, which always
-    request `full_list=True` -- the backend already returned everything it
-    has in one call, so re-issuing the identical call would not surface
-    anything new; only `_sanitize`'s own safety bounding limits what this
-    process inspects in that case, and paging cannot fix that).
+    guessed for an operation whose arguments give no such signal. The
+    production `list_roles`/`list_config_assignments` mappings
+    (`aos8_target_adapters.NewCentralAdapter._map_role`) always declare an
+    explicit bounded `limit`/`offset` page for exactly this reason -- an
+    operation that instead requested `full_list=True` would have already
+    had the backend return everything it has in one call, so re-issuing
+    the identical call would not surface anything new; only `_sanitize`'s
+    own safety bounding would limit what this process inspects in that
+    case, and paging could not fix that.
     """
     if operation.invocation != "tool":
         return False
