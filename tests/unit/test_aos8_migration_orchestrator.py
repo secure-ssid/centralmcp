@@ -14,6 +14,7 @@ from pipeline.aos8_migration_orchestrator import (
     MalformedMigrationStateError,
     MigrationRunError,
     MigrationRunStore,
+    _target_context,
 )
 from pipeline.aos8_target_adapters import (
     ClassicCentralAdapter,
@@ -822,3 +823,235 @@ def test_verify_detects_incomplete_server_group_servers_array(tmp_path):
     assert fields["servers[1].server_name"]["status"] == "unverifiable"
     assert fields["servers[1].position"]["status"] == "unverifiable"
     assert comparison["verification_status"] == "partially_verified"
+
+
+# --------------------------------------------------------------------------
+# Finding #3 regression: numeric Classic group names are accepted end-to-end
+# (no spelling-based `.isdigit()` rejection anywhere in the orchestration
+# path).
+# --------------------------------------------------------------------------
+
+
+def test_classic_numeric_group_name_accepted_end_to_end_through_orchestrator(tmp_path):
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    numeric_target = target("classic_central")
+    numeric_target["scope_name"] = "12345"
+    wlan = candidate(
+        "wlan",
+        "Guest",
+        payload={
+            "name": "Guest",
+            "essid": "Guest",
+            "vlan": 20,
+            "aaa_profile": None,
+            "security": {
+                "mode": "open",
+                "opmode": "open",
+                "ambiguous": False,
+                "aaa_profile": None,
+                "dot1x_auth_profile": None,
+                "mac_auth_profile": None,
+                "passphrase_present": False,
+                "psk_hexkey_present": False,
+                "wpa3_transition": False,
+                "evidence": [],
+            },
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "open",
+            "virtual_ap.forward_mode": "bridge",
+        },
+    )
+    preview = service.preview([wlan], numeric_target)
+    assert preview["target"]["scope_name"] == "12345"
+    assert preview["operations"][0]["status"] == "ready"
+
+
+# --------------------------------------------------------------------------
+# Finding #5 regression: operator-context bounding/validation and backward
+# compatibility with persisted 0.4-era target dictionaries.
+# --------------------------------------------------------------------------
+
+
+def test_target_context_backward_compatible_with_pre_operator_context_state():
+    # A 0.4-era persisted `run["target"]` dict predates
+    # `external_object_references`/`ap_group_target_map`/
+    # `ap_group_device_serials` entirely -- it must load without error and
+    # fall back to empty collections.
+    legacy_target = {
+        "type": "classic_central",
+        "scope_id": "classic-id",
+        "scope_name": "Branch Group",
+        "persona": "CAMPUS_AP",
+        "conflict_policy": "fail",
+        "cluster_name": None,
+        "cluster_scope_id": None,
+        "gateway_name": None,
+        "gateway_scope_id": None,
+    }
+    context = _target_context(legacy_target)
+    assert context.external_object_references == {}
+    assert context.ap_group_target_map == {}
+    assert context.ap_group_device_serials == {}
+
+
+def test_target_context_rejects_oversized_external_object_references():
+    too_many = {f"wlan:candidate-{i}": {"auth_server1": "Server"} for i in range(200)}
+    bad_target = {**target("classic_central"), "external_object_references": too_many}
+    with pytest.raises(MigrationRunError, match="external_object_references"):
+        _target_context(bad_target)
+
+
+def test_target_context_rejects_oversized_string_in_ap_group_target_map():
+    bad_target = {
+        **target("classic_central"),
+        "ap_group_target_map": {"ap-group-hq": "x" * 500},
+    }
+    with pytest.raises(MigrationRunError, match="ap_group_target_map"):
+        _target_context(bad_target)
+
+
+def test_target_context_rejects_secret_looking_reference_name():
+    bad_target = {
+        **target("classic_central"),
+        "external_object_references": {
+            "wlan:Corp": {"radius_shared_secret": "hunter2"}
+        },
+    }
+    with pytest.raises(MigrationRunError, match="secret"):
+        _target_context(bad_target)
+
+
+def test_target_context_bounds_ap_group_device_serials_per_group():
+    bad_target = {
+        **target("classic_central"),
+        "ap_group_device_serials": {"ap-group-hq": [f"CN{i}" for i in range(100)]},
+    }
+    with pytest.raises(MigrationRunError, match="ap_group_device_serials"):
+        _target_context(bad_target)
+
+
+def test_target_context_accepts_bounded_operator_context_and_converts_serials_to_tuple():
+    good_target = {
+        **target("classic_central"),
+        "external_object_references": {"wlan:Corp": {"auth_server1": "InternalServer"}},
+        "ap_group_target_map": {"ap-group-hq": "HQ-Group"},
+        "ap_group_device_serials": {"ap-group-hq": ["CN1234", "CN5678"]},
+    }
+    context = _target_context(good_target)
+    assert context.external_object_references == {
+        "wlan:Corp": {"auth_server1": "InternalServer"}
+    }
+    assert context.ap_group_target_map == {"ap-group-hq": "HQ-Group"}
+    assert context.ap_group_device_serials == {"ap-group-hq": ("CN1234", "CN5678")}
+
+
+def _wpa3_enterprise_candidate(name="Enterprise-Test", vlan=40):
+    return candidate(
+        "wlan",
+        name,
+        payload={
+            "name": name,
+            "essid": name,
+            "vlan": vlan,
+            "aaa_profile": "corp-aaa",
+            "security": {
+                "mode": "enterprise_dot1x",
+                "opmode": "wpa3-aes-ccm-128",
+                "ambiguous": False,
+                "aaa_profile": "corp-aaa",
+                "dot1x_auth_profile": "corp-dot1x",
+                "mac_auth_profile": None,
+                "passphrase_present": False,
+                "psk_hexkey_present": False,
+                "wpa3_transition": False,
+                "evidence": [],
+            },
+        },
+        unsupported_fields={
+            "ssid_profile.opmode": "wpa3-aes-ccm-128",
+            "virtual_ap.forward_mode": "bridge",
+        },
+    )
+
+
+def test_wpa3_enterprise_reachable_end_to_end_via_orchestrator_preview_and_create_run(
+    tmp_path,
+):
+    # Full propagation path: operator-context supplied at `preview()`/
+    # `create_run()` reaches `TargetContext.external_object_references`,
+    # which is what makes WPA3-Enterprise's conditional dry-run reachable
+    # instead of permanently "unsupported" for missing auth_server1.
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    wpa3_target = {
+        **target("classic_central"),
+        "external_object_references": {
+            "wlan:Enterprise-Test": {"auth_server1": "InternalServer"}
+        },
+    }
+    wlan = _wpa3_enterprise_candidate()
+
+    preview = service.preview([wlan], wpa3_target)
+    assert preview["target"]["external_object_references"] == {
+        "wlan:Enterprise-Test": {"auth_server1": "InternalServer"}
+    }
+    action = preview["operations"][0]
+    assert action["status"] == "ready"
+    assert action["dry_run_only"] is True
+
+    created = service.create_run([wlan], wpa3_target, run_id="wpa3-ent")
+    # `create_run` maps preview's "ready" into the retryable "pending"
+    # apply-state -- the important assertion is that it is *not*
+    # "unsupported"/"blocked" (which is what a missing auth_server1
+    # reference would produce).
+    assert created["candidates"][0]["status"] == "pending"
+    assert created["candidates"][0]["retryable"] is True
+
+    dry_run = service.apply("wpa3-ent", dry_run=True, confirmation=False)
+    assert dry_run["candidates"][0]["dry_run_ok"] is True
+
+    # Real (non-dry-run) execution stays refused -- WPA3-Enterprise remains
+    # conditional/dry-run-only even with the auth-server reference supplied.
+    blocked = service.apply("wpa3-ent", dry_run=False, confirmation=True)
+    assert blocked["candidates"][0]["status"] == "blocked"
+
+
+def test_wpa3_enterprise_mcp_preview_and_create_run_propagate_operator_context(
+    tmp_path, monkeypatch
+):
+    # End-to-end through the real MCP tool signatures
+    # (`aos8_preview_migration_run`/`aos8_create_migration_run`), confirming
+    # `external_object_references` reaches the adapter via the MCP boundary,
+    # not just via a direct orchestrator/adapter call.
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    monkeypatch.setattr(aos8, "_aos8_migration_orchestrator", lambda: service)
+    wlan = _wpa3_enterprise_candidate()
+
+    preview = aos8.aos8_preview_migration_run(
+        "classic_central",
+        candidates=[wlan],
+        scope_name="Branch Group",
+        external_object_references={
+            "wlan:Enterprise-Test": {"auth_server1": "InternalServer"}
+        },
+    )
+    assert preview["operations"][0]["status"] == "ready"
+    assert preview["operations"][0]["dry_run_only"] is True
+    assert preview["target"]["external_object_references"] == {
+        "wlan:Enterprise-Test": {"auth_server1": "InternalServer"}
+    }
+
+    created = aos8.aos8_create_migration_run(
+        "classic_central",
+        candidates=[wlan],
+        scope_name="Branch Group",
+        external_object_references={
+            "wlan:Enterprise-Test": {"auth_server1": "InternalServer"}
+        },
+        run_id="mcp-wpa3-ent",
+    )
+    assert created["candidates"][0]["status"] == "pending"
+    assert created["candidates"][0]["retryable"] is True

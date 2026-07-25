@@ -35,6 +35,30 @@ class WriteGateError(PermissionError):
     """Execution was attempted without all required write gates."""
 
 
+class ReadStatusError(RuntimeError):
+    """Raised by a ``read_invoker`` to carry an HTTP-like status code
+    alongside a failed preflight or read-back read.
+
+    Production read invokers (e.g. `CentralClient.get()`, which calls
+    `response.raise_for_status()`) raise on *any* non-2xx response --
+    including a normal, expected 404 for "this item does not exist yet,
+    safe to create". Without a status-aware signal, that safe-to-create
+    case is indistinguishable from an account/endpoint-unavailable error,
+    an auth failure, or a genuine server error, and a caller could either
+    (a) wrongly treat every read failure as a hard block, or (b) wrongly
+    treat every read failure as "absent, proceed to create". Both are
+    unsafe. A read_invoker that wants status-aware preflight/read-back
+    handling should raise this (or a subclass) with ``status_code`` set;
+    adapters that don't recognize a given status code fall back to the
+    fail-closed default ("blocked") via
+    `BaseCentralTargetAdapter._classify_read_status_error`.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 @dataclass(frozen=True)
 class TargetContext:
     target_type: TargetType
@@ -47,6 +71,23 @@ class TargetContext:
     gateway_scope_id: str | None = None
     conflict_policy: ConflictPolicy = ConflictPolicy.FAIL
     secret_inputs: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    # Explicit, operator-supplied non-secret object references required by a
+    # narrow set of conditional/dry-run-only mappings (e.g. an already-existing
+    # Classic auth-server profile name for WPA3-Enterprise). Never a secret;
+    # never used to invent/auto-provision a missing dependency.
+    external_object_references: Mapping[str, Mapping[str, str]] = field(
+        default_factory=dict
+    )
+    # Explicit, operator-provided AOS8 ap_group name -> Classic Central group
+    # name mapping. AOS8 AP groups are never automatically translated into a
+    # Classic group; the operator must name the target group themselves.
+    ap_group_target_map: Mapping[str, str] = field(default_factory=dict)
+    # Explicit, operator-provided AOS8 ap_group name -> device serial numbers
+    # to move into the mapped Classic group. Never inferred from the AOS8
+    # export (which carries no device/serial data today).
+    ap_group_device_serials: Mapping[str, tuple[str, ...]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -105,6 +146,31 @@ class CandidateAction:
     # verified delete/rollback path exists yet for this mapping (distinct
     # from an empty list, which would mean "verified: nothing to delete").
     delete_operations: list[Operation] | None = None
+    # Bounded, single-item post-write verification read. Distinct from
+    # `read_operation` (preflight, run before any write): this is metadata an
+    # orchestrator uses *after* a write to confirm it actually applied — never
+    # trust a successful write response alone (see the Classic group-create
+    # read-back footgun cited in the contract matrix, §3 item 8).
+    read_back_operation: Operation | None = None
+    # Field name -> expected value pairs that the mandatory post-write
+    # read-back response must actually contain (searched recursively, since
+    # the exact response envelope shape is not always identical to the
+    # request body shape). Never invented for its own sake: only populated
+    # when a mapping actually knows which fields the target API is supposed
+    # to echo back. Empty means "identifier match alone is the read-back
+    # bar" -- still stronger than trusting a bare write-success response.
+    read_back_expectations: Mapping[str, Any] = field(default_factory=dict)
+    # Metadata-only rollback (e.g. Classic full_wlan DELETE) describing how to
+    # undo this candidate's write. Never auto-invoked by `_invoke_actions`; an
+    # orchestrator must call it explicitly after confirming a rollback is
+    # actually desired.
+    rollback_operations: list[Operation] = field(default_factory=list)
+    # When True, this action is previewable/dry-run-only: `execute(dry_run=False)`
+    # always refuses to invoke its write operations, regardless of confirmation
+    # or write-gate state, until `dry_run_only_reason`'s precondition has live
+    # evidence recorded in the migration contract matrix.
+    dry_run_only: bool = False
+    dry_run_only_reason: str | None = None
     inline_dependencies: set[str] = field(default_factory=set)
     compatibility_errors: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
@@ -137,8 +203,31 @@ _REDACTED_MARKERS = {
 
 
 def _mask_mapping(value: Mapping[str, Any], sensitive_fields: Iterable[str]) -> dict[str, Any]:
-    sensitive = set(sensitive_fields)
-    return {key: "***" if key in sensitive else item for key, item in value.items()}
+    """Mask top-level sensitive keys plus one level of dotted-path nesting.
+
+    A field name containing a literal ``.`` (e.g. ``"wlan.wpa_passphrase"``)
+    masks ``value["wlan"]["wpa_passphrase"]`` instead of only matching a
+    top-level key named ``"wlan.wpa_passphrase"``. This lets a nested Classic
+    `full_wlan` secret (`{"wlan": {"wpa_passphrase": ...}}`) be redacted from
+    preview output without collapsing the whole `wlan` object.
+    """
+    top: set[str] = set()
+    nested: dict[str, set[str]] = {}
+    for field_name in sensitive_fields:
+        if "." in field_name:
+            head, _, rest = field_name.partition(".")
+            nested.setdefault(head, set()).add(rest)
+        else:
+            top.add(field_name)
+    masked: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in top:
+            masked[key] = "***"
+        elif key in nested and isinstance(item, Mapping):
+            masked[key] = _mask_mapping(item, nested[key])
+        else:
+            masked[key] = item
+    return masked
 
 
 def _candidate_key(candidate: Mapping[str, Any]) -> str:
@@ -249,6 +338,73 @@ def _contains_identifier(value: Any, identifier: str) -> bool:
             return True
         return any(_contains_identifier(item, identifier) for item in value.values())
     return False
+
+
+def _field_value_matches(
+    value: Any, field_name: str, expected: Any, *, _depth: int = 0
+) -> bool:
+    """Recursively (bounded depth) search a read-back response for a key
+    literally named `field_name` whose value string-matches `expected`.
+
+    The exact envelope of a Classic `full_wlan` GET response is not
+    guaranteed to mirror the create/update request body 1:1 (e.g. it may be
+    flat where the request was `{"wlan": {...}}`), so this deliberately does
+    not assume a fixed shape -- it only assumes the target API echoes the
+    same field *names* it accepted, which is the ordinary expectation for a
+    symmetric REST resource.
+    """
+    if _depth > 4:
+        return False
+    if isinstance(value, Mapping):
+        if field_name in value and str(value[field_name]) == str(expected):
+            return True
+        return any(
+            _field_value_matches(item, field_name, expected, _depth=_depth + 1)
+            for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(
+            _field_value_matches(item, field_name, expected, _depth=_depth + 1)
+            for item in value
+        )
+    return False
+
+
+def _read_back_mismatches(existing: Any, expectations: Mapping[str, Any]) -> list[str]:
+    """Return one message per expected read-back field that was not found
+    with a matching value anywhere in the (bounded-depth) response."""
+    return [
+        f"{field_name}={expected!r} was not confirmed in the post-write read-back response"
+        for field_name, expected in expectations.items()
+        if not _field_value_matches(existing, field_name, expected)
+    ]
+
+
+def _write_result_rejection_reason(value: Any) -> str | None:
+    """Return a human-readable rejection reason if a write-invoker result
+    itself signals a non-2xx/rejected outcome, even though the invoker did
+    not raise. A write invoker returning normally is not sufficient proof a
+    write succeeded (contract matrix footgun: Classic Central group/device
+    writes are known to report success without applying) -- but *some*
+    invokers do carry an explicit status/ok/error signal in their return
+    value, and when present it must never be silently ignored.
+
+    Invokers that carry no such signal (e.g. a tool call whose return value
+    has no `status_code`/`ok`/`error` convention) are left alone here; the
+    mandatory read-back (`read_back_operation`) is the actual authority for
+    those, not this best-effort check.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    status_code = value.get("status_code")
+    if isinstance(status_code, int) and not 200 <= status_code < 300:
+        return f"write response status_code={status_code} indicates the write was rejected"
+    if value.get("ok") is False:
+        return "write response reported ok=False"
+    error = value.get("error")
+    if isinstance(error, str) and error.strip():
+        return f"write response reported an error: {error.strip()}"
+    return None
 
 
 def _topological_candidates(
@@ -400,16 +556,39 @@ class BaseCentralTargetAdapter:
             elif action.read_operation is not None:
                 try:
                     existing = self.read_invoker(action.read_operation)
-                    match_identifier = action.read_operation.match_identifier or str(
-                        candidate.get("identifier")
-                    )
-                    if _contains_identifier(existing, match_identifier):
-                        self._apply_conflict_policy(action)
+                except ReadStatusError as exc:
+                    classification = self._classify_read_status_error(exc)
+                    if classification is None:
+                        action.status = "blocked"
+                        action.blockers.append(
+                            f"preflight read failed (status={exc.status_code}): {exc}"
+                        )
                     else:
-                        action.conflict = "absent"
+                        kind, message = classification
+                        if kind == "absent":
+                            action.conflict = "absent"
+                        elif kind == "unsupported":
+                            action.compatibility_errors.append(message or str(exc))
+                            action.status = "unsupported"
+                        else:
+                            action.status = "blocked"
+                            action.blockers.append(message or f"preflight read failed: {exc}")
                 except Exception as exc:
                     action.status = "blocked"
                     action.blockers.append(f"preflight read failed: {exc}")
+                else:
+                    unavailable = self._read_unavailable_reason(existing)
+                    if unavailable:
+                        action.compatibility_errors.append(unavailable)
+                        action.status = "unsupported"
+                    else:
+                        match_identifier = action.read_operation.match_identifier or str(
+                            candidate.get("identifier")
+                        )
+                        if _contains_identifier(existing, match_identifier):
+                            self._apply_conflict_policy(action)
+                        else:
+                            action.conflict = "absent"
             actions.append(action)
 
         preview = {
@@ -423,6 +602,15 @@ class BaseCentralTargetAdapter:
                 "gateway_name": self.context.gateway_name,
                 "gateway_scope_id": self.context.gateway_scope_id,
                 "conflict_policy": self.context.conflict_policy.value,
+                "external_object_references": {
+                    key: dict(value)
+                    for key, value in self.context.external_object_references.items()
+                },
+                "ap_group_target_map": dict(self.context.ap_group_target_map),
+                "ap_group_device_serials": {
+                    key: list(value)
+                    for key, value in self.context.ap_group_device_serials.items()
+                },
             },
             "dry_run": True,
             "write_gate_requirements": {
@@ -434,6 +622,39 @@ class BaseCentralTargetAdapter:
             "operations": [self._action_preview(action) for action in actions],
         }
         return preview, actions
+
+    def _read_unavailable_reason(self, existing: Any) -> str | None:
+        """Override to detect a preflight read that succeeded but indicates
+        the underlying object API itself is unavailable for this account or
+        target (distinct from "this specific item does not exist yet", which
+        is a normal, safe-to-create `absent` result). Returning a non-empty
+        string marks the candidate `unsupported` with that message instead of
+        treating it as `absent`."""
+        return None
+
+    def _classify_read_status_error(
+        self, exc: ReadStatusError
+    ) -> tuple[str, str] | None:
+        """Classify a status-carrying preflight read failure.
+
+        Return ``(kind, message)`` where ``kind`` is one of:
+
+        - ``"absent"``: this specific item does not exist yet; safe to
+          proceed to create (message is ignored).
+        - ``"unsupported"``: the endpoint/account itself is unavailable
+          (auth, entitlement, etc.); reported with ``message``.
+        - ``"blocked"``: a transient/ambiguous failure; reported with
+          ``message``.
+
+        Return ``None`` to fall back to the default fail-closed behavior
+        (``"blocked"`` with the raw exception text) -- the base
+        implementation always returns ``None`` because it does not know any
+        specific target API's status-code semantics. Only an adapter with a
+        verified contract for what a given status code means (e.g. Classic
+        `full_wlan`'s 404-means-absent semantics) should return anything
+        else.
+        """
+        return None
 
     def _apply_conflict_policy(self, action: CandidateAction) -> None:
         policy = self.context.conflict_policy
@@ -488,13 +709,25 @@ class BaseCentralTargetAdapter:
                 if action.delete_operations is not None
                 else None
             ),
+            "read_back": (
+                action.read_back_operation.with_dry_run(True).preview_dict()
+                if action.read_back_operation is not None
+                else None
+            ),
+            "rollback": [
+                operation.with_dry_run(True).preview_dict()
+                for operation in action.rollback_operations
+            ],
             # 0.5: rollback/reversal is NOT an executable feature. `delete_
-            # operations` above (when present) is retained purely as non-
-            # executable manual/future reference metadata -- no adapter,
-            # orchestrator, or MCP method invokes it in this release. Do not
-            # reintroduce a "verified_rollback_available"-style claim without
-            # also shipping a real, gated rollback execution path.
+            # operations`/`read_back`/`rollback` above (when present) are
+            # retained purely as non-executable manual/future reference
+            # metadata -- no adapter, orchestrator, or MCP method invokes
+            # them in this release. Do not reintroduce a
+            # "verified_rollback_available"-style claim without also
+            # shipping a real, gated rollback execution path.
             "rollback_supported": False,
+            "dry_run_only": action.dry_run_only,
+            "dry_run_only_reason": action.dry_run_only_reason,
             "warnings": sorted(set(candidate.get("warnings", []))),
             "unsupported_warnings": sorted(action.compatibility_errors),
             "blockers": sorted(action.blockers),
@@ -590,6 +823,23 @@ class BaseCentralTargetAdapter:
                     }
                 )
                 continue
+            if action.dry_run_only and not dry_run:
+                results.append(
+                    {
+                        "candidate": action.key,
+                        "status": "blocked",
+                        "results": [],
+                        "errors": [
+                            action.dry_run_only_reason
+                            or (
+                                "this candidate is conditional/dry-run-only pending "
+                                "live validation; real (non-dry-run) execution is "
+                                "refused"
+                            )
+                        ],
+                    }
+                )
+                continue
 
             operation_results: list[dict[str, Any]] = []
             errors: list[str] = []
@@ -597,10 +847,48 @@ class BaseCentralTargetAdapter:
                 invoked = operation.with_dry_run(dry_run)
                 try:
                     value = self.write_invoker(invoked, confirmation=confirmation)
-                    operation_results.append({"operation": invoked.preview_dict(), "result": value})
                 except Exception as exc:
                     errors.append(f"{operation.name}: {exc}")
                     break
+                rejection = _write_result_rejection_reason(value)
+                if rejection:
+                    errors.append(f"{operation.name}: {rejection}")
+                    break
+                operation_results.append({"operation": invoked.preview_dict(), "result": value})
+            # A write invoker returning without raising and without an
+            # explicit rejection signal is still not proof the change
+            # actually applied (contract matrix footgun: Classic group/
+            # device writes are known to report success without applying).
+            # Wherever a mandatory `read_back_operation` exists, a real
+            # (non-dry-run) write is only ever reported "applied" after that
+            # bounded read confirms both the identifier and every declared
+            # `read_back_expectations` field.
+            if not errors and not dry_run and action.read_back_operation is not None:
+                try:
+                    confirmed = self.read_invoker(action.read_back_operation)
+                except Exception as exc:
+                    errors.append(f"read_back verification failed: {exc}")
+                else:
+                    match_identifier = (
+                        action.read_back_operation.match_identifier
+                        or str(action.candidate.get("identifier"))
+                    )
+                    if not _contains_identifier(confirmed, match_identifier):
+                        errors.append(
+                            "read_back verification failed: identifier "
+                            f"{match_identifier!r} was not confirmed in the "
+                            "post-write read-back response (a write response "
+                            "alone is not proof the change applied)"
+                        )
+                    else:
+                        mismatches = _read_back_mismatches(
+                            confirmed, action.read_back_expectations
+                        )
+                        if mismatches:
+                            errors.append(
+                                "read_back verification failed: "
+                                + "; ".join(mismatches)
+                            )
             status = "failed" if errors else ("dry-run" if dry_run else "applied")
             if not errors:
                 successful.add(action.key)
@@ -1621,8 +1909,176 @@ class NewCentralAdapter(BaseCentralTargetAdapter):
         )
 
 
+# Precise, per-family manual guidance for AOS8 candidate object types that have
+# no verified Classic Central object REST in the audited surface (contract
+# matrix §5/§6.3-§6.13). These are never a live write path; the guidance
+# exists to make the *reason* and the safe manual/AP-CLI/template fallback
+# explicit instead of a single generic "not verified" message for every type.
+_CLASSIC_MANUAL_FAMILY_GUIDANCE: dict[str, str] = {
+    "aaa_profile": "No verified Classic Central object REST exists for AAA profiles.",
+    "dot1x_auth_profile": (
+        "No verified Classic Central object REST exists for device 802.1X "
+        "authentication profiles."
+    ),
+    "mac_auth_profile": (
+        "No verified Classic Central object REST exists for device MAC-auth "
+        "profiles."
+    ),
+    "server_group": "No verified Classic Central object REST exists for server groups.",
+    "auth_server": (
+        "No verified Classic Central object REST exists for RADIUS/LDAP/TACACS "
+        "auth servers."
+    ),
+    "role": "No verified Classic Central object REST exists for roles.",
+    "policy": (
+        "No verified Classic Central object REST exists for session ACLs/policies."
+    ),
+    "route": "No verified Classic Central object REST exists for IPv4/IPv6 static routes.",
+    "vrrp": "No verified Classic Central object REST exists for VRRP/VRRPv6/tracking.",
+    "controller": (
+        "AOS8 controllers/Mobility Conductors are not migrated as Classic Central "
+        "objects; onboard replacement gateways/APs individually."
+    ),
+}
+
+# Actionable, mode-specific guidance for AOS8 WLAN security intents that remain
+# blocked on the Classic target without live goldens (contract matrix §6.2).
+# Every message names *why* it is blocked so an operator/orchestrator never
+# has to guess whether it is a temporary gap or a permanent rejection.
+_CLASSIC_WLAN_MODE_GUIDANCE: dict[str, str] = {
+    "wpa2_personal": (
+        "WPA2-Personal has a separate, documented Classic v2 WLAN contract that "
+        "has not been reconciled with this full_wlan (v1) shape in this "
+        "repository; the two are never interchangeable. Recreate this "
+        "WPA2-Personal WLAN manually until the v2 contract's exact "
+        "method/path/body/read-back/update/delete semantics are read live "
+        "against the same target group and recorded in the migration contract "
+        "matrix."
+    ),
+    "wpa3_transition_personal": (
+        "WPA2/WPA3 transition (mixed personal) mode is ambiguous in the "
+        "audited Classic samples; no live confirmation of the exact "
+        "opmode/transition-flag behavior exists in this repository. Recreate "
+        "this transition WLAN manually."
+    ),
+    "enhanced_open": (
+        "Enhanced Open (OWE) has no verified Classic full_wlan opmode value "
+        "recorded in this repository. Recreate this WLAN manually until an "
+        "official sample or live read confirms the exact opmode token."
+    ),
+    "mac_auth_only": (
+        "MAC-authentication WLANs require an AOS8 aaa_profile/server-group "
+        "dependency chain with no verified Classic Central object REST in "
+        "this repository. Recreate this WLAN and its MAC-auth policy "
+        "manually."
+    ),
+    "mac_auth_psk": (
+        "MAC-auth + PSK WLANs carry the same unverified AAA/server-group "
+        "dependency chain as MAC-auth-only. Recreate this WLAN manually."
+    ),
+    "unknown": (
+        "Source security intent could not be classified from the AOS8 export "
+        "(ambiguous opmode/passphrase/aaa_profile signal). Confirm the real "
+        "opmode and credential material by hand before recreating this WLAN."
+    ),
+}
+
+
 class ClassicCentralAdapter(BaseCentralTargetAdapter):
     target_type = TargetType.CLASSIC_CENTRAL
+
+    def __init__(self, context: TargetContext, **kwargs: Any) -> None:
+        super().__init__(context, **kwargs)
+        self._validate_classic_target_context()
+
+    def _validate_classic_target_context(self) -> None:
+        """Fail closed unless `scope_name` is a non-empty explicit Classic
+        group name, GUID, or device serial number — the literal `full_wlan`
+        `{group_name_or_guid_or_serial_number}` path segment
+        (developer.arubanetworks.com/central/reference/apifull_wlancreate_wlan).
+
+        This deliberately does *not* reject purely numeric values: a Classic
+        group name is an operator-chosen string with no format constraint,
+        and a numeric-looking name (e.g. a site number used as a group name)
+        is a legitimate value the operator may have explicitly declared. The
+        real hazard this adapter must guard against is a *New Central*
+        `scope_id` being silently fed into the Classic path -- and that is
+        prevented structurally, not by pattern-matching the string: the
+        Classic-specific target resolver wired up at the MCP/orchestrator
+        boundary (`mcp_servers.aos8._aos8_migration_classic_target_resolver`)
+        never performs the New Central `/scopes` lookup and requires the
+        caller to explicitly supply `scope_name` as the literal Classic
+        target string. There is therefore nothing left for this adapter to
+        (unreliably) guess from formatting alone.
+        """
+        scope_name = str(self.context.scope_name or "").strip()
+        if not scope_name:
+            raise ContextValidationError(
+                "ClassicCentralAdapter requires an explicit Classic group name, "
+                "GUID, or device serial number for the full_wlan "
+                "{group_name_or_guid_or_serial_number} path segment "
+                "(developer.arubanetworks.com/central/reference/"
+                "apifull_wlancreate_wlan)."
+            )
+
+    def _classify_read_status_error(
+        self, exc: ReadStatusError
+    ) -> tuple[str, str] | None:
+        """Classic `full_wlan` GET status-code semantics (bounded single-item
+        path): a 404 on the `{group}/{wlan_name}` path means this specific
+        WLAN does not exist yet in an otherwise-valid group -- safe to
+        proceed to create. A 401/403 means the credentials/entitlement for
+        the full_wlan API itself are the problem, not the item -- reported as
+        `unsupported` with actionable guidance rather than silently blocked.
+        Any other status (400/5xx/etc.) is deliberately left unclassified
+        (falls back to the base "blocked" behavior): without a live-verified
+        contract for what those specific codes mean against this endpoint,
+        assuming either "absent" or "unavailable" would be a guess.
+        """
+        if exc.status_code == 404:
+            return "absent", ""
+        if exc.status_code in (401, 403):
+            return (
+                "unsupported",
+                "Classic full_wlan preflight read returned HTTP "
+                f"{exc.status_code} for {self.context.scope_name!r}: {exc}. "
+                "Confirm API credentials and full_wlan entitlement for this "
+                "account/group before retrying (contract matrix §5)."
+            )
+        return None
+
+    def _read_unavailable_reason(self, existing: Any) -> str | None:
+        """Detect a preflight read that succeeded (no exception) but signals
+        the full_wlan API itself is unavailable for this account/group —
+        distinct from a normal per-item "not found yet" result, which is safe
+        to treat as `absent` and proceed to create. Unavailability is never
+        silently treated as absent: it is reported as `unsupported` with an
+        explicit, actionable message instead."""
+        if isinstance(existing, Mapping):
+            error = str(existing.get("error", "")).strip()
+            if error:
+                lowered = error.lower()
+                broad_markers = (
+                    "not supported",
+                    "not available",
+                    "unsupported",
+                    "license",
+                    "invalid group",
+                    "invalid target",
+                    "no such group",
+                    "not enabled",
+                    "not entitled",
+                    "not applicable",
+                )
+                if any(marker in lowered for marker in broad_markers):
+                    return (
+                        "Classic full_wlan API appears unavailable for this "
+                        f"account/group context ({self.context.scope_name!r}): "
+                        f"{error}. Confirm the target group/GUID/serial and "
+                        "account entitlement for the full_wlan API before "
+                        "retrying (contract matrix §5)."
+                    )
+        return None
 
     def checkpoint_guidance(self) -> dict[str, Any]:
         return {
@@ -1630,74 +2086,135 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
             "automatic_rollback_supported": False,
             "manual_checkpoint_restore_supported": False,
             "guidance": (
-                "Export the current Classic Central group configuration before apply. "
-                "This adapter has no verified checkpoint or automatic rollback operation."
+                "Export the current Classic Central group configuration before "
+                "apply. This adapter has no verified checkpoint or automatic "
+                "rollback operation; use the per-candidate `rollback` metadata "
+                "(a DELETE against the same full_wlan item) as a manual, "
+                "explicitly-invoked undo instead. A successful POST/PUT "
+                "response is never sufficient proof the group actually applied "
+                "the change — Classic Central group/device writes are known to "
+                "report success without applying; a bounded GET read-back "
+                "against the single-item full_wlan endpoint is mandatory "
+                "wherever a group/device write is represented, both before "
+                "(preflight) and after (read-back) the write."
             ),
         }
 
     def _map_candidate(self, candidate: Mapping[str, Any]) -> CandidateAction:
-        if candidate.get("object_type") != "wlan":
+        object_type = str(candidate.get("object_type"))
+        if object_type == "wlan":
+            try:
+                return self._map_wlan(candidate)
+            except (AdapterError, TypeError, ValueError) as exc:
+                return CandidateAction(
+                    key=_candidate_key(candidate),
+                    candidate=candidate,
+                    compatibility_errors=[str(exc)],
+                )
+        if object_type == "ap_group":
+            return self._map_ap_group(candidate)
+        return self._manual_guidance(candidate)
+
+    def _manual_guidance(self, candidate: Mapping[str, Any]) -> CandidateAction:
+        object_type = str(candidate.get("object_type"))
+        detail = _CLASSIC_MANUAL_FAMILY_GUIDANCE.get(
+            object_type,
+            f"Classic Central {object_type!r} target operation is not verified "
+            "in this repository.",
+        )
+        return CandidateAction(
+            key=_candidate_key(candidate),
+            candidate=candidate,
+            compatibility_errors=[
+                f"{detail} Candidate remains unapplied; recreate manually via "
+                "the Central UI, an AP-CLI command set, or a Mobility "
+                "Controller template — never treat a whole-config/template "
+                "push as a safe, idempotent per-object write (contract "
+                "matrix §5)."
+            ],
+        )
+
+    def _map_ap_group(self, candidate: Mapping[str, Any]) -> CandidateAction:
+        """AOS8 AP groups are never automatically translated into a Classic
+        Central group or device move (contract matrix §1.3/§5/§6.11). This
+        only ever escalates through explicit, operator-provided input; it
+        never becomes `ready` because no verified Classic device-move object
+        REST exists in the audited surface, and inventing one is exactly the
+        failure mode this adapter must never produce."""
+        key = _candidate_key(candidate)
+        ap_group_name = str(candidate.get("identifier"))
+        target_group = self.context.ap_group_target_map.get(ap_group_name)
+        if not target_group or not str(target_group).strip():
             return CandidateAction(
-                key=_candidate_key(candidate),
+                key=key,
                 candidate=candidate,
                 compatibility_errors=[
-                    f"Classic Central {candidate.get('object_type')!r} target operation "
-                    "is not verified in this repository; candidate remains unapplied"
+                    f"{key}: AOS8 AP groups are not Classic Central groups; no "
+                    "automatic 1:1 group creation or membership is ever "
+                    "inferred. Supply an explicit operator-provided mapping "
+                    "via context.ap_group_target_map[{!r}] naming the target "
+                    "Classic group before this candidate can be considered.".format(
+                        ap_group_name
+                    )
                 ],
             )
-        try:
-            return self._map_wlan(candidate)
-        except (AdapterError, TypeError, ValueError) as exc:
+        serials = tuple(self.context.ap_group_device_serials.get(ap_group_name, ()))
+        if not serials:
             return CandidateAction(
-                key=_candidate_key(candidate),
+                key=key,
                 candidate=candidate,
-                compatibility_errors=[str(exc)],
+                compatibility_errors=[
+                    f"{key}: an explicit Classic group mapping ({target_group!r}) "
+                    "was supplied, but no explicit device serial number(s) were "
+                    f"supplied via context.ap_group_device_serials[{ap_group_name!r}] "
+                    "for a device-move operation; this candidate remains manual "
+                    "until real serials are provided."
+                ],
             )
+        return CandidateAction(
+            key=key,
+            candidate=candidate,
+            compatibility_errors=[
+                f"{key}: an explicit Classic group mapping ({target_group!r}) and "
+                f"device serial(s) ({list(serials)!r}) were supplied, but no "
+                "verified Classic Central device-move object REST exists in "
+                "this repository (contract matrix §5/§6.11). This candidate "
+                "remains manual/unsupported until a live-verified move-device "
+                "endpoint is read and recorded in the migration contract "
+                "matrix — it is never fabricated."
+            ],
+        )
 
-    def _map_wlan(self, candidate: Mapping[str, Any]) -> CandidateAction:
-        unsupported = _unsupported_values(candidate)
-        allowed = {"ssid_profile.opmode", "virtual_ap.forward_mode"}
-        remaining = {
-            key: value
-            for key, value in unsupported.items()
-            if key not in allowed and _nonempty(value)
-        }
-        if remaining:
-            raise AdapterError(
-                f"{_candidate_key(candidate)}: unmapped source fields prevent safe apply: "
-                f"{sorted(remaining)}"
-            )
-        payload = dict(candidate.get("payload", {}))
-        name = str(candidate["identifier"])
-        if payload.get("essid", name) != name:
-            raise AdapterError(
-                f"{_candidate_key(candidate)}: Classic full_wlan mapping requires "
-                "profile name and ESSID to match"
-            )
-        if _nonempty(payload.get("aaa_profile")):
-            raise AdapterError(
-                f"{_candidate_key(candidate)}: Classic full_wlan mapping does not "
-                "translate AOS8 AAA profiles"
-            )
-        opmode = str(unsupported.get("ssid_profile.opmode", "open")).lower()
-        forward_mode = str(unsupported.get("virtual_ap.forward_mode", "bridge")).lower()
-        if opmode not in {"open", "opensystem"} or forward_mode not in {
-            "bridge",
-            "bridged",
-        }:
-            raise AdapterError(
-                f"{_candidate_key(candidate)}: verified Classic mapping is limited "
-                "to open, bridged WLANs"
-            )
-        vlan = payload.get("vlan")
-        if not _nonempty(vlan):
-            raise AdapterError(f"{_candidate_key(candidate)}: VLAN is required")
+    def _full_wlan_endpoint(self, name: str) -> str:
         scope_reference = quote(str(self.context.scope_name), safe="")
         encoded_name = quote(name, safe="")
-        body = {
+        return f"/configuration/full_wlan/{scope_reference}/{encoded_name}"
+
+    def _base_full_wlan_body(
+        self,
+        name: str,
+        vlan: Any,
+        *,
+        opmode: str,
+        wlan_type: str,
+        access_type: str,
+        wpa_passphrase: str = "",
+        auth_server1: str = "",
+        transition_disable: bool = True,
+        mac_authentication: bool = False,
+    ) -> dict[str, Any]:
+        """Complete-body `full_wlan` `{"wlan": ..., "access_rule": ...}` shape,
+        matching the official Create/Update WLAN samples
+        (developer.arubanetworks.com/central/reference/apifull_wlancreate_wlan,
+        apifull_wlanupdate_wlan) and the corroborating Aruba
+        central-python-workflows Classic-Central/wlan_config/configurations/
+        {open_network,psk_network,enterprise-network}.yaml samples. PUT update
+        reuses this same complete body — Classic full_wlan has no verified
+        partial-update/PATCH contract."""
+        return {
             "wlan": {
-                "access_type": "unrestricted",
-                "auth_server1": "",
+                "access_type": access_type,
+                "auth_server1": auth_server1,
                 "auth_server2": "",
                 "blacklist": True,
                 "broadcast_filter": "arp",
@@ -1706,18 +2223,19 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
                 "dynamic_vlans": [],
                 "name": name,
                 "essid": name,
-                "type": "guest",
-                "opmode": "opensystem",
+                "type": wlan_type,
+                "opmode": opmode,
+                "opmode_transition_disable": transition_disable,
                 "vlan": str(vlan),
                 "disable_ssid": False,
                 "hide_ssid": False,
-                "mac_authentication": False,
+                "mac_authentication": mac_authentication,
                 "radius_accounting": False,
                 "rf_band": "all",
                 "roles": [],
                 "ssid_encoding": "utf8",
                 "user_bridging": False,
-                "wpa_passphrase": "",
+                "wpa_passphrase": wpa_passphrase,
             },
             "access_rule": {
                 "name": name,
@@ -1735,50 +2253,348 @@ class ClassicCentralAdapter(BaseCentralTargetAdapter):
                 "vlan": 0,
             },
         }
-        endpoint = f"/configuration/full_wlan/{scope_reference}/{encoded_name}"
-        operation = Operation(
+
+    def _full_wlan_operations(
+        self,
+        name: str,
+        body: Mapping[str, Any],
+        *,
+        provenance_extra: str = "",
+        sensitive_argument_fields: tuple[str, ...] = (),
+    ) -> tuple[Operation, Operation, Operation, Operation, Operation]:
+        """Return (create, update, preflight-read, read-back, rollback-delete)
+        operations for the verified Classic full_wlan lifecycle: `POST` create,
+        complete-body `PUT` update, bounded single-item `GET` for both
+        preflight and post-write read-back, and `DELETE` rollback — all keyed
+        by the same `{group_name_or_guid_or_serial_number}/{wlan_name}` path
+        (developer.arubanetworks.com/central/reference/apifull_wlancreate_wlan,
+        apifull_wlanupdate_wlan, apifull_wlanget_wlan, apifull_wlandelete_wlan).
+        """
+        endpoint = self._full_wlan_endpoint(name)
+        provenance = (
+            "Official Classic Central full_wlan lifecycle: "
+            "developer.arubanetworks.com/central/reference/"
+            "apifull_wlancreate_wlan (POST), apifull_wlanupdate_wlan (PUT, "
+            "complete-body replace), apifull_wlanget_wlan (GET, single item), "
+            "apifull_wlandelete_wlan (DELETE); the "
+            "{group_name_or_guid_or_serial_number} path segment is an explicit "
+            "Classic group name/GUID/device serial, never a New Central "
+            "scope_id."
+        )
+        if provenance_extra:
+            provenance = f"{provenance} {provenance_extra}"
+        create = Operation(
             invocation="endpoint",
             name="central_api_request",
-            arguments={
-                "method": "POST",
-                "endpoint": endpoint,
-                "data": body,
-                "dry_run": True,
-            },
+            arguments={"method": "POST", "endpoint": endpoint, "dry_run": True},
             method="POST",
             endpoint=endpoint,
             payload=body,
+            provenance=provenance,
+            sensitive_argument_fields=sensitive_argument_fields,
+        )
+        update = Operation(
+            invocation="endpoint",
+            name="central_api_request",
+            arguments={"method": "PUT", "endpoint": endpoint, "dry_run": True},
+            method="PUT",
+            endpoint=endpoint,
+            payload=body,
+            provenance=provenance,
+            sensitive_argument_fields=sensitive_argument_fields,
+        )
+        read_item = Operation(
+            invocation="endpoint",
+            name="central_api_read",
+            arguments={"method": "GET", "endpoint": endpoint},
+            method="GET",
+            endpoint=endpoint,
             provenance=(
-                "Official Classic Central Create a new WLAN: "
+                "Official Classic Central Get WLAN: developer.arubanetworks.com/"
+                "central/reference/apifull_wlanget_wlan (bounded single-item "
+                "read, used as preflight)."
+            ),
+            dry_run_field=None,
+            match_identifier=name,
+        )
+        read_back = replace(
+            read_item,
+            name="central_api_read_back",
+            provenance=(
+                "Official Classic Central Get WLAN: developer.arubanetworks.com/"
+                "central/reference/apifull_wlanget_wlan (bounded single-item "
+                "read, used as mandatory post-write read-back). A successful "
+                "POST/PUT response is not sufficient proof the group actually "
+                "applied the change; always confirm with this bounded read "
+                "before trusting the write (contract matrix §3 item 8)."
+            ),
+        )
+        delete = Operation(
+            invocation="endpoint",
+            name="central_api_request",
+            arguments={"method": "DELETE", "endpoint": endpoint, "dry_run": True},
+            method="DELETE",
+            endpoint=endpoint,
+            provenance=(
+                "Official Classic Central Delete WLAN: "
                 "developer.arubanetworks.com/central/reference/"
-                "apifull_wlancreate_wlan; Aruba central-python-workflows "
-                "Classic-Central/wlan_config/configurations/open_network.yaml"
+                "apifull_wlandelete_wlan — rollback operation; metadata only, "
+                "never auto-invoked by this adapter."
+            ),
+        )
+        return create, update, read_item, read_back, delete
+
+    def _map_wlan(self, candidate: Mapping[str, Any]) -> CandidateAction:
+        key = _candidate_key(candidate)
+        unsupported = _unsupported_values(candidate)
+        # Fields consumed elsewhere (opmode/forward-mode drive the mapping
+        # dispatch below; the passphrase/hexkey/transition presence signals
+        # are consumed via `payload["security"]`, never silently dropped —
+        # the real secret value itself is only ever obtained through
+        # `_secret_value`/`context.secret_inputs`, never from this raw field).
+        allowed = {
+            "ssid_profile.opmode",
+            "virtual_ap.forward_mode",
+            "ssid_profile.wpa_passphrase",
+            "ssid_profile.wpa_hexkey",
+            "ssid_profile.wpa3_transition",
+        }
+        remaining = {
+            field_name: value
+            for field_name, value in unsupported.items()
+            if field_name not in allowed and _nonempty(value)
+        }
+        if remaining:
+            raise AdapterError(
+                f"{key}: unmapped source fields prevent safe apply: "
+                f"{sorted(remaining)}"
+            )
+        payload = dict(candidate.get("payload", {}))
+        name = str(candidate["identifier"])
+        if payload.get("essid", name) != name:
+            raise AdapterError(
+                f"{key}: Classic full_wlan mapping requires profile name and "
+                "ESSID to match"
+            )
+        vlan = payload.get("vlan")
+        if not _nonempty(vlan):
+            raise AdapterError(f"{key}: VLAN is required")
+        forward_mode = str(unsupported.get("virtual_ap.forward_mode", "bridge")).lower()
+        if forward_mode not in {"bridge", "bridged"}:
+            raise AdapterError(
+                f"{key}: verified Classic full_wlan mapping is limited to "
+                "bridged WLANs"
+            )
+        security = dict(payload.get("security") or {})
+        mode = str(security.get("mode", "unknown"))
+        aaa_profile = payload.get("aaa_profile")
+
+        if mode in {"open", "wpa3_sae"} and _nonempty(aaa_profile):
+            raise AdapterError(
+                f"{key}: Classic full_wlan mapping does not translate AOS8 AAA "
+                "profiles for this security mode"
+            )
+
+        if mode == "open":
+            return self._open_wlan_action(candidate, name, vlan)
+        if mode == "wpa3_sae":
+            return self._wpa3_personal_wlan_action(candidate, name, vlan, security)
+        if mode == "enterprise_dot1x":
+            opmode_raw = str(security.get("opmode") or "").lower()
+            if "wpa3" in opmode_raw:
+                return self._wpa3_enterprise_wlan_action(candidate, name, vlan, security)
+            raise AdapterError(
+                f"{key}: WPA2-Enterprise (802.1X) Classic mapping remains "
+                "unsupported; only WPA3-Enterprise has an official-sample-"
+                "backed full_wlan payload and an explicit already-existing "
+                "auth-server precondition in this repository"
+            )
+        raise AdapterError(
+            f"{key}: "
+            + _CLASSIC_WLAN_MODE_GUIDANCE.get(
+                mode,
+                "no verified Classic full_wlan mapping exists for this "
+                "security mode; recreate this WLAN manually",
+            )
+        )
+
+    def _inline_vlan_dependencies(self, candidate: Mapping[str, Any]) -> set[str]:
+        return {
+            dependency
+            for dependency in candidate.get("dependencies", [])
+            if str(dependency).startswith("vlan:")
+        }
+
+    def _open_wlan_action(
+        self, candidate: Mapping[str, Any], name: str, vlan: Any
+    ) -> CandidateAction:
+        body = self._base_full_wlan_body(
+            name,
+            vlan,
+            opmode="opensystem",
+            wlan_type="guest",
+            access_type="unrestricted",
+        )
+        create, update, read_item, read_back, delete = self._full_wlan_operations(
+            name,
+            body,
+            provenance_extra=(
+                "Open sample: Aruba central-python-workflows "
+                "Classic-Central/wlan_config/configurations/open_network.yaml."
             ),
         )
         return CandidateAction(
             key=_candidate_key(candidate),
             candidate=candidate,
-            operations=[operation],
-            inline_dependencies={
-                dependency
-                for dependency in candidate.get("dependencies", [])
-                if str(dependency).startswith("vlan:")
+            operations=[create],
+            update_operations=[update],
+            read_operation=read_item,
+            read_back_operation=read_back,
+            read_back_expectations={
+                "essid": name,
+                "opmode": "opensystem",
+                "vlan": str(vlan),
             },
-            read_operation=Operation(
-                invocation="endpoint",
-                name="central_api_read",
-                arguments={
-                    "method": "GET",
-                    "endpoint": f"/configuration/full_wlan/{scope_reference}",
-                },
-                method="GET",
-                endpoint=f"/configuration/full_wlan/{scope_reference}",
-                provenance=(
-                    "Official Classic Central Get WLAN list: "
-                    "developer.arubanetworks.com/central/reference/"
-                    "apifull_wlanget_wlan_list"
-                ),
-                dry_run_field=None,
-                match_identifier=name,
+            rollback_operations=[delete],
+            inline_dependencies=self._inline_vlan_dependencies(candidate),
+        )
+
+    def _wpa3_personal_wlan_action(
+        self,
+        candidate: Mapping[str, Any],
+        name: str,
+        vlan: Any,
+        security: Mapping[str, Any],
+    ) -> CandidateAction:
+        key = _candidate_key(candidate)
+        if security.get("wpa3_transition"):
+            raise AdapterError(
+                f"{key}: verified Classic WPA3-Personal mapping requires "
+                "transition mode disabled; a WPA2/WPA3 mixed-transition "
+                "personal WLAN remains unsupported without live goldens "
+                "confirming the transition field behavior (contract matrix "
+                "§6.2)"
+            )
+        if not security.get("passphrase_present"):
+            raise AdapterError(
+                f"{key}: WPA3-Personal requires the source WLAN to have "
+                "carried a wpa_passphrase; none was detected on this AOS8 "
+                "WLAN"
+            )
+        passphrase = _secret_value(self.context, key, "wpa_passphrase")
+        body = self._base_full_wlan_body(
+            name,
+            vlan,
+            opmode="wpa3-sae-aes",
+            wpa_passphrase=passphrase,
+            wlan_type="employee",
+            access_type="unrestricted",
+        )
+        create, update, read_item, read_back, delete = self._full_wlan_operations(
+            name,
+            body,
+            provenance_extra=(
+                "WPA3-Personal sample: opmode=wpa3-sae-aes, "
+                "opmode_transition_disable=true (developer.arubanetworks.com/"
+                "central/reference/apifull_wlancreate_wlan); Aruba "
+                "central-python-workflows Classic-Central/wlan_config/"
+                "configurations/psk_network.yaml (secondary corroboration)."
+            ),
+            sensitive_argument_fields=("wlan.wpa_passphrase",),
+        )
+        return CandidateAction(
+            key=key,
+            candidate=candidate,
+            operations=[create],
+            update_operations=[update],
+            read_operation=read_item,
+            read_back_operation=read_back,
+            read_back_expectations={
+                "essid": name,
+                "opmode": "wpa3-sae-aes",
+                # WPA3-Personal is verified only with transition mode
+                # disabled (contract matrix §6.2: a WPA2/WPA3 mixed-
+                # transition personal WLAN remains unsupported without live
+                # goldens). A write that "succeeds" but reports transition
+                # mode enabled/absent on read-back is not the verified
+                # configuration this mapping claims to apply, so it must
+                # never be marked "applied" -- this expectation is what
+                # catches that false-success case.
+                "opmode_transition_disable": True,
+                "vlan": str(vlan),
+            },
+            rollback_operations=[delete],
+            inline_dependencies=self._inline_vlan_dependencies(candidate),
+        )
+
+    def _wpa3_enterprise_wlan_action(
+        self,
+        candidate: Mapping[str, Any],
+        name: str,
+        vlan: Any,
+        security: Mapping[str, Any],
+    ) -> CandidateAction:
+        key = _candidate_key(candidate)
+        if not security.get("dot1x_auth_profile"):
+            raise AdapterError(
+                f"{key}: WPA3-Enterprise mapping requires a resolved "
+                "dot1x_auth_profile on the source aaa_profile"
+            )
+        references = self.context.external_object_references.get(key, {})
+        auth_server1 = references.get("auth_server1")
+        if (
+            not isinstance(auth_server1, str)
+            or not auth_server1.strip()
+            or auth_server1.strip() in _REDACTED_MARKERS
+        ):
+            raise AdapterError(
+                f"{key}: WPA3-Enterprise requires an explicit, already-existing "
+                "Classic auth-server reference supplied via "
+                "context.external_object_references[<candidate>]['auth_server1']; "
+                "missing AAA/server-group dependencies are never auto-provisioned"
+            )
+        body = self._base_full_wlan_body(
+            name,
+            vlan,
+            opmode="wpa3-aes-ccm-128",
+            wlan_type="employee",
+            access_type="network_based",
+            auth_server1=auth_server1.strip(),
+        )
+        create, update, read_item, read_back, delete = self._full_wlan_operations(
+            name,
+            body,
+            provenance_extra=(
+                "WPA3-Enterprise sample: opmode=wpa3-aes-ccm-128, "
+                "opmode_transition_disable=true, access_type=network_based, "
+                "auth_server1=<already-existing Classic auth-server profile> "
+                "(developer.arubanetworks.com/central/reference/"
+                "apifull_wlancreate_wlan); Aruba central-python-workflows "
+                "Classic-Central/wlan_config/configurations/"
+                "enterprise-network.yaml (secondary corroboration)."
+            ),
+        )
+        return CandidateAction(
+            key=key,
+            candidate=candidate,
+            operations=[create],
+            update_operations=[update],
+            read_operation=read_item,
+            read_back_operation=read_back,
+            read_back_expectations={
+                "essid": name,
+                "opmode": "wpa3-aes-ccm-128",
+                "vlan": str(vlan),
+                "auth_server1": auth_server1.strip(),
+            },
+            rollback_operations=[delete],
+            inline_dependencies=self._inline_vlan_dependencies(candidate),
+            dry_run_only=True,
+            dry_run_only_reason=(
+                f"{key}: WPA3-Enterprise Classic full_wlan mapping is "
+                "conditional/dry-run-only pending live validation of the "
+                "auth_server1 dependency and full field set against a real "
+                "lab group (contract matrix §5); real execution is refused "
+                "until that evidence is recorded."
             ),
         )
