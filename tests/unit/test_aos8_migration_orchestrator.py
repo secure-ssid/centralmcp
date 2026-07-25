@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from urllib.parse import quote, quote_plus
 
 import pytest
@@ -2380,3 +2381,300 @@ def test_no_global_object_or_cache_retains_secret_material():
     # the secret either -- `_sanitize` never builds a regex from it.
     for pattern_source, *_ in re._cache.keys():
         assert secret not in str(pattern_source)
+
+
+# --------------------------------------------------------------------------
+# Full-ABC aggregate coverage: every non-string Iterable/Iterator category
+# -- not just list/tuple/set -- must collapse to the identical fixed
+# `_SECRET_CONTEXT_AGGREGATE_ENVELOPE` without ever being iterated,
+# indexed, or measured; every bytes-like buffer and every unknown/custom
+# object must fail closed to a fixed marker/envelope without ever having
+# `repr()`/`str()`/`decode()` called on it.
+# --------------------------------------------------------------------------
+
+
+def _never_call(*_args, **_kwargs):
+    raise AssertionError("object method must never be invoked by _sanitize")
+
+
+@pytest.mark.parametrize(
+    "make_payload",
+    [
+        lambda secret: frozenset({secret, "plain-item"}),
+        lambda secret: __import__("collections").deque([secret, "other"]),
+        lambda secret: range(3),
+        lambda secret: (item for item in (secret, "other")),
+        lambda secret: iter([secret, "other"]),
+        lambda secret: b"raw-bytes-payload",
+        lambda secret: bytearray(b"raw-bytearray-payload"),
+        lambda secret: memoryview(b"raw-memoryview-payload"),
+    ],
+)
+def test_sanitize_secret_context_collapses_every_iterable_abc_category(make_payload):
+    # frozenset, deque, range, a generator, a plain iterator, bytes,
+    # bytearray, and memoryview are all non-`str` `Iterable`/`Iterator`
+    # values that must collapse to the identical fixed envelope -- the
+    # same as list/tuple/set/Mapping -- without ever being iterated,
+    # indexed, or measured (a generator/iterator must not be advanced a
+    # single step, and a byte buffer must never be decoded).
+    secret = "iterable-abc-collapse-secret"
+    payload = make_payload(secret)
+    sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
+    assert secret not in json.dumps(sanitized)
+
+
+def test_sanitize_secret_context_does_not_consume_generator_or_iterator():
+    # A generator/iterator routed to the aggregate envelope must never be
+    # advanced: exhausting the generator here would prove `_sanitize`
+    # peeked at (or fully read) its contents before collapsing it.
+    secret = "generator-non-consumption-secret"
+
+    def _make_generator():
+        yield secret
+        raise AssertionError("generator must never be advanced past the first item")
+
+    gen = _make_generator()
+    sanitized = orchestrator_module._sanitize(gen, secret_values=(secret,))
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
+    # The generator itself was never started.
+    assert next(gen) == secret
+
+
+@pytest.mark.parametrize(
+    "make_payload",
+    [
+        lambda secret: _CustomSequence([secret, "other"]),
+        lambda secret: _CustomIterableDuckType(secret),
+        lambda secret: _CustomIteratorDuckType(secret),
+    ],
+)
+def test_sanitize_secret_context_collapses_custom_iterable_protocols(make_payload):
+    # A custom class need not inherit from a `collections.abc` type at
+    # all: implementing `__getitem__`/`__len__` (a duck-typed Sequence)
+    # or `__iter__` (a duck-typed Iterable/Iterator) is enough for
+    # `isinstance` to match it via ABC virtual-subclass registration --
+    # and it must still collapse without ever calling those methods.
+    secret = "custom-iterable-protocol-secret"
+    payload = make_payload(secret)
+    sanitized = orchestrator_module._sanitize(payload, secret_values=(secret,))
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
+    assert secret not in json.dumps(sanitized)
+
+
+class _CustomSequence(Sequence):
+    """A custom `collections.abc.Sequence` subclass whose `__getitem__`/
+    `__len__` must never be called by `_sanitize`."""
+
+    def __init__(self, secret_bearing_items):
+        self._items = secret_bearing_items
+
+    def __getitem__(self, index):
+        return _never_call(index)
+
+    def __len__(self):
+        return _never_call()
+
+
+class _CustomIterableDuckType:
+    """A duck-typed `Iterable` (defines `__iter__` without inheriting from
+    `collections.abc.Iterable`) whose `__iter__` must never be called."""
+
+    def __init__(self, secret):
+        self._secret = secret
+
+    def __iter__(self):
+        return _never_call()
+
+
+class _CustomIteratorDuckType:
+    """A duck-typed `Iterator` (defines `__iter__`/`__next__` without
+    inheriting from `collections.abc.Iterator`) whose methods must never
+    be called."""
+
+    def __init__(self, secret):
+        self._secret = secret
+
+    def __iter__(self):
+        return _never_call()
+
+    def __next__(self):
+        return _never_call()
+
+
+def test_sanitize_secret_context_bytes_like_buffers_are_not_decoded_or_repred():
+    # bytes/bytearray/memoryview must fail closed without ever being
+    # decoded or repr()'d -- a subclass override that raises proves
+    # `_sanitize` never called either.
+    secret_bytes = "bytes-buffer-secret".encode()
+
+    class _NoDecodeBytes(bytes):
+        def decode(self, *args, **kwargs):
+            return _never_call()
+
+        def __repr__(self):
+            return _never_call()
+
+    class _NoDecodeBytearray(bytearray):
+        def decode(self, *args, **kwargs):
+            return _never_call()
+
+        def __repr__(self):
+            return _never_call()
+
+    for payload in (
+        _NoDecodeBytes(secret_bytes),
+        _NoDecodeBytearray(secret_bytes),
+        memoryview(secret_bytes),
+    ):
+        sanitized = orchestrator_module._sanitize(payload, secret_values=("bytes-buffer-secret",))
+        assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
+
+
+def test_sanitize_secret_context_custom_repr_object_never_invoked():
+    # An unknown/custom object whose `__repr__`/`__str__` itself embeds
+    # the secret must fail closed to the fixed marker *without* either
+    # method ever being called -- calling it to decide "is this secret
+    # shaped" would itself be a leak vector.
+    secret = "custom-repr-object-secret"
+
+    class _SecretRepr:
+        def __repr__(self):
+            return _never_call()
+
+        def __str__(self):
+            return _never_call()
+
+    sanitized = orchestrator_module._sanitize(_SecretRepr(), secret_values=(secret,))
+    assert sanitized == orchestrator_module._SECRET_CONTEXT_MARKER
+
+
+def test_sanitize_secret_context_dataclass_instance_fails_closed_to_marker():
+    from dataclasses import dataclass
+
+    @dataclass
+    class _Credentials:
+        secret_field: str
+
+    secret = "dataclass-field-secret"
+    sanitized = orchestrator_module._sanitize(_Credentials(secret), secret_values=(secret,))
+    assert sanitized == orchestrator_module._SECRET_CONTEXT_MARKER
+
+
+def test_sanitize_secret_context_path_fails_closed_to_marker():
+    secret = "path-component-secret"
+    sanitized = orchestrator_module._sanitize(
+        Path(f"/var/lib/{secret}/config"), secret_values=(secret,)
+    )
+    assert sanitized == orchestrator_module._SECRET_CONTEXT_MARKER
+
+
+def test_sanitize_secret_context_plain_enum_fails_closed_to_marker():
+    from enum import Enum
+
+    class _Status(Enum):
+        ACTIVE = "active-secret-value"
+
+    secret = "active-secret-value"
+    sanitized = orchestrator_module._sanitize(_Status.ACTIVE, secret_values=(secret,))
+    assert sanitized == orchestrator_module._SECRET_CONTEXT_MARKER
+
+
+def test_sanitize_secret_context_int_enum_member_preserved_as_int():
+    # An IntEnum member is *already* a safe primitive (a genuine `int`
+    # subtype instance): it is preserved, exactly like a bare `int`, and
+    # is not routed to the marker/envelope path.
+    from enum import IntEnum
+
+    class _Priority(IntEnum):
+        LOW = 1
+        HIGH = 2
+
+    sanitized = orchestrator_module._sanitize(_Priority.HIGH, secret_values=("unrelated",))
+    assert sanitized == _Priority.HIGH
+    assert int(sanitized) == 2
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_sanitize_secret_context_nonfinite_float_fails_closed_to_marker(value):
+    sanitized = orchestrator_module._sanitize(value, secret_values=("unrelated",))
+    assert sanitized == orchestrator_module._SECRET_CONTEXT_MARKER
+
+
+def test_sanitize_secret_context_finite_float_preserved():
+    sanitized = orchestrator_module._sanitize(1.5, secret_values=("unrelated",))
+    assert sanitized == 1.5
+
+
+def test_sanitize_secret_context_all_aggregate_and_unknown_categories_are_byte_identical():
+    # Every aggregate category (Mapping, list, tuple, set, frozenset,
+    # deque, range, generator, bytes, bytearray, memoryview, custom
+    # Sequence/Iterable/Iterator) must produce byte-identical JSON to
+    # each other -- no field anywhere distinguishes which category the
+    # backend actually returned.
+    secret = "cross-category-identical-secret"
+    payloads = [
+        {secret: "v"},
+        [secret],
+        (secret,),
+        {secret},
+        frozenset({secret}),
+        __import__("collections").deque([secret]),
+        range(1),
+        (item for item in (secret,)),
+        b"raw-bytes",
+        bytearray(b"raw-bytearray"),
+        memoryview(b"raw-memoryview"),
+        _CustomSequence([secret]),
+    ]
+    dumped = {
+        json.dumps(orchestrator_module._sanitize(payload, secret_values=(secret,)), sort_keys=True)
+        for payload in payloads
+    }
+    assert len(dumped) == 1
+    assert secret not in dumped.pop()
+
+
+def test_sanitize_secret_context_unknown_objects_and_aggregates_share_no_object_calls():
+    # Sweep every "no object methods invoked" category in one place:
+    # none of these objects' dunder/data methods may ever be called by
+    # `_sanitize`, regardless of whether the object collapses to the
+    # aggregate envelope or fails closed to the marker.
+    secret = "no-object-methods-invoked-secret"
+
+    class _Everything(Sequence):
+        def __getitem__(self, index):
+            return _never_call(index)
+
+        def __len__(self):
+            return _never_call()
+
+        def __repr__(self):
+            return _never_call()
+
+        def __str__(self):
+            return _never_call()
+
+    sanitized = orchestrator_module._sanitize(_Everything(), secret_values=(secret,))
+    assert sanitized == dict(orchestrator_module._SECRET_CONTEXT_AGGREGATE_ENVELOPE)
+
+
+def test_sanitize_secret_context_end_to_end_persists_only_fixed_outputs(tmp_path):
+    # End-to-end: the aggregate-collapse/marker behavior verified above
+    # against `_sanitize` directly must also hold true for whatever
+    # actually lands in on-disk run state after a real apply-with-secret
+    # call -- no adversarial-shaped value may survive the full
+    # persistence round trip.
+    secret = "end-to-end-persistence-secret"
+    error = RuntimeError(
+        f"backend rejected nested=[{secret!r}, frozenset({{{secret!r}}}), b'raw'] "
+        f"mapping={{{secret!r}: 'leak-if-reached'}}"
+    )
+    safe_error = orchestrator_module._sanitize(str(error), secret_values=(secret,))
+    assert safe_error == orchestrator_module._SECRET_CONTEXT_MARKER
+
+    state_path = tmp_path / "run-state.json"
+    state_path.write_text(json.dumps({"last_error": safe_error}), encoding="utf-8")
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted == {"last_error": orchestrator_module._SECRET_CONTEXT_MARKER}
+    assert secret not in state_path.read_text(encoding="utf-8")
