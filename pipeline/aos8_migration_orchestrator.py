@@ -175,11 +175,44 @@ def _sanitize(
     value: Any,
     *,
     secret_values: Iterable[str] = (),
+    structural_redaction_values: Iterable[str] = (),
     redact_marker: str = "******",
+    structural_redact_marker: str = "******",
     max_depth: int = 8,
     _depth: int = 0,
 ) -> Any:
+    """Sanitize `value` for return/persistence across two independent
+    redaction channels:
+
+    - `secret_values`: actual runtime secrets (credentials, passphrases,
+      shared secrets a caller supplied for a real apply/write). These are
+      redacted by aggressive substring replacement (`str.replace`)
+      wherever they appear in any string in `value` -- a leaf, embedded in
+      a longer backend error/result message, inside a URL, nested in a
+      payload or list -- because a real secret must never survive in any
+      form, and secrets are caller-supplied credential material, not
+      arbitrary/generic operator text, so there is no short-generic-value
+      corruption risk to guard against here.
+    - `structural_redaction_values`: transient, non-secret
+      operator-context identifiers (e.g. an already-existing Classic
+      auth-server name, an AP-group target-group name, a device serial).
+      These are redacted only structurally, via `_redact_structural`: a
+      whole leaf string that exactly equals one of them, or an exact
+      decoded path/query component of a URL/endpoint string. They are
+      never substring-replaced, because they can legitimately be as short
+      as one character (see `_bounded_operator_string`) and a generic
+      substring scan would corrupt unrelated prose that merely contains
+      that character sequence (e.g. "ready", "wlan") anywhere else in the
+      same payload.
+
+    Both channels apply independently and can be combined in the same
+    call; each keeps its own marker so the two redaction reasons stay
+    distinguishable in the output.
+    """
     secrets = tuple(secret for secret in secret_values if secret)
+    structural_secrets = tuple(
+        secret for secret in structural_redaction_values if secret
+    )
     if _depth >= max_depth:
         return "<bounded:max-depth>"
     if isinstance(value, Mapping):
@@ -194,7 +227,9 @@ def _sanitize(
                 else _sanitize(
                     item,
                     secret_values=secrets,
+                    structural_redaction_values=structural_secrets,
                     redact_marker=redact_marker,
+                    structural_redact_marker=structural_redact_marker,
                     max_depth=max_depth,
                     _depth=_depth + 1,
                 )
@@ -211,7 +246,9 @@ def _sanitize(
             _sanitize(
                 item,
                 secret_values=secrets,
+                structural_redaction_values=structural_secrets,
                 redact_marker=redact_marker,
+                structural_redact_marker=structural_redact_marker,
                 max_depth=max_depth,
                 _depth=_depth + 1,
             )
@@ -229,12 +266,16 @@ def _sanitize(
         return bounded
     if isinstance(value, str):
         text = value
-        # `redact_marker` defaults to the same generic secret marker used
-        # for key-based redaction above, but callers scrubbing a distinct
-        # category of exact-match value (e.g. transient operator-context
-        # strings, never actual secrets) pass a different stable marker so
-        # the two redaction reasons stay distinguishable in the output.
-        text = _redact_structural(text, secrets, redact_marker)
+        # Actual secrets: aggressive substring replacement, anywhere in
+        # the string -- this must catch a credential embedded in a longer
+        # backend error/result message, not just a leaf that equals it
+        # exactly.
+        for secret in secrets:
+            text = text.replace(secret, redact_marker)
+        # Non-secret operator-context identifiers: exact-match-only
+        # structural redaction (whole-leaf or URL component), never a
+        # substring scan -- see `_redact_structural`.
+        text = _redact_structural(text, structural_secrets, structural_redact_marker)
         if len(text) > 1000:
             return f"{text[:1000]}... [truncated {len(text) - 1000} chars]"
         return text
@@ -621,7 +662,7 @@ def _operator_context_redaction_values(
 ) -> tuple[str, ...]:
     """Collect every operator-*supplied* leaf string from the three
     transient operator-context maps, to be used as exact-match redaction
-    input by `_sanitize(..., secret_values=...)`.
+    input by `_sanitize(..., structural_redaction_values=...)`.
 
     Deliberately excludes the maps' own keys: `ap_group_target_map`'s and
     `ap_group_device_serials`' keys are AOS8 AP-group names that already
@@ -1136,16 +1177,35 @@ class AOS8MigrationOrchestrator:
         # recursively -- operations, payloads, blockers, warnings, and
         # results alike -- and replace it with a stable, distinct marker
         # rather than leaving the operator-supplied value (or a
-        # derived/identifying count) in the returned preview.
+        # derived/identifying count) in the returned preview. These are
+        # non-secret operator identifiers (can legitimately be as short as
+        # one character), so they go through the exact-match-only
+        # `structural_redaction_values` channel, never a substring scan.
         redaction_values = _operator_context_redaction_values(
             context.external_object_references,
             context.ap_group_target_map,
             context.ap_group_device_serials,
         )
+        # `preview()` also transiently injects a fixed, non-secret
+        # `__runtime_secret_placeholder__` literal (via `placeholders=True`
+        # / `_placeholder_secret_inputs`) into any operation payload field
+        # that requires real target secrets, so callers can see the shape
+        # of a WPA3-Enterprise/auth-server write without ever holding real
+        # credentials. It is not itself sensitive, but it is still fed
+        # through the aggressive-substring `secret_values` channel for
+        # defense in depth and to keep the two channels exercised together
+        # here exactly as they would be for a real secret-bearing preview.
+        placeholder_secret_values = tuple(
+            value
+            for bundle in context.secret_inputs.values()
+            for value in bundle.values()
+            if isinstance(value, str) and value
+        )
         return _sanitize(
             preview,
-            secret_values=redaction_values,
-            redact_marker=_RUNTIME_CONTEXT_REDACTED_MARKER,
+            secret_values=placeholder_secret_values,
+            structural_redaction_values=redaction_values,
+            structural_redact_marker=_RUNTIME_CONTEXT_REDACTED_MARKER,
         )
 
     def create_run(

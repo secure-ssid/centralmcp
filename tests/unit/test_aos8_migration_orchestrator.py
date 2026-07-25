@@ -56,6 +56,11 @@ class FakeBackend:
         self.read_calls = []
         self.fail_real: dict[str, int] = {}
         self.echo_secret = False
+        # When set, embeds any `shared_secret`/`wpa_passphrase` argument
+        # *inside* a longer backend error/result message (not as a bare
+        # leaf equal to the secret), to exercise the aggressive-substring
+        # `secret_values` redaction channel end to end.
+        self.embed_secret_in_message = False
 
     def read(self, operation):
         self.read_calls.append(operation)
@@ -63,16 +68,33 @@ class FakeBackend:
             raise self.read_failures[operation.name]
         return self.read_values.get(operation.name)
 
+    def _operation_secret(self, operation):
+        arguments = operation.arguments or {}
+        return (
+            arguments.get("shared_secret")
+            or arguments.get("wpa_passphrase")
+            or arguments.get("passphrase")
+        )
+
     def write(self, operation, *, confirmation):
         self.write_calls.append((operation, confirmation))
         dry_run = bool(operation.arguments.get("dry_run"))
         remaining = self.fail_real.get(operation.name, 0)
         if not dry_run and remaining:
             self.fail_real[operation.name] = remaining - 1
+            if self.embed_secret_in_message:
+                secret = self._operation_secret(operation)
+                raise RuntimeError(
+                    f"{operation.name} rejected: shared_secret={secret} "
+                    "was refused by upstream"
+                )
             raise RuntimeError(f"{operation.name} rejected")
         result = {"ok": True, "name": operation.name, "dry_run": dry_run}
         if self.echo_secret:
             result["echo"] = operation.arguments.get("shared_secret")
+        if self.embed_secret_in_message:
+            secret = self._operation_secret(operation)
+            result["message"] = f"applied {operation.name} using value '{secret}' successfully"
         return result
 
 
@@ -272,6 +294,54 @@ def test_secret_is_required_each_attempt_and_never_persisted_or_returned(tmp_pat
     )
     assert missing_again["candidates"][0]["status"] == "blocked"
     assert "target-super-secret" not in json.dumps(missing_again)
+
+
+def test_apply_redacts_embedded_credential_in_backend_error_and_result(tmp_path):
+    # Regression for the 562f4a4 fix-up: a real caller-supplied secret
+    # embedded *inside* a longer backend error or result message (not as
+    # a bare leaf equal to the secret) must still be redacted end to end
+    # through `apply()`'s `secret_values` channel -- in the returned
+    # response and in the persisted on-disk state.
+    backend = FakeBackend()
+    backend.embed_secret_in_message = True
+    backend.fail_real["build_underlay_ssid"] = 1
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _wpa2_wlan_candidate("EmbeddedSecretGuest")
+    service.create_run([wlan], target(), run_id="secret-in-text")
+    supplied = {
+        "wlan:EmbeddedSecretGuest": {"wpa_passphrase": "embedded-super-secret"}
+    }
+    service.apply(
+        "secret-in-text",
+        dry_run=True,
+        confirmation=False,
+        target_secrets=supplied,
+    )
+
+    # First real attempt fails with the secret embedded in the backend's
+    # error message.
+    failed = service.apply(
+        "secret-in-text",
+        dry_run=False,
+        confirmation=True,
+        target_secrets=supplied,
+    )
+    assert failed["candidates"][0]["status"] == "failed"
+    assert "embedded-super-secret" not in json.dumps(failed)
+    assert "embedded-super-secret" not in store.path_for("secret-in-text").read_text()
+
+    # Retry succeeds, with the secret embedded in the backend's success
+    # message.
+    applied = service.apply(
+        "secret-in-text",
+        dry_run=False,
+        confirmation=True,
+        target_secrets=supplied,
+        retry_failed=True,
+    )
+    assert applied["candidates"][0]["status"] == "applied"
+    assert "embedded-super-secret" not in json.dumps(applied)
+    assert "embedded-super-secret" not in store.path_for("secret-in-text").read_text()
 
 
 def test_malformed_state_and_path_traversal_fail_cleanly(tmp_path):
@@ -1391,9 +1461,10 @@ def test_sanitize_structural_redaction_never_corrupts_short_generic_text():
     # `_bounded_operator_string` is legal) corrupt unrelated text
     # anywhere else in the same payload -- e.g. a value "a" turning
     # "ready" into "re<marker>dy" and "wlan" into "wl<marker>n".
-    # Structural redaction must never do that: generic prose that merely
-    # shares characters with a short secret is left completely
-    # unchanged, and only an exact whole-string match is redacted.
+    # `structural_redaction_values` must never do that: generic prose
+    # that merely shares characters with a short operator value is left
+    # completely unchanged, and only an exact whole-string match is
+    # redacted.
     from pipeline.aos8_migration_orchestrator import _sanitize
 
     payload = {
@@ -1403,19 +1474,23 @@ def test_sanitize_structural_redaction_never_corrupts_short_generic_text():
         "auth_server1": "a",
     }
     sanitized = _sanitize(
-        payload, secret_values=("a",), redact_marker="<runtime-context-redacted>"
+        payload,
+        structural_redaction_values=("a",),
+        structural_redact_marker="<runtime-context-redacted>",
     )
     assert sanitized["status"] == "ready"
     assert sanitized["object_type"] == "wlan"
     assert sanitized["notes"] == ["wlan provisioning is ready", "already applied"]
-    # The one leaf whose *entire* value equals the secret is redacted.
+    # The one leaf whose *entire* value equals the operator value is
+    # redacted.
     assert sanitized["auth_server1"] == "<runtime-context-redacted>"
 
 
 def test_sanitize_redacts_exact_url_path_and_query_components_only():
     # Endpoint/URL strings must have only their exact decoded or
     # percent-encoded path/query components redacted -- never an
-    # arbitrary substring match against the rest of the URL.
+    # arbitrary substring match against the rest of the URL -- for the
+    # structural (non-secret, operator-context) channel.
     from urllib.parse import quote
 
     from pipeline.aos8_migration_orchestrator import _sanitize
@@ -1435,8 +1510,8 @@ def test_sanitize_redacts_exact_url_path_and_query_components_only():
             "query": query_endpoint,
             "unrelated": unrelated_endpoint,
         },
-        secret_values=(secret,),
-        redact_marker=marker,
+        structural_redaction_values=(secret,),
+        structural_redact_marker=marker,
     )
     assert sanitized["decoded"] == f"/network-config/v1alpha1/server-groups/{marker}"
     assert sanitized["encoded"] == f"/network-config/v1alpha1/server-groups/{marker}"
@@ -1446,6 +1521,82 @@ def test_sanitize_redacts_exact_url_path_and_query_components_only():
     assert sanitized["unrelated"] == unrelated_endpoint
     assert secret not in json.dumps(sanitized)
     assert encoded not in json.dumps(sanitized)
+
+
+def test_sanitize_secret_values_redacts_embedded_credential_in_backend_text():
+    # Regression for the 562f4a4 fix-up: real runtime secrets
+    # (credentials/passphrases/shared secrets) must still be redacted by
+    # aggressive substring replacement wherever they appear -- including
+    # embedded in the middle of a longer backend error/result message --
+    # not only when a leaf string equals the secret exactly. Only
+    # `structural_redaction_values` is restricted to whole-leaf/URL-
+    # component matches; `secret_values` is not.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "Sup3rSecret!"
+    payload = {
+        "error": f"write rejected by backend: shared_secret={secret} was invalid",
+        "result": {"detail": f"upstream said '{secret}' already exists"},
+    }
+    sanitized = _sanitize(payload, secret_values=(secret,))
+    dumped = json.dumps(sanitized)
+    assert secret not in dumped
+    assert "******" in sanitized["error"]
+    assert "******" in sanitized["result"]["detail"]
+    # The surrounding prose must otherwise survive untouched.
+    assert "write rejected by backend" in sanitized["error"]
+    assert "upstream said" in sanitized["result"]["detail"]
+
+
+def test_sanitize_secret_values_redacts_credential_in_url_payload_and_list():
+    # A real secret embedded inside a URL (not as a clean path/query
+    # component), a nested payload leaf, or inside a list must all be
+    # redacted by the `secret_values` channel.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "hunter2-token"
+    payload = {
+        "endpoint": f"/network-config/v1/server-groups/lookup?raw=prefix-{secret}-suffix",
+        "wlan": {"auth_server1": secret},
+        "history": [f"attempt failed for {secret}", "attempt failed for other-value"],
+    }
+    sanitized = _sanitize(payload, secret_values=(secret,))
+    dumped = json.dumps(sanitized)
+    assert secret not in dumped
+    assert sanitized["wlan"]["auth_server1"] == "******"
+    assert "attempt failed for other-value" in dumped
+
+
+def test_sanitize_combined_secret_and_structural_channels():
+    # Both channels must be usable together in a single `_sanitize` call:
+    # a real secret substring-redacted anywhere it appears, and a short
+    # generic operator-context value exact-match-redacted only where it
+    # is the entire leaf/URL component, without either channel corrupting
+    # the other's untouched text.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "Sup3rSecret!"
+    operator_value = "a"
+    payload = {
+        "status": "ready",
+        "object_type": "wlan",
+        "notes": ["wlan provisioning is ready", "already applied"],
+        "auth_server1": operator_value,
+        "error": f"backend rejected shared_secret={secret}",
+    }
+    sanitized = _sanitize(
+        payload,
+        secret_values=(secret,),
+        structural_redaction_values=(operator_value,),
+        structural_redact_marker="<runtime-context-redacted>",
+    )
+    assert sanitized["status"] == "ready"
+    assert sanitized["object_type"] == "wlan"
+    assert sanitized["notes"] == ["wlan provisioning is ready", "already applied"]
+    assert sanitized["auth_server1"] == "<runtime-context-redacted>"
+    assert secret not in sanitized["error"]
+    assert "******" in sanitized["error"]
+    assert "backend rejected" in sanitized["error"]
 
 
 def test_preview_one_character_operator_value_does_not_corrupt_preview(tmp_path):
