@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, quote_plus
@@ -15,6 +16,7 @@ from pipeline.aos8_migration_orchestrator import (
     MalformedMigrationStateError,
     MigrationRunError,
     MigrationRunStore,
+    _compile_secret_pattern,
     _target_context,
 )
 from pipeline.aos8_target_adapters import (
@@ -23,6 +25,26 @@ from pipeline.aos8_target_adapters import (
     TargetType,
     WriteGateError,
 )
+
+
+def _mixed_case_percent_encode(value: str) -> str:
+    """Percent-encode `value` like `quote(value, safe="")`, but flip the
+    hex-digit case of every other `%XX` escape, so the resulting string
+    mixes upper- and lower-case hex *within the same encoded string* --
+    exercising the requirement that each `%XX` escape be independently
+    case-insensitive, not just uniformly upper or uniformly lower.
+    """
+    encoded = quote(value, safe="")
+    parts = re.split(r"(%[0-9A-Fa-f]{2})", encoded)
+    toggle = False
+    out = []
+    for part in parts:
+        if len(part) == 3 and part.startswith("%"):
+            out.append(part.lower() if toggle else part)
+            toggle = not toggle
+        else:
+            out.append(part)
+    return "".join(out)
 
 
 def candidate(
@@ -64,10 +86,16 @@ class FakeBackend:
         self.embed_secret_in_message = False
         # When set, embeds the operation secret percent-encoded across a
         # URL-shaped path segment, query value, and fragment value inside
-        # the backend error/result message, to exercise the URL-component
-        # `secret_values` redaction pass (`_redact_url_secrets`) end to
-        # end -- not just the plain aggressive-substring pass.
+        # the backend error/result message, to exercise the regex-based
+        # `secret_values` redaction pass end to end -- not just the
+        # plain aggressive-substring pass.
         self.embed_secret_in_url = False
+        # When set (in combination with `embed_secret_in_url`), the
+        # percent-encoding used for the embedded secret mixes upper- and
+        # lower-case hex digits *within the same escape sequence run*,
+        # to exercise arbitrary independent per-escape case mixing end
+        # to end, not just a uniformly-upper or uniformly-lower variant.
+        self.embed_secret_mixed_case_in_url = False
 
     def read(self, operation):
         self.read_calls.append(operation)
@@ -86,11 +114,15 @@ class FakeBackend:
     def _secret_url(self, operation):
         # A URL with the operation secret percent-encoded into a path
         # segment, a query value, and a fragment value -- exercising all
-        # three component kinds `_redact_url_secrets` decodes/redacts.
+        # three component kinds the regex-based secret pass must catch.
         from urllib.parse import quote
 
         secret = self._operation_secret(operation)
-        encoded = quote(secret, safe="")
+        encoded = (
+            _mixed_case_percent_encode(secret)
+            if self.embed_secret_mixed_case_in_url
+            else quote(secret, safe="")
+        )
         return (
             f"/network-config/v1alpha1/wlan/{encoded}"
             f"?shared_secret={encoded}&status=rejected#detail={encoded}"
@@ -384,8 +416,9 @@ def test_apply_redacts_percent_encoded_credential_in_backend_error_and_result_ur
     # both in the returned response and in the persisted on-disk state.
     # Plain substring replacement of the raw secret cannot catch this,
     # because the raw secret text never appears literally in the
-    # percent-encoded message; only component-aware decode-then-redact
-    # (`_redact_url_secrets`) does.
+    # percent-encoded message; only the per-character secret regex
+    # (`_compile_secret_pattern`), matched directly against the literal
+    # text, does.
     backend = FakeBackend()
     backend.embed_secret_in_url = True
     backend.fail_real["build_underlay_ssid"] = 1
@@ -433,6 +466,61 @@ def test_apply_redacts_percent_encoded_credential_in_backend_error_and_result_ur
         assert secret not in text
         assert quote(secret, safe="") not in text
         assert quote(secret, safe="").lower() not in text
+
+
+def test_apply_redacts_mixed_case_and_partially_raw_percent_encoded_credential_end_to_end(
+    tmp_path,
+):
+    # Companion end-to-end regression: a real backend is free to mix
+    # upper/lower-case hex *within the same encoded string* (not just
+    # uniformly all-upper or all-lower) when it echoes a rejected
+    # request back. Only the per-character regex matcher
+    # (`_compile_secret_pattern`), not a fixed list of whole-string
+    # variants, can catch this end to end, in both the returned
+    # response and the persisted on-disk run state.
+    backend = FakeBackend()
+    backend.embed_secret_in_url = True
+    backend.embed_secret_mixed_case_in_url = True
+    backend.fail_real["build_underlay_ssid"] = 1
+    service, store = orchestrator(tmp_path, backend)
+    wlan = _wpa2_wlan_candidate("MixedCaseSecretGuest")
+    service.create_run([wlan], target(), run_id="mixed-case-secret-url")
+    secret = "P@ss/w?rd#x"
+    supplied = {"wlan:MixedCaseSecretGuest": {"wpa_passphrase": secret}}
+    service.apply(
+        "mixed-case-secret-url",
+        dry_run=True,
+        confirmation=False,
+        target_secrets=supplied,
+    )
+    pattern = _compile_secret_pattern(secret)
+
+    failed = service.apply(
+        "mixed-case-secret-url",
+        dry_run=False,
+        confirmation=True,
+        target_secrets=supplied,
+    )
+    assert failed["candidates"][0]["status"] == "failed"
+    dumped_failed = json.dumps(failed)
+    persisted_failed = store.path_for("mixed-case-secret-url").read_text()
+    for text in (dumped_failed, persisted_failed):
+        assert secret not in text
+        assert pattern.search(text) is None
+
+    applied = service.apply(
+        "mixed-case-secret-url",
+        dry_run=False,
+        confirmation=True,
+        target_secrets=supplied,
+        retry_failed=True,
+    )
+    assert applied["candidates"][0]["status"] == "applied"
+    dumped_applied = json.dumps(applied)
+    persisted_applied = store.path_for("mixed-case-secret-url").read_text()
+    for text in (dumped_applied, persisted_applied):
+        assert secret not in text
+        assert pattern.search(text) is None
 
 
 def test_malformed_state_and_path_traversal_fail_cleanly(tmp_path):
@@ -2040,6 +2128,172 @@ def test_sanitize_url_secret_pass_does_not_corrupt_unrelated_percent_encoded_tex
     )
     assert sanitized["endpoint"] == url
     assert sanitized["notes"] == non_url_text
+
+
+def test_sanitize_redacts_secret_with_arbitrary_per_escape_hex_case_mixture():
+    # Every `%XX` hex escape must be independently case-insensitive -- a
+    # backend is free to mix upper/lower case across escapes within the
+    # very same encoded string (not just consistently all-upper or
+    # all-lower), e.g. `%2F%3f%3A%20` mixing all four case combinations
+    # for the secret `/?: `. A fixed two-variant (all-upper/all-lower)
+    # substring scan cannot match this; only a per-character regex can.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "/?: "
+    mixed = "%2F%3f%3A%20"  # upper, lower, upper, upper
+    payload = {"endpoint": f"/network-config/v1/wlan?raw={mixed}&status=rejected"}
+
+    sanitized = _sanitize(payload, secret_values=(secret,))
+    assert sanitized["endpoint"] == "/network-config/v1/wlan?raw=******&status=rejected"
+
+
+def test_sanitize_redacts_secret_with_mixed_raw_and_encoded_characters():
+    # A single occurrence of a secret can mix raw and percent-encoded
+    # characters arbitrarily -- e.g. only some of the special characters
+    # in `P@ss/w?rd#x` percent-encoded, others left literal -- not just
+    # "fully raw" or "fully encoded" as a whole. The regex must match
+    # this interleaving directly.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "P@ss/w?rd#x"
+    mixed = "P@ss%2Fw?rd%23x"  # '/' and '#' encoded, '@' and '?' raw
+    payload = {"error": f"write rejected: shared_secret={mixed} was invalid"}
+
+    sanitized = _sanitize(payload, secret_values=(secret,))
+    assert secret not in sanitized["error"]
+    assert mixed not in sanitized["error"]
+    assert sanitized["error"] == "write rejected: shared_secret=****** was invalid"
+
+
+def test_sanitize_redacts_form_plus_secret_mixed_with_percent_encoded_characters():
+    # Form-encoding (`+` for space) must combine with percent-encoding
+    # of the *other* characters of the same secret in a single match --
+    # not just a purely percent-encoded or purely form-encoded whole
+    # string.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "/?: "
+    mixed_plus = "%2F%3f%3A+"  # '/','?',':' percent-encoded, space as '+'
+    payload = {"endpoint": f"/network-config/v1/wlan?raw={mixed_plus}&status=rejected"}
+
+    sanitized = _sanitize(payload, secret_values=(secret,))
+    assert sanitized["endpoint"] == "/network-config/v1/wlan?raw=******&status=rejected"
+
+
+def test_sanitize_redacts_unicode_secret_percent_encoded_bytes():
+    # A secret containing a non-ASCII character must be matched against
+    # its multi-byte UTF-8 percent-encoded form (one `%XX` per byte),
+    # with independent per-escape hex-digit case, the same as an ASCII
+    # secret.
+    import re as re_module
+
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "pa$$wörd"
+    encoded_upper = quote(secret, safe="")
+    encoded_lower = re_module.sub(
+        r"%[0-9A-Fa-f]{2}", lambda m: m.group(0).lower(), encoded_upper
+    )
+    payload = {
+        "upper": f"/network-config/v1/wlan?token={encoded_upper}",
+        "lower": f"/network-config/v1/wlan?token={encoded_lower}",
+    }
+
+    sanitized = _sanitize(payload, secret_values=(secret,))
+    dumped = json.dumps(sanitized)
+    assert secret not in dumped
+    assert encoded_upper not in dumped
+    assert encoded_lower not in dumped
+    assert sanitized["upper"] == "/network-config/v1/wlan?token=******"
+    assert sanitized["lower"] == "/network-config/v1/wlan?token=******"
+
+
+def test_sanitize_absolute_url_embedded_in_prose_unchanged_except_secret_marker():
+    # A secret percent-encoded inside an *absolute* URL that is itself
+    # embedded in a longer backend message must be redacted without any
+    # attempt to parse/decode-then-re-encode the URL or the surrounding
+    # prose -- the regex is applied directly to the literal text, so the
+    # scheme, host, and every other character survive byte-for-byte.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "P@ss/w?rd#x"
+    encoded = quote(secret, safe="")
+    message = (
+        "upstream rejected request (see "
+        f"https://central.example.com/network-config/v1/wlan?token={encoded} "
+        "for detail)"
+    )
+
+    sanitized = _sanitize({"error": message}, secret_values=(secret,))
+    expected = message.replace(encoded, "******")
+    assert sanitized["error"] == expected
+    assert secret not in sanitized["error"]
+    assert encoded not in sanitized["error"]
+    assert "https://central.example.com/network-config/v1/wlan?token=" in sanitized["error"]
+    assert "upstream rejected request (see" in sanitized["error"]
+    assert "for detail)" in sanitized["error"]
+
+
+def test_sanitize_preserves_standalone_absolute_url_structure_when_redacting_secret():
+    # A secret embedded as a query value in a standalone absolute URL
+    # (scheme, host, path, query) must be redacted with the rest of the
+    # URL's structure left completely untouched.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    secret = "Sup3rSecret!"
+    url = f"https://central.example.com/network-config/v1/wlan?token={secret}&status=ok"
+
+    sanitized = _sanitize({"endpoint": url}, secret_values=(secret,))
+    assert sanitized["endpoint"] == (
+        "https://central.example.com/network-config/v1/wlan?token=******&status=ok"
+    )
+
+
+def test_sanitize_structural_redaction_applies_to_standalone_absolute_url_leaf():
+    # The structural (non-secret, operator-context) channel must still
+    # work on a standalone absolute URL leaf -- one that begins with an
+    # anchored, valid `scheme://` -- redacting only the exact matching
+    # path component and leaving the scheme/host/other segments intact.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    structural_value = "Legacy-AuthServer"
+    marker = "<runtime-context-redacted>"
+    url = (
+        "https://central.example.com/network-config/v1alpha1/"
+        f"auth-servers/{structural_value}"
+    )
+
+    sanitized = _sanitize(
+        {"endpoint": url},
+        structural_redaction_values=(structural_value,),
+        structural_redact_marker=marker,
+    )
+    assert sanitized["endpoint"] == (
+        "https://central.example.com/network-config/v1alpha1/"
+        f"auth-servers/{marker}"
+    )
+
+
+def test_sanitize_structural_redaction_never_parses_url_embedded_in_prose():
+    # Regression for the corruption risk this hardening removes: an
+    # absolute URL merely *embedded* inside longer prose (not a
+    # standalone leaf) must never be parsed as if the whole string were
+    # that URL -- doing so would risk matching a short/generic
+    # structural value against an unrelated fragment (e.g. a
+    # single-character value equal to a domain segment) and corrupting
+    # text that has nothing to do with the operator-context identifier.
+    from pipeline.aos8_migration_orchestrator import _sanitize
+
+    structural_value = "x"
+    marker = "<runtime-context-redacted>"
+    message = "See https://x/status for detail and retry"
+
+    sanitized = _sanitize(
+        {"note": message},
+        structural_redaction_values=(structural_value,),
+        structural_redact_marker=marker,
+    )
+    assert sanitized["note"] == message
 
 
 def test_preview_one_character_operator_value_does_not_corrupt_preview(tmp_path):

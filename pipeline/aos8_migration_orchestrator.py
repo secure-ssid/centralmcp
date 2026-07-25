@@ -11,9 +11,10 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, quote_plus, unquote, unquote_plus
+from urllib.parse import unquote, unquote_plus
 
 from pipeline.aos8_target_adapters import (
     BaseCentralTargetAdapter,
@@ -51,7 +52,11 @@ MAX_OPERATOR_CONTEXT_STRING_LENGTH = 256
 MAX_AP_GROUP_SERIALS_PER_GROUP = 64
 MAX_SERIAL_STRING_LENGTH = 64
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_PERCENT_HEX_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+# Anchored scheme (RFC 3986 `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" /
+# "." )`) followed immediately by "://" -- used by `_is_url_like` to
+# require that a string *is* a standalone absolute URL leaf, never that
+# it merely contains "://" somewhere inside arbitrary prose.
+_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _SENSITIVE_KEY_RE = re.compile(
     r"(?:^|[_-])(?:credential|key|passphrase|password|psk|"
     r"secret|token)(?:$|[_-])",
@@ -187,21 +192,24 @@ def _sanitize(
 
     - `secret_values`: actual runtime secrets (credentials, passphrases,
       shared secrets a caller supplied for a real apply/write). A real
-      secret must never survive in any form it might appear in, so this
-      channel runs in two passes (see inline comments below): first
-      `_redact_url_secrets`, which decodes each path/query/fragment
-      component of a URL/endpoint string in isolation (undoing percent-
-      encoding of either hex case, and `+` form-encoding in a query/
-      fragment component) and substring-matches the secret against the
-      *decoded* text of each component, re-encoding only a component
-      that actually contained it; then a plain aggressive substring
-      replacement (`str.replace`) over the (possibly component-modified)
-      whole string, which catches a raw/unencoded secret anywhere --
-      a leaf, embedded in a longer backend error/result message, inside
-      non-URL text, or a substring of a URL that isn't a clean component.
-      Secrets are caller-supplied credential material, not arbitrary/
-      generic operator text, so there is no short-generic-value
-      corruption risk to guard against for either pass.
+      secret must never survive in any form it might appear in, so each
+      secret is matched directly against the text with a single linear
+      regex (`_compile_secret_pattern`) that treats every character of
+      the secret as *either* its raw literal form, *or* its UTF-8
+      percent-encoded byte sequence with every hex digit independently
+      case-insensitive, *or* (for a space) a literal `+` (form
+      encoding) -- so it matches arbitrary mixtures of raw and encoded
+      characters, and arbitrary per-escape case mixing, in one pass. The
+      regex is applied directly to the (possibly structurally-modified)
+      text as plain pattern matching -- it never decodes/re-encodes a
+      parsed URL or any surrounding prose -- so it catches a credential
+      wherever it appears: a leaf, a URL/query/fragment component,
+      embedded inside a longer backend error/result message, or a URL
+      string itself embedded in a longer message, without any risk of
+      corrupting an absolute URL or unrelated text around it. Secrets
+      are caller-supplied credential material, not arbitrary/generic
+      operator text, so there is no short-generic-value corruption risk
+      to guard against.
     - `structural_redaction_values`: transient, non-secret
       operator-context identifiers (e.g. an already-existing Classic
       auth-server name, an AP-group target-group name, a device serial).
@@ -243,11 +251,10 @@ def _sanitize(
       component that is an exact structural operator-context match
       *and* another component (or an embedded fragment) that holds an
       actual runtime secret; both channels must run over the same string
-      so neither leaks. The `secret_values` URL-component pass and
-      substring pass always run afterward, over the (possibly
-      structurally-modified) text, so a credential elsewhere in the
-      URL/string -- raw, percent-encoded, or form-encoded -- is still
-      caught.
+      so neither leaks. The `secret_values` regex pass always runs
+      afterward, over the (possibly structurally-modified) text, so a
+      credential elsewhere in the URL/string -- raw, percent-encoded, or
+      form-encoded -- is still caught.
     """
     secrets = tuple(secret for secret in secret_values if secret)
     structural_secrets = tuple(
@@ -325,98 +332,112 @@ def _sanitize(
         # falls through to the `secret_values` substring pass below on
         # whatever `_redact_url_structural` returns.
         text = _redact_url_structural(text, structural_secret_set, structural_redact_marker)
-        # Actual secrets, pass 1: URL/query/fragment-component-aware.
-        # A real secret embedded in a URL is not always present as a
-        # literal substring of the raw text -- it can be percent-encoded
-        # (either hex case), form-encoded (`+` for space in a query/
-        # fragment component), or nested inside a decoded path/query/
-        # fragment component alongside other text. `_redact_url_secrets`
-        # decodes each component in isolation, checks the *decoded* text
-        # for the secret, and only rewrites (re-encodes) a component that
-        # actually contains it -- every other component, delimiter, and
-        # unrelated character of the URL is left byte-for-byte untouched.
-        # This pass only fires on a string that is itself URL-shaped
-        # (starts with "/" or contains "://") -- it deliberately does
-        # NOT decode/re-encode a URL merely *embedded* inside a longer
-        # non-URL message (e.g. "... rejected (/path?token=%40...)"),
-        # since that would require guessing where the embedded URL
-        # starts/ends within arbitrary prose, risking corruption of the
-        # surrounding text. Pass 2 below covers that case instead.
-        text = _redact_url_secrets(text, secrets, redact_marker)
-        # Actual secrets, pass 2: aggressive substring replacement,
-        # anywhere in the (possibly structurally- and URL-component-
-        # modified) string, of every literal text variant a secret could
-        # appear as -- raw, percent-encoded (`quote`, either hex case),
-        # and form-encoded (`quote_plus`, `+` for space, either hex
-        # case). This is what catches a credential embedded in a longer
-        # backend error/result message, inside non-URL text, or inside
-        # a URL string that is itself embedded in a longer message (so
-        # pass 1's `_is_url_like` check never fires on it) -- not just a
-        # leaf or clean URL component that equals it exactly. Because
-        # pass 1 already removed every clean-URL-leaf encoded/component-
-        # form occurrence, this pass is a no-op for those and only
-        # catches what pass 1 cannot reach. Plain substring matching of
-        # a precomputed encoded literal never decodes/re-encodes
-        # surrounding text, so it cannot corrupt unrelated URL/message
-        # structure.
+        # Actual secrets: one linear regex per secret
+        # (`_compile_secret_pattern`), applied directly to the (possibly
+        # structurally-modified) text as plain pattern matching. Each
+        # character of the secret is matched as its raw literal form,
+        # its UTF-8 percent-encoded byte sequence (every hex digit
+        # independently case-insensitive), or -- for a space -- a
+        # literal `+` (form encoding), so a single pass catches any
+        # mixture of raw/encoded characters and any per-escape case
+        # mixing, whether the secret is a whole leaf, a URL/query/
+        # fragment component, embedded inside a longer backend error/
+        # result message, or inside a URL string that is itself
+        # embedded in a longer message. This never decodes/re-encodes a
+        # parsed URL or any surrounding prose -- it is a direct regex
+        # substitution over the literal text -- so it cannot corrupt an
+        # absolute URL embedded in prose, or any unrelated text around
+        # a match.
         for secret in secrets:
-            for variant in _secret_text_variants(secret):
-                text = text.replace(variant, redact_marker)
+            text = _compile_secret_pattern(secret).sub(redact_marker, text)
         if len(text) > 1000:
             return f"{text[:1000]}... [truncated {len(text) - 1000} chars]"
         return text
     return value
 
 
-def _secret_text_variants(secret: str) -> tuple[str, ...]:
-    """Return every literal text form of `secret` the plain-substring
-    `secret_values` pass should scan for: the raw secret, its percent-
-    encoded form (`quote(secret, safe="")`) in both hex cases, and its
-    form-encoded form (`quote_plus(secret)`, `+` for space) in both hex
-    cases.
+def _hex_digit_pattern(digit: str) -> str:
+    """Return a regex fragment matching one hex digit of a `%XX` escape:
+    case-insensitively (`[Ff]`) when `digit` is a letter (A-F, since hex
+    letters are the only part of a percent escape that has a case at
+    all), or the literal digit itself (0-9 has no case)."""
+    if digit.isalpha():
+        return f"[{digit.upper()}{digit.lower()}]"
+    return re.escape(digit)
 
-    This exists specifically for text where a secret is embedded (raw,
-    percent-encoded, or form-encoded) inside a larger string that is
-    *not itself* a clean URL leaf/component -- e.g. a backend message
-    like `"... rejected (/path?token=%40...)"`, where the embedded path
-    is only part of a longer sentence, so `_redact_url_secrets`'s
-    `_is_url_like` check never fires on the whole string and the
-    component-decoding pass never runs. Sorted longest-first so that if
-    one variant happens to be a substring of another (only possible when
-    `secret` itself needs no encoding, making some variants identical),
-    replacement is stable and never leaves a partial match behind.
 
-    Every returned variant is compared/replaced as a literal substring
-    -- never decoded or re-encoded -- so surrounding text is always left
-    untouched; this is safe for secrets specifically (unlike
-    `structural_redaction_values`) because secrets are real credential
-    material, not short/generic operator text.
+def _percent_encoded_char_pattern(char: str) -> str:
+    """Return a regex fragment matching the UTF-8 percent-encoded byte
+    sequence for `char`, with every hex digit independently case-
+    insensitive -- so `%2f`, `%2F`, and any other per-digit case
+    mixture all match the same fragment. A multi-byte (non-ASCII)
+    character yields one concatenated `%XX` per UTF-8 byte, so a
+    Unicode secret character is matched the same way a backend would
+    actually percent-encode it.
     """
-    if not secret:
-        return ()
-    percent = quote(secret, safe="")
-    percent_plus = quote_plus(secret)
-    variants = {
-        secret,
-        percent,
-        _PERCENT_HEX_RE.sub(lambda m: m.group(0).lower(), percent),
-        percent_plus,
-        _PERCENT_HEX_RE.sub(lambda m: m.group(0).lower(), percent_plus),
-    }
-    return tuple(sorted((v for v in variants if v), key=len, reverse=True))
+    pieces = []
+    for byte in char.encode("utf-8"):
+        hex_digits = f"{byte:02X}"
+        pieces.append("%" + "".join(_hex_digit_pattern(d) for d in hex_digits))
+    return "".join(pieces)
+
+
+def _secret_char_pattern(char: str) -> str:
+    """Return a regex fragment matching a single secret character as
+    either: the raw literal character; its UTF-8 percent-encoded byte
+    sequence, with any mixture of upper/lower-case hex digits (see
+    `_percent_encoded_char_pattern`); or, only for a space, also a
+    literal `+` (form encoding). The alternatives are mutually
+    exclusive by construction -- a literal character can never begin
+    with the `%` that starts the percent-encoded alternative -- so
+    there is no ambiguity for the regex engine to backtrack over.
+    """
+    alternatives = [re.escape(char), _percent_encoded_char_pattern(char)]
+    if char == " ":
+        alternatives.append(re.escape("+"))
+    return "(?:" + "|".join(alternatives) + ")"
+
+
+@lru_cache(maxsize=256)
+def _compile_secret_pattern(secret: str) -> re.Pattern[str]:
+    """Compile a regex matching `secret` against arbitrary mixtures of
+    raw and percent-/form-encoded characters -- e.g. the four characters
+    `/?: ` can appear in backend-echoed text as any of `/?: `,
+    `%2F%3f%3A%20`, `%2F%3f%3A+`, or any other per-character mixture of
+    raw/encoded forms, with every `%XX` hex escape independently case-
+    insensitive.
+
+    Applied directly (via `.sub`) to the literal text -- it never
+    decodes/re-encodes a parsed URL or any surrounding prose, so it
+    cannot corrupt an absolute URL embedded in prose or any unrelated
+    text around a match. Each secret character contributes a small,
+    fixed-size, non-overlapping set of alternatives (see
+    `_secret_char_pattern`), so the compiled pattern is linear in
+    `len(secret)` with no catastrophic-backtracking exposure regardless
+    of secret length or content. Cached because the same handful of
+    secrets is matched against many strings within a single `_sanitize`
+    call tree.
+    """
+    return re.compile("".join(_secret_char_pattern(c) for c in secret))
 
 
 def _is_url_like(text: str) -> bool:
-    """Return True only for a URL/endpoint-shaped string -- the same
-    narrow predicate both `_redact_url_structural` and `_redact_url_secrets`
-    use to decide whether component-wise decoding is safe to attempt at
-    all. Deliberately conservative: this must never be broadened into a
-    generic "does this look like it might contain a URL" heuristic, or
-    arbitrary non-URL prose would be decoded/re-encoded, risking
-    corruption of unrelated text (see `_redact_url_components` and
-    `_redact_url_secrets`).
+    """Return True only for a standalone URL/endpoint leaf: an absolute
+    URL beginning with an anchored, valid `scheme://` at the very start
+    of `text`, or a path/query/fragment leaf beginning with `/`, `?`, or
+    `#`. This is the narrow predicate `_redact_url_structural` uses to
+    decide whether component-wise decoding is safe to attempt at all.
+
+    Deliberately conservative: matching `"://"` anywhere in `text`
+    (rather than an anchored scheme at the start) would let arbitrary
+    prose that merely mentions or embeds a URL (e.g. "see
+    https://example.com/x for detail") be parsed as if the *entire*
+    string were that URL, corrupting everything before the scheme when
+    path/query components are rewritten. This must never be broadened
+    into a generic "does this look like it might contain a URL"
+    heuristic -- see `_redact_url_components`.
     """
-    return text.startswith("/") or "://" in text
+    return bool(_URL_SCHEME_RE.match(text)) or text.startswith(("/", "?", "#"))
 
 
 def _split_url_parts(text: str) -> tuple[str, str, str, str, str]:
@@ -449,16 +470,19 @@ def _redact_url_structural(text: str, secret_set: set[str], redact_marker: str) 
 
     The whole-leaf exact-match case is handled by the caller (`_sanitize`)
     before this function is ever reached; this function only handles the
-    URL/query/fragment-component case: if `text` is a URL/endpoint path
-    (starts with "/" or contains "://"), each `/`-delimited path segment,
-    each `key`/`value` in a `?`-delimited query string, and each
-    `key`/`value` in a `#`-delimited fragment is percent-/form-decoded and
-    compared for an exact match, so a runtime value embedded as one
-    path/query/fragment component is redacted without touching the rest
-    of the endpoint string, whether it was passed decoded or percent-
-    encoded. Non-URL text (and URL text with no matching component) is
+    URL/query/fragment-component case: if `text` *is* a standalone URL/
+    endpoint leaf (see `_is_url_like` -- an anchored `scheme://` at the
+    very start, or a path/query/fragment leaf starting with `/`, `?`, or
+    `#`), each `/`-delimited path segment, each `key`/`value` in a
+    `?`-delimited query string, and each `key`/`value` in a
+    `#`-delimited fragment is percent-/form-decoded and compared for an
+    exact match, so a runtime value embedded as one path/query/fragment
+    component is redacted without touching the rest of the endpoint
+    string, whether it was passed decoded or percent-encoded. Non-URL
+    text, a URL merely *embedded* inside longer prose (never a
+    standalone leaf), and URL text with no matching component are all
     returned unchanged -- this function never short-circuits the
-    caller's subsequent secret-substring pass.
+    caller's subsequent secret pass.
 
     Generic prose (adapter messages, statuses, warnings) that merely
     happens to share characters with a short operator value is left
@@ -485,71 +509,6 @@ def _redact_url_components(text: str, secret_set: set[str], redact_marker: str) 
         # ordinary percent-escapes, so a value form-encoded with `+`
         # matches the same way a purely percent-encoded one does.
         return redact_marker if unquote_plus(component) in secret_set else component
-
-    def redact_pair(pair: str) -> str:
-        key, eq, val = pair.partition("=")
-        if not eq:
-            return redact_query_component(key)
-        return f"{redact_query_component(key)}={redact_query_component(val)}"
-
-    path_part, query_sep, query_part, fragment_sep, fragment_part = _split_url_parts(text)
-    redacted_path = "/".join(redact_path_component(segment) for segment in path_part.split("/"))
-    result = redacted_path
-    if query_sep:
-        redacted_query = "&".join(redact_pair(pair) for pair in query_part.split("&"))
-        result = f"{result}{query_sep}{redacted_query}"
-    if fragment_sep:
-        redacted_fragment = "&".join(redact_pair(pair) for pair in fragment_part.split("&"))
-        result = f"{result}{fragment_sep}{redacted_fragment}"
-    return result
-
-
-def _redact_url_secrets(text: str, secrets: tuple[str, ...], redact_marker: str) -> str:
-    """Redact actual runtime `secrets` from a URL/endpoint string `text`
-    component-wise, so a credential is caught whether it appears raw,
-    percent-encoded (either hex case), or form-encoded (`+` for space in
-    a query/fragment component) -- and whether it is the *entire*
-    decoded path/query/fragment component or only embedded as a
-    substring inside a longer one (e.g. `prefix-<secret>-suffix`).
-
-    Unlike `_redact_url_structural`, this is a substring check against
-    each *decoded* component, not a whole-component equality check --
-    `secret_values` are real credentials, not short/generic operator
-    text, so there is no short-value-corruption risk to guard against
-    here (see `_sanitize`'s docstring), and a secret can legitimately be
-    only part of a component's raw value.
-
-    Only the component(s) that actually contain a secret are rewritten:
-    the surviving (non-secret) text of that component is re-encoded with
-    `quote`/`quote_plus` so the reassembled URL/string stays well-formed
-    (a raw secret like `P@ss/w?rd#x` contains `/`, `?`, and `#` --
-    structural URL delimiters -- so simply splicing the decoded,
-    redacted text back in unencoded could corrupt the surrounding URL).
-    Every other component, delimiter, and unrelated character is left
-    byte-for-byte untouched -- this function never touches non-URL text,
-    and never rewrites a component that does not contain any secret.
-    """
-    if not secrets or not _is_url_like(text):
-        return text
-
-    def redact_decoded(decoded: str) -> tuple[str, bool]:
-        changed = False
-        for secret in secrets:
-            if secret in decoded:
-                decoded = decoded.replace(secret, redact_marker)
-                changed = True
-        return decoded, changed
-
-    def redact_path_component(component: str) -> str:
-        redacted, changed = redact_decoded(unquote(component))
-        # `*` is not in `quote`'s default "always safe" set, so it would
-        # otherwise be percent-encoded (e.g. "******" -> "%2A%2A...");
-        # exempting it keeps a literal `redact_marker` readable.
-        return quote(redacted, safe="*") if changed else component
-
-    def redact_query_component(component: str) -> str:
-        redacted, changed = redact_decoded(unquote_plus(component))
-        return quote_plus(redacted, safe="*") if changed else component
 
     def redact_pair(pair: str) -> str:
         key, eq, val = pair.partition("=")
