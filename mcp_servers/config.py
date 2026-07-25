@@ -25,6 +25,7 @@ from mcp_servers.shared import (
     get_client,
     get_mcp_client,
     resp_json,
+    validate_write_result,
 )
 from pipeline.config import build_account_contexts
 from pipeline.create_ssid import (
@@ -958,6 +959,10 @@ def delete_overlay_ssid(
     """Delete an overlay (tunneled/GRE) WLAN profile. Must precede underlay SSID deletion.
 
     profile_name visible in gw-profile field or via list_overlay_wlans.
+
+    Raises `WriteResultError` (via `validate_write_result`) on a non-2xx response
+    or an error-shaped envelope instead of returning a success-shaped result with
+    the failure buried in an `errors` list.
     """
     if dry_run:
         return {"dry_run": True, "profile_name": profile_name, "endpoint": f"/network-config/v1alpha1/overlay-wlan/{profile_name}"}
@@ -965,9 +970,9 @@ def delete_overlay_ssid(
     endpoint = f"/network-config/v1alpha1/overlay-wlan/{profile_name}"
     client = get_client()
     resp = client._request("DELETE", endpoint)
+    validate_write_result(resp, context=f"DELETE {endpoint}")
     result = resp_json(resp)
-    if not resp.is_success:
-        result.setdefault("errors", []).append(compact_http_error(resp, endpoint))
+    validate_write_result(result, context=f"DELETE {endpoint}")
     return result
 
 
@@ -1564,6 +1569,10 @@ def create_role(
 
     allow_all=True attaches 'sys_allow_all'. target: NAC allows spaces;
     SWITCH/GATEWAY/AOS_CX/AOS_S reject them; omit to skip validation.
+
+    Raises `WriteResultError` (via `validate_write_result`) on a non-2xx response
+    or an error-shaped envelope instead of returning a success-shaped result with
+    the failure buried in an `errors` list.
     """
     _validate_name_for_target(name, target)
     payload: dict[str, Any] = {}
@@ -1583,11 +1592,9 @@ def create_role(
         f"/network-config/v1/roles/{name}",
         json=payload,
     )
+    validate_write_result(resp, context=f"POST /network-config/v1/roles/{name}")
     result = resp_json(resp)
-    if not resp.is_success:
-        result.setdefault("errors", []).append(
-            compact_http_error(resp, f"/network-config/v1/roles/{name}")
-        )
+    validate_write_result(result, context=f"POST /network-config/v1/roles/{name}")
     return result
 
 
@@ -1600,7 +1607,12 @@ def update_role(
     target: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """PUT-update an existing wireless role in the Central Library. target: see create_role."""
+    """PUT-update an existing wireless role in the Central Library. target: see create_role.
+
+    Raises `WriteResultError` (via `validate_write_result`) on a non-2xx response
+    or an error-shaped envelope instead of returning a success-shaped result with
+    the failure buried in an `errors` list.
+    """
     _validate_name_for_target(name, target)
     payload: dict[str, Any] = {}
     if description:
@@ -1619,11 +1631,9 @@ def update_role(
         f"/network-config/v1/roles/{name}",
         json=payload,
     )
+    validate_write_result(resp, context=f"PUT /network-config/v1/roles/{name}")
     result = resp_json(resp)
-    if not resp.is_success:
-        result.setdefault("errors", []).append(
-            compact_http_error(resp, f"/network-config/v1/roles/{name}")
-        )
+    validate_write_result(result, context=f"PUT /network-config/v1/roles/{name}")
     return result
 
 
@@ -1746,6 +1756,10 @@ def delete_config_assignment(
     """Unassign a profile from a device function at a scope (required before delete_role).
 
     profile_type e.g. 'roles'; profile_instance is the profile name.
+
+    Raises `WriteResultError` (via `validate_write_result`) on a non-2xx response
+    or an error-shaped envelope instead of returning a success-shaped result with
+    the failure buried in an `errors` list.
     """
     endpoint = f"/network-config/v1alpha1/config-assignments/{scope_id}/{device_function}/{profile_type}/{profile_instance}"
 
@@ -1754,9 +1768,9 @@ def delete_config_assignment(
 
     client = get_client()
     resp = client._request("DELETE", endpoint)
+    validate_write_result(resp, context=f"DELETE {endpoint}")
     result = resp_json(resp)
-    if not resp.is_success:
-        result.setdefault("errors", []).append(compact_http_error(resp, endpoint))
+    validate_write_result(result, context=f"DELETE {endpoint}")
     return result
 
 
@@ -1774,6 +1788,10 @@ def create_config_assignment(
     it applies. Config-authoring tools produce orphans without this.
     profile_type: API endpoint segment ('roles', 'wlan-ssids', 'named-vlans',
     'sw-port-profiles', 'policies', etc.). profile_instance: profile name/ID.
+
+    Raises `WriteResultError` (via `validate_write_result`) on a non-2xx response
+    or an error-shaped envelope instead of returning a success-shaped result with
+    the failure buried in an `errors` list.
     """
     endpoint = f"/network-config/v1alpha1/config-assignments/{scope_id}/{device_function}/{profile_type}/{profile_instance}"
 
@@ -1782,9 +1800,9 @@ def create_config_assignment(
 
     client = get_client()
     resp = client._request("POST", endpoint)
+    validate_write_result(resp, context=f"POST {endpoint}")
     result = resp_json(resp)
-    if not resp.is_success:
-        result.setdefault("errors", []).append(compact_http_error(resp, endpoint))
+    validate_write_result(result, context=f"POST {endpoint}")
     return result
 
 
@@ -1825,6 +1843,10 @@ def delete_role(
     """Delete a wireless/gateway role by name.
 
     Pre-reqs: delete_role_acl then delete_config_assignment for all scopes.
+
+    Raises `WriteResultError` (via `validate_write_result`) on a non-2xx response
+    or an error-shaped envelope instead of returning a success-shaped result with
+    the failure buried in an `errors` list.
     """
     if dry_run:
         return {"dry_run": True, "name": name}
@@ -1832,9 +1854,9 @@ def delete_role(
     endpoint = f"/network-config/v1alpha1/roles/{name}"
     client = get_client()
     resp = client._request("DELETE", endpoint)
+    validate_write_result(resp, context=f"DELETE {endpoint}")
     result = resp_json(resp)
-    if not resp.is_success:
-        result.setdefault("errors", []).append(compact_http_error(resp, endpoint))
+    validate_write_result(result, context=f"DELETE {endpoint}")
     return result
 
 

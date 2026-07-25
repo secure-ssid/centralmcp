@@ -7,8 +7,11 @@ new per-candidate verification taxonomy, and a read-only live/dry-run
 evaluation of the whole pipeline. Investigation effort was applied equally to
 Classic Central and New Central; the result is **not** claimed parity between
 them, and this release does not claim to have executed any live write against
-either target. Tool counts, router modes, and every other platform surface
-are unchanged from 0.4.0.
+either target. **Tool counts and router modes are unchanged from 0.4.0** —
+no tool was added, removed, or renamed. Tool *behavior* did change on the
+config-tool surface that AOS8 migration writes reuse: see
+[Config-tool changes in this release](#config-tool-changes-in-this-release)
+below for the full list and required upgrade steps.
 
 ![centralmcp platform coverage](assets/platform-coverage.svg)
 
@@ -28,6 +31,40 @@ Capability totals across the complete backend index remain **2,813 read**,
 [capability gap matrix](capability-gap-matrix.md) for the full,
 reproducible, per-platform breakdown. `scripts/report_capability_gaps.py
 --check` confirms the committed matrix is current against these counts.
+
+## Config-tool changes in this release
+
+No tool was added, removed, or renamed on the `aruba-config` server — the
+following are **behavior/signature changes on existing tools**, made while
+building the AOS8 migration write path (`mcp_servers/config.py`):
+
+- **New `wpa3_transition` parameter** on `build_underlay_ssid` and
+  `build_overlay_ssid` (default `False`). It is an explicit, never-inherited
+  opt-in for a WPA3-transition-mode SSID; every currently supported pure
+  opmode (`OPEN`, `WPA2_PERSONAL`, `WPA3_SAE`, `ENHANCED_OPEN`) continues to
+  default to `False` and behaves exactly as before if the parameter is
+  omitted. Existing callers that do not pass this argument see no change in
+  behavior.
+- **Stronger, fail-closed failure handling** on `create_role`, `update_role`,
+  `delete_role`, `create_config_assignment`, `delete_config_assignment`, and
+  `delete_overlay_ssid`. These tools previously returned a **2xx-shaped
+  dict with the failure buried in an ad hoc `errors` list** on a non-2xx
+  response — a caller that only checked "did this raise?" would treat a
+  rejected write as applied, and the ad hoc
+  `result.setdefault("errors", []).append(...)` pattern itself could raise
+  `AttributeError` if the parsed response body was not a dict. All six tools
+  now call the shared `mcp_servers.shared.validate_write_result` helper on
+  both the raw HTTP response and the parsed envelope, and **raise
+  `WriteResultError`** (a `RuntimeError` subclass) on a non-2xx status, a
+  non-empty `errors`/`error` field (list, string, or dict), an explicit
+  `success`/`ok: False`, or a `failed`/`failure`/`error` `status` field. A
+  legitimate empty/success 2xx body is never rejected. This is the same
+  validation already used by the AOS8 migration write invoker
+  (`mcp_servers/aos8.py`); it is now applied consistently whether these
+  tools are called directly, via the router, or via the AOS8 migration
+  tools.
+- No tool count changed as part of this hardening — only the six tools
+  above changed their failure-reporting contract.
 
 ## Source foundation hardening
 
@@ -179,9 +216,13 @@ by the [AOS8 migration contract matrix](aos8-migration-contract-matrix.md):
 
 Run as the final release gate for this version:
 
-- **1,534 unit tests passed** (`uv run pytest tests/unit -q`) — including the
+- **1,566 unit tests passed** (`uv run pytest tests/unit -q`) — including the
   MCP protocol end-to-end suite (**10 passed**,
-  `tests/unit/test_mcp_protocol_e2e.py`).
+  `tests/unit/test_mcp_protocol_e2e.py`), the config-tool write-result
+  validation regression suite (**26 passed**,
+  `tests/unit/test_config_write_result_validation.py`), and the AOS8
+  read-only evaluation script's own tests (**6 passed**,
+  `tests/unit/test_evaluate_aos8_050_readonly.py`).
 - **20-sample RAG/API eval green** (`tests/eval/run_eval.py --ci`):
   `source_hit@k` 0.9, `keyword_hit` 1.0, `mrr` 0.9, `howto_recall@k` 0.9,
   `api_exact` 1.0.
@@ -219,6 +260,32 @@ All of the above are run together by `scripts/validate_release.py`.
    Central, is claimed. Treat every `conditional` mapping as preview-only
    until you have independently confirmed a live apply plus read-back in your
    own environment.
+6. **If any caller (your own code, an automation, or an AOS8 migration run)
+   depended on `create_role`, `update_role`, `delete_role`,
+   `create_config_assignment`, `delete_config_assignment`, or
+   `delete_overlay_ssid` returning a 2xx-shaped dict even when the
+   underlying write was rejected**, that caller must be updated before
+   upgrading: these six tools now raise `mcp_servers.shared.WriteResultError`
+   on a non-2xx response or an error-shaped envelope instead of returning a
+   success-shaped result with the failure buried in an `errors` list. Wrap
+   calls to these tools in a `try`/`except WriteResultError` (or the
+   generic exception handling your caller already uses) instead of checking
+   the returned dict for an `errors` key. Add or re-run targeted coverage —
+   `tests/unit/test_config_write_result_validation.py` — against your own
+   integration if you maintain a fork or wrapper around these tools. No
+   change is needed for callers that already treat "no exception raised" as
+   the only success signal *and* never inspected the previous ad hoc
+   `errors` list themselves; only callers that inspected the old buried
+   `errors` field to detect failure need to change error-detection logic to
+   a `try`/`except` instead.
+7. To reproduce this release's AOS8 read-only evaluation yourself, run
+   `scripts/evaluate_aos8_050_readonly.py` (offline/fixture-backed by
+   default; pass `--live-new-central-readonly` for a GET-only live New
+   Central check). See
+   [live/dry-run evaluation](aos8-live-dryrun-evaluation.md#reproduction)
+   for exact commands — the prose evaluation findings recorded in that file
+   were produced manually before this script existed; the script reproduces
+   an equivalent read-only evaluation, not a replay of that exact session.
 
 See the [0.4.0 release notes](release-notes-0.4.0.md) for the prior
 resumable-migration-execution, typed GLP, and Mist/EdgeConnect/Axis history,

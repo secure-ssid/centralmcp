@@ -899,7 +899,7 @@ def validate_write_result(result: Any, *, context: str = "") -> Any:
       * raw HTTP response-like objects (anything with a `status_code`
         attribute, e.g. `httpx.Response` or a test double) -- checked via
         `.is_success` when present, else `200 <= status_code < 300`;
-      * response envelopes (`Mapping`) carrying a non-empty `errors` list/str
+      * response envelopes (`Mapping`) carrying a non-empty `errors` list/str/dict
         or a non-empty `error` string;
       * response envelopes with an explicit `success`/`ok` field set to
         `False`;
@@ -932,6 +932,8 @@ def validate_write_result(result: Any, *, context: str = "") -> Any:
             raise WriteResultError(f"{where}write reported errors: {list(errors)}")
         if isinstance(errors, str) and errors.strip():
             raise WriteResultError(f"{where}write reported error: {errors}")
+        if isinstance(errors, Mapping) and len(errors) > 0:
+            raise WriteResultError(f"{where}write reported errors: {dict(errors)}")
         error = result.get("error")
         if isinstance(error, str) and error.strip():
             raise WriteResultError(f"{where}write reported error: {error}")

@@ -8,6 +8,13 @@ or a stateless `preview()` call; `confirmation=True` was never passed and no
 `aos8_create_migration_run`/`aos8_apply_migration_run(dry_run=False, ...)`
 call was made against any target.
 
+## Reproduction
+
+- Offline / fixture-backed reproduction: `.venv/bin/python scripts/evaluate_aos8_050_readonly.py`
+- New-Central-only live GET-only reproduction: `.venv/bin/python scripts/evaluate_aos8_050_readonly.py --live-new-central-readonly`
+
+The original evidence recorded in the rest of this document was produced manually, before `scripts/evaluate_aos8_050_readonly.py` existed. The committed script is a reproducible harness for re-running an equivalent read-only evaluation going forward; it is not a replay or committed transcript of that exact original manual session.
+
 ## 1. Access availability
 
 | Surface | Configured in this environment | Evidence |
