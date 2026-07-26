@@ -71,6 +71,7 @@ panels are defined in `assets/css/style.scss`.
 | `scripts/download_indexes.py` | Restore prebuilt docs/API/tool indexes from GitHub Releases |
 | `scripts/package_indexes.py` | Package local indexes for a GitHub Release asset |
 | `scripts/check_openapi_drift.py` / `scripts/check_mist_openapi_drift.py` | Detect Aruba ReadMe registry and official Mist OpenAPI changes |
+| `scripts/check_nowireless_source_drift.py` | Read-only, path-specific freshness check for the pinned community `nowireless4u/hpe-networking-mcp` inputs (GLP vendored specs, Axis platform source, capability-benchmark evidence paths); community pins are benchmarks/inputs, not API authority -- see [capability-gap-matrix.md](capability-gap-matrix.md) |
 | `scripts/check_security_lifecycle_drift.py` | Fresh/stale/unavailable/changed/coverage-gap state per security/lifecycle source, plus a bounded `source_freshness_result` artifact; see `ingestion/lifecycle_provenance.py` for the source-identity/schema pins under `ingestion/provenance/` |
 | `scripts/report_capability_gaps.py` | Generate/check the reproducible capability gap matrix and pinned benchmark comparison |
 | `scripts/generate_axis_manifest.py` | Rebuild/verify the deterministic SHA-pinned Axis Atmos Cloud manifest |

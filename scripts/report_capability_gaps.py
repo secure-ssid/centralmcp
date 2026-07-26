@@ -325,6 +325,13 @@ def render_report() -> str:
         "authority for behavior. The pinned `nowireless4u/hpe-networking-mcp` data is "
         "a useful MIT-licensed benchmark, not an API authority.",
         "",
+        "`scripts/check_nowireless_source_drift.py` checks whether the GLP vendored-spec, "
+        "Axis platform-source, and capability-benchmark path pins referenced here have "
+        "advanced past their reviewed commit; drift means review the changed path(s) "
+        "upstream and regenerate with `scripts/generate_glp_tools.py`, "
+        "`scripts/generate_axis_manifest.py`, or this script (updating "
+        "`docs/capability-benchmark-snapshot.json`) before advancing the pin.",
+        "",
         "## centralmcp executable catalog",
         "",
         "Counts below describe the full read-write backend registration. Optional "
