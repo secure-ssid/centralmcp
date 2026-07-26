@@ -44,6 +44,18 @@ questions:
     expect_sources: ["firmware-compliance"]
     expect_keywords: ["firmware-compliance", "PATCH"]
 
+  - id: sites-client-health-exact-path
+    type: api-lookup
+    query: "GET /network-monitoring/v1/sites-client-health"
+    expect_sources: ["monitoring-7wjo8aumqq.json#GET /network-monitoring/v1/sites-client-health"]
+    expect_keywords: ["sites-client-health", "GET"]
+
+  - id: sites-client-health-operation-id
+    type: api-lookup
+    query: "listSitesClientHealthV1"
+    expect_sources: ["monitoring-7wjo8aumqq.json#GET /network-monitoring/v1/sites-client-health"]
+    expect_keywords: ["sites-client-health", "GET"]
+
   - id: firmware-no-upgrade-path
     type: api-lookup
     query: "Is there a device-firmware-upgrade endpoint in the New Central config API?"

@@ -30,8 +30,11 @@ FIXTURE_SPECS = {
         "servers": [{"url": "https://example.test/cda"}],
         "paths": {
             "/auth-profiles/{name}": {
-                "patch": {"summary": "Update auth profile",
-                          "description": "Update an existing CDA auth profile."},
+                "patch": {
+                    "operationId": "updateAuthProfile",
+                    "summary": "Update auth profile",
+                    "description": "Update an existing CDA auth profile.",
+                },
             },
         },
         "components": {"schemas": {
@@ -52,10 +55,16 @@ FIXTURE_SPECS = {
         "servers": [{"url": "https://example.test/config"}],
         "paths": {
             "/device-firmware": {
-                "post": {"summary": "Create device firmware settings",
-                         "description": "Configure device firmware for a scope."},
-                "patch": {"summary": "Update device firmware settings",
-                          "description": "Update device firmware for a scope."},
+                "post": {
+                    "operationId": "createDeviceFirmware",
+                    "summary": "Create device firmware settings",
+                    "description": "Configure device firmware for a scope.",
+                },
+                "patch": {
+                    "operationId": "updateDeviceFirmware",
+                    "summary": "Update device firmware settings",
+                    "description": "Update device firmware for a scope.",
+                },
             },
         },
         "components": {"schemas": {}},
@@ -155,6 +164,24 @@ class TestQueryGroups:
 
 
 class TestLookup:
+    def test_exact_method_path_returns_only_literal_operation(self, db):
+        hits = specs_index.lookup("patch /device-firmware", db_path=db)
+
+        assert len(hits) == 1
+        assert hits[0]["kind"] == "endpoint"
+        assert hits[0]["file_path"].endswith(
+            "firmware-management.json#PATCH /device-firmware"
+        )
+        assert "Update device firmware settings" in hits[0]["text"]
+
+    def test_exact_operation_id_is_case_insensitive(self, db):
+        hits = specs_index.lookup("UPDATEDEVICEFIRMWARE", db_path=db)
+
+        assert len(hits) == 1
+        assert hits[0]["file_path"].endswith(
+            "firmware-management.json#PATCH /device-firmware"
+        )
+
     def test_exact_enum_hit_ranked_first_with_full_enum_list(self, db):
         hits = specs_index.lookup(
             "What are the valid auth-type values for a CDA auth profile?", db_path=db
@@ -202,6 +229,9 @@ class TestLookup:
         hits = specs_index.lookup("cda auth profile firmware device", top_k=2, db_path=db)
         assert len(hits) <= 2
 
+    def test_top_k_is_defensively_clamped(self, db):
+        assert len(specs_index.lookup("PATCH /device-firmware", top_k=0, db_path=db)) == 1
+
     def test_hyphen_components_do_not_self_corroborate(self, db):
         # Regression: "auth-type" used to expand to [auth-type, auth] and count
         # twice, letting an off-corpus query return confident enum hits instead
@@ -210,6 +240,22 @@ class TestLookup:
             "auth-type quantum teleportation flux capacitor", db_path=db
         )
         assert hits == []
+
+    def test_stale_index_requires_rebuild_for_operation_id(self, tmp_path):
+        import sqlite3
+
+        stale = tmp_path / "specs.sqlite"
+        conn = sqlite3.connect(stale)
+        conn.execute(
+            "CREATE TABLE endpoints ("
+            "id INTEGER PRIMARY KEY, spec_name TEXT, spec_file TEXT, server TEXT, "
+            "method TEXT, path TEXT, summary TEXT, description TEXT)"
+        )
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(FileNotFoundError, match="rebuild-shared"):
+            specs_index.lookup("updateDeviceFirmware", db_path=stale)
 
     def test_missing_db_raises_with_build_instructions(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="--build"):
@@ -220,7 +266,7 @@ class TestLookup:
         # present-but-corrupt file must be converted, not leak to the transport.
         bad = tmp_path / "specs.sqlite"
         bad.write_bytes(b"this is not a sqlite database, not even close!!")
-        with pytest.raises(FileNotFoundError, match="--build"):
+        with pytest.raises(FileNotFoundError, match="rebuild-shared"):
             specs_index.lookup("auth-type enum", db_path=bad)
 
     def test_schemaless_db_raises_filenotfound(self, tmp_path):
@@ -229,7 +275,7 @@ class TestLookup:
         import sqlite3
         empty = tmp_path / "specs.sqlite"
         sqlite3.connect(empty).close()  # creates a 0-byte file
-        with pytest.raises(FileNotFoundError, match="--build"):
+        with pytest.raises(FileNotFoundError, match="rebuild-shared"):
             specs_index.lookup("firmware compliance", db_path=empty)
 
 
@@ -244,6 +290,18 @@ def _write_specs(specs_dir):
         (specs_dir / fname).write_text(json.dumps(spec))
 
 
+def _write_knowledge_sources(sources_dir):
+    for source_family in (
+        "security_advisories",
+        "juniper_security_advisories",
+        "lifecycle_notices",
+        "juniper_lifecycle",
+    ):
+        source_dir = sources_dir / source_family
+        source_dir.mkdir(parents=True, exist_ok=True)
+        (source_dir / "record.md").write_text(f"# {source_family}\n")
+
+
 class TestAtomicBuild:
     def test_build_leaves_no_tmp_and_produces_usable_db(self, tmp_path):
         specs_dir = tmp_path / "specs"
@@ -256,6 +314,213 @@ class TestAtomicBuild:
         assert not db_path.with_name(db_path.name + ".tmp").exists()
         # Sanity: the freshly-built index answers a lookup.
         assert specs_index.lookup("auth-type enum", db_path=db_path)
+
+    def test_build_preserves_shared_non_openapi_tables(self, tmp_path):
+        import sqlite3
+
+        specs_dir = tmp_path / "specs"
+        _write_specs(specs_dir)
+        db_path = tmp_path / "specs.sqlite"
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE advisories (advisory_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO advisories VALUES ('HPESBNW00001')")
+        conn.commit()
+        conn.close()
+
+        specs_index.build(specs_dir=specs_dir, db_path=db_path)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            assert conn.execute("SELECT advisory_id FROM advisories").fetchone() == (
+                "HPESBNW00001",
+            )
+        finally:
+            conn.close()
+        assert specs_index.lookup("PATCH /device-firmware", db_path=db_path)
+
+    def test_empty_source_build_preserves_live_index(self, tmp_path):
+        import sqlite3
+
+        db_path = tmp_path / "specs.sqlite"
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE advisories (advisory_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO advisories VALUES ('HPESBNW00001')")
+        conn.commit()
+        conn.close()
+        good_bytes = db_path.read_bytes()
+
+        with pytest.raises(RuntimeError, match="no OpenAPI records"):
+            specs_index.build(
+                specs_dir=tmp_path / "missing-openapi-sources",
+                db_path=db_path,
+            )
+
+        assert db_path.read_bytes() == good_bytes
+        assert not db_path.with_name(db_path.name + ".tmp").exists()
+
+    def test_preserving_build_rejects_corrupt_shared_index(self, tmp_path):
+        specs_dir = tmp_path / "specs"
+        _write_specs(specs_dir)
+        db_path = tmp_path / "specs.sqlite"
+        corrupt = b"not a sqlite database"
+        db_path.write_bytes(corrupt)
+
+        with pytest.raises(RuntimeError, match="rebuild-shared"):
+            specs_index.build(specs_dir=specs_dir, db_path=db_path)
+
+        assert db_path.read_bytes() == corrupt
+        assert not db_path.with_name(db_path.name + ".tmp").exists()
+
+    def test_preserving_build_rejects_malformed_sqlite_schema(self, tmp_path):
+        import sqlite3
+
+        specs_dir = tmp_path / "specs"
+        _write_specs(specs_dir)
+        db_path = tmp_path / "specs.sqlite"
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE advisories (id INTEGER)")
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute(
+            "UPDATE sqlite_master SET sql='CREATE TABLE advisories(' "
+            "WHERE name='advisories'"
+        )
+        conn.commit()
+        conn.close()
+        corrupt = db_path.read_bytes()
+
+        with pytest.raises(RuntimeError, match="rebuild-shared"):
+            specs_index.build(specs_dir=specs_dir, db_path=db_path)
+
+        assert db_path.read_bytes() == corrupt
+        assert not db_path.with_name(db_path.name + ".tmp").exists()
+
+    def test_fresh_build_recovers_from_corrupt_shared_index(self, tmp_path):
+        specs_dir = tmp_path / "specs"
+        _write_specs(specs_dir)
+        db_path = tmp_path / "specs.sqlite"
+        db_path.write_bytes(b"not a sqlite database")
+
+        specs_index.build(
+            specs_dir=specs_dir,
+            db_path=db_path,
+            preserve_shared=False,
+        )
+
+        assert specs_index.lookup("PATCH /device-firmware", db_path=db_path)
+
+    def test_rebuild_shared_recreates_both_index_families(
+        self, tmp_path, monkeypatch
+    ):
+        from pipeline.clients import advisory_index
+
+        db_path = tmp_path / "specs.sqlite"
+        sources_dir = tmp_path / "sources"
+        _write_knowledge_sources(sources_dir)
+        calls = []
+
+        def fake_specs_build(*, db_path, preserve_shared):
+            calls.append(("openapi", db_path, preserve_shared))
+            db_path.write_bytes(b"staged")
+            return {"endpoints": 3}
+
+        def fake_knowledge_build(*, sources_dir, db_path):
+            calls.append(("knowledge", sources_dir, db_path))
+            return {"advisories": 2, "lifecycle_events": 4}
+
+        monkeypatch.setattr(specs_index, "build", fake_specs_build)
+        monkeypatch.setattr(advisory_index, "build", fake_knowledge_build)
+
+        result = specs_index.rebuild_shared(
+            db_path=db_path,
+            sources_dir=sources_dir,
+        )
+
+        assert result == {
+            "openapi": {"endpoints": 3},
+            "knowledge": {"advisories": 2, "lifecycle_events": 4},
+        }
+        staging_path = db_path.with_name(db_path.name + ".shared.tmp")
+        assert calls == [
+            ("openapi", staging_path, False),
+            ("knowledge", sources_dir, staging_path),
+        ]
+        assert db_path.read_bytes() == b"staged"
+        assert not staging_path.exists()
+
+    def test_rebuild_shared_failure_preserves_live_index(self, tmp_path, monkeypatch):
+        from pipeline.clients import advisory_index
+
+        db_path = tmp_path / "specs.sqlite"
+        db_path.write_bytes(b"previous-good-index")
+        sources_dir = tmp_path / "sources"
+        _write_knowledge_sources(sources_dir)
+
+        def fake_specs_build(*, db_path, preserve_shared):
+            assert preserve_shared is False
+            db_path.write_bytes(b"partial-rebuild")
+            return {"endpoints": 3}
+
+        def fail_knowledge_build(*, sources_dir, db_path):
+            raise RuntimeError(f"failed knowledge rebuild for {db_path}")
+
+        monkeypatch.setattr(specs_index, "build", fake_specs_build)
+        monkeypatch.setattr(advisory_index, "build", fail_knowledge_build)
+
+        with pytest.raises(RuntimeError, match="failed knowledge rebuild"):
+            specs_index.rebuild_shared(
+                db_path=db_path,
+                sources_dir=sources_dir,
+            )
+
+        assert db_path.read_bytes() == b"previous-good-index"
+        assert not db_path.with_name(db_path.name + ".shared.tmp").exists()
+
+    def test_rebuild_shared_rejects_empty_knowledge_index(
+        self, tmp_path, monkeypatch
+    ):
+        from pipeline.clients import advisory_index
+
+        db_path = tmp_path / "specs.sqlite"
+        db_path.write_bytes(b"previous-good-index")
+        sources_dir = tmp_path / "sources"
+        _write_knowledge_sources(sources_dir)
+
+        def fake_specs_build(*, db_path, preserve_shared):
+            assert preserve_shared is False
+            db_path.write_bytes(b"partial-rebuild")
+            return {"specs": 3, "endpoints": 3}
+
+        def empty_knowledge_build(*, sources_dir, db_path):
+            return {"advisories": 0, "lifecycle_events": 0}
+
+        monkeypatch.setattr(specs_index, "build", fake_specs_build)
+        monkeypatch.setattr(advisory_index, "build", empty_knowledge_build)
+
+        with pytest.raises(RuntimeError, match="no advisory or lifecycle records"):
+            specs_index.rebuild_shared(
+                db_path=db_path,
+                sources_dir=sources_dir,
+            )
+
+        assert db_path.read_bytes() == b"previous-good-index"
+        assert not db_path.with_name(db_path.name + ".shared.tmp").exists()
+
+    def test_rebuild_shared_requires_every_source_family(self, tmp_path):
+        db_path = tmp_path / "specs.sqlite"
+        db_path.write_bytes(b"previous-good-index")
+        sources_dir = tmp_path / "sources"
+        _write_knowledge_sources(sources_dir)
+        missing = sources_dir / "juniper_lifecycle" / "record.md"
+        missing.unlink()
+
+        with pytest.raises(RuntimeError, match="juniper_lifecycle"):
+            specs_index.rebuild_shared(
+                db_path=db_path,
+                sources_dir=sources_dir,
+            )
+
+        assert db_path.read_bytes() == b"previous-good-index"
+        assert not db_path.with_name(db_path.name + ".shared.tmp").exists()
 
     def test_interrupted_build_preserves_prior_good_index(self, tmp_path, monkeypatch):
         specs_dir = tmp_path / "specs"
