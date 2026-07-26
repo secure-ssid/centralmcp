@@ -568,11 +568,9 @@ def main():
         if not incremental_done:
             upload_lancedb(all_records, ingested_sources, parallel=args.parallel)
         if openapi_specs_present:
-            from pipeline.clients import advisory_index, specs_index
-            print("  rebuilding specs.sqlite...")
-            print(f"  {specs_index.build()}")
-            print("  rebuilding structured advisory/lifecycle tables...")
-            print(f"  {advisory_index.build()}")
+            from pipeline.clients import specs_index
+            print("  rebuilding shared structured SQLite index...")
+            print(f"  {specs_index.rebuild_shared()}")
     else:
         print("\nConnecting to Redis Stack + Ollama...")
         client = get_client()

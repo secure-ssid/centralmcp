@@ -102,10 +102,27 @@ gh release upload "$VERSION" \
 | Artifact | Used by | Purpose |
 |---|---|---|
 | `data/docs.lance` | `search_docs`, `ask_docs` | Embedded docs retrieval |
-| `data/specs.sqlite` | `lookup_api` | Exact OpenAPI endpoint/schema lookup |
+| `data/specs.sqlite` | `lookup_api` | Exact OpenAPI method/path, operation ID, endpoint, schema, field, and enum lookup |
 | `data/tools.lance` | `find_tool` | Semantic router tool discovery |
 | `data/SOURCE-MANIFEST.json` | humans / release audit | Copy of the tracked RAG source manifest used for the rebuild |
 | `data/INDEX-MANIFEST.json` | humans / doctor output | Build metadata, artifact sizes, and source-manifest checksum/source names |
+
+OpenAPI-only rebuilds replace their owned endpoint/schema/field tables
+atomically while preserving the advisory and lifecycle tables that share
+`data/specs.sqlite`. The full ingestion command starts a fresh shared SQLite
+artifact and then rebuilds all structured tables, so it is also the recovery
+path for a corrupt index.
+
+To recover only the shared structured artifact without touching LanceDB:
+
+```bash
+uv run python -m pipeline.clients.specs_index --rebuild-shared
+```
+
+This command requires the git-ignored OpenAPI plus all four Aruba/Juniper
+security-advisory and lifecycle source folders described below. It fails
+closed without replacing the live artifact if any required structured source
+family is absent or empty.
 
 ## Refresh RAG source inputs
 

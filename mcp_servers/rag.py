@@ -179,8 +179,10 @@ def lookup_api(query: str, top_k: int = 10) -> list[dict[str, Any]]:
     specs hold no confident answer — fall back to search_docs in that case.
 
     Args:
-        query: Natural language question or keywords (e.g. "auth-type enum
-               values for an auth profile", "firmware compliance endpoint").
+        query: Natural language question, exact ``METHOD /path``, or exact
+               operationId (e.g. "auth-type enum values for an auth profile",
+               "GET /network-monitoring/v1/sites-client-health", or
+               "listSitesClientHealthV1").
         top_k: Results to return (default 10, range 1-20).
     """
     try:

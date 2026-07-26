@@ -22,12 +22,15 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 SPECS_DIR = ROOT / "ingestion" / "sources" / "openapi_specs"
 DB_PATH = ROOT / "data" / "specs.sqlite"
+_FULL_REBUILD_COMMAND = (
+    "uv run python -m pipeline.clients.specs_index --rebuild-shared"
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS endpoints (
     id INTEGER PRIMARY KEY,
     spec_name TEXT, spec_file TEXT, server TEXT,
-    method TEXT, path TEXT, summary TEXT, description TEXT
+    method TEXT, path TEXT, operation_id TEXT, summary TEXT, description TEXT
 );
 CREATE TABLE IF NOT EXISTS schemas (
     id INTEGER PRIMARY KEY,
@@ -45,6 +48,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
 CREATE INDEX IF NOT EXISTS idx_fields_name ON fields(field_name);
 CREATE INDEX IF NOT EXISTS idx_fields_schema ON fields(schema_name);
 CREATE INDEX IF NOT EXISTS idx_endpoints_path ON endpoints(path);
+CREATE INDEX IF NOT EXISTS idx_endpoints_operation_id
+    ON endpoints(operation_id COLLATE NOCASE);
 """
 
 
@@ -81,20 +86,19 @@ def _walk_fields(node: Any, path: str, depth: int = 0):
             yield from _walk_fields(sub, path, depth + 1)
 
 
-def build(specs_dir: Path = SPECS_DIR, db_path: Path = DB_PATH) -> dict[str, int]:
-    """Parse all OpenAPI specs into the SQLite index. Recreates tables.
-
-    Builds into a sibling temp file and atomically ``os.replace()``s it over
-    the live path only after the full build commits — an interrupted build
-    (Ctrl-C, disk full, a parse blow-up) leaves the previous good index in
-    place instead of unlinking it up front and leaving a missing or
-    valid-but-empty DB that ``lookup`` would silently serve ``[]`` from.
-    """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = db_path.with_name(db_path.name + ".tmp")
-    if tmp_path.exists():
-        tmp_path.unlink()
-    conn = connect(tmp_path)
+def _populate_openapi_tables(
+    conn: sqlite3.Connection,
+    specs_dir: Path,
+) -> dict[str, int]:
+    """Populate OpenAPI-owned tables in an initialized SQLite connection."""
+    conn.executescript(
+        """
+        DROP TABLE IF EXISTS endpoints;
+        DROP TABLE IF EXISTS schemas;
+        DROP TABLE IF EXISTS fields;
+        DROP TABLE IF EXISTS fts;
+        """
+    )
     conn.executescript(_SCHEMA)
 
     counts = {"specs": 0, "endpoints": 0, "schemas": 0, "fields": 0, "skipped": 0}
@@ -119,8 +123,13 @@ def build(specs_dir: Path = SPECS_DIR, db_path: Path = DB_PATH) -> dict[str, int
                 summary = op.get("summary", "")
                 desc = op.get("description", "")
                 conn.execute(
-                    "INSERT INTO endpoints (spec_name, spec_file, server, method, path, summary, description) VALUES (?,?,?,?,?,?,?)",
-                    (spec_name, spec_file, server, method.upper(), api_path, summary, desc),
+                    "INSERT INTO endpoints "
+                    "(spec_name, spec_file, server, method, path, operation_id, "
+                    "summary, description) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        spec_name, spec_file, server, method.upper(), api_path,
+                        op.get("operationId", ""), summary, desc,
+                    ),
                 )
                 conn.execute(
                     "INSERT INTO fts (kind, spec_file, ref, body) VALUES (?,?,?,?)",
@@ -157,10 +166,130 @@ def build(specs_dir: Path = SPECS_DIR, db_path: Path = DB_PATH) -> dict[str, int
                 ("schema", spec_file, schema_name,
                  f"{spec_name} {schema_name} {s_desc} {' '.join(prop_texts)}"),
             )
-    conn.commit()
-    conn.close()
-    os.replace(tmp_path, db_path)
     return counts
+
+
+def _check_integrity(conn: sqlite3.Connection, db_path: Path) -> None:
+    try:
+        result = [row[0] for row in conn.execute("PRAGMA quick_check(1)").fetchall()]
+    except sqlite3.Error as exc:
+        raise RuntimeError(
+            f"shared index at {db_path} is corrupt; rebuild it with "
+            f"`{_FULL_REBUILD_COMMAND}`"
+        ) from exc
+    if result != ["ok"]:
+        raise RuntimeError(
+            f"shared index at {db_path} failed integrity checking: {result!r}; "
+            f"rebuild it with `{_FULL_REBUILD_COMMAND}`"
+        )
+
+
+def build(
+    specs_dir: Path = SPECS_DIR,
+    db_path: Path = DB_PATH,
+    *,
+    preserve_shared: bool = True,
+) -> dict[str, int]:
+    """Parse all OpenAPI specs into the shared SQLite index.
+
+    Builds into a sibling temp file and atomically replaces the live path only
+    after a full commit. Existing non-OpenAPI tables are copied forward by
+    default because advisory and lifecycle indexes share this artifact. Full
+    ingestion and ``--rebuild-shared`` set ``preserve_shared=False`` because
+    they rebuild every shared table.
+    """
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = db_path.with_name(db_path.name + ".tmp")
+    tmp_path.unlink(missing_ok=True)
+    conn = connect(tmp_path)
+    try:
+        if preserve_shared and db_path.exists():
+            source = connect(db_path)
+            try:
+                _check_integrity(source, db_path)
+                source.backup(conn)
+            finally:
+                source.close()
+        counts = _populate_openapi_tables(conn, specs_dir)
+        if counts["specs"] <= 0 or counts["endpoints"] <= 0:
+            raise RuntimeError(
+                f"no OpenAPI records found under {specs_dir}; refresh the "
+                "git-ignored ingestion sources before rebuilding"
+            )
+        conn.commit()
+    except Exception:
+        conn.close()
+        tmp_path.unlink(missing_ok=True)
+        raise
+    conn.close()
+    try:
+        os.replace(tmp_path, db_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    return counts
+
+
+def _validate_knowledge_sources(
+    sources_dir: Path,
+    source_families: list[str],
+) -> None:
+    missing: list[str] = []
+    for source_family in source_families:
+        source_dir = sources_dir / source_family
+        readable = False
+        if source_dir.is_dir():
+            for path in sorted(source_dir.rglob("*.md")):
+                try:
+                    if path.read_text(encoding="utf-8", errors="ignore").strip():
+                        readable = True
+                        break
+                except OSError:
+                    continue
+        if not readable:
+            missing.append(source_family)
+    if missing:
+        raise RuntimeError(
+            "missing or empty structured source families: "
+            f"{', '.join(missing)}; refresh the git-ignored ingestion sources "
+            "before rebuilding"
+        )
+
+
+def rebuild_shared(
+    db_path: Path = DB_PATH,
+    sources_dir: Path | None = None,
+) -> dict[str, dict[str, int]]:
+    """Rebuild every table in the shared structured SQLite artifact."""
+    from pipeline.clients import advisory_index
+
+    knowledge_sources = sources_dir or advisory_index.SOURCES_DIR
+    _validate_knowledge_sources(
+        knowledge_sources,
+        list(advisory_index.SOURCE_DIRS),
+    )
+    staging_path = db_path.with_name(db_path.name + ".shared.tmp")
+    staging_path.unlink(missing_ok=True)
+    try:
+        openapi_counts = build(db_path=staging_path, preserve_shared=False)
+        knowledge_counts = advisory_index.build(
+            sources_dir=knowledge_sources,
+            db_path=staging_path,
+        )
+        if (
+            knowledge_counts.get("advisories", 0) <= 0
+            or knowledge_counts.get("lifecycle_events", 0) <= 0
+        ):
+            raise RuntimeError(
+                "no advisory or lifecycle records were indexed; refresh the "
+                "git-ignored ingestion sources before rebuilding"
+            )
+        result = {"openapi": openapi_counts, "knowledge": knowledge_counts}
+        os.replace(staging_path, db_path)
+    except Exception:
+        staging_path.unlink(missing_ok=True)
+        raise
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +333,39 @@ def get_endpoint(path_contains: str, method: str | None = None,
     params.append(limit)
     try:
         rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_exact_endpoint(method: str, path: str, limit: int = 10,
+                       db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    """Exact endpoint lookup by HTTP method and literal OpenAPI path."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT spec_name, spec_file, server, method, path, summary, description "
+            "FROM endpoints WHERE method = ? AND path = ? "
+            "ORDER BY spec_file, id LIMIT ?",
+            (method.upper(), path, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_endpoint_by_operation_id(operation_id: str, limit: int = 10,
+                                 db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    """Exact case-insensitive endpoint lookup by OpenAPI operationId."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT spec_name, spec_file, server, method, path, summary, "
+            "description FROM endpoints "
+            "WHERE operation_id = ? COLLATE NOCASE "
+            "ORDER BY spec_file, id LIMIT ?",
+            (operation_id, limit),
+        ).fetchall()
     finally:
         conn.close()
     return [dict(r) for r in rows]
@@ -281,6 +443,11 @@ accept accepts allow allows allowed support supports supported
 """.split())
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-._]*")
+_EXACT_ENDPOINT_RE = re.compile(
+    r"^\s*(GET|POST|PUT|PATCH|DELETE)\s+(/[^\s?#]*)\s*$",
+    re.IGNORECASE,
+)
+_OPERATION_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{1,255}$")
 
 # Tight, curated domain synonyms — Aruba docs use these interchangeably
 # (specs say "wlan"/"essid" where users say "SSID"). Synonyms join the SAME
@@ -347,6 +514,21 @@ def _fmt_endpoint(row: dict[str, Any]) -> str:
     return f"{row['method']} {url} — {row.get('summary', '')} {desc}".strip()
 
 
+def _exact_endpoint_hits(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "text": _fmt_endpoint(row),
+            "source": "openapi_specs",
+            "file_path": (
+                f"openapi_specs/{row['spec_file']}#{row['method']} {row['path']}"
+            ),
+            "kind": "endpoint",
+            "score": 100,
+        }
+        for row in rows
+    ]
+
+
 def _fmt_enum_field(row: dict[str, Any]) -> str:
     enums = row.get("enums") or []
     text = (f"{row['schema_name']}.{row['path']} ({row['spec_name']}) "
@@ -359,11 +541,12 @@ def lookup(query: str, top_k: int = 10, db_path: Path = DB_PATH) -> list[dict[st
     """Exact API lookup for a natural-language question. Returns [] when the
     specs have no confident answer (caller should fall back to prose search).
 
-    Three strategies, merged and de-duplicated:
-      1. exact enum/field match for field-like terms (get_enum)
-      2. exact endpoint match for hyphenated path-like tokens, with one
+    Four strategies:
+      1. exact HTTP method/path or operationId equality lookup
+      2. exact enum/field match for field-like terms (get_enum)
+      3. exact endpoint match for hyphenated path-like tokens, with one
          progressive right-trim (device-firmware-upgrade -> device-firmware)
-      3. FTS prefix search re-ranked by how many distinct query terms the row
+      4. FTS prefix search re-ranked by how many distinct query terms the row
          actually contains (bm25 alone ranks short generic rows too high)
 
     Hits are {"text", "source", "file_path", "kind", "score"} — file_path is a
@@ -374,6 +557,7 @@ def lookup(query: str, top_k: int = 10, db_path: Path = DB_PATH) -> list[dict[st
             f"specs index missing at {db_path} — build it with "
             "`python -m pipeline.clients.specs_index --build`"
         )
+    top_k = max(1, min(20, top_k))
     try:
         return _lookup(query, top_k, db_path)
     except sqlite3.Error as exc:
@@ -382,11 +566,25 @@ def lookup(query: str, top_k: int = 10, db_path: Path = DB_PATH) -> list[dict[st
         # tool — surface it the same way as a missing index.
         raise FileNotFoundError(
             f"specs index at {db_path} is unreadable ({exc}) — rebuild it with "
-            "`python -m pipeline.clients.specs_index --build`"
+            f"`{_FULL_REBUILD_COMMAND}`"
         ) from exc
 
 
 def _lookup(query: str, top_k: int, db_path: Path) -> list[dict[str, Any]]:
+    stripped = query.strip()
+    exact_endpoint = _EXACT_ENDPOINT_RE.fullmatch(stripped)
+    if exact_endpoint:
+        method, path = exact_endpoint.groups()
+        return _exact_endpoint_hits(
+            get_exact_endpoint(method, path, limit=top_k, db_path=db_path)
+        )
+    if _OPERATION_ID_RE.fullmatch(stripped):
+        operation_rows = get_endpoint_by_operation_id(
+            stripped, limit=top_k, db_path=db_path
+        )
+        if operation_rows:
+            return _exact_endpoint_hits(operation_rows)
+
     groups = _query_groups(query)
     if not groups:
         return []
@@ -513,13 +711,17 @@ def _lookup(query: str, top_k: int, db_path: Path) -> list[dict[str, Any]]:
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", action="store_true")
+    build_group = ap.add_mutually_exclusive_group()
+    build_group.add_argument("--build", action="store_true")
+    build_group.add_argument("--rebuild-shared", action="store_true")
     ap.add_argument("--query")
     ap.add_argument("--enum")
     ap.add_argument("--lookup", help="natural-language lookup (as the MCP tool runs it)")
     args = ap.parse_args()
     if args.build:
         print(json.dumps(build(), indent=2))
+    if args.rebuild_shared:
+        print(json.dumps(rebuild_shared(), indent=2))
     if args.query:
         print(json.dumps(search(args.query), indent=2))
     if args.enum:

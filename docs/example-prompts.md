@@ -63,7 +63,10 @@ operations/schema fields, authoritative and lossless from the parsed specs;
 an empty array means no confident match -- fall back to <code>ask_docs</code>
 or <code>search_docs</code>.</p>
 <p><strong>Variation:</strong> ask for exact enum values, e.g.
-<code>lookup_api("wlan-ssids opmode enum values")</code>.</p>
+<code>lookup_api("wlan-ssids opmode enum values")</code>, or bypass fuzzy
+ranking with an exact route or operation ID:
+<code>lookup_api("GET /network-monitoring/v1/sites-client-health")</code> and
+<code>lookup_api("listSitesClientHealthV1")</code>.</p>
 </div>
 
 <div class="example-card" markdown="1">

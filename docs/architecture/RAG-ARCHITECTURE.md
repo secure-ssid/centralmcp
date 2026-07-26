@@ -8,7 +8,7 @@
 
 > **Current default backend = embedded, no Docker, no background services:**
 > - **LanceDB** — prose docs (developer/tech/NAC/VSG/aos), with native **hybrid (vector + BM25) + reranking**.
-> - **SQLite** — OpenAPI specs as **exact structured lookup** (endpoints / schemas / fields / enums), *not* embeddings.
+> - **SQLite** — OpenAPI specs as **exact structured lookup** (method/path, operation IDs, endpoints, schemas, fields, and enums), *not* embeddings.
 > - **fastembed** — embeddings in-process (ONNX); no Ollama required. Can run the same `nomic-embed-text-v1.5`.
 > - **Ship a prebuilt index** as a GitHub Release asset so `git clone → uv sync → run` works with zero ingest.
 > - **The portal consumes via the MCP** (`search_docs` / `ask_docs` over stdio or streamable-HTTP) — it never touches the store directly, so no shared server is needed.
@@ -85,7 +85,7 @@ Deployment (embedded vs server) does not affect retrieval quality — the
 *design* does. The implemented design is strictly better than the historical
 vector-only Redis path:
 
-1. **API/field/enum/endpoint questions → exact SQLite lookup, not vectors.** A large slice of the corpus is OpenAPI specs (structured JSON). Embedding them is lossy; vector search returns *fuzzy-similar* prose instead of the authoritative enum/field list. A `lookup_api(endpoint|schema|field)` tool over the parsed specs is exact and lossless — and doubles as the API-correctness checker the audit needed.
+1. **API/field/enum/endpoint questions → exact SQLite lookup, not vectors.** A large slice of the corpus is OpenAPI specs (structured JSON). Embedding them is lossy; vector search returns *fuzzy-similar* prose instead of the authoritative enum/field list. `lookup_api` resolves literal `METHOD /path` and `operationId` identifiers before its structured endpoint/schema/field fallback, so exact identifiers cannot be displaced by similar enum or schema text.
 2. **Prose questions → hybrid (BM25 + vector) + rerank.** Today's path is vector-only and *misses exact identifiers* (`WPA3_SAE`, endpoint paths, error codes). BM25 catches those; a cross-encoder rerank promotes the truly relevant chunk. (~+15–30% precision in practice; Anthropic measured up to **67%** retrieval-failure reduction with contextual + hybrid + rerank.)
 3. **Same embeddings, fixed prefixes.** fastembed can run `nomic-embed-text-v1.5` in-process — identical semantics to today — while fixing the **missing `search_query:`/`search_document:` prefixes** (see fix R3).
 4. **Agentic safety net.** `search_docs`/`ask_docs` are called by an LLM that can re-query when results are thin.
