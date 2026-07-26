@@ -845,10 +845,32 @@ def list_gateways(
 def list_sites_client_health(
     limit: int = 100,
     offset: int = 0,
+    site_id: str | None = None,
+    site_name: str | None = None,
+    filter: str | None = None,
+    sort: str | None = None,
 ) -> dict[str, Any]:
-    """List per-site client health from network-monitoring/v1/sites-client-health."""
+    """List per-site wired/wireless client health summaries.
+
+    GET /network-monitoring/v1/sites-client-health uses true limit/offset
+    pagination. Structured filters use exact OData equality matches for
+    siteId and siteName. Use ``filter`` for documented ``in`` expressions
+    or to combine other supported clauses; only ``and`` conjunctions are
+    supported. Sort fields are siteName, clientHealth, wirelessClientHealth,
+    and wiredClientHealth.
+    """
     client = get_client()
-    params = {"limit": clamp_limit(limit), "offset": max(0, offset)}
+    params: dict[str, Any] = {"limit": clamp_limit(limit), "offset": max(0, offset)}
+    filter_parts: list[str] = []
+    if filter and filter.strip():
+        filter_parts.append(filter.strip())
+    for field, value in (("siteId", site_id), ("siteName", site_name)):
+        if value and value.strip():
+            filter_parts.append(f"{field} eq '{_odata_string(value.strip())}'")
+    if filter_parts:
+        params["filter"] = " and ".join(filter_parts)
+    if sort and sort.strip():
+        params["sort"] = sort.strip()
     try:
         return client.get("/network-monitoring/v1/sites-client-health", params=params)
     except Exception as exc:
