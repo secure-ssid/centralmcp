@@ -146,6 +146,71 @@ def test_list_bssids_is_registered_read_only():
     assert tool.annotations.destructiveHint is False
 
 
+def test_list_sites_client_health_forwards_official_filters_and_sort(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"items": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_sites_client_health(
+        site_id="site-1",
+        site_name="Branch O'Hare",
+        filter="siteId in ('site-1','site-2')",
+        sort="wirelessClientHealth DESC",
+        limit=500,
+        offset=-10,
+    )
+
+    assert result == {"items": []}
+    client.get.assert_called_once_with(
+        "/network-monitoring/v1/sites-client-health",
+        params={
+            "limit": 200,
+            "offset": 0,
+            "filter": (
+                "siteId in ('site-1','site-2') and siteId eq 'site-1' "
+                "and siteName eq 'Branch O''Hare'"
+            ),
+            "sort": "wirelessClientHealth DESC",
+        },
+    )
+
+
+def test_list_sites_client_health_omits_blank_optional_params(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"items": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    monitoring.list_sites_client_health(
+        site_id=" ",
+        site_name="",
+        filter=" ",
+        sort=" ",
+        limit=0,
+        offset=25,
+    )
+
+    client.get.assert_called_once_with(
+        "/network-monitoring/v1/sites-client-health",
+        params={"limit": 1, "offset": 25},
+    )
+    tool = monitoring.mcp._tool_manager._tools["list_sites_client_health"]
+    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.destructiveHint is False
+
+
+def test_list_sites_client_health_preserves_positional_pagination(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"items": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    monitoring.list_sites_client_health(25, 10)
+
+    client.get.assert_called_once_with(
+        "/network-monitoring/v1/sites-client-health",
+        params={"limit": 25, "offset": 10},
+    )
+
+
 def test_list_alert_classifications_calls_expected_endpoint(monkeypatch):
     client = MagicMock()
     client.get.return_value = {"Critical": 2}

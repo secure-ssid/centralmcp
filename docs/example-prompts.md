@@ -42,7 +42,9 @@ wrapper only if the result needed clipping.</p>
 switches instead of sites. For wireless troubleshooting, use
 <code>list_bssids</code> with <code>site_id</code>,
 <code>serial_number</code>, or MAC filters to map each BSSID to its AP,
-radio, WLAN, band, and site.</p>
+radio, WLAN, band, and site. Use <code>list_sites_client_health</code> with
+<code>site_id</code>, <code>site_name</code>, or health sorting to compare
+wired and wireless client experience across sites.</p>
 </div>
 
 <div class="example-card" markdown="1">
