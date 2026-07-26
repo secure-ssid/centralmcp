@@ -34,9 +34,14 @@ class TestCompatibilityEntry:
         assert entry.reasons  # always at least one explanatory reason
         assert len(entry.source_sha256) == 64
 
-    def test_apstra_reports_added_operations(self):
-        # v0.7 added resource pools/profiles/system-agents/telemetry/IBA to the
-        # Apstra manifest; the git-HEAD baseline must reflect a real delta.
+    def test_apstra_reports_added_operations(self, monkeypatch):
+        # Use an explicit prior manifest so the delta check remains stable
+        # after v0.7 becomes HEAD and in shallow CI clones.
+        monkeypatch.setattr(
+            evidence,
+            "_git_head_bytes",
+            lambda path: b'{"operations":[]}',
+        )
         entry = evidence.build_compatibility_entry("apstra")
         assert entry.operations_added > 0
         assert entry.operations_removed == 0

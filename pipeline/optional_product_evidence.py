@@ -196,14 +196,6 @@ def _coverage_gaps(manifest: dict[str, Any]) -> list[str]:
 
 
 def _status_step(platform: str) -> dict[str, Any]:
-    """Attempt one bounded, read-only status smoke-check for ``platform``.
-
-    Only ever calls that backend's own ``<platform>_status`` tool (never a
-    list/get/write tool), and only when the live read gate is explicitly
-    enabled. Never raises -- a probe failure is recorded as a step, not an
-    exception.
-    """
-def _status_step(platform: str) -> dict[str, Any]:
     """Attempt one bounded, read-only configuration/status smoke-check.
 
     Every optional backend except Axis exposes a plain, non-network
