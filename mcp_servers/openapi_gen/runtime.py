@@ -127,7 +127,7 @@ def _safe_arg_name(name: str, taken: set[str]) -> str:
 def _py_type(schema_type: str, item_type: str | None = None) -> Any:
     if schema_type == "array":
         elem = _PY_TYPES.get(item_type or "any", Any)
-        return list if elem is Any else list
+        return list if elem is Any else list[elem]
     return _PY_TYPES.get(schema_type, Any)
 
 
