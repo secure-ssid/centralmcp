@@ -257,7 +257,13 @@ async def poe_bounce(
     """
     errors: list[str] = []
     dtype = device_type_for_troubleshoot(serial_number, device_type)
-    if dtype is None or dtype == "aps":
+    if dtype is None:
+        errors.append(
+            f"Could not determine device type for {serial_number}. "
+            "Provide device_type explicitly (SWITCH/GATEWAY)."
+        )
+        return {"status": None, "errors": errors}
+    if dtype == "aps":
         errors.append("PoE bounce is not supported on Access Points.")
         return {"status": None, "errors": errors}
 
@@ -292,7 +298,13 @@ async def port_bounce(
     """
     errors: list[str] = []
     dtype = device_type_for_troubleshoot(serial_number, device_type)
-    if dtype is None or dtype == "aps":
+    if dtype is None:
+        errors.append(
+            f"Could not determine device type for {serial_number}. "
+            "Provide device_type explicitly (SWITCH/GATEWAY)."
+        )
+        return {"status": None, "errors": errors}
+    if dtype == "aps":
         errors.append("Port bounce is not supported on Access Points.")
         return {"status": None, "errors": errors}
 
@@ -323,10 +335,16 @@ async def cable_test(
     """Run a cable/TDR test on CX or AOS-S switch ports (async, polls ~60s)."""
     errors: list[str] = []
     dtype = device_type_for_troubleshoot(serial_number, device_type)
+    if dtype is None:
+        errors.append(
+            f"Could not determine device type for {serial_number}. "
+            "Provide device_type explicitly (SWITCH/GATEWAY)."
+        )
+        return {"status": None, "errors": errors}
     if dtype == "gateways":
         errors.append("Cable test is not supported on gateways.")
         return {"status": None, "errors": errors}
-    if dtype is None or dtype == "aps":
+    if dtype == "aps":
         errors.append("Cable test is not supported on Access Points.")
         return {"status": None, "errors": errors}
     return await atroubleshoot_async(

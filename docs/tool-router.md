@@ -26,6 +26,7 @@ router-call examples.
 |---|---|---|
 | `find_tool` | read-only | Search the enabled backend catalog |
 | `invoke_read_tool` | read-only | Dispatch only backend tools annotated read-only |
+| `invoke_read_tool_batch` | read-only | Dispatch a bounded, ordered batch of read-only calls in one round trip (outside `minimal` mode) |
 | `invoke_tool` | destructive | Generic dispatcher for write/destructive tools |
 | Convenience wrappers | mixed | Available only outside `minimal` mode |
 | `plan_tool_workflow` | read-only | Deterministic, catalog-backed dependency/order planner (outside `minimal` mode) |
@@ -110,6 +111,8 @@ This keeps the tool list small while still covering the common Central, GLP, and
 
 If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and includes convenience wrappers. Keep `minimal` in MCP client configs when token surface matters.
 
+Each convenience wrapper (`list_sites`, `find_device`, `ask_docs`, ...) fans into exactly one backend call and draws exactly one rate-limit token for it — the same token a direct `invoke_read_tool` would draw — never a second token for the wrapper's own MCP hop.
+
 ## Catalog size
 
 | Profile | Client-visible / indexed tools |
@@ -183,6 +186,22 @@ Unrecognized manual access-mode values fail closed as read-only.
 Use `CENTRALMCP_<PLATFORM>_WRITES=1` for a narrower per-platform override when
 one optional backend needs write access without enabling all optional writes,
 for example `CENTRALMCP_AXIS_WRITES=1` for Axis Atmos Cloud alone.
+
+### Global read-only kill switch (`CENTRALMCP_READONLY`)
+
+Set `CENTRALMCP_READONLY=1` for a server-wide write kill switch, independent of
+`CENTRALMCP_PRODUCT_ACCESS` and the per-platform write gates. When set, every
+`write`/`destructive` tool on **every** backend (core or optional) is hidden
+from `find_tool` (keyword and semantic results), skipped in `direct`-mode
+registration, and refused at dispatch with a `blocked` response that names
+`CENTRALMCP_READONLY` as the reason. `read` and `diagnostic` tools are
+unaffected, so troubleshooting/diagnostic flows keep working. The switch is
+enforced identically for a backend run standalone (`python -m mcp_servers.<x>`),
+so coverage never depends on how the server was launched. Per-platform gates
+are preserved: a platform whose writes are enabled is still fully read-only
+while `CENTRALMCP_READONLY` is set. Intended for demo/dashboard deployments that
+must never reach a write. Unset (the default) leaves writes governed solely by
+the per-platform / product-access gates.
 
 Set `CENTRALMCP_TOKENIZE_SECRETS=1` to install the optional session-scoped
 secret-tokenization middleware. Plaintext values remain in bounded TTL vaults
@@ -323,6 +342,80 @@ Cursor semantics:
   (e.g. one huge blob), the response is marked `"resumable": false` with a
   `resumable_reason` instead of emitting a cursor that would just re-fetch
   the same oversized item forever.
+
+## Batched reads (`invoke_read_tool_batch`)
+
+Available outside `minimal` mode. Dispatches an ordered list of read-only
+calls in a single MCP round trip, through the *same* annotation gate,
+cursor verification, and response-bounding path `invoke_read_tool` uses.
+
+```json
+invoke_read_tool_batch({
+  "calls": [
+    {"id": "alerts", "name": "list_active_alerts", "arguments": {"severity": "CRITICAL"}},
+    {"id": "sites",  "name": "list_sites",         "arguments": {"limit": 25}},
+    {"id": "devices","name": "list_devices",       "arguments": {"limit": 25}}
+  ]
+})
+```
+
+Each entry accepts:
+
+| Field | Required | Notes |
+|---|---|---|
+| `name` | yes | Exact backend tool name from `find_tool` (max 200 chars) |
+| `arguments` | no | Object, default `{}`; max 20,000 serialized bytes and 8 nesting levels |
+| `id` | no | Correlation string, max 100 chars, **unique within the batch**; defaults to the entry's index |
+| `cursor` | no | An opaque `next_cursor` from a previous truncated read of this exact tool+arguments |
+
+Response shape:
+
+```json
+{
+  "ok": false,
+  "results": [
+    {"index": 0, "id": "alerts", "tool": "list_active_alerts", "server": "aruba-monitoring",
+     "status": "ok", "result": {...}},
+    {"index": 1, "id": "sites", "tool": "set_site", "server": "aruba-config",
+     "status": "blocked", "error": "Tool 'set_site' is not read-only. ..."}
+  ],
+  "counts": {"total": 2, "succeeded": 1, "failed": 1},
+  "failed_ids": ["sites"],
+  "failed_indexes": [1],
+  "truncated": false
+}
+```
+
+Guarantees:
+
+- **Read-only, per entry.** A write/destructive/unknown tool named in an
+  entry is rejected for that entry alone (`status` `blocked` /
+  `unknown_tool`) and never reaches a backend. `ok` is `true` only when
+  every entry succeeded.
+- **One failure never aborts the batch.** Validation rejections, backend
+  error responses, and any exception escaping dispatch all become ordinary
+  result items; the tool never raises.
+- **Bounded input.** Max 25 entries, with the per-entry bounds in the table
+  above. Duplicate `id`s reject the whole batch before any dispatch, since
+  correlating results by `id` is the reason to supply one. A validation
+  error message never echoes an argument value, so a secret placed in
+  `arguments` cannot leak back through it.
+- **Bounded output, strictly.** `CENTRALMCP_ROUTER_BATCH_RESPONSE_MAX_BYTES`
+  (default 300000) caps the whole serialized response. Each entry also gets
+  its own share of that budget while dispatching, so one large read cannot
+  crowd out the rest. If the total still overflows, successful payloads are
+  replaced with a compact `"result_truncated": true` marker (last entry
+  first), then error text is squeezed -- every failure keeps its
+  `index`/`id`/`tool`/`status` regardless, so overflow never erases evidence
+  that a call failed.
+- **Rate limited per backend call.** A 25-call batch draws 25 tokens from the
+  same 8 req/s bucket a single `invoke_read_tool` call draws one from -- the
+  dispatching tools are exempt from the per-MCP-call limiter and charge at
+  the dispatch seam instead.
+- **Observable.** Metrics labels and audit records resolve the real dispatch
+  target: the backend tool/server name when the whole batch targets one, and
+  the constant `batch_multi` label otherwise. Each result item also reports
+  its resolved `server`.
 
 ## Router automation planning
 

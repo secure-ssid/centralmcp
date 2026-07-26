@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Collection
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ class RateLimitMiddleware:
         burst: int | None = None,
         *,
         on_wait: Callable[[float], None] | None = None,
+        exempt_names: Collection[str] | None = None,
     ):
         """
         Args:
@@ -50,6 +51,15 @@ class RateLimitMiddleware:
                 called with argument/result content, only the numeric wait;
                 any exception it raises is logged and swallowed so a broken
                 observer can never break rate limiting itself.
+            exempt_names: Optional set of tool names this middleware must not
+                charge a token for. Unset by default -- every tool is charged,
+                as before. Its only intended use is a *dispatching* tool (the
+                router's invoke_read_tool / invoke_tool / invoke_read_tool_batch)
+                whose real API cost is one token per backend call it makes, not
+                one per outer MCP call: those charge through :meth:`acquire`
+                at the dispatch seam instead, so exempting them here prevents
+                double-charging while making a batch of N backend calls cost N
+                tokens instead of 1.
         """
         if rate <= 0:
             raise ValueError(f"rate must be positive, got {rate}")
@@ -59,9 +69,14 @@ class RateLimitMiddleware:
         self._last_refill = time.monotonic()
         self._lock = asyncio.Lock()
         self._on_wait = on_wait
+        self.exempt_names = frozenset(exempt_names or ())
 
-    async def _acquire(self) -> None:
-        """Wait until a token is available, then consume one."""
+    async def acquire(self) -> None:
+        """Wait until a token is available, then consume one.
+
+        Public so a caller that fans one MCP call out into several backend
+        calls can charge the bucket per *backend* call (see ``exempt_names``).
+        """
         while True:
             async with self._lock:
                 now = time.monotonic()
@@ -82,8 +97,13 @@ class RateLimitMiddleware:
                 except Exception:
                     logger.warning("rate limit on_wait observer failed", exc_info=True)
 
+    # Backwards-compatible alias for the pre-public spelling.
+    _acquire = acquire
+
     async def before_call(self, name: str, arguments: dict[str, Any]) -> None:
-        await self._acquire()
+        if name in self.exempt_names:
+            return None
+        await self.acquire()
         return None
 
     def after_call(self, name: str, arguments: dict[str, Any], result: Any) -> None:

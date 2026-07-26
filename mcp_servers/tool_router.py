@@ -45,12 +45,15 @@ import hashlib
 import hmac
 import importlib
 import json
+import logging
 import os
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
+from pydantic import BaseModel, ConfigDict, Field
 
 from mcp_servers.prompts import register_router_prompts
 from mcp_servers.shared import (
@@ -61,6 +64,8 @@ from mcp_servers.shared import (
     READ_ONLY,
     bound_collection_response,
     build_write_execution_contract,
+    global_readonly_enabled,
+    global_write_blocked,
     optional_product_access_mode,
     platform_write_blocked,
     platform_write_gate_state,
@@ -97,8 +102,9 @@ else:
 
     _embedder = EmbedClient()  # lazy — the ONNX model loads on first query
 
+logger = logging.getLogger(__name__)
+
 mcp = FastMCP("aruba-tool-router")
-register_router_prompts(mcp)
 
 # Backend MCP modules (loaded lazily on first invoke_tool).
 _BACKENDS_BASE = {
@@ -201,6 +207,20 @@ def _write_is_enabled(server: str | None, capability: str) -> bool:
     if server in _OPTIONAL_SERVER_NAMES:
         return _optional_writes_allowed()
     return True
+
+
+def _readonly_blocks(tool: Any) -> bool:
+    """True when the global CENTRALMCP_READONLY kill switch hides/blocks ``tool``.
+
+    Blocks only ``write``/``destructive`` capabilities on any backend; ``read``
+    and ``diagnostic`` tools are always allowed. Layers on top of (and is
+    independent of) the per-platform write gates: a platform whose writes are
+    enabled is still fully read-only while CENTRALMCP_READONLY is set.
+    """
+    return global_readonly_enabled() and _tool_capability(tool) in {
+        "write",
+        "destructive",
+    }
 
 
 def _schema_default(properties: dict[str, Any], name: str) -> Any:
@@ -428,10 +448,31 @@ def _build_backends() -> dict[str, str]:
 
 
 _BACKENDS = _build_backends()
+
+# Registered only now that the enabled backend set is known: prompts that name
+# tools from a disabled backend (AOS 8 today) are skipped rather than telling
+# the model to call tools that are not in the tool list.
+register_router_prompts(mcp, enabled_backends=_BACKENDS)
+
 _tool_index: dict[str, Any] = {}  # name -> FastMCP Tool
 _tool_servers: dict[str, Any] = {}  # name -> owning FastMCP backend (for dispatch)
 _tool_backend_names: dict[str, str] = {}  # name -> owning server name
 _generated_tool_records: dict[str, dict[str, Any]] | None = None
+# server name -> compact import/index failure string, populated by
+# _load_all_backends(). Never cleared implicitly: a backend that failed to
+# import stays recorded for the life of the process so the reason a tool is
+# missing is always available (see backend_load_errors()).
+_backend_load_errors: dict[str, str] = {}
+
+
+def backend_load_errors() -> dict[str, str]:
+    """Backends that failed to import/index, mapped to a compact reason.
+
+    Empty when every enabled backend loaded. Surfaced on unknown-tool
+    dispatch errors and on find_tool's error fallback so a missing tool is
+    never silently indistinguishable from a tool that never existed.
+    """
+    return dict(_backend_load_errors)
 
 
 def _generated_records() -> dict[str, dict[str, Any]]:
@@ -460,41 +501,100 @@ def _generated_records() -> dict[str, dict[str, Any]]:
 
 
 def _load_all_backends() -> None:
-    """Import every backend once and index tools by name."""
+    """Import every enabled backend once and index its tools by name.
+
+    Atomic: everything is staged in local dicts and only published to the
+    module globals once the whole pass succeeds. A partially-populated
+    ``_tool_index`` used to be worse than an empty one, because the
+    ``if _tool_index: return`` fast path then made that partial state
+    permanent for the life of the process -- one backend raising on import
+    silently truncated the router's catalog with no way to retry.
+
+    Resilient to a single bad backend: an import/index failure is recorded in
+    ``_backend_load_errors`` (see :func:`backend_load_errors`) and the
+    remaining backends still load, so one optional product with a missing
+    dependency cannot take the whole router down.
+
+    Still strict about correctness: a duplicate tool name across two backends
+    is a genuine ambiguity about where a call would be routed, so it raises --
+    and, because staging happens first, it raises without leaving any partial
+    state behind.
+    """
     if _tool_index:
         return
+
+    staged_index: dict[str, Any] = {}
+    staged_servers: dict[str, Any] = {}
+    staged_backend_names: dict[str, str] = {}
+    errors: dict[str, str] = {}
+
     for server_name, module_path in _BACKENDS.items():
-        mod = importlib.import_module(module_path)
-        for name, tool in mod.mcp._tool_manager._tools.items():
+        try:
+            mod = importlib.import_module(module_path)
+            backend_tools = list(mod.mcp._tool_manager._tools.items())
+        except Exception as exc:
+            errors[server_name] = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "backend %s (%s) failed to load: %s", server_name, module_path, exc
+            )
+            continue
+        for name, tool in backend_tools:
             if _optional_write_disabled(name, tool, server_name):
                 continue
-            previous = _tool_backend_names.get(name)
+            previous = staged_backend_names.get(name)
             if previous is not None and previous != server_name:
+                # Raised before any global is touched -- the router stays
+                # completely unloaded rather than half-loaded.
                 raise RuntimeError(
                     f"duplicate backend tool name {name!r}: {previous!r} and {server_name!r}"
                 )
-            _tool_index[name] = tool
-            _tool_servers[name] = mod.mcp
-            _tool_backend_names[name] = server_name
+            staged_index[name] = tool
+            staged_servers[name] = mod.mcp
+            staged_backend_names[name] = server_name
+
+    _backend_load_errors.clear()
+    _backend_load_errors.update(errors)
+    _tool_index.update(staged_index)
+    _tool_servers.update(staged_servers)
+    _tool_backend_names.update(staged_backend_names)
 
 
 def _register_direct_backend_tools(target: FastMCP | None = None) -> list[str]:
-    """Register every enabled backend tool directly on the router server."""
+    """Register every enabled backend tool directly on the router server.
+
+    Two invariants this must hold, both of which the previous
+    ``target.add_tool(tool.fn, ...)`` form broke:
+
+    1. A write/destructive tool whose platform write gate is disabled is not
+       registered at all. ``_load_all_backends`` only filters the *optional*
+       product backends (``_optional_write_disabled``), so in direct mode a
+       gated-off Central/GLP write was still published in the tool list and
+       only failed at call time -- if the backend happened to check. Direct
+       mode now matches router mode: a disabled write is simply not offered.
+    2. The original FastMCP ``Tool`` object is published verbatim.
+       ``add_tool`` re-derives the tool with ``Tool.from_function``, which
+       rebuilds ``parameters``/``fn_metadata`` and drops ``title``, ``icons``,
+       ``meta`` and any ``structured_output`` choice the backend made. Reusing
+       the object keeps the router's published schema byte-identical to the
+       backend's.
+    """
     target = target or mcp
     _load_all_backends()
-    existing = set(target._tool_manager._tools)
+    tools = target._tool_manager._tools
+    existing = set(tools)
     registered: list[str] = []
     for name, tool in _tool_index.items():
         if name in existing:
             # Router wrappers intentionally retain their compact forwarding
             # signatures when a backend exposes the same public tool name.
             continue
-        target.add_tool(
-            tool.fn,
-            name=name,
-            description=tool.description,
-            annotations=tool.annotations,
-        )
+        if not _write_is_enabled(_tool_backend_names.get(name), _tool_capability(tool)):
+            continue
+        # CENTRALMCP_READONLY hides write/destructive tools from the direct-mode
+        # tool list entirely, exactly as it does from find_tool discovery.
+        if _readonly_blocks(tool):
+            continue
+        tools[name] = tool
         existing.add(name)
         registered.append(name)
     return registered
@@ -523,7 +623,7 @@ def _keyword_hits(query: str, limit: int, include_schema: bool = False) -> list[
         return []
     scored: list[tuple[float, Any]] = []
     for name, tool in _tool_index.items():
-        if _optional_write_disabled(name, tool):
+        if _optional_write_disabled(name, tool) or _readonly_blocks(tool):
             continue
         name_tokens = set(name.lower().split("_")) - _STOPWORDS
         overlap = q_tokens & name_tokens
@@ -596,9 +696,10 @@ def find_tool(
         operation_id: Filter by an exact generated OpenAPI operationId.
     """
     top_k = max(1, min(top_k, 10))
-    # Split the budget so one match type can't starve the other.
+    # Split the budget so one match type can't starve the other: the keyword
+    # pass is capped at half, and whatever it leaves unused is available to
+    # the semantic pass (see semantic_allowance below).
     kw_budget = max(1, top_k // 2)
-    sem_budget = top_k - kw_budget
     by_name: dict[str, dict[str, Any]] = {}
     semantic_error: str | None = None
 
@@ -618,6 +719,14 @@ def find_tool(
         by_name[h["name"]] = h
         if len(by_name) >= kw_budget:
             break
+
+    # The semantic pass may fill every slot the keyword pass left open. This
+    # is computed ONCE, before the loop: the previous form recomputed
+    # ``kw_budget - len(by_name)`` on every iteration, and because ``by_name``
+    # grows as semantic hits are added, the allowance shrank by one for each
+    # hit accepted. With no keyword hits and top_k=10 that stopped at 5
+    # results instead of 10, so top_k was silently not honored.
+    semantic_allowance = max(0, top_k - len(by_name))
 
     try:
         if _BACKEND == "redis":
@@ -645,6 +754,8 @@ def find_tool(
                 _load_all_backends()
             tool = _tool_index.get(name)
             if tool is None:
+                continue
+            if _readonly_blocks(tool):
                 continue
             if (
                 hit_server in _OPTIONAL_SERVER_NAMES
@@ -677,7 +788,7 @@ def find_tool(
                 operation_id=operation_id,
             ):
                 continue
-            if added >= sem_budget + max(0, kw_budget - len(by_name)):
+            if added >= semantic_allowance:
                 break
             if include_schema:
                 candidate["schema"] = schema
@@ -687,12 +798,13 @@ def find_tool(
         semantic_error = f"{type(exc).__name__}: {exc}"
 
     if not by_name and semantic_error:
-        return [
-            {
-                "error": f"Tool semantic search unavailable: {semantic_error}",
-                "hint": "Rebuild the tool index with `uv run python scripts/ingest_tools.py`.",
-            }
-        ]
+        failure: dict[str, Any] = {
+            "error": f"Tool semantic search unavailable: {semantic_error}",
+            "hint": "Rebuild the tool index with `uv run python scripts/ingest_tools.py`.",
+        }
+        if _backend_load_errors:
+            failure["backend_load_errors"] = backend_load_errors()
+        return [failure]
     return list(by_name.values())[:top_k]
 
 
@@ -911,6 +1023,35 @@ def _decode_and_verify_continuation_cursor(
     return offset
 
 
+#: Keys a backend may use to publish its own continuation token, checked at
+#: the top level and inside ``_pagination``. When one is present the router
+#: must not add a competing ``next_cursor``: the two have different offset
+#: semantics, and the router's would shadow the backend's on the wire.
+_UPSTREAM_CURSOR_KEYS = ("next_cursor", "nextCursor", "next", "cursor")
+
+
+def _upstream_cursor_key(result: Any) -> str | None:
+    """Return where ``result`` already carries a continuation token, or None.
+
+    The returned string is the location (e.g. ``"next_cursor"`` or
+    ``"_pagination.next_cursor"``) so the reason a router cursor was withheld
+    can be reported precisely rather than as an opaque flag.
+    """
+    if not isinstance(result, dict):
+        return None
+    for key in _UPSTREAM_CURSOR_KEYS:
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
+            return key
+    pagination = result.get("_pagination")
+    if isinstance(pagination, dict):
+        for key in _UPSTREAM_CURSOR_KEYS:
+            value = pagination.get(key)
+            if isinstance(value, str) and value.strip():
+                return f"_pagination.{key}"
+    return None
+
+
 def _bound_router_response(
     result: Any,
     *,
@@ -1043,16 +1184,25 @@ def _bound_router_response(
         )
         if present
     ] or ["item_budget"]
+    # A backend that pages with its own opaque token owns continuation for
+    # this response. Emitting a router cursor alongside it would publish two
+    # different "next" positions -- and, at the top level, would overwrite the
+    # backend's outright -- so the router defers and says so.
+    upstream_cursor = _upstream_cursor_key(page)
     can_emit_cursor = (
         enable_cursor
         and truncated_by_items
         and tool_name is not None
         and tool_arguments is not None
+        and upstream_cursor is None
     )
     marker = _response_bounds_marker(
         reason="+".join(reasons), item_limit=limit, byte_limit=bytes_budget
     )
     marker["resumable"] = bool(can_emit_cursor)
+    if upstream_cursor is not None:
+        marker["resumable_reason"] = "upstream_cursor_present"
+        marker["upstream_cursor_key"] = upstream_cursor
     if isinstance(page, dict):
         page = {**page, "_response_bounds": marker}
         if can_emit_cursor:
@@ -1063,7 +1213,58 @@ def _bound_router_response(
     return page
 
 
+# ── Dispatch-level rate gate ────────────────────────────────────────────────
+#
+# RateLimitMiddleware sits on the *router's* tool manager, so it charges one
+# token per inbound MCP call. That is exactly wrong for the dispatching tools:
+# invoke_read_tool_batch makes up to 25 backend API calls behind a single
+# inbound call, and the backend tool managers are never middleware-installed
+# in this process. Without a gate here, a batch would draw one token for 25
+# real requests to Central -- the opposite of what the 10 req/s account-wide
+# cap requires.
+#
+# __main__ wires this to the shared RateLimitMiddleware's public ``acquire``
+# and exempts the dispatching tools from that middleware, so every backend
+# call costs exactly one token, whether it arrived alone or in a batch. Unset
+# (the default) it is a no-op, so importing the router in tests or embedding
+# it without middleware behaves exactly as before.
+
+_dispatch_rate_gate: Callable[[], Awaitable[None]] | None = None
+
+
+def set_dispatch_rate_gate(gate: Callable[[], Awaitable[None]] | None) -> None:
+    """Install (or clear) the per-backend-call rate gate awaited by dispatch."""
+    global _dispatch_rate_gate
+    _dispatch_rate_gate = gate
+
+
+async def _await_dispatch_rate_gate() -> None:
+    gate = _dispatch_rate_gate
+    if gate is None:
+        return
+    try:
+        await gate()
+    except Exception:
+        # A broken gate must never block dispatch outright -- rate limiting is
+        # a protection, not a correctness requirement.
+        logger.warning("dispatch rate gate failed; proceeding", exc_info=True)
+
+
 # ── invoke_read_tool / invoke_tool ───────────────────────────────────────────
+
+def _unknown_tool_error(name: str) -> dict[str, Any]:
+    error: dict[str, Any] = {
+        "error": f"Unknown tool '{name}'. Use find_tool to discover.",
+        "tool": name,
+        "status": "unknown_tool",
+    }
+    if _backend_load_errors:
+        # A tool can be missing because its backend failed to import. Saying
+        # so here is the difference between "typo" and "this deployment is
+        # broken".
+        error["backend_load_errors"] = backend_load_errors()
+    return error
+
 
 async def _dispatch_tool(
     ctx: Context,
@@ -1072,16 +1273,31 @@ async def _dispatch_tool(
     *,
     resume_offset: int = 0,
     enable_cursor: bool = False,
+    max_items: int | None = None,
+    max_bytes: int | None = None,
 ) -> Any:
+    """Dispatch one backend tool call.
+
+    Args:
+        max_items / max_bytes: Optional per-call response budget overriding the
+            process defaults. Threaded through by invoke_read_tool_batch so N
+            batched results share the whole-response budget instead of each
+            claiming the full single-call budget.
+    """
     _load_all_backends()
     backend = _tool_servers.get(name)
     if backend is None:
-        return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
+        return _unknown_tool_error(name)
     args = _strip_null_arguments(arguments)
     tool = _tool_index[name]
     server = _tool_backend_names.get(name)
     schema = tool.parameters if isinstance(tool.parameters, dict) else {}
     capability = _tool_capability(tool)
+    # CENTRALMCP_READONLY overrides every per-platform gate: refuse a
+    # write/destructive dispatch before charging the rate gate, and say the
+    # kill switch is why. read/diagnostic tools are unaffected.
+    if capability in {"write", "destructive"} and global_readonly_enabled():
+        return global_write_blocked(name)
     contract = _execution_contract(tool, server, schema, arguments=args)
     platform = _server_platform(server)
     if (
@@ -1096,6 +1312,10 @@ async def _dispatch_tool(
             capability=capability,
             execution_contract=contract,
         )
+    # One token per *backend* call, charged after every cheap local rejection
+    # above (unknown tool / blocked write) so a refused call never consumes
+    # quota it never used.
+    await _await_dispatch_rate_gate()
     try:
         result = await backend._tool_manager.call_tool(name, args, context=ctx)
     except Exception as e:
@@ -1106,6 +1326,8 @@ async def _dispatch_tool(
     cursor_eligible = enable_cursor and capability == "read"
     result = _bound_router_response(
         result,
+        max_items=max_items,
+        max_bytes=max_bytes,
         offset=resume_offset,
         enable_cursor=cursor_eligible,
         tool_name=name,
@@ -1123,6 +1345,59 @@ async def _dispatch_tool(
     if isinstance(result, dict):
         return {**result, "execution_contract": contract}
     return {"result": result, "execution_contract": contract}
+
+
+async def _dispatch_read_tool(
+    ctx: Context,
+    name: str,
+    arguments: dict[str, Any] | None = None,
+    cursor: str | None = None,
+    *,
+    max_items: int | None = None,
+    max_bytes: int | None = None,
+) -> Any:
+    """Shared internal read-only dispatch path -- the single place that
+    resolves a tool, enforces the read-only annotation gate, decodes/
+    verifies an optional continuation cursor, and calls ``_dispatch_tool``.
+
+    Both ``invoke_read_tool`` (one call) and ``invoke_read_tool_batch`` (a
+    bounded, ordered list of calls) call this directly instead of each
+    other, so the annotation/permission/cursor/response-bounding logic
+    lives in exactly one place. Never touches a write/destructive tool --
+    every rejection below returns before ``_dispatch_tool`` (and therefore
+    the backend) is ever reached.
+    """
+    _load_all_backends()
+    tool = _tool_index.get(name)
+    if tool is None:
+        return _unknown_tool_error(name)
+    if not bool(getattr(getattr(tool, "annotations", None), "readOnlyHint", False)):
+        return {
+            "error": (
+                f"Tool '{name}' is not read-only. Use invoke_tool only after "
+                "explicit user intent for write/destructive actions."
+            ),
+            "tool": name,
+            "status": "blocked",
+        }
+    resume_offset = 0
+    if cursor is not None:
+        canonical_args = _strip_null_arguments(arguments)
+        try:
+            resume_offset = _decode_and_verify_continuation_cursor(
+                cursor, name=name, arguments=canonical_args
+            )
+        except CursorError as exc:
+            return {"error": str(exc), "tool": name, "status": "invalid_cursor"}
+    return await _dispatch_tool(
+        ctx,
+        name,
+        arguments,
+        resume_offset=resume_offset,
+        enable_cursor=True,
+        max_items=max_items,
+        max_bytes=max_bytes,
+    )
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1146,31 +1421,7 @@ async def invoke_read_tool(
             these exact arguments. A malformed/tampered/expired/mismatched
             cursor returns an error and never reaches the backend.
     """
-    _load_all_backends()
-    tool = _tool_index.get(name)
-    if tool is None:
-        return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
-    if not bool(getattr(getattr(tool, "annotations", None), "readOnlyHint", False)):
-        return {
-            "error": (
-                f"Tool '{name}' is not read-only. Use invoke_tool only after "
-                "explicit user intent for write/destructive actions."
-            ),
-            "tool": name,
-            "status": "blocked",
-        }
-    resume_offset = 0
-    if cursor is not None:
-        canonical_args = _strip_null_arguments(arguments)
-        try:
-            resume_offset = _decode_and_verify_continuation_cursor(
-                cursor, name=name, arguments=canonical_args
-            )
-        except CursorError as exc:
-            return {"error": str(exc), "tool": name, "status": "invalid_cursor"}
-    return await _dispatch_tool(
-        ctx, name, arguments, resume_offset=resume_offset, enable_cursor=True
-    )
+    return await _dispatch_read_tool(ctx, name, arguments, cursor)
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -1193,12 +1444,519 @@ async def invoke_tool(
     return await _dispatch_tool(ctx, name, arguments)
 
 
+# Router convenience wrappers (list_sites/find_device/ask_docs/...) fan a single
+# inbound MCP call into exactly one backend call via invoke_tool. That backend
+# call is already charged one token at the dispatch rate gate inside
+# _dispatch_tool, so the wrapper must be exempt from RateLimitMiddleware -- else
+# each wrapper call draws two tokens (middleware seam + gate) for one backend
+# request. This set collects their names; __main__ exempts it alongside the
+# dispatching primitives so a wrapped read costs exactly one token, same as a
+# direct invoke_read_tool.
+_WRAPPER_DISPATCHING_TOOLS: set[str] = set()
+
+
+def _dispatching_wrapper_tool(annotations: Any):
+    """Register a convenience wrapper that internally dispatches to a backend.
+
+    Identical to ``mcp.tool(annotations=...)`` but also records the wrapped
+    function's name in :data:`_WRAPPER_DISPATCHING_TOOLS` so its per-backend
+    rate cost is charged once (at the dispatch gate), never twice.
+    """
+    register = mcp.tool(annotations=annotations)
+
+    def decorator(fn):
+        _WRAPPER_DISPATCHING_TOOLS.add(fn.__name__)
+        return register(fn)
+
+    return decorator
+
+
+# ── invoke_read_tool_batch: bounded, sequential, read-only fan-out ──────────
+#
+# Nornir-inspired (see nornir.core.task.Result/MultiResult/AggregatedResult):
+# an ordered, per-call result list plus rolled-up aggregate counts. Every
+# call dispatches through the exact same _dispatch_read_tool helper
+# invoke_read_tool itself calls -- never invoke_read_tool (or invoke_tool)
+# recursively, and never a second copy of the annotation/permission/cursor/
+# response-bounding logic. Sequential only (no concurrency) in this first
+# version: deterministic ordering and the existing single async
+# RateLimitMiddleware token bucket are both easier to reason about than an
+# interleaved fan-out, and every existing rate-limit/audit/metrics
+# assumption already models "one dispatch at a time".
+#
+# Excluded from `minimal` mode along with plan_tool_workflow/
+# plan_reconciliation_schedule/evaluate_compliance_policy to keep that
+# profile's tool-list token cost at exactly find_tool + invoke_read_tool +
+# invoke_tool.
+if _ROUTER_MODE != "minimal":
+    MAX_BATCH_CALLS = 25
+    MAX_BATCH_CALL_ID_CHARS = 100
+    MAX_BATCH_TOOL_NAME_CHARS = 200
+    MAX_BATCH_ARGUMENTS_BYTES = 20_000
+    MAX_BATCH_ARGUMENTS_DEPTH = 8
+    MAX_BATCH_ERROR_CHARS = 500
+    _BATCH_RESPONSE_BUDGET_BYTES_ENV = "CENTRALMCP_ROUTER_BATCH_RESPONSE_MAX_BYTES"
+    _BATCH_RESPONSE_BUDGET_DEFAULT_BYTES = 300_000
+    # Every result item's "status" is exactly one of: "ok", "error",
+    # "blocked", "unknown_tool", "invalid_cursor", "invalid_call".
+
+    def _batch_response_budget_bytes() -> int:
+        return _env_positive_int(
+            _BATCH_RESPONSE_BUDGET_BYTES_ENV,
+            _BATCH_RESPONSE_BUDGET_DEFAULT_BYTES,
+            minimum=_RESPONSE_BUDGET_MIN_BYTES,
+        )
+
+    def _batch_argument_depth(value: Any, depth: int = 0) -> int:
+        """Max nesting depth of a JSON-shaped value, short-circuiting as
+        soon as the running depth already exceeds the bound so one
+        pathologically deep/wide payload can't cost more than a bounded
+        amount of recursion before being rejected."""
+        if depth > MAX_BATCH_ARGUMENTS_DEPTH:
+            return depth
+        if isinstance(value, dict):
+            if not value:
+                return depth
+            return max(_batch_argument_depth(v, depth + 1) for v in value.values())
+        if isinstance(value, list):
+            if not value:
+                return depth
+            return max(_batch_argument_depth(v, depth + 1) for v in value)
+        return depth
+
+    def _truncate_batch_error(message: str, limit: int = MAX_BATCH_ERROR_CHARS) -> str:
+        if len(message) > limit:
+            return message[: max(0, limit - 3)] + "..."
+        return message
+
+    class BatchCall(BaseModel):
+        """One entry in an invoke_read_tool_batch request.
+
+        A typed model rather than a bare ``dict`` so the published MCP input
+        schema states the shape and its bounds up front: a client (or a model
+        writing the call) sees ``name``/``arguments``/``id``/``cursor`` and the
+        length caps instead of an opaque object. Semantic bounds that a JSON
+        schema cannot express -- serialized argument size and nesting depth --
+        are still enforced per item in ``_validate_batch_call`` so an oversized
+        entry is rejected on its own rather than failing the whole batch.
+        """
+
+        model_config = ConfigDict(extra="forbid")
+
+        name: str = Field(
+            min_length=1,
+            max_length=MAX_BATCH_TOOL_NAME_CHARS,
+            description="Exact backend tool name from find_tool.",
+        )
+        arguments: dict[str, Any] = Field(
+            default_factory=dict,
+            description="Tool arguments object (default {}).",
+        )
+        id: str | None = Field(
+            default=None,
+            max_length=MAX_BATCH_CALL_ID_CHARS,
+            description=(
+                "Optional caller correlation id, unique within the batch. "
+                "Defaults to the call's list index as a string."
+            ),
+        )
+        cursor: str | None = Field(
+            default=None,
+            description="Optional next_cursor from a previous truncated read.",
+        )
+
+    def _as_call_mapping(raw_call: Any) -> Any:
+        """Normalize a validated ``BatchCall`` back to a plain mapping.
+
+        FastMCP coerces incoming JSON into ``BatchCall`` instances, while a
+        direct in-process caller (and every unit test) passes plain dicts.
+        Both are accepted; validation below only ever sees a mapping.
+        """
+        if isinstance(raw_call, BatchCall):
+            return raw_call.model_dump()
+        return raw_call
+
+    def _validate_batch_call(
+        raw_call: Any, index: int
+    ) -> tuple[dict[str, Any] | None, str | None, str, str | None]:
+        """Validate/normalize one raw batch call entry.
+
+        Returns ``(normalized, error, resolved_id, raw_name)``.
+        ``normalized`` is ``None`` whenever ``error`` is set. Never raises,
+        and never echoes a raw argument *value* in the error message --
+        only shape/type/bound facts about the call itself, so a caller
+        credential/secret placed in ``arguments`` can never leak through a
+        validation error message.
+        """
+        raw_call = _as_call_mapping(raw_call)
+        default_id = str(index)
+        if not isinstance(raw_call, dict):
+            return None, "call must be an object", default_id, None
+        raw_name = raw_call.get("name")
+        raw_id = raw_call.get("id", default_id)
+        if raw_id is None:
+            raw_id = default_id
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            return None, "id must be a non-empty string", default_id, raw_name
+        if len(raw_id) > MAX_BATCH_CALL_ID_CHARS:
+            return (
+                None,
+                f"id exceeds the {MAX_BATCH_CALL_ID_CHARS}-character bound",
+                default_id,
+                raw_name,
+            )
+        resolved_id = raw_id
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            return None, "name must be a non-empty string", resolved_id, raw_name
+        if len(raw_name) > MAX_BATCH_TOOL_NAME_CHARS:
+            return (
+                None,
+                f"name exceeds the {MAX_BATCH_TOOL_NAME_CHARS}-character bound",
+                resolved_id,
+                raw_name,
+            )
+        arguments = raw_call.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return None, "arguments must be an object", resolved_id, raw_name
+        try:
+            argument_bytes = len(json.dumps(arguments, default=str).encode("utf-8"))
+        except TypeError:
+            return None, "arguments must be JSON-serializable", resolved_id, raw_name
+        if argument_bytes > MAX_BATCH_ARGUMENTS_BYTES:
+            return (
+                None,
+                f"arguments exceed the {MAX_BATCH_ARGUMENTS_BYTES}-byte bound",
+                resolved_id,
+                raw_name,
+            )
+        if _batch_argument_depth(arguments) > MAX_BATCH_ARGUMENTS_DEPTH:
+            return (
+                None,
+                f"arguments exceed the {MAX_BATCH_ARGUMENTS_DEPTH}-level nesting bound",
+                resolved_id,
+                raw_name,
+            )
+        cursor = raw_call.get("cursor")
+        if cursor is not None and not isinstance(cursor, str):
+            return None, "cursor must be a string", resolved_id, raw_name
+        normalized = {"name": raw_name, "arguments": arguments, "cursor": cursor}
+        return normalized, None, resolved_id, raw_name
+
+    async def _dispatch_one_batch_call(
+        ctx: Context,
+        index: int,
+        raw_call: Any,
+        *,
+        item_max_bytes: int | None = None,
+    ) -> dict[str, Any]:
+        """Validate and dispatch exactly one batch entry through
+        ``_dispatch_read_tool`` -- the same helper ``invoke_read_tool``
+        uses -- and normalize the outcome into one bounded, always-present
+        result-item shape (``index``/``id``/``tool``/``server``/``status``
+        plus either ``result`` or ``error``, never both).
+
+        Contains every failure mode: a validation rejection, an error-shaped
+        backend response, and an exception escaping dispatch all become an
+        ordinary result item, so one bad call can never abort the batch or
+        raise out of the tool.
+        """
+        normalized, error, resolved_id, raw_name = _validate_batch_call(raw_call, index)
+        if error is not None:
+            return {
+                "index": index,
+                "id": resolved_id,
+                "tool": raw_name if isinstance(raw_name, str) else None,
+                "server": None,
+                "status": "invalid_call",
+                "error": _truncate_batch_error(error),
+            }
+        name = normalized["name"]
+        server = _tool_backend_names.get(name)
+        base = {"index": index, "id": resolved_id, "tool": name, "server": server}
+        try:
+            result = await _dispatch_read_tool(
+                ctx,
+                name,
+                normalized["arguments"],
+                normalized["cursor"],
+                max_bytes=item_max_bytes,
+            )
+        except Exception as exc:
+            # Defense in depth: _dispatch_tool already converts backend
+            # exceptions into an error dict, so reaching here means the
+            # router itself failed. Report it as this item's failure rather
+            # than losing every other call's result.
+            logger.warning("batch item %d (%s) raised", index, name, exc_info=True)
+            return {
+                **base,
+                "status": "error",
+                "error": _truncate_batch_error(f"{type(exc).__name__}: {exc}"),
+            }
+        base["server"] = _tool_backend_names.get(name, server)
+        if isinstance(result, dict) and result.get("status") in (
+            "blocked",
+            "invalid_cursor",
+            "unknown_tool",
+        ):
+            return {
+                **base,
+                "status": result["status"],
+                "error": _truncate_batch_error(str(result.get("error", ""))),
+            }
+        if isinstance(result, dict) and "error" in result:
+            return {
+                **base,
+                "status": "error",
+                "error": _truncate_batch_error(str(result["error"])),
+            }
+        return {**base, "status": "ok", "result": result}
+
+    def _first_duplicate_batch_id(calls: list[Any]) -> str | None:
+        """First explicitly-supplied id that appears twice, else None.
+
+        Only explicit ids are checked -- an omitted id defaults to the call's
+        index and is unique by construction.
+        """
+        seen: set[str] = set()
+        for raw_call in calls:
+            mapping = _as_call_mapping(raw_call)
+            if not isinstance(mapping, dict):
+                continue
+            call_id = mapping.get("id")
+            if not isinstance(call_id, str) or not call_id.strip():
+                continue
+            if call_id in seen:
+                return call_id
+            seen.add(call_id)
+        return None
+
+    def _batch_items_byte_size(items: list[dict[str, Any]]) -> int:
+        return len(json.dumps(items, ensure_ascii=False, default=str).encode("utf-8"))
+
+    #: Error text is squeezed to this before the response is allowed to be
+    #: over budget. Still enough to identify the failure class.
+    MIN_BATCH_ERROR_CHARS = 80
+
+    def _shrink_batch_items_for_budget(
+        items: list[dict[str, Any]], *, byte_budget: int
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Deterministically shrink the *total* serialized batch response to
+        ``byte_budget``, in strictly increasing order of destructiveness,
+        without ever dropping an item.
+
+        Stages, each applied only if the previous one left the response over
+        budget:
+
+        1. Replace an ``"ok"`` item's already-bounded ``result`` with a
+           compact ``result_truncated`` marker, one item at a time, in reverse
+           call order (the last call shrinks first).
+        2. Squeeze every failure's ``error`` text to ``MIN_BATCH_ERROR_CHARS``.
+
+        Failures keep their ``index``/``id``/``tool``/``status`` at every
+        stage: exceeding the byte budget must never silently erase evidence
+        that a call failed. The result is *strictly* bounded -- the caller
+        asserts the final size and falls back to a minimal envelope if even
+        stage 2 is not enough (see ``_batch_overflow_envelope``).
+        """
+        working = [dict(item) for item in items]
+        truncated = False
+        if _batch_items_byte_size(working) <= byte_budget:
+            return working, truncated
+
+        for pos in range(len(working) - 1, -1, -1):
+            if _batch_items_byte_size(working) <= byte_budget:
+                break
+            if working[pos].get("status") != "ok":
+                continue
+            working[pos] = {
+                "index": working[pos]["index"],
+                "id": working[pos]["id"],
+                "tool": working[pos]["tool"],
+                "server": working[pos].get("server"),
+                "status": "ok",
+                "result_truncated": True,
+                "result": None,
+            }
+            truncated = True
+
+        if _batch_items_byte_size(working) > byte_budget:
+            for pos, item in enumerate(working):
+                message = item.get("error")
+                if not isinstance(message, str) or len(message) <= MIN_BATCH_ERROR_CHARS:
+                    continue
+                shrunk = dict(item)
+                shrunk["error"] = _truncate_batch_error(message, MIN_BATCH_ERROR_CHARS)
+                shrunk["error_truncated"] = True
+                working[pos] = shrunk
+                truncated = True
+                if _batch_items_byte_size(working) <= byte_budget:
+                    break
+
+        return working, truncated
+
+    def _batch_overflow_envelope(
+        items: list[dict[str, Any]],
+        counts: dict[str, int],
+        failed_ids: list[str],
+        failed_indexes: list[int],
+        byte_budget: int,
+    ) -> dict[str, Any]:
+        """Last-resort response when even fully-shrunk items exceed the budget.
+
+        Can only happen with a large batch of long tool names/ids, since every
+        payload is already gone by this point. Keeps the aggregate counts and
+        the per-item id/index/status skeleton -- never a partial, over-budget
+        body -- and is itself clipped to the budget.
+        """
+        skeleton = [
+            {"index": item["index"], "id": item["id"], "status": item["status"]}
+            for item in items
+        ]
+        while skeleton and _batch_items_byte_size(skeleton) > byte_budget // 2:
+            skeleton.pop()
+        return {
+            "ok": False,
+            "error": (
+                "batch response exceeded the "
+                f"{byte_budget}-byte budget; results omitted"
+            ),
+            "results": skeleton,
+            "results_omitted": len(items) - len(skeleton),
+            "counts": counts,
+            "failed_ids": failed_ids[:MAX_BATCH_CALLS],
+            "failed_indexes": failed_indexes[:MAX_BATCH_CALLS],
+            "truncated": True,
+        }
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def invoke_read_tool_batch(
+        ctx: Context,
+        calls: list[BatchCall],
+    ) -> dict[str, Any]:
+        """Dispatch a bounded, ordered batch of read-only tool calls in one round trip.
+
+        Nornir-inspired bounded fan-out: each entry in ``calls`` is
+        dispatched sequentially (no concurrency in this version --
+        deterministic ordering and rate-limit safety over throughput)
+        through the identical read-only gate/response-bounding path
+        ``invoke_read_tool`` itself uses. One call's failure never aborts
+        the rest: every call gets its own ordered result entry plus
+        rolled-up aggregate ``counts``, never a raised exception and never
+        a success-shaped failure. A write/destructive/unknown tool named in
+        any entry is rejected for that entry alone and never reaches the
+        backend (same gate as ``invoke_read_tool``).
+
+        Args:
+            calls: bounded (max 25) ordered list of call objects, each with
+                required "name" (exact backend tool name from find_tool),
+                optional "arguments" (object, default {}), optional "id"
+                (caller-supplied correlation string, max 100 chars, unique
+                within the batch -- defaults to the call's list index as a
+                string), and optional "cursor" (an opaque next_cursor from a
+                previous truncated single-call or batch-item read of this
+                exact tool+arguments, resumed exactly like invoke_read_tool's
+                own cursor argument). "arguments" is bounded to 20,000
+                serialized bytes and 8 levels of nesting per call -- an
+                oversized/malformed call entry is rejected with status
+                "invalid_call" before any dispatch is attempted for that
+                entry, and never included in a validation-error message
+                (so a secret placed in "arguments" is never echoed back).
+                Duplicate ids reject the whole batch before any dispatch:
+                correlating results by id is the point of supplying one, and
+                silently returning two entries with the same id would make
+                that impossible.
+
+        Rate limiting is charged per *backend* call, not per batch, so a
+        25-call batch draws 25 tokens from the same bucket a single
+        invoke_read_tool call draws one from.
+
+        Returns "ok" (True only when every call in the batch succeeded --
+        never True while any failure exists), "results" (ordered list, one
+        entry per call, each with "index", "id", "tool", "server", "status" --
+        one of "ok", "error", "blocked", "unknown_tool", "invalid_cursor",
+        "invalid_call" -- and either "result" (on "ok") or "error" (bounded
+        to 500 characters, otherwise)), "counts" ("total"/"succeeded"/
+        "failed"), "failed_ids" and "failed_indexes" (both ordered, one
+        entry per failed call), and "truncated" (True when the response had
+        to be shrunk to fit the configured byte budget --
+        CENTRALMCP_ROUTER_BATCH_RESPONSE_MAX_BYTES, default 300000). Each
+        item additionally gets its own share of that budget while
+        dispatching, so no single call can consume the whole batch's budget.
+        The returned response is strictly within budget.
+        """
+        if not isinstance(calls, list):
+            return {"ok": False, "error": "calls must be a list"}
+        if not calls:
+            return {"ok": False, "error": "calls must contain at least one entry"}
+        if len(calls) > MAX_BATCH_CALLS:
+            return {
+                "ok": False,
+                "error": (
+                    f"calls has {len(calls)} entries, exceeding the "
+                    f"{MAX_BATCH_CALLS}-entry bound"
+                ),
+            }
+
+        duplicate_id = _first_duplicate_batch_id(calls)
+        if duplicate_id is not None:
+            return {
+                "ok": False,
+                "error": (
+                    f"duplicate call id {duplicate_id!r}: ids must be unique "
+                    "within a batch so results can be correlated"
+                ),
+            }
+
+        byte_budget = _batch_response_budget_bytes()
+        # Split the whole-response budget across the batch so one large read
+        # cannot crowd out every other call's result. Each item still gets at
+        # least the router's per-response floor.
+        item_budget = max(_RESPONSE_BUDGET_MIN_BYTES, byte_budget // max(1, len(calls)))
+
+        items: list[dict[str, Any]] = []
+        for index, raw_call in enumerate(calls):
+            items.append(
+                await _dispatch_one_batch_call(
+                    ctx, index, raw_call, item_max_bytes=item_budget
+                )
+            )
+
+        succeeded = sum(1 for item in items if item["status"] == "ok")
+        failed_items = [item for item in items if item["status"] != "ok"]
+        counts = {
+            "total": len(items),
+            "succeeded": succeeded,
+            "failed": len(failed_items),
+        }
+        failed_ids = [item["id"] for item in failed_items]
+        failed_indexes = [item["index"] for item in failed_items]
+
+        shrunk, truncated = _shrink_batch_items_for_budget(
+            items, byte_budget=byte_budget
+        )
+        if _batch_items_byte_size(shrunk) > byte_budget:
+            return _batch_overflow_envelope(
+                items, counts, failed_ids, failed_indexes, byte_budget
+            )
+
+        return {
+            "ok": not failed_items,
+            "results": shrunk,
+            "counts": counts,
+            "failed_ids": failed_ids,
+            "failed_indexes": failed_indexes,
+            "truncated": truncated,
+        }
+
+
 # ── Optional discovery convenience tools ──────────────────────────────────────
 #
 # default mode: include convenience wrappers (list_sites/find_device/etc.)
 # minimal mode: expose only find_tool + invoke_read_tool + invoke_tool to minimize tool-list tokens
 if _ROUTER_MODE != "minimal" and "aruba-monitoring" in _BACKENDS:
-    @mcp.tool(annotations=READ_ONLY)
+    @_dispatching_wrapper_tool(READ_ONLY)
     async def list_scopes(
         ctx: Context, limit: int = 100, offset: int = 0, full_list: bool = False
     ) -> dict[str, Any]:
@@ -1208,13 +1966,13 @@ if _ROUTER_MODE != "minimal" and "aruba-monitoring" in _BACKENDS:
         )
 
 
-    @mcp.tool(annotations=READ_ONLY)
+    @_dispatching_wrapper_tool(READ_ONLY)
     async def get_global_scope_id(ctx: Context) -> dict[str, Any]:
         """Return the global (org-wide) scope-id."""
         return await invoke_tool(ctx, "get_global_scope_id")
 
 
-    @mcp.tool(annotations=READ_ONLY)
+    @_dispatching_wrapper_tool(READ_ONLY)
     async def list_sites(
         ctx: Context, limit: int = 50, offset: int = 0
     ) -> dict[str, Any]:
@@ -1222,7 +1980,7 @@ if _ROUTER_MODE != "minimal" and "aruba-monitoring" in _BACKENDS:
         return await invoke_tool(ctx, "list_sites", {"limit": limit, "offset": offset})
 
 
-    @mcp.tool(annotations=READ_ONLY)
+    @_dispatching_wrapper_tool(READ_ONLY)
     async def list_devices(
         ctx: Context, limit: int = 50, offset: int = 0
     ) -> dict[str, Any]:
@@ -1230,20 +1988,20 @@ if _ROUTER_MODE != "minimal" and "aruba-monitoring" in _BACKENDS:
         return await invoke_tool(ctx, "list_devices", {"limit": limit, "offset": offset})
 
 
-    @mcp.tool(annotations=READ_ONLY)
+    @_dispatching_wrapper_tool(READ_ONLY)
     async def find_device(ctx: Context, query: str) -> dict[str, Any]:
         """Find a device by serial number."""
         return await invoke_tool(ctx, "find_device", {"serial_number": query})
 
 
-    @mcp.tool(annotations=READ_ONLY)
+    @_dispatching_wrapper_tool(READ_ONLY)
     async def find_client(ctx: Context, query: str) -> dict[str, Any]:
         """Find a client by name / MAC / IP."""
         return await invoke_tool(ctx, "find_client", {"mac_or_ip": query})
 
 
 if _ROUTER_MODE != "minimal" and "aruba-rag" in _BACKENDS:
-    @mcp.tool(annotations=READ_ONLY)
+    @_dispatching_wrapper_tool(READ_ONLY)
     async def ask_docs(ctx: Context, query: str, top_k: int = 5) -> Any:
         """Ask Aruba/HPE docs for a compact cited answer.
 
@@ -1254,7 +2012,7 @@ if _ROUTER_MODE != "minimal" and "aruba-rag" in _BACKENDS:
         return await invoke_tool(ctx, "ask_docs", {"question": query, "top_k": top_k})
 
 
-    @mcp.tool(annotations=READ_ONLY)
+    @_dispatching_wrapper_tool(READ_ONLY)
     async def search_docs(
         ctx: Context,
         query: str,
@@ -1272,7 +2030,7 @@ if _ROUTER_MODE != "minimal" and "aruba-rag" in _BACKENDS:
         return await invoke_tool(ctx, "search_docs", args)
 
 
-    @mcp.tool(annotations=READ_ONLY)
+    @_dispatching_wrapper_tool(READ_ONLY)
     async def lookup_api(ctx: Context, query: str, top_k: int = 10) -> Any:
         """Exact Aruba Central API lookup — endpoints, schemas, fields, enum values.
 
@@ -1779,6 +2537,46 @@ if _ROUTER_MODE == "direct":
 # tool it is just that tool's own (fixed, small) name. Never reads any
 # argument value beyond the single expected "name" key, and never reads
 # result content at all.
+#: Label used when one batch call fans out to more than one distinct backend
+#: tool or backend server. Bounded and constant by construction, so it can
+#: never leak an argument value into a metric series or an audit record.
+BATCH_MULTI_LABEL = "batch_multi"
+
+#: Router tools whose real dispatch target lives in their arguments. Kept in
+#: sync with ``mcp_servers._middleware.audit_log._DISPATCHING_TOOL_NAMES``.
+_DISPATCHING_ROUTER_TOOLS = frozenset(
+    {"invoke_tool", "invoke_read_tool", "invoke_read_tool_batch"}
+)
+
+#: Hard cap on how many batch entries label resolution will inspect. Matches
+#: the batch bound in default mode, and stays defined in minimal mode (where
+#: the batch tool is not registered) so observability never depends on which
+#: router mode is active.
+MAX_BATCH_CALLS_LABEL_CAP = 25
+
+
+def _batch_call_targets(arguments: dict[str, Any]) -> list[str]:
+    """Bounded list of backend tool names named by one batch request.
+
+    Reads only each entry's ``name``, exactly like the single-call resolver
+    reads ``arguments["name"]`` -- never any argument *value*. Entries are
+    capped at ``MAX_BATCH_CALLS`` so a malformed oversized request cannot make
+    label resolution unbounded.
+    """
+    calls = arguments.get("calls") if isinstance(arguments, dict) else None
+    if not isinstance(calls, list):
+        return []
+    names: list[str] = []
+    for raw_call in calls[:MAX_BATCH_CALLS_LABEL_CAP]:
+        mapping = raw_call.model_dump() if isinstance(raw_call, BaseModel) else raw_call
+        if not isinstance(mapping, dict):
+            continue
+        target = mapping.get("name")
+        if isinstance(target, str) and target in _tool_index:
+            names.append(target)
+    return names
+
+
 def _router_call_labels(name: str, arguments: dict[str, Any]) -> tuple[str, str, str]:
     """Resolve bounded ``(tool, backend, capability)`` labels for one call."""
     if name in {"invoke_tool", "invoke_read_tool"} and isinstance(arguments, dict):
@@ -1789,6 +2587,22 @@ def _router_call_labels(name: str, arguments: dict[str, Any]) -> tuple[str, str,
             capability = _tool_capability(_tool_index[target_name])
             return (target_name, backend, capability)
         return (name, "router", "unknown")
+    if name == "invoke_read_tool_batch" and isinstance(arguments, dict):
+        # A batch is still a dispatching call: labelling it "router"/"unknown"
+        # made every batched backend call invisible to metrics and audit. When
+        # the whole batch targets one tool/backend, use it; otherwise collapse
+        # to a single constant multi-target label.
+        targets = _batch_call_targets(arguments)
+        if targets:
+            distinct = sorted(set(targets))
+            backends = sorted(
+                {_tool_backend_names.get(target, "router") for target in targets}
+            )
+            tool_label = distinct[0] if len(distinct) == 1 else BATCH_MULTI_LABEL
+            backend_label = backends[0] if len(backends) == 1 else BATCH_MULTI_LABEL
+            # Every dispatched entry is annotation-gated read-only.
+            return (tool_label, backend_label, "read")
+        return (name, "router", "read")
     tool = mcp._tool_manager._tools.get(name)
     capability = _tool_capability(tool) if tool is not None else "unknown"
     return (name, "router", capability)
@@ -1802,7 +2616,7 @@ def _router_call_classification(name: str, arguments: dict[str, Any]) -> str:
 
 def _router_call_target(name: str, arguments: dict[str, Any]) -> str | None:
     """Return only a catalog-resolved dispatch target for audit records."""
-    if name not in {"invoke_tool", "invoke_read_tool"}:
+    if name not in _DISPATCHING_ROUTER_TOOLS:
         return None
     target, backend, _capability = _router_call_labels(name, arguments)
     return target if backend != "router" else "unknown"
@@ -1837,12 +2651,19 @@ if __name__ == "__main__":
 
     _metrics_registry = get_default_registry()
     _metrics_on = metrics_enabled()
+    # One shared bucket, charged per *backend* call. The dispatching tools are
+    # exempt from the middleware (they would otherwise pay one token for the
+    # outer MCP call regardless of how many backend calls they make) and the
+    # bucket is instead drawn from inside _dispatch_tool via the gate below.
+    _rate_limiter = RateLimitMiddleware(
+        rate=8.0,
+        on_wait=_metrics_registry.record_rate_limit_wait if _metrics_on else None,
+        exempt_names=_DISPATCHING_ROUTER_TOOLS | _WRAPPER_DISPATCHING_TOOLS,
+    )
+    set_dispatch_rate_gate(_rate_limiter.acquire)
     middlewares = [
         NullStripMiddleware(),
-        RateLimitMiddleware(
-            rate=8.0,
-            on_wait=_metrics_registry.record_rate_limit_wait if _metrics_on else None,
-        ),
+        _rate_limiter,
         UnknownToolSuggestMiddleware(
             lambda: mcp._tool_manager._tools,
             suggestion_provider=_suggest_router_tool,

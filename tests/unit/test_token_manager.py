@@ -179,3 +179,68 @@ def test_token_manager_does_not_collapse_when_generation_already_advanced(tmp_pa
     assert token == "token-2"
     assert len(calls) == 2
     assert manager.generation == 2
+
+
+def test_token_cache_write_is_atomic_and_0600(tmp_path, monkeypatch):
+    """The token cache is written owner-only (0600) via a temp file that is
+    atomically renamed into place, leaving no world-readable window and no
+    orphan .tmp file."""
+    import json as _json
+    import stat
+
+    monkeypatch.setenv("TOKEN_CACHE_DIR", str(tmp_path))
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        return _TokenResponse("tok-abc")
+
+    monkeypatch.setattr("pipeline.clients.token_manager.httpx.post", fake_post)
+
+    manager = TokenManager(
+        client_id="client-id",
+        client_secret="secret",
+        token_url="https://sso.example.com/token",
+        cache_key="atomic",
+    )
+    manager.get_access_token()
+
+    cache_file = manager.cache_file
+    assert cache_file.exists()
+    # Owner-only permissions.
+    assert stat.S_IMODE(cache_file.stat().st_mode) == 0o600
+    # No orphan temp file left behind.
+    assert not list(tmp_path.glob("*.tmp"))
+    # Valid, complete JSON (never a torn partial write).
+    data = _json.loads(cache_file.read_text())
+    assert data["access_token"] == "tok-abc"
+
+
+def test_token_cache_write_failure_preserves_prior_cache(tmp_path, monkeypatch):
+    """A crash during the atomic swap must leave the previous cached token
+    intact rather than corrupting or truncating it."""
+    import json as _json
+
+    monkeypatch.setenv("TOKEN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "pipeline.clients.token_manager.httpx.post",
+        lambda url, data=None, headers=None, timeout=None: _TokenResponse("first"),
+    )
+    manager = TokenManager(
+        client_id="client-id",
+        client_secret="secret",
+        token_url="https://sso.example.com/token",
+        cache_key="preserve",
+    )
+    manager.get_access_token()
+    good = manager.cache_file.read_text()
+
+    # A later save crashes exactly at the rename.
+    def _boom(src, dst):
+        raise RuntimeError("simulated crash during rename")
+
+    monkeypatch.setattr("pipeline.clients.token_manager.os.replace", _boom)
+    manager.access_token = "second"
+    manager._save_token_to_cache()  # swallowed + logged, must not raise
+
+    assert manager.cache_file.read_text() == good
+    assert not list(tmp_path.glob("*.tmp"))
+    assert _json.loads(good)["access_token"] == "first"

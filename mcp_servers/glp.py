@@ -3,7 +3,8 @@ service catalog (105 curated + 904 active generated tools; 918 in provenance man
 
 Covers: GLP device lifecycle (v1 + v2beta1), device grouping summaries,
 subscription assignment/bulk-add, auto-subscription-setting reads/updates,
-audit logs (v1 + v2beta1), users, workspaces (incl. contact PATCH), reporting
+audit logs (v2beta1 -- the only version in the manifest), users,
+workspaces (incl. contact PATCH), reporting
 statuses, service-catalog reads, and a guarded read-only GLP GET. Curated
 workflows also cover RBAC role-assignment and scope-group lifecycle
 (create/update/delete), identity user lifecycle (invite/update-preferences/
@@ -39,7 +40,11 @@ from mcp_servers.shared import (
     redact_sensitive,
     safe_api_path,
 )
-from pipeline.clients.glp_client import _V2BETA1_WRITES_FLAG, _writes_enabled
+from pipeline.clients.glp_client import (
+    _V2BETA1_WRITES_FLAG,
+    _writes_enabled,
+    glp_write_gate_message,
+)
 
 mcp = FastMCP("aruba-glp")
 
@@ -72,12 +77,22 @@ _GLP_AUTH_HEADER_NAMES = {"authorization", "cookie"}
 
 @mcp.tool(annotations=READ_ONLY)
 def glp_write_status() -> dict[str, Any]:
-    """Report whether guarded GLP v2beta1 write tools are enabled."""
+    """Report whether guarded GLP v2beta1 write tools are enabled.
+
+    The GLP gate is resolved independently of Central's write gate — flipping
+    CENTRALMCP_CENTRAL_WRITES neither enables nor blocks GreenLake writes.
+    """
+    from mcp_servers.shared import platform_write_gate_state
+
     enabled = _writes_enabled()
+    gate = platform_write_gate_state("glp")
     return {
         "enabled": enabled,
         "flag": _V2BETA1_WRITES_FLAG,
         "set_to_enable": f"{_V2BETA1_WRITES_FLAG}=1",
+        "gate_state": gate["state"],
+        "gate_source": gate["source"],
+        "independent_of": ["CENTRALMCP_CENTRAL_WRITES"],
         "guarded_tools": [
             "glp_assign_subscription",
             "glp_add_device",
@@ -104,7 +119,10 @@ def glp_write_status() -> dict[str, Any]:
         "message": (
             "GLP write tools can execute."
             if enabled
-            else "GLP write tools are visible but fail closed until the feature flag is enabled."
+            else (
+                f"GLP write tools are visible but fail closed until {_V2BETA1_WRITES_FLAG}=1. "
+                "Central's write gate (CENTRALMCP_CENTRAL_WRITES) has no effect on GLP writes."
+            )
         ),
     }
 
@@ -114,11 +132,12 @@ def _write_disabled(tool_name: str, payload: dict[str, Any]) -> dict[str, Any] |
         return None
     return {
         "status": "FORBIDDEN",
-        "error": (
-            f"{tool_name} is gated behind {_V2BETA1_WRITES_FLAG}=1 and was not performed. "
-            "Set the flag only after sandbox-validating payload and rollback."
+        "error": glp_write_gate_message(
+            tool_name,
+            "Set the flag only after sandbox-validating payload and rollback.",
         ),
         "flag": _V2BETA1_WRITES_FLAG,
+        "platform": "glp",
         "would_have_sent": payload,
     }
 
@@ -155,6 +174,22 @@ def _paged_params(limit: int | None = 100, offset: int | None = 0, **values: Any
         "limit": clamp_limit(limit),
         "offset": max(0, offset or 0),
     }
+
+
+_LIST_PAGINATION_KEYS = ("count", "offset", "total", "next")
+
+
+def _list_result(page: dict[str, Any], errors: list[str]) -> dict[str, Any]:
+    """Shape a client ``*_page`` envelope into the tool's list response.
+
+    Preserves the existing ``{"items", "errors"}`` contract and adds whichever
+    of ``count``/``offset``/``total``/``next`` GLP returned so callers can page.
+    """
+    out: dict[str, Any] = {"items": page.get("items", []), "errors": errors}
+    for key in _LIST_PAGINATION_KEYS:
+        if key in page:
+            out[key] = page[key]
+    return out
 
 
 def _cursor_params(
@@ -266,8 +301,10 @@ def list_glp_devices(
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        items = glp.list_devices(limit=clamp_limit(limit), offset=max(0, offset), filter=filter)
-        return {"items": items, "errors": errors}
+        page = glp.list_devices_page(
+            limit=clamp_limit(limit), offset=max(0, offset), filter=filter
+        )
+        return _list_result(page, errors)
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "errors": errors}
@@ -298,8 +335,8 @@ def list_glp_subscriptions(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        items = glp.list_subscriptions(limit=clamp_limit(limit), offset=max(0, offset))
-        return {"items": items, "errors": errors}
+        page = glp.list_subscriptions_page(limit=clamp_limit(limit), offset=max(0, offset))
+        return _list_result(page, errors)
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "errors": errors}
@@ -383,8 +420,8 @@ def list_glp_users(limit: int = 100, offset: int = 0) -> dict[str, Any]:
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        items = glp.list_users(limit=clamp_limit(limit), offset=max(0, offset))
-        return {"items": items, "errors": errors}
+        page = glp.list_users_page(limit=clamp_limit(limit), offset=max(0, offset))
+        return _list_result(page, errors)
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "errors": errors}
@@ -470,23 +507,40 @@ def list_glp_audit_logs(
     limit: int = 100,
     offset: int = 0,
     category: str | None = None,
+    filter: str | None = None,
+    select: str | None = None,
+    sort: str | None = None,
 ) -> dict[str, Any]:
     """List GLP audit log entries (who did what and when).
+
+    Calls the only audit-log list operation in the committed GLP manifest,
+    GET /audit-log/v2beta1/logs (getAuditLogs).
 
     Args:
         limit: Maximum entries to request; clamped to the MCP list limit.
         offset: Zero-based result offset for pagination.
-        category: e.g. "USER_MANAGEMENT", "DEVICE_MANAGEMENT".
+        category: Convenience shorthand — translated into the documented
+            filter expression ``category eq '<value>'`` (e.g. "User Management",
+            "Device Management"); it is not a standalone query parameter.
+        filter: Raw OData filter, ANDed with ``category`` when both are given.
+            Supported fields include createdAt, category, description,
+            ipAddress, username, workspace/name, workspace/type,
+            serviceOffer/id, region and hasDetails.
+        select: Comma-separated properties to return.
+        sort: Sort expression, e.g. "createdAt desc".
     """
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        items = glp.list_audit_logs(
+        page = glp.list_audit_logs_page(
             limit=clamp_limit(limit),
             offset=max(0, offset),
             category=category,
+            filter=filter,
+            select=select,
+            sort=sort,
         )
-        return {"items": items, "errors": errors}
+        return _list_result(page, errors)
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "errors": errors}
@@ -494,8 +548,14 @@ def list_glp_audit_logs(
 
 @mcp.tool(annotations=READ_ONLY)
 def get_glp_audit_log_detail(audit_log_id: str) -> dict[str, Any]:
-    """Fetch official GLP audit-log details for entries with details enabled."""
-    return _glp_read(f"/audit-log/v1/logs/{_path_part(audit_log_id)}/detail")
+    """Fetch official GLP audit-log details for entries with details enabled.
+
+    Uses GET /audit-log/v2beta1/logs/{id}/details (getAuditLogDetails) — the
+    only audit-log detail operation in the committed manifest. The previous
+    singular ``/audit-log/v1/logs/{id}/detail`` spelling exists in neither the
+    manifest nor the service.
+    """
+    return _glp_read(f"/audit-log/v2beta1/logs/{_path_part(audit_log_id)}/details")
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1171,22 +1231,38 @@ def list_glp_scim_user_groups(
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
-def glp_assign_subscription(serial_number: str, subscription_key: str) -> dict[str, Any]:
+def glp_assign_subscription(
+    serial_number: str,
+    subscription_key: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     """Assign a GLP subscription (license) to a device.
 
     subscription_key accepts either a subscription key string or its GLP UUID;
     a key is resolved to its UUID internally before assignment.
+
+    dry_run=True sends the manifest-declared ``dry-run`` query parameter on
+    PATCH /devices/v2beta1/devices (patchDevicesV2beta1): GLP validates the
+    request and returns as if it had completed, without changing anything.
+    Still requires the GLP write flag, because the validation request does
+    reach the tenant.
     """
     disabled = _write_disabled(
         "glp_assign_subscription",
-        {"serial_number": serial_number, "subscription_key": subscription_key},
+        {
+            "serial_number": serial_number,
+            "subscription_key": subscription_key,
+            "dry_run": dry_run,
+        },
     )
     if disabled:
         return disabled
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        result = glp.assign_subscription(serial_number, subscription_key)
+        result = glp.assign_subscription(
+            serial_number, subscription_key, dry_run=dry_run
+        )
         return {"result": result, "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
@@ -1234,15 +1310,24 @@ def glp_add_devices_bulk(devices: list[dict[str, str]]) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
-def glp_archive_device(serial_number: str) -> dict[str, Any]:
-    """Archive a device in GLP (removes from Central, keeps in GLP inventory)."""
-    disabled = _write_disabled("glp_archive_device", {"serial_number": serial_number})
+def glp_archive_device(serial_number: str, dry_run: bool = False) -> dict[str, Any]:
+    """Archive a device in GLP (removes from Central, keeps in GLP inventory).
+
+    dry_run=True sends the manifest-declared ``dry-run`` query parameter on
+    PATCH /devices/v2beta1/devices (patchDevicesV2beta1) so GLP validates the
+    archive without performing it. Still requires the GLP write flag — the
+    validation request reaches the tenant.
+    """
+    disabled = _write_disabled(
+        "glp_archive_device",
+        {"serial_number": serial_number, "dry_run": dry_run},
+    )
     if disabled:
         return disabled
     glp = get_glp_client()
     errors: list[str] = []
     try:
-        result = glp.archive_device(serial_number)
+        result = glp.archive_device(serial_number, dry_run=dry_run)
         return {"result": result, "errors": errors}
     except Exception as exc:
         errors.append(str(exc))
@@ -1319,13 +1404,26 @@ def list_glp_audit_logs_v2(
     limit: int = 100,
     offset: int = 0,
     category: str | None = None,
+    filter: str | None = None,
+    select: str | None = None,
+    sort: str | None = None,
 ) -> dict[str, Any]:
-    """List GLP audit log entries via the v2beta1 Audit Log service."""
+    """List GLP audit log entries via the v2beta1 Audit Log service.
+
+    Same manifest operation as list_glp_audit_logs (getAuditLogs); kept for
+    callers that pinned the explicit-version name. ``category`` is translated
+    into the documented ``category eq '<value>'`` filter expression.
+    """
     glp = get_glp_client()
     errors: list[str] = []
     try:
         items = glp.list_audit_logs_v2beta1(
-            limit=clamp_limit(limit), offset=max(0, offset), category=category
+            limit=clamp_limit(limit),
+            offset=max(0, offset),
+            category=category,
+            filter=filter,
+            select=select,
+            sort=sort,
         )
         return {"items": items, "errors": errors}
     except Exception as exc:

@@ -78,6 +78,11 @@ def test_build_ssid_body_normalizes_deprecated_wpa2_psk_alias():
 def test_build_ssid_body_wpa2_psk_alias_logs_deprecation_warning(caplog):
     import logging
 
+    from pipeline.create_ssid import reset_opmode_deprecation_warnings
+
+    # The warning is deduplicated per process, so reset the cache first —
+    # another test in this session may already have tripped it.
+    reset_opmode_deprecation_warnings()
     with caplog.at_level(logging.WARNING, logger="pipeline.create_ssid"):
         _build_ssid_body("X", ["1"], opmode="WPA2_PSK", wpa_passphrase="mypassword")
     assert any(

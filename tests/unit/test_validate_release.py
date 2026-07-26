@@ -26,6 +26,51 @@ def test_tool_catalog_count_includes_optional_products():
     assert validate_release._tool_catalog_count("all") >= MIN_TOOLS
 
 
+def test_registered_tool_identities_len_matches_tool_catalog_count():
+    identities = validate_release._registered_tool_identities("clearpass")
+
+    assert len(identities) == validate_release._tool_catalog_count("clearpass")
+    assert all(":" in identity for identity in identities)
+
+
+def test_indexed_tool_identities_none_when_table_missing(tmp_path: Path):
+    assert validate_release._indexed_tool_identities(tmp_path) is None
+
+
+def test_indexed_tool_identities_reflect_tools_table_rows(tmp_path: Path):
+    from pipeline.clients import lance_client
+
+    (tmp_path / "data").mkdir()
+    db = lance_client.connect(tmp_path / "data")
+    lance_client.create_tools_table(
+        db,
+        [
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "server": "aruba-config",
+                "name": "list_ssids",
+                "description": "List SSIDs",
+                "schema_json": "{}",
+                "fts_text": "list ssids",
+                "vector": [0.0, 0.0],
+            },
+            {
+                "id": "22222222-2222-2222-2222-222222222222",
+                "server": "aruba-ops",
+                "name": "reboot_device",
+                "description": "Reboot a device",
+                "schema_json": "{}",
+                "fts_text": "reboot device",
+                "vector": [0.0, 0.0],
+            },
+        ],
+    )
+
+    identities = validate_release._indexed_tool_identities(tmp_path)
+
+    assert identities == {"aruba-config:list_ssids", "aruba-ops:reboot_device"}
+
+
 def test_optional_product_catalog_can_filter_writes_for_read_only(monkeypatch):
     monkeypatch.setenv("CENTRALMCP_PRODUCT_ACCESS", "read-only")
     read_only_names = {
@@ -136,15 +181,51 @@ def test_validate_tool_count_rejects_count_below_floor():
         raise AssertionError("expected SystemExit")
 
 
-def test_validate_tool_index_fresh_accepts_equal_count():
-    validate_release._validate_tool_index_fresh(MIN_TOOLS, MIN_TOOLS)
+def _identity_set(n: int) -> set[str]:
+    return {f"server:tool_{i}" for i in range(n)}
 
 
-def test_validate_tool_index_fresh_rejects_stale_index():
+def test_validate_tool_index_fresh_accepts_identical_identity_sets():
+    identities = _identity_set(MIN_TOOLS)
+    validate_release._validate_tool_index_fresh(identities, identities)
+
+
+def test_validate_tool_index_fresh_rejects_missing_tools():
+    registered = _identity_set(MIN_TOOLS)
+    indexed = _identity_set(MIN_TOOLS - 1)
     try:
-        validate_release._validate_tool_index_fresh(MIN_TOOLS - 1, MIN_TOOLS)
+        validate_release._validate_tool_index_fresh(indexed, registered)
     except SystemExit as exc:
         assert "Tool index is stale" in str(exc)
+        assert "missing from the index" in str(exc)
         assert "scripts/ingest_tools.py --products all" in str(exc)
     else:
         raise AssertionError("expected SystemExit")
+
+
+def test_validate_tool_index_fresh_rejects_same_count_but_different_identities():
+    # Same total count on both sides -- a count-only comparison would have
+    # called this "fresh" -- but one tool was swapped for a different one.
+    registered = _identity_set(MIN_TOOLS)
+    indexed = _identity_set(MIN_TOOLS) - {"server:tool_0"} | {"server:renamed_tool"}
+
+    try:
+        validate_release._validate_tool_index_fresh(indexed, registered)
+    except SystemExit as exc:
+        message = str(exc)
+        assert "Tool index is stale" in message
+        assert "missing from the index" in message
+        assert "no longer registered" in message
+        assert "server:tool_0" in message
+        assert "server:renamed_tool" in message
+    else:
+        raise AssertionError("expected SystemExit")
+
+
+def test_bounded_preview_truncates_long_identity_lists():
+    identities = sorted(_identity_set(50))
+
+    preview = validate_release._bounded_preview(identities)
+
+    assert preview.endswith(", ...")
+    assert preview.count(",") == validate_release._BOUNDED_PREVIEW_LIMIT

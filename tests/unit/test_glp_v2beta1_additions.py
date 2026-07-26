@@ -96,9 +96,14 @@ class TestAuditLogsV2Beta1:
         items = glp_client.list_audit_logs_v2beta1(category="DEVICE_MANAGEMENT")
 
         assert items == [{"id": "a1"}]
+        # `category` is a filter *field* in getAuditLogs, not a query param.
         inner.get.assert_called_once_with(
             "/audit-log/v2beta1/logs",
-            params={"limit": 100, "offset": 0, "category": "DEVICE_MANAGEMENT"},
+            params={
+                "limit": 100,
+                "offset": 0,
+                "filter": "category eq 'DEVICE_MANAGEMENT'",
+            },
         )
 
     def test_get_audit_log_v2beta1_detail_hits_correct_endpoint(self, clean_env):

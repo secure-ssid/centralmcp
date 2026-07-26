@@ -7,6 +7,7 @@ No vendor SDK dependency in this stage.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from pipeline.models import AccountContext, DeviceRecord, StageResult
@@ -14,6 +15,17 @@ from pipeline.state_store import StateStore
 from pipeline.stages.base import Stage
 
 logger = logging.getLogger(__name__)
+
+
+def _is_idempotent_conflict(exc: Exception) -> bool:
+    """True when a failed write is an idempotent no-op (resource already applied).
+
+    Matches the "duplicate"/"already exists" markers Central returns on a
+    resumed run so re-creating an existing scope-map/resource is non-fatal.
+    """
+    body = (getattr(getattr(exc, "response", None), "text", "") or "").lower()
+    return "duplicate" in body or "already exists" in body
+
 
 
 ARUBA_DEVICE_PROFILES: list[dict] = [
@@ -100,6 +112,81 @@ def _fetch_global_scope_id(central_client: Any) -> str:
     raise RuntimeError("Could not determine global scope-id from scope-maps")
 
 
+# Device profiles / port profiles are library-level objects that must be
+# scope-mapped at the org root and at the switch device group. Both scope IDs
+# are tenant-specific and are resolved at runtime — the previous hardcoded
+# literals belonged to one lab tenant and silently mapped resources onto
+# nonexistent (or, worse, unrelated) scopes anywhere else.
+DEFAULT_SWITCH_GROUP_NAME = "Switches"
+SWITCH_GROUP_NAME_ENV = "CENTRALMCP_SWITCH_GROUP_NAME"
+
+
+def _switch_group_name(target_ctx: Any) -> str:
+    """Name of the device group switch-scoped profiles are mapped into."""
+    configured = getattr(target_ctx, "switch_group_name", None) or os.environ.get(
+        SWITCH_GROUP_NAME_ENV
+    )
+    return (configured or DEFAULT_SWITCH_GROUP_NAME).strip() or DEFAULT_SWITCH_GROUP_NAME
+
+
+def _resolve_device_group_scope_id(central_client: Any, group_name: str) -> str | None:
+    """Return the scope-id of the named device group, or ``None`` if absent.
+
+    Propagates lookup failures (:class:`DeviceGroupLookupError`) rather than
+    swallowing them — an unreachable scope API must not be indistinguishable
+    from "that group does not exist".
+    """
+    from pipeline.stages.s2_validate import _fetch_device_groups, _group_name
+
+    wanted = group_name.strip().lower()
+    for group in _fetch_device_groups(central_client):
+        if _group_name(group).lower() != wanted:
+            continue
+        for key in ("scopeId", "scope_id", "scope-id", "id"):
+            value = group.get(key)
+            if value not in (None, ""):
+                return str(value)
+        logger.warning(
+            "Device group %r matched but carries no scope-id field (keys=%s)",
+            group_name,
+            sorted(group)[:20],
+        )
+        return None
+    return None
+
+
+def _profile_scope_ids(central_client: Any, target_ctx: Any) -> list[str]:
+    """Resolve the scope-ids library profiles are mapped into.
+
+    Always includes the org-level global scope. Adds the switch device-group
+    scope when it resolves. Raises ``RuntimeError`` if the global scope cannot
+    be determined — every scope-map below would otherwise be pointed at a
+    guessed ID.
+    """
+    global_scope_id = target_ctx.global_scope_id or _fetch_global_scope_id(central_client)
+    if not global_scope_id:
+        raise RuntimeError(
+            "could not resolve the org-level global scope-id from "
+            "/network-config/v1/scope-maps"
+        )
+    target_ctx.global_scope_id = str(global_scope_id)
+
+    scope_ids = [str(global_scope_id)]
+    group_name = _switch_group_name(target_ctx)
+    group_scope_id = _resolve_device_group_scope_id(central_client, group_name)
+    if group_scope_id and group_scope_id not in scope_ids:
+        scope_ids.append(group_scope_id)
+    elif group_scope_id is None:
+        logger.warning(
+            "Device group %r not found in the target account — library profiles "
+            "will only be scope-mapped at the global scope. Set %s to the correct "
+            "group name if switch-group scoping is required.",
+            group_name,
+            SWITCH_GROUP_NAME_ENV,
+        )
+    return scope_ids
+
+
 def _post_scope_map(
     central_client: Any,
     scope_id: str,
@@ -125,22 +212,32 @@ def _post_scope_map(
     )
 
 
-def _ensure_device_profiles(central_client: Any, target_ctx: Any) -> None:
+def _ensure_device_profiles(central_client: Any, target_ctx: Any) -> list[str]:
     """Create the four standard Aruba LLDP device profiles at the library level.
 
-    Step 1: Create switch_allow_all policy + add to policy group + scope-map at global.
-    Step 2: Create port profiles (roles) referencing switch_allow_all; scope-map at global
-            and Switches group.
+    Step 1: Create port profiles (roles); scope-map at the resolved global scope
+            and the switch device-group scope.
+    Step 2: Create sw-port-profiles; scope-map at the same scopes.
     Step 3: Create device profiles with LLDP match rules via v1alpha1.
 
-    Silently skips anything that already exists. Idempotent — safe to re-run.
-    Sets target_ctx.device_profiles_created = True so subsequent devices skip this step.
+    Scope IDs are resolved at runtime via ``_profile_scope_ids`` — a failure to
+    resolve the global scope raises instead of proceeding against a guess.
+    "Already exists" responses are skipped; any other write failure is
+    collected and returned so the caller can surface it rather than losing it
+    in a log line.
+
+    Returns:
+        Non-duplicate failure messages encountered while creating/mapping
+        profiles (empty when everything succeeded or already existed).
+
+    Sets target_ctx.device_profiles_created = True so subsequent devices skip
+    this step.
     """
     if target_ctx.device_profiles_created:
-        return
+        return []
 
-    _GLOBAL_SCOPE_ID = "79236221864456192"
-    _SWITCHES_SCOPE_ID = "79244358948933632"
+    profile_errors: list[str] = []
+    scope_ids = _profile_scope_ids(central_client, target_ctx)
     _PROFILE_NAMES = [p["name"] for p in ARUBA_DEVICE_PROFILES]
 
     def _skip(response_text: str) -> bool:
@@ -169,17 +266,20 @@ def _ensure_device_profiles(central_client: Any, target_ctx: Any) -> None:
                     central_client.put(f"/network-config/v1/roles/{name}", data=role_body)
                     logger.debug("Updated existing port profile (role) '%s'", name)
                 except Exception as exc2:
+                    profile_errors.append(f"role_update({name}): {exc2}")
                     logger.warning("Role '%s' update failed: %s — continuing", name, exc2)
             else:
+                profile_errors.append(f"role_create({name}): {exc}")
                 logger.warning("Port profile '%s' creation failed: %s — continuing", name, exc)
 
-        # Scope-map role at global scope and Switches group
-        for scope_id in (_GLOBAL_SCOPE_ID, _SWITCHES_SCOPE_ID):
+        # Scope-map role at the resolved global scope and switch device group
+        for scope_id in scope_ids:
             try:
                 _post_scope_map(central_client, scope_id, "ACCESS_SWITCH", f"roles/{name}")
             except Exception as exc:
                 resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
                 if not _skip(resp_text):
+                    profile_errors.append(f"role_scope_map({name}@{scope_id}): {exc}")
                     logger.warning("Role '%s' scope-map (scope=%s) failed: %s — continuing", name, scope_id, exc)
 
     # Step 2: Port profiles (sw-port-profiles)
@@ -248,14 +348,16 @@ def _ensure_device_profiles(central_client: Any, target_ctx: Any) -> None:
         except Exception as exc:
             resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
             if not _skip(resp_text):
+                profile_errors.append(f"sw_port_profile_create({pp_name}): {exc}")
                 logger.warning("Port profile '%s' creation failed: %s — continuing", pp_name, exc)
 
-        for scope_id in (_GLOBAL_SCOPE_ID, _SWITCHES_SCOPE_ID):
+        for scope_id in scope_ids:
             try:
                 _post_scope_map(central_client, scope_id, "ACCESS_SWITCH", f"sw-port-profiles/{pp_name}")
             except Exception as exc:
                 resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
                 if not _skip(resp_text):
+                    profile_errors.append(f"sw_port_profile_scope_map({pp_name}@{scope_id}): {exc}")
                     logger.warning("Port profile '%s' scope-map (scope=%s) failed: %s — continuing", pp_name, scope_id, exc)
 
     # Step 3: Device profiles with LLDP match rules + scope-maps
@@ -267,17 +369,20 @@ def _ensure_device_profiles(central_client: Any, target_ctx: Any) -> None:
         except Exception as exc:
             resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
             if not _skip(resp_text):
+                profile_errors.append(f"device_profile_create({name}): {exc}")
                 logger.warning("Device profile '%s' creation failed: %s — continuing", name, exc)
 
-        for scope_id in (_GLOBAL_SCOPE_ID, _SWITCHES_SCOPE_ID):
+        for scope_id in scope_ids:
             try:
                 _post_scope_map(central_client, scope_id, "ACCESS_SWITCH", f"device-profile/{name}")
             except Exception as exc:
                 resp_text = getattr(getattr(exc, "response", None), "text", "") or ""
                 if not _skip(resp_text):
+                    profile_errors.append(f"device_profile_scope_map({name}@{scope_id}): {exc}")
                     logger.warning("Device profile '%s' scope-map (scope=%s) failed: %s — continuing", name, scope_id, exc)
 
     target_ctx.device_profiles_created = True
+    return profile_errors
 
 
 def _push_vlan_interface(
@@ -327,14 +432,19 @@ def _push_vlan_interface(
         except Exception:
             central_client.put(f"/network-config/v1/vlan-interfaces/{vlan_id}", params=local_params, data=local_body)
 
-    # Step 4: Scope-maps
-    _post_scope_map(central_client, global_scope_id, persona, f"layer2-vlan/{vlan_id}")
-    try:
-        _post_scope_map(central_client, device_scope_id, persona, f"vlan-interfaces/{vlan_id}")
-    except Exception as exc:
-        response_text = getattr(getattr(exc, "response", None), "text", "") or ""
-        if "already exists" not in response_text.lower():
-            raise
+    # Step 4: Scope-maps — duplicates on a resumed run are non-fatal for BOTH
+    # the global layer2-vlan map and the device vlan-interfaces map. The global
+    # map used to be issued unguarded, so a re-run whose global scope-map
+    # already existed aborted the whole VLAN push.
+    for scope_id, resource in (
+        (global_scope_id, f"layer2-vlan/{vlan_id}"),
+        (device_scope_id, f"vlan-interfaces/{vlan_id}"),
+    ):
+        try:
+            _post_scope_map(central_client, scope_id, persona, resource)
+        except Exception as exc:
+            if not _is_idempotent_conflict(exc):
+                raise
 
     logger.debug(
         "Pushed VLAN interface %d (%s) for scope-id=%s",
@@ -373,7 +483,18 @@ class ConfigureStage(Stage):
                 return StageResult.failed(f"CONFIGURE_FAILED: global scope-id discovery — {exc}")
 
         # 0.5. Ensure Aruba device profiles exist at library level (once per run)
-        _ensure_device_profiles(central, target_ctx)
+        try:
+            profile_errors = _ensure_device_profiles(central, target_ctx)
+        except Exception as exc:
+            return StageResult.failed(
+                f"CONFIGURE_FAILED: device-profile scope resolution — {exc}"
+            )
+        if profile_errors:
+            logger.warning(
+                "Device-profile setup completed with %d non-fatal failure(s): %s",
+                len(profile_errors),
+                "; ".join(profile_errors[:5]),
+            )
 
         # 1. Resolve device scope-id (populated in S5; re-fetch if missing)
         device_scope_id = record.scope_id
@@ -498,4 +619,5 @@ class ConfigureStage(Stage):
             global_scope_id=target_ctx.global_scope_id,
             vlans_pushed=vlans_pushed,
             vlan_interfaces_pushed=vlan_interfaces_pushed,
+            profile_warnings=profile_errors,
         )

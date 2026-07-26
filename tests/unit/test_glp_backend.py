@@ -118,33 +118,39 @@ def test_glp_list_tools_clamp_limit_and_forward_offset(monkeypatch):
     calls = []
 
     class DummyGLP:
-        def list_devices(self, limit=100, offset=0, filter=None):
+        # Wrappers now call the ``*_page`` methods so pagination metadata
+        # (count/offset/total/next) can flow through to the tool response.
+        def list_devices_page(self, limit=100, offset=0, filter=None):
             calls.append(("devices", limit, offset, filter))
-            return []
+            return {"items": []}
 
-        def list_subscriptions(self, limit=100, offset=0):
+        def list_subscriptions_page(self, limit=100, offset=0):
             calls.append(("subscriptions", limit, offset))
-            return []
+            return {"items": []}
 
-        def list_users(self, limit=100, offset=0):
+        def list_users_page(self, limit=100, offset=0):
             calls.append(("users", limit, offset))
-            return []
+            return {"items": []}
 
-        def list_audit_logs(self, limit=100, offset=0, category=None):
-            calls.append(("audit", limit, offset, category))
-            return []
+        def list_audit_logs_page(
+            self, limit=100, offset=0, category=None, filter=None, select=None, sort=None
+        ):
+            calls.append(("audit", limit, offset, category, filter, select, sort))
+            return {"items": []}
 
     monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
 
     assert glp.list_glp_devices(limit=999, offset=-1, filter="deviceType eq 'AP'")["errors"] == []
     assert glp.list_glp_subscriptions(limit=999, offset=2)["errors"] == []
     assert glp.list_glp_users(limit=999, offset=3)["errors"] == []
-    assert glp.list_glp_audit_logs(limit=999, offset=4, category="USER_MANAGEMENT")["errors"] == []
+    assert glp.list_glp_audit_logs(
+        limit=999, offset=4, category="USER_MANAGEMENT", sort="createdAt desc"
+    )["errors"] == []
     assert calls == [
         ("devices", 200, 0, "deviceType eq 'AP'"),
         ("subscriptions", 200, 2),
         ("users", 200, 3),
-        ("audit", 200, 4, "USER_MANAGEMENT"),
+        ("audit", 200, 4, "USER_MANAGEMENT", None, None, "createdAt desc"),
     ]
 
 
@@ -162,8 +168,10 @@ def test_glp_official_id_wrappers_encode_and_call_paths(monkeypatch):
     monkeypatch.setattr(glp, "get_glp_client", lambda: DummyGLP())
 
     assert glp.get_glp_device_by_id("device 1")["data"]["path"] == "/devices/v1/devices/device%201"
+    # getAuditLogDetails in the committed manifest is v2beta1 with a plural
+    # /details segment; the old /audit-log/v1/.../detail path does not exist.
     assert glp.get_glp_audit_log_detail("audit-1")["data"]["path"] == (
-        "/audit-log/v1/logs/audit-1/detail"
+        "/audit-log/v2beta1/logs/audit-1/details"
     )
     assert glp.get_glp_user("user 1")["data"]["path"] == "/identity/v1/users/user%201"
     assert glp.get_glp_workspace("workspace-1")["data"]["path"] == (
@@ -174,7 +182,7 @@ def test_glp_official_id_wrappers_encode_and_call_paths(monkeypatch):
     )
     assert calls == [
         ("/devices/v1/devices/device%201", {}),
-        ("/audit-log/v1/logs/audit-1/detail", {}),
+        ("/audit-log/v2beta1/logs/audit-1/details", {}),
         ("/identity/v1/users/user%201", {}),
         ("/workspaces/v1/workspaces/workspace-1", {}),
         ("/reporting/v1/statuses/report-1", {}),
@@ -325,4 +333,5 @@ def test_glp_assign_subscription_fails_closed_when_writes_disabled(monkeypatch):
     assert result["would_have_sent"] == {
         "serial_number": "SERIAL1",
         "subscription_key": "SUBKEY",
+        "dry_run": False,
     }

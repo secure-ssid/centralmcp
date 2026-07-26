@@ -53,6 +53,15 @@ _SESSION_ID_BYTES = 8
 _MAX_FALLBACK_SESSIONS = 256
 _SAFE_TARGET_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 
+#: Router tools that dispatch into a *different* backend tool, and therefore
+#: have a meaningful audit "target". ``invoke_read_tool_batch`` dispatches
+#: several; its resolver collapses them to a single bounded label (see
+#: ``mcp_servers.tool_router._router_call_target``) rather than leaving the
+#: record's target ``None``/``unknown``.
+_DISPATCHING_TOOL_NAMES = frozenset(
+    {"invoke_tool", "invoke_read_tool", "invoke_read_tool_batch"}
+)
+
 # One correlation id per *process* -- generated once at import time, never
 # from client input, so every audit record written by this process (however
 # many client sessions connect to it) can be grouped together.
@@ -154,7 +163,7 @@ class AuditLogMiddleware:
         return normalized if normalized in _KNOWN_CLASSIFICATIONS else "unknown"
 
     def _target_tool(self, name: str, arguments: dict[str, Any]) -> str | None:
-        if name not in {"invoke_tool", "invoke_read_tool"}:
+        if name not in _DISPATCHING_TOOL_NAMES:
             return None
         if self._target_resolver is None:
             return "unknown"

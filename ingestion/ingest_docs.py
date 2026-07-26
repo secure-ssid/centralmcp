@@ -77,8 +77,15 @@ def _md5_uuid(key: str) -> str:
     return str(uuid.UUID(hashlib.md5(key.encode()).hexdigest()))
 
 
-def stable_id(path: Path, chunk_index: int) -> str:
-    return _md5_uuid(f"{path}:{chunk_index}")
+def stable_id(rel_path: str, chunk_index: int) -> str:
+    """Derive a stable chunk id from a path already relative to SOURCES_DIR.
+
+    Callers must pass a path resolved relative to ``SOURCES_DIR`` (see
+    ``collect_points``), not a raw ``Path`` as constructed from argv/CLI
+    invocation — otherwise the same file chunked via a relative vs. an
+    absolute invocation path would hash to different ids.
+    """
+    return _md5_uuid(f"{rel_path}:{chunk_index}")
 
 
 def content_hash(text: str) -> str:
@@ -98,6 +105,12 @@ def _schema_to_text(spec_name: str, schema_name: str, schema: dict) -> str | Non
 
     field_lines = []
     for field, fdef in props.items():
+        # JSON Schema (fully embedded by OpenAPI 3.1) permits boolean schemas
+        # (true/false) anywhere a schema is expected, including in
+        # properties — skip those rather than crashing the whole run on
+        # ``bool.get``.
+        if not isinstance(fdef, dict):
+            continue
         parts = [f"  - {field}"]
         if fdesc := fdef.get("description"):
             parts.append(f": {fdesc}")
@@ -145,7 +158,13 @@ def collect_openapi_points(source_dir: Path) -> list[dict]:
             continue
 
         spec_name = spec.get("info", {}).get("title", path.stem)
-        rel_path = str(path.resolve().relative_to(SOURCES_DIR.resolve()))
+        try:
+            rel_path = str(path.resolve().relative_to(SOURCES_DIR.resolve()))
+        except ValueError:
+            # A symlink/mount that resolves outside the sources tree — skip
+            # the one file rather than aborting the whole run.
+            print(f"  SKIP {path.name}: resolves outside {SOURCES_DIR}")
+            continue
 
         # One chunk per schema
         schemas = spec.get("components", {}).get("schemas", {})
@@ -198,18 +217,29 @@ def collect_points(source_dir: Path, doc_type: str) -> list[dict]:
     print(f"  {source_dir.name}: {len(files)} files")
 
     for path in files:
-        text = read_file(path)
-        if not text or not text.strip():
+        file_text = read_file(path)
+        if not file_text or not file_text.strip():
             continue
-        chunks = chunk_text(text)
+        # Resolve both sides before computing the relative path so the id is
+        # identical whether ingest_docs.py was invoked with a relative or an
+        # absolute path (argv/PYTHONPATH differences otherwise change
+        # Path(__file__) and thus SOURCES_DIR's string form).
+        try:
+            rel_path = str(path.resolve().relative_to(SOURCES_DIR.resolve()))
+        except ValueError:
+            # A symlink/mount that resolves outside the sources tree — skip
+            # the one file rather than aborting the whole run.
+            print(f"  SKIP {path.name}: resolves outside {SOURCES_DIR}")
+            continue
+        chunks = chunk_text(file_text)
         for i, chunk in enumerate(chunks):
             records.append(
                 {
-                    "id": stable_id(path, i),
+                    "id": stable_id(rel_path, i),
                     "text": chunk,
                     "source": source_dir.name,
                     "doc_type": doc_type,
-                    "file_path": str(path.relative_to(SOURCES_DIR)),
+                    "file_path": rel_path,
                     "chunk_index": i,
                     "content_hash": content_hash(chunk),
                 }
@@ -273,9 +303,16 @@ def source_uses_structured_index(folder: str, backend: str) -> bool:
 def upload_lancedb(records: list[dict], ingested_sources: list[str],
                    parallel: int | None = None) -> None:
     """Full rebuild of the LanceDB docs table: stream embeddings from fastembed
-    (one embed pass so parallel workers spawn once), add rows in batches, build
-    the FTS index once at the end, then assert every ingested source landed
-    >0 chunks (R2 — a silently-empty source poisoned the old index).
+    (one embed pass so parallel workers spawn once), add rows in batches into a
+    staging table, assert every ingested source landed >0 chunks (R2 — a
+    silently-empty source poisoned the old index), then atomically swap the
+    staging table into place and build its FTS index.
+
+    Building into a staging table (rather than overwriting the live "docs"
+    table on the first batch) means a crash partway through a large rebuild
+    — OOM, disk full, Ctrl-C — leaves the previous good index untouched and
+    still serving ``ask_docs``/``search_docs``, instead of a table truncated
+    to whatever fraction of the corpus landed before the crash.
     """
     from pipeline.clients import lance_client
     from pipeline.clients.embed_client import EmbedClient
@@ -285,6 +322,7 @@ def upload_lancedb(records: list[dict], ingested_sources: list[str],
     vectors = embedder.iter_embed_documents(
         (r["text"] for r in records), parallel=safe_parallel_workers(parallel)
     )
+    staging_name = f"{lance_client.DOCS_TABLE}__staging"
     table = None
     buf: list[dict] = []
     done = 0
@@ -292,7 +330,7 @@ def upload_lancedb(records: list[dict], ingested_sources: list[str],
         buf.append({**record, "vector": vec})
         if len(buf) >= WRITE_BATCH_LANCE:
             if table is None:
-                table = lance_client.create_docs_table(db, buf)
+                table = lance_client.create_docs_table(db, buf, table_name=staging_name)
             else:
                 table.add(buf)
             done += len(buf)
@@ -300,21 +338,24 @@ def upload_lancedb(records: list[dict], ingested_sources: list[str],
             print(f"    embedded+added {done}/{len(records)}", flush=True)
     if buf:
         if table is None:
-            table = lance_client.create_docs_table(db, buf)
+            table = lance_client.create_docs_table(db, buf, table_name=staging_name)
         else:
             table.add(buf)
         done += len(buf)
         print(f"    embedded+added {done}/{len(records)}", flush=True)
     if table is None:
         raise SystemExit("No records to ingest — check ingestion/sources/")
-    print("  building FTS index...", flush=True)
-    lance_client.build_fts_index(table)
 
-    counts = lance_client.source_counts(db)
+    counts = lance_client.source_counts(db, table_name=staging_name)
     print(f"  per-source counts: {counts}")
     empty = [s for s in ingested_sources if counts.get(s, 0) == 0]
     if empty:
         raise SystemExit(f"FAIL: sources with 0 indexed chunks: {empty}")
+
+    print("  swapping staged index into place...", flush=True)
+    live_table = lance_client.promote_staging_table(db, staging_name)
+    print("  building FTS index...", flush=True)
+    lance_client.build_fts_index(live_table)
 
 
 def upload_lancedb_incremental(
@@ -326,9 +367,38 @@ def upload_lancedb_incremental(
 
     Returns ``False`` when the existing table predates content hashes so the
     caller can perform one full rebuild and establish the incremental schema.
+
+    ``records`` must reflect a *full-corpus* pass over every source whose
+    directory is present on disk this run (the lancedb backend never accepts
+    ``--source``; see ``main``'s parser.error). Deletion of stale rows is
+    deliberately conservative so an incomplete local ``ingestion/sources``
+    tree can never silently wipe an index:
+
+    * A chunk removed from a source that *was* walked this run (its file was
+      deleted, or the present source produced fewer/zero chunks) is swept —
+      its id is gone from the current full-corpus ``records``.
+    * A source folder that is missing this run but is still a known
+      ``SOURCE_META`` key is treated as *not downloaded here*, not *deleted*:
+      its rows are preserved untouched. This is the common case for a partial
+      local checkout and must never trigger a mass delete.
+    * Only a source that is no longer in ``SOURCE_META`` at all (truly retired
+      from the catalog) has its leftover rows swept even though nothing this
+      run names it.
+
+    A run that collects zero records fails closed (raises) rather than
+    deleting every row — that is overwhelmingly a missing sources tree, not an
+    intentional empty corpus.
     """
     from pipeline.clients import lance_client
     from pipeline.clients.embed_client import EmbedClient
+
+    if not records:
+        raise SystemExit(
+            "refusing incremental ingest: zero records collected — this is almost "
+            "always a missing/undownloaded ingestion/sources tree, not an "
+            "intentional empty corpus. The existing docs index was left untouched; "
+            "re-run with the source directories present."
+        )
 
     db = lance_client.connect()
     if "content_hash" not in lance_client.docs_columns(db):
@@ -339,18 +409,51 @@ def upload_lancedb_incremental(
         )
         return False
 
-    existing = {
-        str(row["id"]): str(row.get("content_hash") or "")
-        for row in lance_client.docs_metadata(db)
-        if row.get("source") in ingested_sources
-    }
+    existing_hash: dict[str, str] = {}
+    existing_source: dict[str, str] = {}
+    for row in lance_client.docs_metadata(db):
+        rid = str(row["id"])
+        existing_hash[rid] = str(row.get("content_hash") or "")
+        existing_source[rid] = str(row.get("source") or "")
     current_ids = {str(record["id"]) for record in records}
     changed = [
         record
         for record in records
-        if existing.get(str(record["id"])) != record["content_hash"]
+        if existing_hash.get(str(record["id"])) != record["content_hash"]
     ]
-    removed = sorted(set(existing) - current_ids)
+
+    # Sources actually touched this run: those explicitly ingested plus any
+    # that produced a record. A known-but-missing source dir is in neither, so
+    # its rows are preserved; a source dropped from SOURCE_META entirely is
+    # "retired" and its leftover rows are swept.
+    walked_sources = set(ingested_sources) | {
+        str(record.get("source") or "") for record in records
+    }
+    known_sources = set(SOURCE_META)
+    removed = sorted(
+        rid
+        for rid in existing_hash
+        if rid not in current_ids
+        and (
+            existing_source.get(rid, "") in walked_sources
+            or existing_source.get(rid, "") not in known_sources
+        )
+    )
+    preserved_absent = sorted(
+        {
+            existing_source.get(rid, "")
+            for rid in existing_hash
+            if rid not in current_ids
+            and existing_source.get(rid, "") in known_sources
+            and existing_source.get(rid, "") not in walked_sources
+        }
+    )
+    if preserved_absent:
+        print(
+            "  preserving rows for known sources absent this run "
+            f"(not downloaded, not deleted): {preserved_absent}",
+            flush=True,
+        )
     print(
         f"  incremental diff: {len(changed)} changed/new, "
         f"{len(removed)} removed, {len(records) - len(changed)} unchanged",

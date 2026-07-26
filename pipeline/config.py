@@ -3,13 +3,52 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 from dotenv import load_dotenv
 
 from pipeline.models import AccountContext
+
+# GLP workspace IDs are UUID-ish opaque identifiers. They are interpolated
+# into the derived OAuth token URL path, so anything outside this character
+# set (a slash, "..", a "?" or "#", whitespace) could silently retarget the
+# credential exchange at a different path or host. Reject those loudly
+# instead of building a wrong-but-plausible URL.
+_SAFE_WORKSPACE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# Credentials must only ever be exchanged over TLS.
+_ALLOWED_URL_SCHEMES = ("https",)
+
+
+def _validate_absolute_url(value: str, label: str) -> str:
+    """Return ``value`` if it is an absolute https URL, else raise ValueError."""
+    parts = urlsplit(value)
+    if parts.scheme.lower() not in _ALLOWED_URL_SCHEMES:
+        raise ValueError(
+            f"{label} must be an absolute https:// URL (got {value!r}). "
+            "Credentials are only exchanged over TLS."
+        )
+    if not parts.netloc:
+        raise ValueError(
+            f"{label} must include a host (got {value!r}); "
+            "a scheme-only or relative URL cannot be used."
+        )
+    return value
+
+
+def _validate_workspace_id(workspace_id: str, label: str) -> str:
+    """Return ``workspace_id`` if it is safe to embed in a URL path."""
+    if not _SAFE_WORKSPACE_ID.match(workspace_id):
+        raise ValueError(
+            f"{label} {workspace_id!r} contains characters that are not allowed in a "
+            "GLP workspace ID (expected letters, digits, '.', '-' or '_'). "
+            "Refusing to build a token URL from it."
+        )
+    return workspace_id
 
 
 def load_credentials(creds_path: str = "config/credentials.yaml") -> dict[str, Any]:
@@ -86,14 +125,36 @@ def build_account_contexts(creds_path: str = "config/credentials.yaml") -> tuple
         (source_context, target_context)
     """
     creds = load_credentials(creds_path)
-    glp_base_url = creds["glp"]["base_url"].rstrip("/")
+    glp_base_url = creds["glp"]["base_url"].strip().rstrip("/")
+    configured_token_url = creds["glp"]["token_url"].strip()
 
-    def _glp_token_url(workspace_id: str) -> str:
-        configured = creds["glp"]["token_url"].strip()
-        if configured:
-            return configured
+    # Validate the shared inputs once, up front, so a bad value fails with a
+    # clear message naming the offending setting rather than surfacing later
+    # as an opaque auth failure (or, worse, a request to the wrong host).
+    if configured_token_url:
+        _validate_absolute_url(configured_token_url, "GLP token URL (glp.token_url / GLP_TOKEN_URL)")
+    if glp_base_url:
+        _validate_absolute_url(glp_base_url, "GLP base URL (glp.base_url / GLP_BASE_URL)")
+
+    def _glp_token_url(workspace_id: str, label: str) -> str:
+        """Resolve the GLP OAuth token URL for one account context.
+
+        Precedence is unchanged: an explicitly configured token URL wins;
+        otherwise it is derived from the GLP base URL and workspace ID.
+        Returning "" when there is no workspace ID is also unchanged and
+        deliberate — an empty value is safe (the GLP client simply has no
+        token endpoint) whereas a guessed one is not.
+        """
+        if configured_token_url:
+            return configured_token_url
         if not workspace_id:
             return ""
+        if not glp_base_url:
+            raise ValueError(
+                f"Cannot derive a GLP token URL for the {label} account: "
+                "glp.base_url / GLP_BASE_URL is empty and glp.token_url is unset."
+            )
+        _validate_workspace_id(workspace_id, f"{label} glp_workspace_id")
         return f"{glp_base_url}/authorization/v2/oauth2/{workspace_id}/token"
 
     source = AccountContext(
@@ -102,7 +163,7 @@ def build_account_contexts(creds_path: str = "config/credentials.yaml") -> tuple
         client_id=creds["source"]["client_id"],
         client_secret=creds["source"]["client_secret"],
         glp_workspace_id=creds["source"]["glp_workspace_id"],
-        glp_token_url=_glp_token_url(creds["source"]["glp_workspace_id"]),
+        glp_token_url=_glp_token_url(creds["source"]["glp_workspace_id"], "source"),
         glp_base_url=glp_base_url,
     )
 
@@ -112,7 +173,7 @@ def build_account_contexts(creds_path: str = "config/credentials.yaml") -> tuple
         client_id=creds["target"]["client_id"],
         client_secret=creds["target"]["client_secret"],
         glp_workspace_id=creds["target"]["glp_workspace_id"],
-        glp_token_url=_glp_token_url(creds["target"]["glp_workspace_id"]),
+        glp_token_url=_glp_token_url(creds["target"]["glp_workspace_id"], "target"),
         glp_base_url=glp_base_url,
     )
 

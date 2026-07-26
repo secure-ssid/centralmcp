@@ -152,12 +152,31 @@ def test_s4_transfer_cross_account_success(
 # ---------------------------------------------------------------------------
 
 
-def _setup_s6_mocks(target_ctx):
-    """Set up minimum mocks for S6 to reach the VLAN step."""
+SWITCH_GROUP_SCOPE_ID = "88888"
+
+
+def _setup_s6_mocks(target_ctx, switch_group_name="Switches"):
+    """Set up minimum mocks for S6 to reach the VLAN step.
+
+    S6 resolves the switch device-group scope-id at runtime (no hardcoded
+    tenant IDs), so the device-groups collection has to answer with a named
+    group carrying a scopeId.
+    """
     target_ctx.global_scope_id = "99999"
-    target_ctx.central_client.get.return_value = {
-        "items": [{"scopeId": "99999", "id": "site-abc"}]
-    }
+
+    def _get(path, params=None):
+        if "device-groups" in path:
+            if params and params.get("offset", 0):
+                return {"items": []}
+            return {
+                "items": [
+                    {"scopeName": switch_group_name, "scopeId": SWITCH_GROUP_SCOPE_ID},
+                    {"scopeName": "Other", "scopeId": "77777"},
+                ]
+            }
+        return {"items": [{"scopeId": "99999", "id": "site-abc"}]}
+
+    target_ctx.central_client.get.side_effect = _get
     target_ctx.central_client.post.return_value = {}
     target_ctx.mcp_client.get_device_scope_id.return_value = "12345"  # numeric string — required by scope-map
     target_ctx.mcp_client.get_site_by_name.return_value = {"siteId": "site-abc"}

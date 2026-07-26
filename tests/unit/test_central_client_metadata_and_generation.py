@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 
 import httpx
 
-from pipeline.clients.central_client import CentralClient
+from pipeline.clients.central_client import CentralClient, reset_deprecation_warning_cache
 from pipeline.clients.token_manager import TokenManager
 
 
@@ -117,6 +117,9 @@ class TestDeprecationMetadata:
     def test_deprecation_and_sunset_headers_are_parsed_and_logged(
         self, tmp_path, monkeypatch, caplog
     ):
+        # The warning is deduplicated per process/endpoint, so clear the cache
+        # to stay independent of test ordering.
+        reset_deprecation_warning_cache()
         client, _tm = _make_client_with_real_token_manager(tmp_path, monkeypatch)
         client.session.request.side_effect = [
             _make_httpx_response(

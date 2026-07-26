@@ -279,6 +279,22 @@ is writable) — a permanent upstream omission, not a missing curated wrapper.
 Continue promoting curated tools only after the vendor source or target
 instance confirms the request shape.
 
+## Ranked next capabilities
+
+The next roadmap is based on current HPE Aruba Networking documentation and
+public MCP/OpenAPI prior art. External projects are design references only;
+vendor specifications and live target behavior remain authoritative.
+
+| Rank | Capability | Recommended scope | Evidence |
+|---:|---|---|---|
+| 1 | Central Streaming API collector | Add a bounded, authenticated WSS collector for AP monitoring and geofence topics, including CloudEvents/protobuf decoding, event/byte/time caps, and an explicit Advanced-subscription prerequisite. | `developer_docs/developer_arubanetworks_com_new-central_docs_streaming-api-connection-management.md`, `developer_docs/developer_arubanetworks_com_new-central_docs_streaming-api-event-ap-monitoring.md` |
+| 2 | Better low-token tool ranking | Add BM25 as a deterministic ranking layer beside the current keyword and semantic passes, while retaining compact results and the read/diagnostic/write/destructive gates. Do not replace the router with an upstream generic dispatcher that exposes full schemas or weakens write controls. | [FastMCP Tool Search](https://github.com/PrefectHQ/fastmcp/blob/main/docs/servers/transforms/tool-search.mdx) |
+| 3 | Plain-language OpenAPI summaries | Add an endpoint-family summary tier between `find_tool` and exact `lookup_api` results so an agent can disambiguate a large API without loading full schemas. | [janwilmake/openapi-mcp-server](https://github.com/janwilmake/openapi-mcp-server) |
+| 4 | Generated router trajectory evals | Extend `openapi_gen` to emit framework-neutral YAML smoke cases that grade tool selection, argument construction, correctness, and hallucination across `find_tool` -> dispatch trajectories. | [cnoe-io/openapi-mcp-codegen](https://github.com/cnoe-io/openapi-mcp-codegen) |
+| 5 | Git-incremental vendor-source RAG | Index official SDKs and example repositories alongside documentation, recording repository URL and commit provenance and refreshing only changed files. | [kvncampos/nautobot_mcp](https://github.com/kvncampos/nautobot_mcp) |
+| 6 | Telemetry-to-remediation plans | Correlate alerts, audit trails, and state-of-truth data into read-only drift findings, then produce dry-run remediation plans that require the existing confirmation and platform write gates before execution. | Concept demonstrated by [kiskander/mcp-splunk-meraki](https://github.com/kiskander/mcp-splunk-meraki); no license, so do not reuse its code |
+| 7 | Generated-backend provenance parity | Normalize source-pin/provenance checks for Mist, Axis, and EdgeConnect, then promote high-value typed workflows such as EdgeConnect SD-WAN-AI sessions and Apstra blueprint commit/rollback. | `mcp_servers/openapi_gen/provenance/`, `scripts/check_generated_tool_manifests.py` |
+
 ## Design constraints
 
 1. Keep optional products opt-in via `CENTRALMCP_PRODUCTS`.
