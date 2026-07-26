@@ -4,7 +4,8 @@ Supports three exposure modes:
   minimal  — find_tool + invoke_read_tool + invoke_tool only
   default  — minimal plus convenience wrappers, including the read-only
              automation planners plan_tool_workflow and
-             plan_reconciliation_schedule
+             plan_reconciliation_schedule, and the read-only declarative
+             compliance-policy evaluator evaluate_compliance_policy
   direct   — default plus every enabled backend tool registered directly
 
 Backend servers are imported in-process — no subprocess overhead.
@@ -24,7 +25,10 @@ _bound_router_response / CENTRALMCP_ROUTER_RESPONSE_MAX_ITEMS /
 CENTRALMCP_ROUTER_RESPONSE_MAX_BYTES) and plan_tool_workflow /
 plan_reconciliation_schedule provide read-only, catalog-backed dependency
 ordering and recurring-reconciliation planning (pipeline/router_automation.py)
-without ever executing a tool.
+without ever executing a tool. evaluate_compliance_policy (pipeline/compliance.py)
+evaluates already-retrieved observations against a bounded, declarative
+policy (fixed operator dispatch, no eval/exec) and never dispatches a tool
+either.
 
 invoke_read_tool also accepts an optional opaque `cursor` to resume a
 previously truncated response (see "Continuation cursors" below). Cursors
@@ -63,6 +67,7 @@ from mcp_servers.shared import (
     platform_writes_allowed,
 )
 from pipeline import artifact_contracts as _artifact_contracts
+from pipeline import compliance as _compliance
 from pipeline import router_automation as _router_automation
 
 _BACKEND = os.getenv("CENTRALMCP_RAG_BACKEND", "lancedb").strip().lower()
@@ -1651,6 +1656,110 @@ if _ROUTER_MODE != "minimal":
             "excluded": excluded,
             "excluded_count": excluded_total,
             "dry_run": True,
+            "artifact": artifact,
+            "artifact_error": artifact_error,
+        }
+
+    @mcp.tool(annotations=READ_ONLY)
+    def evaluate_compliance_policy(
+        observations: list[dict[str, Any]],
+        policy: list[dict[str, Any]],
+        policy_id: str = "ad-hoc",
+        max_result_entries: int = 200,
+    ) -> dict[str, Any]:
+        """Evaluate already-retrieved observations against a declarative compliance policy.
+
+        Pure, bounded, read-only evaluation only -- this never calls
+        invoke_tool/invoke_read_tool or any backend itself, and never fetches
+        anything. Fetch device/config/inventory state first (e.g. one or more
+        invoke_read_tool results), then pass the already-retrieved data here
+        as `observations` alongside a declarative `policy`. The architecture
+        is inspired by NAPALM's `compliance_report` (a fixed comparison-
+        operator dispatch table evaluated over structured state) and by
+        Nornir-style aggregate run counts, but is implemented independently
+        in `pipeline/compliance.py` with this repository's own bounds and
+        conventions -- no eval/exec, no arbitrary expressions, no dynamic
+        imports, and no write/destructive tool is ever reachable from here.
+
+        Args:
+            observations: bounded (max 100) list of objects, one per device/
+                entity already retrieved by the caller (e.g. a single
+                invoke_read_tool result, or one element of a list response).
+                Never fetched by this tool.
+            policy: bounded (max 50) list of rule objects, each with "field"
+                (a dotted/indexed path, e.g. "interfaces[0].status" or
+                "firmware.version" -- Mapping key lookup and Sequence integer
+                indexing only, never eval/attribute access), "operator" (one
+                of "eq", "ne", "lt", "le", "gt", "ge", "contains", "in",
+                "regex_fullmatch", "version_gte", "version_range", "exists",
+                "not_exists"), and "expected" (required for every operator
+                except exists/not_exists). Optional per-rule "id" (defaults
+                to "rule_<index>"), "severity" ("critical"/"error"/"warning"/
+                "info", default "error", informational only -- it does not
+                change pass/fail logic), and "optional" (bool, default
+                False -- a missing field on an optional rule is reported
+                "skipped" instead of "error"). A structurally invalid policy
+                (unknown operator, malformed field path, an "expected" shape
+                that does not match its operator, an unparsable regex/
+                version value, or exceeding a bound) is rejected before any
+                observation is evaluated.
+            policy_id: free-text label carried through into the report and
+                artifact only.
+            max_result_entries: bounded per-rule result detail cap (default
+                200, max 500). Aggregate counts always reflect the true
+                total even when the detail list is capped -- see
+                "results_truncated"/"results_total".
+
+        Returns "ok", "compliant" (True only when every rule for every
+        observation passed or was explicitly skipped -- never True while any
+        "fail"/"error" result exists), "counts" (pass/fail/error/skipped
+        totals), "observations" (per-observation compliant flag + counts),
+        "results" (bounded per-rule detail), "results_total"/
+        "results_truncated", and "artifact" (a compliance_report-shaped
+        payload suitable for pipeline.artifact_contracts.write_artifact --
+        never written to disk by this tool). A structurally invalid policy/
+        observations input fails closed with "ok": False and a bounded
+        "error" message before any rule evaluation begins.
+        """
+        try:
+            report = _compliance.evaluate_policy(
+                observations,
+                policy,
+                policy_id=policy_id,
+                max_result_entries=max_result_entries,
+            )
+        except _compliance.ComplianceError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        artifact: dict[str, Any] | None = None
+        artifact_error: str | None = None
+        try:
+            payload = _compliance.build_compliance_report_payload(
+                policy_id=report["policy_id"],
+                compliant=report["compliant"],
+                counts=report["counts"],
+                observations=report["observations"],
+                results=report["results"],
+                results_total=report["results_total"],
+            )
+            built = _artifact_contracts.build_artifact(
+                _artifact_contracts.COMPLIANCE_REPORT, payload
+            )
+            artifact = _artifact_contracts.to_json_dict(built)
+        except _artifact_contracts.ArtifactValidationError as exc:
+            artifact_error = str(exc)
+
+        return {
+            "ok": artifact_error is None,
+            "compliant": report["compliant"],
+            "policy_id": report["policy_id"],
+            "rule_count": report["rule_count"],
+            "observation_count": report["observation_count"],
+            "counts": report["counts"],
+            "observations": report["observations"],
+            "results": report["results"],
+            "results_total": report["results_total"],
+            "results_truncated": report["results_truncated"],
             "artifact": artifact,
             "artifact_error": artifact_error,
         }

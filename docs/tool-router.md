@@ -30,6 +30,7 @@ router-call examples.
 | Convenience wrappers | mixed | Available only outside `minimal` mode |
 | `plan_tool_workflow` | read-only | Deterministic, catalog-backed dependency/order planner (outside `minimal` mode) |
 | `plan_reconciliation_schedule` | read-only | Plan-only recurring reconciliation schedule builder (outside `minimal` mode) |
+| `evaluate_compliance_policy` | read-only | Bounded, declarative compliance-policy evaluator over caller-supplied observations (outside `minimal` mode) |
 
 `find_tool` results include normalized routing and safety metadata:
 
@@ -114,15 +115,14 @@ If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and inclu
 | Profile | Client-visible / indexed tools |
 |---|---:|
 | Minimal router | 3 client-visible tools |
-| Default router | 14 client-visible tools[^v07-planner] |
+| Default router | 15 client-visible tools[^compliance-tool] |
 | Complete backend index | 6,699 tools |
-| Direct-all router | 6,704 client-visible tools |
+| Direct-all router | 6,705 client-visible tools |
 
-[^v07-planner]: v0.7 added two read-only router-native tools --
-    `plan_tool_workflow` and `plan_reconciliation_schedule` -- raising the
-    default-mode count from 12 to 14. `minimal` mode is unaffected (both
-    planners are gated behind non-`minimal` router mode, same as the other
-    convenience wrappers).
+[^compliance-tool]: v0.7 added `plan_tool_workflow` and
+    `plan_reconciliation_schedule`; the post-v0.7 compliance expansion adds
+    `evaluate_compliance_policy`, raising the default-mode count to 15.
+    `minimal` mode remains the same three-tool surface.
 
 The complete catalog spans nine platform surfaces plus RAG. Its nine generated
 manifests contain 6,143 reproducible operations (6,126 register as active
@@ -372,6 +372,93 @@ plan_reconciliation_schedule("daily", platforms=["central"], max_entries=25)
 `router_reconciliation_plan` artifact. This tool never creates an OS timer,
 cron job, or GitHub Actions schedule, and never dispatches a tool -- it only
 produces a plan specification.
+
+## Compliance-policy evaluation
+
+`evaluate_compliance_policy` (outside `minimal` mode) is a bounded,
+read-only, declarative compliance-policy evaluator. Its architecture is
+inspired by NAPALM's `compliance_report` (a fixed comparison-operator
+dispatch table evaluated over structured device state) and by Nornir-style
+aggregate run counts, but it is implemented independently in
+`pipeline/compliance.py` -- no `eval`/`exec`, no arbitrary expressions, no
+dynamic imports, and no third-party dependency.
+
+It never fetches data and never calls `invoke_tool`/`invoke_read_tool`
+itself: fetch device/config/inventory state first (e.g. one or more
+`invoke_read_tool` calls), then pass the already-retrieved results as
+`observations` alongside a declarative `policy`.
+
+```text
+evaluate_compliance_policy(
+  observations=[{"hostname": "sw1", "firmware": {"version": "8.10.0"}}],
+  policy=[
+    {"field": "firmware.version", "operator": "version_gte", "expected": "8.9.0"},
+  ],
+)
+```
+
+Each rule has a `field` (a restricted dotted/indexed path such as
+`interfaces[0].status` or `firmware.version` -- `Mapping` key lookup and
+`Sequence` integer indexing only), an `operator` (one of `eq`, `ne`, `lt`,
+`le`, `gt`, `ge`, `contains`, `in`, `regex_fullmatch`, `version_gte`,
+`version_range`, `exists`, `not_exists`), and an `expected` value (required
+for every operator except `exists`/`not_exists`). An optional `optional`
+flag (default `false`) reports a missing field as `"skipped"` instead of
+`"error"`; an optional `severity` (`critical`/`error`/`warning`/`info`,
+default `"error"`) is informational only.
+
+A structurally invalid policy -- an unknown operator, a malformed field
+path, an `expected` shape that does not match its operator, an unparsable
+regex/version value, an oversized policy/observations list, or a
+`policy_id`/rule `id` longer than 200/100 characters -- is rejected with
+`"ok": false` before any observation is evaluated. Every per-rule result is
+exactly one of `"pass"`, `"fail"`, `"error"`, or `"skipped"` -- never
+silently success-shaped.
+
+`regex_fullmatch` patterns are restricted to a fail-closed *safe regex
+subset*: literals, character classes, anchors, alternation, and grouping
+are permitted, but **at most one quantifier opcode (`*`, `+`, `?`, `{m,n}`,
+or a lazy/possessive form of one) is permitted anywhere in the entire
+pattern** -- a conservative, auditable ceiling that rejects not only a
+nested quantified group (e.g. `(a+)+`, `(a*)+`, `([ab]+)*` -- the shape
+that causes catastrophic backtracking) but also plain sibling/sequential
+quantifiers that never nest at all (e.g. `a*a*a*a*a*a*a*a*a*b`,
+`.*.*=.*`, `[a-z]*[a-z]*!`, `^\d+\.\d+\.\d+$`), and even an
+otherwise-ordinary two-quantifier pattern such as `^[\w.-]+@[\w.-]+$`.
+Common single-quantifier patterns such as `^sw[0-9]+$` and `^[A-Z]{2}$`
+remain accepted, as does unquantified alternation. A backreference, a
+lookaround assertion, or any other unrecognized construct is also rejected
+outright, even though Python's stdlib `re.compile` would otherwise accept
+it. Finite repeat counts cannot exceed the 500-character subject bound,
+and a quantified body must consume at least one character, so huge repeats
+of empty or zero-width groups are rejected before matching. This is a
+static, parse-tree-based check (no thread/subprocess/signal
+timeout, no new dependency) -- a risky pattern is rejected before it is
+ever matched against any observation. This intentionally rejects some
+otherwise-safe complex regexes in exchange for a small, fully auditable
+rule with no combinatorial edge cases.
+
+Every per-rule result's `"actual"` value is bounded (depth, collection
+size, string length, and final serialized-byte size) and recursively
+redacted: a field path containing any credential/secret-shaped segment
+(e.g. `credentials.password`, `auth.value`) or tenant/workspace/account-
+shaped segment (e.g. `account.tenant_id.v`) is replaced outright, and any
+dict/list `"actual"` value is walked recursively so a nested secret/tenant
+key is redacted too -- never only the top-level field. A value that still
+cannot fit the bound after redaction falls back to a deterministic
+`"**TRUNCATED-ACTUAL**"` marker rather than ever exceeding the
+`compliance_report` artifact contract's own ceiling, so a legitimately
+large observation (e.g. a 50-interface list) always still produces a
+valid `"artifact"`.
+
+The response includes `"compliant"` (only `true` when every rule for every
+observation passed or was explicitly skipped), aggregate `"counts"`,
+per-observation `"observations"` summaries, bounded per-rule `"results"`
+detail (`"results_truncated"`/`"results_total"` report the true total even
+when the detail list itself is capped), and an `"artifact"`
+(`compliance_report`-shaped, see [artifact-contracts.md](artifact-contracts.md))
+ready for `pipeline.artifact_contracts.write_artifact` -- this tool never
+writes to disk itself.
 
 ### Generating versioned report artifacts
 

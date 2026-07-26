@@ -1,8 +1,9 @@
 """Unit tests for pipeline.artifact_contracts.
 
 Covers:
-- Valid artifacts for each of the eight supported kinds (including the
-  router automation dependency/reconciliation plan kinds added in v0.7).
+- Valid artifacts for each of the ten supported kinds (including the
+  router automation dependency/reconciliation plan kinds and the
+  declarative compliance-report kind added in v0.7).
 - Invalid/malformed data (missing/wrong-typed required fields).
 - Bounded-collection enforcement.
 - Deterministic content-hash/digest behavior.
@@ -233,6 +234,52 @@ class TestValidArtifacts:
             tmp_path / "validation-matrix.json", contracts.VALIDATION_MATRIX_RESULT, payload
         )
         assert entry.kind == contracts.VALIDATION_MATRIX_RESULT
+        assert entry.schema_version == 1
+
+    def test_compliance_report(self, tmp_path):
+        payload = {
+            "generated_at": GENERATED_AT,
+            "policy_id": "baseline",
+            "compliant": False,
+            "counts": {"pass": 1, "fail": 1, "error": 0, "skipped": 0},
+            "observations": [
+                {
+                    "observation_index": 0,
+                    "observation_id": "sw1",
+                    "compliant": False,
+                    "counts": {"pass": 1, "fail": 1, "error": 0, "skipped": 0},
+                }
+            ],
+            "results": [
+                {
+                    "rule_id": "rule_0",
+                    "field": "firmware.version",
+                    "operator": "version_gte",
+                    "status": "pass",
+                    "observation_index": 0,
+                    "observation_id": "sw1",
+                    "severity": "error",
+                    "actual": "8.10.0",
+                    "message": "",
+                },
+                {
+                    "rule_id": "rule_1",
+                    "field": "hostname",
+                    "operator": "eq",
+                    "status": "fail",
+                    "observation_index": 0,
+                    "observation_id": "sw1",
+                    "severity": "error",
+                    "actual": "sw1",
+                    "message": "",
+                },
+            ],
+            "results_total": 2,
+        }
+        entry = contracts.write_artifact(
+            tmp_path / "compliance-report.json", contracts.COMPLIANCE_REPORT, payload
+        )
+        assert entry.kind == contracts.COMPLIANCE_REPORT
         assert entry.schema_version == 1
 
 
@@ -578,6 +625,159 @@ class TestInvalidArtifacts:
                 },
             )
 
+    def test_compliance_report_unknown_status_rejected(self):
+        with pytest.raises(contracts.ArtifactValidationError, match="status"):
+            contracts.build_artifact(
+                contracts.COMPLIANCE_REPORT,
+                {
+                    "generated_at": GENERATED_AT,
+                    "policy_id": "baseline",
+                    "compliant": True,
+                    "counts": {"pass": 1, "fail": 0, "error": 0, "skipped": 0},
+                    "observations": [
+                        {
+                            "observation_index": 0,
+                            "compliant": True,
+                            "counts": {"pass": 1, "fail": 0, "error": 0, "skipped": 0},
+                        }
+                    ],
+                    "results": [
+                        {
+                            "rule_id": "rule_0",
+                            "field": "a",
+                            "operator": "eq",
+                            "status": "success",
+                            "observation_index": 0,
+                        }
+                    ],
+                    "results_total": 1,
+                },
+            )
+
+    def test_compliance_report_compliant_flag_must_match_counts(self):
+        # compliant=True while counts.fail is nonzero must be rejected --
+        # this contract can never be success-shaped over a real failure.
+        with pytest.raises(contracts.ArtifactValidationError, match="never success-shaped"):
+            contracts.build_artifact(
+                contracts.COMPLIANCE_REPORT,
+                {
+                    "generated_at": GENERATED_AT,
+                    "policy_id": "baseline",
+                    "compliant": True,
+                    "counts": {"pass": 0, "fail": 1, "error": 0, "skipped": 0},
+                    "observations": [
+                        {
+                            "observation_index": 0,
+                            "compliant": True,
+                            "counts": {"pass": 0, "fail": 1, "error": 0, "skipped": 0},
+                        }
+                    ],
+                    "results": [
+                        {
+                            "rule_id": "rule_0",
+                            "field": "a",
+                            "operator": "eq",
+                            "status": "fail",
+                            "observation_index": 0,
+                        }
+                    ],
+                    "results_total": 1,
+                },
+            )
+
+    def test_compliance_report_counts_missing_key_rejected(self):
+        with pytest.raises(contracts.ArtifactValidationError, match="missing required key"):
+            contracts.build_artifact(
+                contracts.COMPLIANCE_REPORT,
+                {
+                    "generated_at": GENERATED_AT,
+                    "policy_id": "baseline",
+                    "compliant": True,
+                    "counts": {"pass": 1, "fail": 0, "error": 0},
+                    "observations": [
+                        {
+                            "observation_index": 0,
+                            "compliant": True,
+                            "counts": {"pass": 1, "fail": 0, "error": 0, "skipped": 0},
+                        }
+                    ],
+                    "results": [],
+                    "results_total": 0,
+                },
+            )
+
+    def test_compliance_report_counts_must_sum_to_results_total(self):
+        with pytest.raises(contracts.ArtifactValidationError, match="sum to results_total"):
+            contracts.build_artifact(
+                contracts.COMPLIANCE_REPORT,
+                {
+                    "generated_at": GENERATED_AT,
+                    "policy_id": "baseline",
+                    "compliant": True,
+                    "counts": {"pass": 1, "fail": 0, "error": 0, "skipped": 0},
+                    "observations": [
+                        {
+                            "observation_index": 0,
+                            "compliant": True,
+                            "counts": {"pass": 1, "fail": 0, "error": 0, "skipped": 0},
+                        }
+                    ],
+                    "results": [],
+                    "results_total": 5,
+                },
+            )
+
+    def test_compliance_report_results_total_below_len_results_rejected(self):
+        with pytest.raises(contracts.ArtifactValidationError, match="results_total must be"):
+            contracts.build_artifact(
+                contracts.COMPLIANCE_REPORT,
+                {
+                    "generated_at": GENERATED_AT,
+                    "policy_id": "baseline",
+                    "compliant": False,
+                    "counts": {"pass": 0, "fail": 2, "error": 0, "skipped": 0},
+                    "observations": [
+                        {
+                            "observation_index": 0,
+                            "compliant": False,
+                            "counts": {"pass": 0, "fail": 2, "error": 0, "skipped": 0},
+                        }
+                    ],
+                    "results": [
+                        {
+                            "rule_id": "rule_0",
+                            "field": "a",
+                            "operator": "eq",
+                            "status": "fail",
+                            "observation_index": 0,
+                        },
+                        {
+                            "rule_id": "rule_1",
+                            "field": "b",
+                            "operator": "eq",
+                            "status": "fail",
+                            "observation_index": 0,
+                        },
+                    ],
+                    "results_total": 1,
+                },
+            )
+
+    def test_compliance_report_empty_observations_rejected(self):
+        with pytest.raises(contracts.ArtifactValidationError, match="at least one entry"):
+            contracts.build_artifact(
+                contracts.COMPLIANCE_REPORT,
+                {
+                    "generated_at": GENERATED_AT,
+                    "policy_id": "baseline",
+                    "compliant": True,
+                    "counts": {"pass": 0, "fail": 0, "error": 0, "skipped": 0},
+                    "observations": [],
+                    "results": [],
+                    "results_total": 0,
+                },
+            )
+
 
 # ---------------------------------------------------------------------------
 # 3. Collection bounds
@@ -790,6 +990,116 @@ class TestBounds:
                             "detail": "x" * (contracts.MAX_VALIDATION_MATRIX_DETAIL_CHARS + 1),
                         }
                     ],
+                },
+            )
+
+    def test_compliance_report_observations_over_bound_rejected(self):
+        count = contracts.MAX_COMPLIANCE_OBSERVATIONS + 1
+        observations = [
+            {
+                "observation_index": i,
+                "compliant": True,
+                "counts": {"pass": 0, "fail": 0, "error": 0, "skipped": 0},
+            }
+            for i in range(count)
+        ]
+        with pytest.raises(contracts.ArtifactValidationError, match="exceeding the bound"):
+            contracts.build_artifact(
+                contracts.COMPLIANCE_REPORT,
+                {
+                    "generated_at": GENERATED_AT,
+                    "policy_id": "baseline",
+                    "compliant": True,
+                    "counts": {"pass": 0, "fail": 0, "error": 0, "skipped": 0},
+                    "observations": observations,
+                    "results": [],
+                    "results_total": 0,
+                },
+            )
+
+    def test_compliance_report_observations_at_bound_accepted(self):
+        count = contracts.MAX_COMPLIANCE_OBSERVATIONS
+        observations = [
+            {
+                "observation_index": i,
+                "compliant": True,
+                "counts": {"pass": 0, "fail": 0, "error": 0, "skipped": 0},
+            }
+            for i in range(count)
+        ]
+        artifact = contracts.build_artifact(
+            contracts.COMPLIANCE_REPORT,
+            {
+                "generated_at": GENERATED_AT,
+                "policy_id": "baseline",
+                "compliant": True,
+                "counts": {"pass": 0, "fail": 0, "error": 0, "skipped": 0},
+                "observations": observations,
+                "results": [],
+                "results_total": 0,
+            },
+        )
+        assert len(artifact.observations) == contracts.MAX_COMPLIANCE_OBSERVATIONS
+
+    def test_compliance_report_results_over_bound_rejected(self):
+        count = contracts.MAX_COMPLIANCE_RESULTS + 1
+        results = [
+            {
+                "rule_id": f"rule_{i}",
+                "field": "a",
+                "operator": "eq",
+                "status": "pass",
+                "observation_index": 0,
+            }
+            for i in range(count)
+        ]
+        with pytest.raises(contracts.ArtifactValidationError, match="exceeding the bound"):
+            contracts.build_artifact(
+                contracts.COMPLIANCE_REPORT,
+                {
+                    "generated_at": GENERATED_AT,
+                    "policy_id": "baseline",
+                    "compliant": True,
+                    "counts": {"pass": count, "fail": 0, "error": 0, "skipped": 0},
+                    "observations": [
+                        {
+                            "observation_index": 0,
+                            "compliant": True,
+                            "counts": {"pass": count, "fail": 0, "error": 0, "skipped": 0},
+                        }
+                    ],
+                    "results": results,
+                    "results_total": count,
+                },
+            )
+
+    def test_compliance_report_message_over_bound_rejected(self):
+        with pytest.raises(contracts.ArtifactValidationError, match="character bound"):
+            contracts.build_artifact(
+                contracts.COMPLIANCE_REPORT,
+                {
+                    "generated_at": GENERATED_AT,
+                    "policy_id": "baseline",
+                    "compliant": False,
+                    "counts": {"pass": 0, "fail": 1, "error": 0, "skipped": 0},
+                    "observations": [
+                        {
+                            "observation_index": 0,
+                            "compliant": False,
+                            "counts": {"pass": 0, "fail": 1, "error": 0, "skipped": 0},
+                        }
+                    ],
+                    "results": [
+                        {
+                            "rule_id": "rule_0",
+                            "field": "a",
+                            "operator": "eq",
+                            "status": "fail",
+                            "observation_index": 0,
+                            "message": "x" * (contracts.MAX_COMPLIANCE_MESSAGE_CHARS + 1),
+                        }
+                    ],
+                    "results_total": 1,
                 },
             )
 

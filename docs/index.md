@@ -10,7 +10,7 @@ ArubaOS 8, EdgeConnect, UXI, and Axis backends.
 
 | Area | Current snapshot |
 |---|---|
-| Tool catalog | 6,143 generated operations (6,126 active) / 573 curated / 6,699 backend tools / 6,702 direct-all |
+| Tool catalog | 6,143 generated operations (6,126 active) / 573 curated / 6,699 backend tools / 6,705 direct-all |
 | Capability totals | 3,147 read, 165 diagnostic, 2,544 write, 843 destructive |
 | RAG | 51,737 prose chunks in LanceDB |
 | Structured lookup | 244 specs, 3,796 endpoints, 11,293 schemas, 60,568 fields, 102 advisories, 346 lifecycle records |

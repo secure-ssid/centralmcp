@@ -1,8 +1,8 @@
 # Tool catalog
 
 centralmcp registers **6,699 backend tools** when every generated surface and
-guarded write is enabled. Direct-all router mode adds five router-native tools for
-**6,704 total**. The recommended minimal router exposes only `find_tool`,
+guarded write is enabled. Direct-all router mode adds six router-native tools for
+**6,705 total**. The recommended minimal router exposes only `find_tool`,
 `invoke_read_tool`, and `invoke_tool`, then searches the larger index on demand.
 
 The nine committed generated manifests contain **6,143 operations** (6,126
@@ -64,8 +64,8 @@ operations register as active generated tools.
 | Mode | Client-visible tools | Use |
 |---|---:|---|
 | `minimal` | 3 | Recommended low-token discovery and dispatch |
-| `default` | 14 | Router convenience wrappers |
-| `direct` + all toolsets/products | 6,704 | Full schema introspection and debugging |
+| `default` | 15 | Router convenience wrappers |
+| `direct` + all toolsets/products | 6,705 | Full schema introspection and debugging |
 
 ```env
 CENTRALMCP_ROUTER_MODE=minimal

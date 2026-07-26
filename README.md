@@ -183,7 +183,7 @@ EdgeConnect link integrity diagnostics, low-token MCP router.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 6,143 generated operations (6,126 active); 573 curated; 6,699 backend tools; 6,704 tools in direct-all router mode |
+| MCP tools | 6,143 generated operations (6,126 active); 573 curated; 6,699 backend tools; 6,705 tools in direct-all router mode |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |

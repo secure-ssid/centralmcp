@@ -59,6 +59,14 @@ Supported artifact kinds (see :data:`ARTIFACT_KINDS`):
    disposable write -- that classification only ever reflects
    authorization state, matching every other v0.7 evaluator's
    never-invoked-by-default write probe.
+10. ``compliance_report`` -- a bounded, declarative compliance-policy
+    evaluation report produced by
+    ``mcp_servers.tool_router.evaluate_compliance_policy`` (see
+    ``pipeline/compliance.py``): per-rule pass/fail/error/skipped results
+    plus aggregate counts against caller-supplied, already-retrieved
+    observations. Never includes raw secrets and never represents a live
+    fetch -- observations must already be in hand before the report is
+    built.
 
 Typical usage::
 
@@ -117,6 +125,7 @@ RELEASE_ARTIFACT_MANIFEST = "release_artifact_manifest"
 ROUTER_DEPENDENCY_PLAN = "router_dependency_plan"
 ROUTER_RECONCILIATION_PLAN = "router_reconciliation_plan"
 VALIDATION_MATRIX_RESULT = "validation_matrix_result"
+COMPLIANCE_REPORT = "compliance_report"
 
 ARTIFACT_KINDS: tuple[str, ...] = (
     LIVE_LIFECYCLE_EVIDENCE,
@@ -128,6 +137,7 @@ ARTIFACT_KINDS: tuple[str, ...] = (
     ROUTER_DEPENDENCY_PLAN,
     ROUTER_RECONCILIATION_PLAN,
     VALIDATION_MATRIX_RESULT,
+    COMPLIANCE_REPORT,
 )
 
 # Every kind starts at schema version 1. Bump the kind's entry here (and
@@ -161,6 +171,15 @@ MAX_ROUTER_RECONCILIATION_EXCLUDED = 200
 MAX_ROUTER_CADENCE_CHARS = 200
 MAX_VALIDATION_MATRIX_ENTRIES = 50
 MAX_VALIDATION_MATRIX_DETAIL_CHARS = 500
+# Paired with pipeline.compliance's own MAX_POLICY_RULES/MAX_OBSERVATIONS/
+# MAX_RESULT_ENTRIES bounds -- independently enforced here so a malformed
+# caller-built payload (bypassing pipeline.compliance entirely) still
+# cannot produce an oversized compliance_report artifact.
+MAX_COMPLIANCE_RULES = 50
+MAX_COMPLIANCE_OBSERVATIONS = 100
+MAX_COMPLIANCE_RESULTS = 500
+MAX_COMPLIANCE_MESSAGE_CHARS = 500
+MAX_COMPLIANCE_VALUE_CHARS = 500
 # Overall safety ceiling for one serialized artifact file.
 MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
 
@@ -209,6 +228,16 @@ VALIDATION_MATRIX_CLASSIFICATIONS: tuple[str, ...] = (
     "unavailable",
     "coverage_gap",
 )
+
+# The four states one compliance-policy rule result can report for one
+# observation (see pipeline.compliance.RULE_STATUSES, which this mirrors
+# independently so an artifact built directly from a plain dict -- bypassing
+# pipeline.compliance -- is still validated against the same fixed set).
+# Never success-shaped: "error" (a type mismatch or missing required field)
+# is always distinct from "pass", and a ComplianceReport's own "compliant"
+# flag must agree with whether any "fail"/"error" results exist (see
+# ComplianceReport.__post_init__).
+COMPLIANCE_RULE_STATUSES: tuple[str, ...] = ("pass", "fail", "error", "skipped")
 
 
 # ---------------------------------------------------------------------------
@@ -1071,6 +1100,161 @@ class ValidationMatrix:
 
 
 # ---------------------------------------------------------------------------
+# 10. Compliance report
+# ---------------------------------------------------------------------------
+
+
+def _require_counts_mapping(value: Any, field_name: str) -> Mapping[str, int]:
+    counts = _require_mapping(value, field_name)
+    for key in COMPLIANCE_RULE_STATUSES:
+        if key not in counts:
+            raise ArtifactValidationError(f"{field_name} is missing required key {key!r}")
+        _require_int(counts[key], f"{field_name}.{key}", minimum=0)
+    return counts
+
+
+@dataclass(frozen=True)
+class ComplianceRuleResult:
+    """One rule's evaluated outcome against one observation.
+
+    ``status`` is always exactly one of :data:`COMPLIANCE_RULE_STATUSES` --
+    never success-shaped: a type mismatch or a missing required field is
+    ``"error"``, never silently ``"pass"``.
+    """
+
+    rule_id: str
+    field: str
+    operator: str
+    status: str
+    observation_index: int
+    observation_id: str | None = None
+    severity: str = "error"
+    actual: Any = None
+    message: str = ""
+
+    def __post_init__(self) -> None:
+        _require_str(self.rule_id, "rule_id")
+        _require_str(self.field, "field")
+        _require_str(self.operator, "operator")
+        if self.status not in COMPLIANCE_RULE_STATUSES:
+            raise ArtifactValidationError(
+                f"status must be one of {COMPLIANCE_RULE_STATUSES}, got {self.status!r}"
+            )
+        _require_int(self.observation_index, "observation_index", minimum=0)
+        if self.observation_id is not None:
+            _require_str(self.observation_id, "observation_id")
+            if len(self.observation_id) > MAX_COMPLIANCE_VALUE_CHARS:
+                raise ArtifactValidationError(
+                    f"observation_id exceeds the {MAX_COMPLIANCE_VALUE_CHARS}-character bound"
+                )
+        _require_str(self.severity, "severity")
+        _require_str(self.message, "message", allow_empty=True)
+        if len(self.message) > MAX_COMPLIANCE_MESSAGE_CHARS:
+            raise ArtifactValidationError(
+                f"message exceeds the {MAX_COMPLIANCE_MESSAGE_CHARS}-character bound"
+            )
+        try:
+            actual_size = len(json.dumps(self.actual, default=str))
+        except TypeError as exc:
+            raise ArtifactValidationError(f"actual is not JSON serializable: {exc}") from exc
+        if actual_size > MAX_COMPLIANCE_VALUE_CHARS * 4:
+            raise ArtifactValidationError("actual exceeds the configured safety bound")
+
+
+@dataclass(frozen=True)
+class ComplianceObservationSummary:
+    """One observation's compliant flag and per-status rule counts."""
+
+    observation_index: int
+    compliant: bool
+    counts: Mapping[str, int]
+    observation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_int(self.observation_index, "observation_index", minimum=0)
+        _require_bool(self.compliant, "compliant")
+        counts = _require_counts_mapping(self.counts, "counts")
+        expected_compliant = counts["fail"] == 0 and counts["error"] == 0
+        if self.compliant != expected_compliant:
+            raise ArtifactValidationError(
+                "compliant must be False whenever counts.fail or counts.error is nonzero "
+                "(never success-shaped)"
+            )
+        if self.observation_id is not None:
+            _require_str(self.observation_id, "observation_id")
+            if len(self.observation_id) > MAX_COMPLIANCE_VALUE_CHARS:
+                raise ArtifactValidationError(
+                    f"observation_id exceeds the {MAX_COMPLIANCE_VALUE_CHARS}-character bound"
+                )
+
+
+@dataclass(frozen=True)
+class ComplianceReport:
+    """A bounded, declarative compliance-policy evaluation report.
+
+    Produced by ``mcp_servers.tool_router.evaluate_compliance_policy``
+    (backed by ``pipeline/compliance.py``) against caller-supplied,
+    already-retrieved observations -- never a live fetch. ``results`` may be
+    capped below ``results_total`` (mirroring the
+    ``RouterReconciliationPlan.excluded``/``excluded_count`` pattern); the
+    aggregate ``counts`` always reflect the true total regardless of the
+    detail-list cap.
+    """
+
+    generated_at: str
+    policy_id: str
+    compliant: bool
+    counts: Mapping[str, int]
+    observations: Sequence[ComplianceObservationSummary] = field(default_factory=tuple)
+    results: Sequence[ComplianceRuleResult] = field(default_factory=tuple)
+    results_total: int = 0
+    schema_version: int = SCHEMA_VERSIONS[COMPLIANCE_REPORT]
+    kind: str = COMPLIANCE_REPORT
+
+    def __post_init__(self) -> None:
+        _require_iso_timestamp(self.generated_at, "generated_at")
+        _require_str(self.policy_id, "policy_id")
+        if len(self.policy_id) > MAX_COMPLIANCE_VALUE_CHARS:
+            raise ArtifactValidationError(
+                f"policy_id exceeds the {MAX_COMPLIANCE_VALUE_CHARS}-character bound"
+            )
+        _require_bool(self.compliant, "compliant")
+        counts = _require_counts_mapping(self.counts, "counts")
+        expected_compliant = counts["fail"] == 0 and counts["error"] == 0
+        if self.compliant != expected_compliant:
+            raise ArtifactValidationError(
+                "compliant must be False whenever counts.fail or counts.error is nonzero "
+                "(never success-shaped)"
+            )
+        observations = _require_sequence(
+            self.observations, "observations", max_items=MAX_COMPLIANCE_OBSERVATIONS
+        )
+        if not observations:
+            raise ArtifactValidationError("observations must contain at least one entry")
+        for observation in observations:
+            if not isinstance(observation, ComplianceObservationSummary):
+                raise ArtifactValidationError(
+                    "observations must be ComplianceObservationSummary instances"
+                )
+        results = _require_sequence(self.results, "results", max_items=MAX_COMPLIANCE_RESULTS)
+        for result in results:
+            if not isinstance(result, ComplianceRuleResult):
+                raise ArtifactValidationError("results must be ComplianceRuleResult instances")
+        _require_int(self.results_total, "results_total", minimum=0)
+        if self.results_total < len(results):
+            raise ArtifactValidationError(
+                "results_total must be >= len(results); the detail list may be capped "
+                "below the true total, never the other way around"
+            )
+        total_from_counts = sum(counts[key] for key in COMPLIANCE_RULE_STATUSES)
+        if total_from_counts != self.results_total:
+            raise ArtifactValidationError(
+                "counts must sum to results_total (pass+fail+error+skipped)"
+            )
+        _check_schema_kind(self, COMPLIANCE_REPORT)
+
+
+# ---------------------------------------------------------------------------
 # Dict -> contract builders (used by build_artifact/write_artifact, and
 # directly by tests/callers that only have plain JSON-shaped dicts).
 # ---------------------------------------------------------------------------
@@ -1162,6 +1346,21 @@ def _build_validation_matrix(payload: dict[str, Any]) -> ValidationMatrix:
     return ValidationMatrix(entries=entries, **payload)
 
 
+def _build_compliance_report(payload: dict[str, Any]) -> ComplianceReport:
+    raw_observations = payload.pop("observations", ())
+    observations = _build_entries(
+        ComplianceObservationSummary,
+        raw_observations,
+        "observations",
+        MAX_COMPLIANCE_OBSERVATIONS,
+    )
+    raw_results = payload.pop("results", ())
+    results = _build_entries(
+        ComplianceRuleResult, raw_results, "results", MAX_COMPLIANCE_RESULTS
+    )
+    return ComplianceReport(observations=observations, results=results, **payload)
+
+
 _BUILDERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     LIVE_LIFECYCLE_EVIDENCE: _build_live_lifecycle_evidence,
     PLATFORM_COMPATIBILITY_RESULT: _build_platform_compatibility_matrix,
@@ -1172,6 +1371,7 @@ _BUILDERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     ROUTER_DEPENDENCY_PLAN: _build_router_dependency_plan,
     ROUTER_RECONCILIATION_PLAN: _build_router_reconciliation_plan,
     VALIDATION_MATRIX_RESULT: _build_validation_matrix,
+    COMPLIANCE_REPORT: _build_compliance_report,
 }
 
 

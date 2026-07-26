@@ -13,8 +13,10 @@ environment-variable convention.
 |---|---|
 | [`pipeline/artifact_contracts.py`](https://github.com/secure-ssid/centralmcp/blob/main/pipeline/artifact_contracts.py) | Versioned, bounded, redacted artifact schemas and the atomic JSON writer. |
 | [`pipeline/live_test_config.py`](https://github.com/secure-ssid/centralmcp/blob/main/pipeline/live_test_config.py) | Credential-gated, default-disabled per-platform live-test read/write configuration. |
+| [`pipeline/compliance.py`](https://github.com/secure-ssid/centralmcp/blob/main/pipeline/compliance.py) | Pure, network-free declarative compliance-policy evaluation (bounded operators, safe field extraction, no eval/exec) backing `evaluate_compliance_policy`. |
 | [`tests/unit/test_artifact_contracts.py`](https://github.com/secure-ssid/centralmcp/blob/main/tests/unit/test_artifact_contracts.py) | Contract validation, bounds, redaction, and digest determinism tests. |
 | [`tests/unit/test_live_test_config.py`](https://github.com/secure-ssid/centralmcp/blob/main/tests/unit/test_live_test_config.py) | Default-disabled, explicit-opt-in, and no-leak status API tests. |
+| [`tests/unit/test_compliance.py`](https://github.com/secure-ssid/centralmcp/blob/main/tests/unit/test_compliance.py) | Field extraction, every operator, fail-closed policy validation, bounds, and aggregate-report tests for `pipeline/compliance.py`. |
 
 Neither module makes network calls or writes indexes/release artifacts on
 import; they are pure validation/serialization helpers for callers to use
@@ -39,6 +41,7 @@ out-of-bound collection):
 | `ROUTER_DEPENDENCY_PLAN` | `RouterPlanStep`, `RouterDependencyPlan` | A bounded, deterministic, read-only dependency/order plan produced by `mcp_servers.tool_router.plan_tool_workflow` -- never a record of an executed workflow. |
 | `ROUTER_RECONCILIATION_PLAN` | `ReconciliationEntry`, `RouterReconciliationPlan` | A bounded, read-only, plan-only recurring reconciliation schedule specification produced by `mcp_servers.tool_router.plan_reconciliation_schedule`; `dry_run` is always `True`. |
 | `VALIDATION_MATRIX_RESULT` | `ValidationMatrixEntry`, `ValidationMatrix` | The per-category (platform, RAG/source-freshness, router-automation) credential-gated classification produced by `scripts/run_v07_validation_matrix.py`: `offline_fixture`, `live_read`, `disposable_write`, `blocked`, `unavailable`, or `coverage_gap`, plus whether reads/writes are enabled and credentials are configured -- never raw credential values. |
+| `COMPLIANCE_REPORT` | `ComplianceRuleResult`, `ComplianceObservationSummary`, `ComplianceReport` | A bounded, declarative compliance-policy evaluation report produced by `mcp_servers.tool_router.evaluate_compliance_policy` (see `pipeline/compliance.py`): per-rule `pass`/`fail`/`error`/`skipped` results and per-observation/aggregate counts against caller-supplied, already-retrieved observations -- never a live fetch, and `compliant` can never be `True` while any `fail`/`error` result exists. Every result's `actual` is recursively redacted (mirroring `mcp_servers.shared`'s sensitive-key and this module's tenant-key semantics against every field-path segment, not just container keys) and depth/collection/string/byte-bounded *before* it ever reaches this contract, so a valid `ComplianceRuleResult.actual` always fits this contract's own serialized-size ceiling. |
 
 Every collection that can grow has a hard, fail-closed bound (for example
 `MAX_EVIDENCE_STEPS`, `MAX_MATRIX_PLATFORMS`, `MAX_MANIFEST_ENTRIES`) --

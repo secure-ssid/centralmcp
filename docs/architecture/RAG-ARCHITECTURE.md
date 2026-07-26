@@ -179,7 +179,7 @@ authoritative. The rebuilt SQLite index contains 244 specs, 3,796 endpoints,
 11,293 schemas, 60,568 fields, 102 advisories, and 346 lifecycle records. The
 rebuilt router index contains 6,699 backend tools. Minimal mode keeps this
 catalog behind the three-tool discovery/dispatch surface; direct-all mode
-exposes 6,702 tools including the router itself. The v0.7 31-question eval set
+exposes 6,705 tools including the router itself. The v0.7 31-question eval set
 (expanded from 24 to add structured list/correlate/diagnostics and negative
 coverage-gap questions) hits rank 1 on all 31 questions. Standard catalog
 profiles contain 360 core tools / 2813 read-only optional starters / 5795 read-write optional starters; the complete index also enables generated GLP.
