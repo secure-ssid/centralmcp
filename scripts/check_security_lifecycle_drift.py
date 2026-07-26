@@ -201,13 +201,30 @@ def evaluate_juniper_lifecycle() -> dict[str, Any]:
 
 
 def evaluate_juniper_security() -> dict[str, Any]:
-    def _fetch_all() -> list[str]:
-        return [sources.fetch_text(url) for url in sources.JUNIPER_SITEMAPS]
+    """Evaluate the Juniper security-bulletin sitemap-index discovery chain.
 
-    def _parse_all(sitemap_texts: list[str]) -> set[str]:
+    ``discover_juniper_security_sitemaps()`` fetches and parses the official
+    sitemap index (``JUNIPER_SECURITY_SITEMAP_INDEX_URL``) into its current
+    topic-article child sitemap URLs; any index network failure or
+    structural break (malformed XML, wrong root, off-host/non-HTTPS/unsafe
+    child URL, zero matching children) raises ``SourceFetchError`` from
+    inside the ``fetch`` phase and is reported as ``unavailable`` here, the
+    same as an unreachable child sitemap fetch -- both are "could not
+    assemble the set of official child sitemaps to read" failures. A
+    malformed *child* sitemap body, in contrast, is only discovered once its
+    (already-fetched) text is parsed in the ``parse`` phase, so it is
+    reported as ``changed`` (a structural/schema break in already-reachable
+    content) rather than ``unavailable``.
+    """
+
+    def _fetch_all() -> dict[str, str]:
+        children = sources.discover_juniper_security_sitemaps()
+        return {child: sources.fetch_text(child) for child in children}
+
+    def _parse_all(children_xml: dict[str, str]) -> set[str]:
         urls: set[str] = set()
-        for text in sitemap_texts:
-            urls |= sources.parse_juniper_security_sitemap(text)
+        for xml_text in children_xml.values():
+            urls |= sources.parse_juniper_security_sitemap(xml_text)
         return urls
 
     entry = _evaluate(
@@ -219,7 +236,8 @@ def evaluate_juniper_security() -> dict[str, Any]:
     if entry["status"] == STATUS_FRESH:
         try:
             provenance.validate_source_identity(
-                provenance.JUNIPER_SECURITY_ADVISORIES, sorted(sources.JUNIPER_SITEMAPS)
+                provenance.JUNIPER_SECURITY_ADVISORIES,
+                [sources.JUNIPER_SECURITY_SITEMAP_INDEX_URL],
             )
         except provenance.SourceProvenanceError as exc:
             return _changed_from(entry, exc)

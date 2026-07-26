@@ -133,10 +133,9 @@
     "doc_type": "security-advisory",
     "purpose": "Official Juniper security bulletins for the Mist and Apstra product families exposed by centralmcp's optional backends.",
     "seed_urls": [
-      "https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml",
-      "https://supportportal.juniper.net/s/sitemap-topicarticle-weekly.xml"
+      "https://supportportal.juniper.net/s/sitemap.xml"
     ],
     "output_dir": "ingestion/sources/juniper_security_advisories",
-    "notes": "Refresh with ingestion/scrape_security_lifecycle.py. The official sitemap discovers Mist/Apstra Security Bulletin articles; Playwright renders the Salesforce article body because plain HTTP receives only the application shell."
+    "notes": "Refresh with ingestion/scrape_security_lifecycle.py. discover_juniper_security_sitemaps() fetches and parses the official sitemap index above into its current topic-article child sitemap URLs (host/scheme/path validated, sitemap-topicarticle-*.xml only); discover_juniper_security_urls() then reads each child sitemap and filters to Mist/Apstra Security Bulletin articles. Playwright renders the Salesforce article body because plain HTTP receives only the application shell."
   }
 ]

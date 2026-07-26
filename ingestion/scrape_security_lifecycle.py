@@ -63,10 +63,29 @@ JUNIPER_LIFECYCLE_URLS = {
 # the official page so a future Juniper-added Mist/Apstra EOL page is
 # discovered automatically instead of requiring a code change to notice it.
 JUNIPER_EOL_INDEX_URL = "https://support.juniper.net/support/eol/"
-JUNIPER_SITEMAPS = (
-    "https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml",
-    "https://supportportal.juniper.net/s/sitemap-topicarticle-weekly.xml",
-)
+
+# Official Juniper support-portal sitemap index. This is the single stable,
+# human-reviewed entry point for security-bulletin discovery -- individual
+# child sitemap filenames (e.g. "sitemap-topicarticle-1.xml") are an
+# implementation detail of Juniper's Salesforce-hosted portal that has
+# changed before without notice (a previously hardcoded
+# "sitemap-topicarticle-weekly.xml" child started 404ing) and must never be
+# pinned directly. discover_juniper_security_sitemaps() re-derives the
+# current topic-article child sitemap URLs from this index on every run,
+# so provenance pins this index URL, not its children.
+JUNIPER_SECURITY_SITEMAP_INDEX_URL = "https://supportportal.juniper.net/s/sitemap.xml"
+_JUNIPER_SECURITY_SITEMAP_HOST = urlparse(JUNIPER_SECURITY_SITEMAP_INDEX_URL).netloc
+_SITEMAP_XML_NS = "http://www.sitemaps.org/schemas/sitemap/0.9"
+_SITEMAP_INDEX_ROOT_TAG = f"{{{_SITEMAP_XML_NS}}}sitemapindex"
+# Only the topic-article sitemap family carries Security Bulletin articles
+# (as opposed to the sibling "sitemap-topic-*.xml"/"sitemap-view-*.xml"
+# children the same index also lists for unrelated portal navigation).
+_JUNIPER_TOPICARTICLE_SITEMAP_RE = re.compile(r"^sitemap-topicarticle-[A-Za-z0-9]+\.xml$")
+# Sanity bound on how many child sitemaps the official index may list;
+# reviewed 2026-07-26 against an index of 3 children. A number this far
+# outside that is treated as a compromised/garbled index rather than
+# silently iterated.
+MAX_JUNIPER_SITEMAP_INDEX_CHILDREN = 50
 
 # Explicit coverage-gap status for current (post-2020) Aruba-branded HPE
 # Networking product lifecycle notices. Reviewed 2026-07-25:
@@ -625,9 +644,96 @@ def parse_juniper_security_sitemap(xml_text: str) -> set[str]:
     return urls
 
 
+def parse_juniper_security_sitemap_index(xml_text: str) -> list[str]:
+    """Return the reviewed topic-article child sitemap URLs from the official index.
+
+    Fails closed (raises ``SourceFetchError``) rather than silently
+    returning a partial or fallback result when the index:
+
+    - is not well-formed XML;
+    - has an unexpected root element or is missing the sitemap XML
+      namespace (e.g. a ``<urlset>`` page or an un-namespaced document);
+    - lists more child sitemaps than ``MAX_JUNIPER_SITEMAP_INDEX_CHILDREN``
+      (treated as a garbled/compromised index rather than iterated);
+    - discloses a topic-article child URL that is not HTTPS, is not on the
+      exact reviewed ``supportportal.juniper.net`` host, embeds
+      credentials, carries a query string or fragment, or contains a path
+      traversal segment; or
+    - lists zero children matching the topic-article sitemap family
+      (``sitemap-topicarticle-*.xml``) -- e.g. if Juniper renames or drops
+      that family, this never silently keeps using a stale/removed child
+      URL from a previous run.
+
+    Sibling children outside the topic-article family (e.g.
+    ``sitemap-topic-*.xml``, ``sitemap-view-*.xml``) are ignored rather
+    than rejected, since they carry unrelated portal content this source
+    does not consume.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise SourceFetchError(f"invalid Juniper sitemap index XML: {exc}") from exc
+    if root.tag != _SITEMAP_INDEX_ROOT_TAG:
+        raise SourceFetchError(f"unexpected Juniper sitemap index root element: {root.tag!r}")
+
+    namespace = {"sm": _SITEMAP_XML_NS}
+    locations = root.findall("sm:sitemap/sm:loc", namespace)
+    if len(locations) > MAX_JUNIPER_SITEMAP_INDEX_CHILDREN:
+        raise SourceFetchError(
+            f"Juniper sitemap index lists {len(locations)} child sitemaps, "
+            f"exceeding the reviewed bound of {MAX_JUNIPER_SITEMAP_INDEX_CHILDREN}"
+        )
+
+    matches: set[str] = set()
+    for element in locations:
+        raw_url = (element.text or "").strip()
+        if not raw_url:
+            continue
+        filename = PurePosixPath(urlparse(raw_url).path).name
+        if not _JUNIPER_TOPICARTICLE_SITEMAP_RE.match(filename):
+            continue
+        parsed = urlparse(raw_url)
+        if parsed.scheme != "https":
+            raise SourceFetchError(
+                f"Juniper sitemap index topic-article child URL is not HTTPS: {raw_url!r}"
+            )
+        if parsed.username or parsed.password:
+            raise SourceFetchError(
+                f"Juniper sitemap index topic-article child URL embeds credentials: {raw_url!r}"
+            )
+        if parsed.netloc != _JUNIPER_SECURITY_SITEMAP_HOST:
+            raise SourceFetchError(
+                "Juniper sitemap index disclosed a topic-article child URL outside "
+                f"the reviewed {_JUNIPER_SECURITY_SITEMAP_HOST} host: {raw_url!r}"
+            )
+        if parsed.query or parsed.fragment:
+            raise SourceFetchError(
+                "Juniper sitemap index topic-article child URL has a query "
+                f"string or fragment: {raw_url!r}"
+            )
+        if ".." in PurePosixPath(parsed.path).parts:
+            raise SourceFetchError(
+                "Juniper sitemap index topic-article child URL contains a path "
+                f"traversal segment: {raw_url!r}"
+            )
+        matches.add(raw_url)
+
+    if not matches:
+        raise SourceFetchError(
+            "Juniper sitemap index no longer lists any topic-article sitemap "
+            "children (sitemap-topicarticle-*.xml)"
+        )
+    return sorted(matches)
+
+
+def discover_juniper_security_sitemaps() -> list[str]:
+    """Fetch and parse the official index into its topic-article child sitemap URLs."""
+    return parse_juniper_security_sitemap_index(fetch_text(JUNIPER_SECURITY_SITEMAP_INDEX_URL))
+
+
 def discover_juniper_security_urls() -> list[str]:
     urls: set[str] = set()
-    for sitemap in JUNIPER_SITEMAPS:
+    for sitemap in discover_juniper_security_sitemaps():
         urls.update(parse_juniper_security_sitemap(fetch_text(sitemap)))
     return sorted(urls)
 

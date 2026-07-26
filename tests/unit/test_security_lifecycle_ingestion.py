@@ -145,6 +145,222 @@ def test_parse_juniper_security_sitemap_filters_to_mist_and_apstra_bulletins():
     }
 
 
+def test_parse_juniper_security_sitemap_index_returns_current_topicarticle_child():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topic-1.xml</loc></sitemap>
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-view-1.xml</loc></sitemap>
+</sitemapindex>
+"""
+
+    children = sl.parse_juniper_security_sitemap_index(index)
+
+    assert children == ["https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml"]
+
+
+def test_parse_juniper_security_sitemap_index_returns_multiple_topicarticle_children():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-2.xml</loc></sitemap>
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>
+</sitemapindex>
+"""
+
+    children = sl.parse_juniper_security_sitemap_index(index)
+
+    # Deterministic: sorted, not insertion order.
+    assert children == [
+        "https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml",
+        "https://supportportal.juniper.net/s/sitemap-topicarticle-2.xml",
+    ]
+
+
+def test_parse_juniper_security_sitemap_index_ignores_unrelated_children():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topic-1.xml</loc></sitemap>
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-view-1.xml</loc></sitemap>
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>
+</sitemapindex>
+"""
+
+    children = sl.parse_juniper_security_sitemap_index(index)
+
+    assert children == ["https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml"]
+
+
+def test_parse_juniper_security_sitemap_index_dedupes_duplicate_children():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>
+</sitemapindex>
+"""
+
+    children = sl.parse_juniper_security_sitemap_index(index)
+
+    assert children == ["https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml"]
+
+
+def test_parse_juniper_security_sitemap_index_requires_topicarticle_match():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topic-1.xml</loc></sitemap>
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-view-1.xml</loc></sitemap>
+</sitemapindex>
+"""
+
+    with pytest.raises(sl.SourceFetchError, match="no longer lists any topic-article"):
+        sl.parse_juniper_security_sitemap_index(index)
+
+
+def test_parse_juniper_security_sitemap_index_rejects_malformed_xml():
+    with pytest.raises(sl.SourceFetchError, match="invalid Juniper sitemap index XML"):
+        sl.parse_juniper_security_sitemap_index("<sitemapindex><not-closed>")
+
+
+def test_parse_juniper_security_sitemap_index_rejects_wrong_root():
+    urlset = """\
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></url>
+</urlset>
+"""
+    with pytest.raises(sl.SourceFetchError, match="unexpected Juniper sitemap index root"):
+        sl.parse_juniper_security_sitemap_index(urlset)
+
+
+def test_parse_juniper_security_sitemap_index_rejects_missing_namespace():
+    # Same shape, no default xmlns -- must not be silently accepted.
+    index = (
+        "<sitemapindex>"
+        "<sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>"
+        "</sitemapindex>"
+    )
+    with pytest.raises(sl.SourceFetchError, match="unexpected Juniper sitemap index root"):
+        sl.parse_juniper_security_sitemap_index(index)
+
+
+def test_parse_juniper_security_sitemap_index_rejects_off_host_child():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://evil.example.test/s/sitemap-topicarticle-1.xml</loc></sitemap>
+</sitemapindex>
+"""
+    with pytest.raises(sl.SourceFetchError, match="outside the reviewed"):
+        sl.parse_juniper_security_sitemap_index(index)
+
+
+def test_parse_juniper_security_sitemap_index_rejects_non_https_child():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>http://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>
+</sitemapindex>
+"""
+    with pytest.raises(sl.SourceFetchError, match="not HTTPS"):
+        sl.parse_juniper_security_sitemap_index(index)
+
+
+def test_parse_juniper_security_sitemap_index_rejects_embedded_credentials():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://user:pass@supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>
+</sitemapindex>
+"""
+    with pytest.raises(sl.SourceFetchError, match="outside the reviewed|embeds credentials"):
+        sl.parse_juniper_security_sitemap_index(index)
+
+
+def test_parse_juniper_security_sitemap_index_rejects_query_string():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml?x=1</loc></sitemap>
+</sitemapindex>
+"""
+    with pytest.raises(sl.SourceFetchError, match="query string or fragment"):
+        sl.parse_juniper_security_sitemap_index(index)
+
+
+def test_parse_juniper_security_sitemap_index_rejects_fragment():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml#frag</loc></sitemap>
+</sitemapindex>
+"""
+    with pytest.raises(sl.SourceFetchError, match="query string or fragment"):
+        sl.parse_juniper_security_sitemap_index(index)
+
+
+def test_parse_juniper_security_sitemap_index_rejects_path_traversal():
+    index = """\
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://supportportal.juniper.net/s/../../sitemap-topicarticle-1.xml</loc></sitemap>
+</sitemapindex>
+"""
+    with pytest.raises(sl.SourceFetchError, match="path traversal"):
+        sl.parse_juniper_security_sitemap_index(index)
+
+
+def test_parse_juniper_security_sitemap_index_rejects_too_many_children():
+    children = "".join(
+        f"<sitemap><loc>https://supportportal.juniper.net/s/sitemap-topic-{i}.xml</loc></sitemap>"
+        for i in range(sl.MAX_JUNIPER_SITEMAP_INDEX_CHILDREN + 1)
+    )
+    index = (
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"{children}</sitemapindex>"
+    )
+    with pytest.raises(sl.SourceFetchError, match="exceeding the reviewed bound"):
+        sl.parse_juniper_security_sitemap_index(index)
+
+
+def test_discover_juniper_security_sitemaps_fetches_and_parses_the_index(monkeypatch):
+    index_xml = (
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>"
+        "</sitemapindex>"
+    )
+
+    def _fetch(url):
+        assert url == sl.JUNIPER_SECURITY_SITEMAP_INDEX_URL
+        return index_xml
+
+    monkeypatch.setattr(sl, "fetch_text", _fetch)
+
+    children = sl.discover_juniper_security_sitemaps()
+
+    assert children == ["https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml"]
+
+
+def test_discover_juniper_security_urls_reads_all_discovered_children(monkeypatch):
+    pages = {
+        sl.JUNIPER_SECURITY_SITEMAP_INDEX_URL: (
+            '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>"
+            "<sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-2.xml</loc></sitemap>"
+            "</sitemapindex>"
+        ),
+        "https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml": (
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<url><loc>https://supportportal.juniper.net/s/article/2026-Security-Bulletin-Apstra-CVE-1</loc></url>"
+            "</urlset>"
+        ),
+        "https://supportportal.juniper.net/s/sitemap-topicarticle-2.xml": (
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<url><loc>https://supportportal.juniper.net/s/article/2020-Security-Bulletin-Mist-CVE-2</loc></url>"
+            "</urlset>"
+        ),
+    }
+    monkeypatch.setattr(sl, "fetch_text", lambda url: pages[url])
+
+    urls = sl.discover_juniper_security_urls()
+
+    assert urls == [
+        "https://supportportal.juniper.net/s/article/2020-Security-Bulletin-Mist-CVE-2",
+        "https://supportportal.juniper.net/s/article/2026-Security-Bulletin-Apstra-CVE-1",
+    ]
+
+
 def test_render_juniper_security_requires_article_body():
     rendered = sl.render_juniper_security_advisory(
         "Apstra advisory",
