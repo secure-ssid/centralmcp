@@ -1,8 +1,8 @@
 """Register generated OpenAPI operations as FastMCP tools.
 
 Each manifest operation becomes one FastMCP tool with a *typed* signature
-derived from its path/query/header parameters (plus ``body``/``dry_run``/
-``confirm`` for writes). The runtime:
+derived from its path/query/header parameters (plus ``body`` when declared,
+and ``dry_run``/``confirm`` for writes). The runtime:
 
 * keeps auth headers/cookies out of the model-visible arguments;
 * URL-escapes path values and rejects traversal-style values;
@@ -34,7 +34,7 @@ from mcp_servers.openapi_gen.naming import digest, snake
 from mcp_servers.shared import DESTRUCTIVE, DIAGNOSTIC, IDEMPOTENT_WRITE, READ_ONLY, WRITE
 
 # Executor protocols (implemented per platform in the backend module).
-ReadExecutor = Callable[[str, str, dict[str, Any], dict[str, str]], Awaitable[dict[str, Any]]]
+ReadExecutor = Callable[..., Awaitable[dict[str, Any]]]
 WriteExecutor = Callable[
     [str, str, str, dict[str, Any], dict[str, str], Any, str, bool, bool],
     Awaitable[dict[str, Any]],
@@ -203,7 +203,12 @@ def _path_values(specs: list[_ParamSpec], kwargs: dict[str, Any]) -> dict[str, A
 
 
 def _build_signature(
-    specs: list[_ParamSpec], *, is_write: bool, body_type: Any, body_required: bool
+    specs: list[_ParamSpec],
+    *,
+    include_body: bool,
+    include_write_controls: bool,
+    body_type: Any,
+    body_required: bool,
 ) -> tuple[inspect.Signature, dict[str, Any]]:
     parameters: list[inspect.Parameter] = []
     annotations: dict[str, Any] = {}
@@ -225,7 +230,7 @@ def _build_signature(
                 annotation=annotation,
             )
         )
-    if is_write:
+    if include_body:
         if body_required:
             annotations["body"] = body_type
             parameters.append(
@@ -243,6 +248,7 @@ def _build_signature(
                     annotation=annotations["body"],
                 )
             )
+    if include_write_controls:
         annotations["dry_run"] = bool
         parameters.append(
             inspect.Parameter(
@@ -288,9 +294,15 @@ def _short_description(op: dict[str, Any]) -> str:
 
 
 def _make_read_tool(op: dict[str, Any], read_executor: ReadExecutor) -> Callable[..., Any]:
-    specs = _param_specs(op)
+    rb = op.get("request_body") or {}
+    specs = _param_specs(op, reserved=frozenset({"body"}) if rb else frozenset())
     method = op["method"]
     template = op["path"]
+    content_type = rb.get("content_type", "application/json")
+    body_type = _py_type(rb.get("schema_type", "object"), rb.get("item_type"))
+    if body_type is Any:
+        body_type = dict
+    body_required = bool(rb.get("required", False))
 
     async def _tool(**kwargs: Any) -> dict[str, Any]:
         try:
@@ -299,10 +311,23 @@ def _make_read_tool(op: dict[str, Any], read_executor: ReadExecutor) -> Callable
             return {"error": str(exc)}
         query = _build_query(specs, kwargs)
         headers = _build_headers(specs, kwargs)
+        if rb:
+            return await read_executor(
+                method,
+                path,
+                query,
+                headers,
+                kwargs.get("body"),
+                content_type,
+            )
         return await read_executor(method, path, query, headers)
 
     signature, annotations = _build_signature(
-        specs, is_write=False, body_type=Any, body_required=False
+        specs,
+        include_body=bool(rb),
+        include_write_controls=False,
+        body_type=body_type,
+        body_required=body_required,
     )
     _finalize(_tool, op, signature, annotations)
     return _tool
@@ -336,7 +361,11 @@ def _make_write_tool(op: dict[str, Any], write_executor: WriteExecutor) -> Calla
         )
 
     signature, annotations = _build_signature(
-        specs, is_write=True, body_type=body_type, body_required=body_required
+        specs,
+        include_body=True,
+        include_write_controls=True,
+        body_type=body_type,
+        body_required=body_required,
     )
     _finalize(_tool, op, signature, annotations)
     return _tool
@@ -345,7 +374,7 @@ def _make_write_tool(op: dict[str, Any], write_executor: WriteExecutor) -> Calla
 def _make_diagnostic_tool(
     op: dict[str, Any], write_executor: WriteExecutor
 ) -> Callable[..., Any]:
-    specs = _param_specs(op)
+    specs = _param_specs(op, reserved=frozenset({"body"}))
     method = op["method"]
     template = op["path"]
     rb = op.get("request_body") or {}
@@ -375,16 +404,13 @@ def _make_diagnostic_tool(
         )
 
     signature, annotations = _build_signature(
-        specs, is_write=True, body_type=body_type, body_required=body_required
+        specs,
+        include_body=True,
+        include_write_controls=False,
+        body_type=body_type,
+        body_required=body_required,
     )
-    parameters = [
-        parameter
-        for parameter in signature.parameters.values()
-        if parameter.name not in {"dry_run", "confirm"}
-    ]
-    annotations.pop("dry_run", None)
-    annotations.pop("confirm", None)
-    _finalize(_tool, op, signature.replace(parameters=parameters), annotations)
+    _finalize(_tool, op, signature, annotations)
     return _tool
 
 

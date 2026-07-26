@@ -2793,8 +2793,17 @@ async def _edgeconnect_generated_read(
     path: str,
     query: dict[str, Any],
     headers: dict[str, str],
+    body: Any = None,
+    content_type: str = "application/json",
 ) -> dict[str, Any]:
-    return await _edgeconnect_generated_request(method, path, query, headers)
+    return await _edgeconnect_generated_request(
+        method,
+        path,
+        query,
+        headers,
+        body=body,
+        content_type=content_type,
+    )
 
 
 async def _edgeconnect_generated_write(

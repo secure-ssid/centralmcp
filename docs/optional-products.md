@@ -105,6 +105,20 @@ invoke_read_tool("mist_list_sites", {"org_id": "11111111-2222-3333-4444-55555555
 invoke_read_tool("apstra_list_blueprints", {"limit": 5})
 ```
 
+Some Apstra query endpoints use `POST` without changing state. They remain
+read-only tools and accept their required JSON query payload through `body`,
+without `dry_run` or `confirm`:
+
+```text
+invoke_read_tool("apstra_search_connectivity_templates", {
+  "blueprint_id": "blueprint-id",
+  "body": {"<query-field>": "<value>"}
+})
+```
+
+The exact query object is version-specific; use the fields documented by the
+Apstra API running in your environment.
+
 </div>
 
 <div class="example-card" markdown="1">

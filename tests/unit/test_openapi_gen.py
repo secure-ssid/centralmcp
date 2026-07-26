@@ -10,8 +10,10 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 import mcp_servers.mist as mist
+import mcp_servers.openapi_gen.http_exec as http_exec
 from mcp_servers.openapi_gen import manifest_operation_count
 from mcp_servers.openapi_gen.classify import classify
+from mcp_servers.openapi_gen.http_exec import make_read_executor
 from mcp_servers.openapi_gen.ir import SpecParser, UnresolvedRefError
 from mcp_servers.openapi_gen.manifest import (
     build_manifest,
@@ -313,8 +315,17 @@ def test_merged_manifest_is_deterministic_and_deduplicates_operations():
 # ---------------------------------------------------------------------------
 
 def _fake_read_executor(captured):
-    async def _exec(method, path, query, headers):
-        captured.update(method=method, path=path, query=query, headers=headers)
+    async def _exec(
+        method, path, query, headers, body=None, content_type="application/json"
+    ):
+        captured.update(
+            method=method,
+            path=path,
+            query=query,
+            headers=headers,
+            body=body,
+            content_type=content_type,
+        )
         return {"status_code": 200, "data": {"ok": True}}
     return _exec
 
@@ -371,6 +382,96 @@ def test_direct_read_dispatch(monkeypatch):
     assert read_cap["path"] == "/api/v1/orgs/o1/widgets"
     # False preserved (not dropped), None omitted.
     assert read_cap["query"] == {"verbose": False, "mode": "fast"}
+
+
+def test_read_post_exposes_required_body_without_write_controls(monkeypatch):
+    manifest = _manifest()
+    read_post = dict(manifest["operations"][1])
+    read_post.update(
+        name="demo_search_widgets",
+        operation_id="searchWidgets",
+        capability="read",
+        summary="Search widgets",
+    )
+    manifest["operations"].append(read_post)
+    server = FastMCP("demo-read-body")
+    captured: dict = {}
+    monkeypatch.setenv("CENTRALMCP_DEMO_GENERATED_TOOLS", "1")
+    register_generated_tools(
+        server,
+        "demo",
+        read_executor=_fake_read_executor(captured),
+        write_executor=_fake_write_executor({}),
+        manifest=manifest,
+    )
+
+    tool = server._tool_manager._tools["demo_search_widgets"]
+    props = tool.parameters.get("properties") or {}
+    assert tool.annotations.readOnlyHint is True
+    assert "body" in (tool.parameters.get("required") or [])
+    assert "dry_run" not in props
+    assert "confirm" not in props
+
+    out = asyncio.run(tool.fn(org_id="o1", body={"name": "leaf"}))
+    assert out["status_code"] == 200
+    assert captured["method"] == "POST"
+    assert captured["body"] == {"name": "leaf"}
+    assert captured["content_type"] == "application/json"
+
+
+def test_http_read_executor_applies_json_body(monkeypatch):
+    captured: dict = {}
+
+    class Response:
+        status_code = 200
+        content = b'{"ok": true}'
+        text = '{"ok": true}'
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {"ok": True}
+
+    class FakeClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            captured.update(method=method, url=url, kwargs=kwargs)
+            return Response()
+
+    async def resolve(path, headers):
+        return "https://example.test", {
+            "Authorization": "Bearer secret",
+            **headers,
+        }
+
+    monkeypatch.setattr(http_exec.httpx, "AsyncClient", FakeClient)
+    executor = make_read_executor(
+        resolve=resolve,
+        allowed_prefixes=lambda: ("/api/",),
+        not_configured="not configured",
+    )
+    out = asyncio.run(
+        executor(
+            "POST",
+            "/api/search",
+            {"limit": 5},
+            {"X-Trace": "trace"},
+            {"name": "leaf"},
+            "application/json",
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert captured["kwargs"]["json"] == {"name": "leaf"}
+    assert captured["kwargs"]["params"] == {"limit": 5}
+    assert captured["kwargs"]["headers"]["X-Trace"] == "trace"
 
 
 def test_read_path_escaping_and_traversal_rejection(monkeypatch):

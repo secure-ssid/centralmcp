@@ -153,14 +153,16 @@ def make_read_executor(
     allowed_prefixes: PrefixGetter,
     not_configured: str = "backend not configured",
     refresh_auth: AuthRefresher | None = None,
-) -> Callable[[str, str, dict[str, Any], dict[str, str]], Awaitable[dict[str, Any]]]:
-    """Build the read executor (GET/HEAD, bounded, direct)."""
+) -> Callable[..., Awaitable[dict[str, Any]]]:
+    """Build the read executor (read-classified methods, bounded, direct)."""
 
     async def _read(
         method: str,
         path: str,
         query: dict[str, Any],
         headers: dict[str, str],
+        body: Any = None,
+        content_type: str = "application/json",
     ) -> dict[str, Any]:
         prefixes = allowed_prefixes()
         if not _path_ok(path, prefixes):
@@ -171,9 +173,16 @@ def make_read_executor(
                 for attempt in range(_MAX_RETRIES + 1):
                     base_url, req_headers = await resolve(path, headers)
                     url = f"{base_url}{path}"
-                    resp = await client.request(
-                        method, url, headers=req_headers, params=params
+                    request_kwargs: dict[str, Any] = {
+                        "headers": req_headers,
+                        "params": params,
+                    }
+                    body_error = apply_request_body(
+                        request_kwargs, req_headers, body, content_type
                     )
+                    if body_error is not None:
+                        return body_error
+                    resp = await client.request(method, url, **request_kwargs)
                     if (
                         resp.status_code == 401
                         and refresh_auth is not None

@@ -25,6 +25,7 @@ from urllib.parse import quote
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from mcp_servers.openapi_gen.http_exec import apply_request_body
 from mcp_servers.shared import (
     DESTRUCTIVE,
     IDEMPOTENT_WRITE,
@@ -1182,17 +1183,26 @@ async def _clearpass_generated_read(
     path: str,
     query: dict[str, Any],
     headers: dict[str, str],
+    body: Any = None,
+    content_type: str = "application/json",
 ) -> dict[str, Any]:
-    """Read executor for generated ClearPass tools (GET/HEAD, bounded, direct)."""
+    """Read executor for generated ClearPass tools (bounded, direct)."""
     base_url, token, error = _clearpass_generated_prepare(path)
     if error:
         return {"error": error}
     url = f"{base_url}{_CLEARPASS_API_PREFIX}{path}"
     req_headers = _clearpass_generated_headers(token, headers)
     clean_params = {k: v for k, v in query.items() if v is not None}
+    request_kwargs: dict[str, Any] = {
+        "headers": req_headers,
+        "params": clean_params,
+    }
+    body_error = apply_request_body(request_kwargs, req_headers, body, content_type)
+    if body_error is not None:
+        return body_error
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.request(method, url, headers=req_headers, params=clean_params)
+            resp = await client.request(method, url, **request_kwargs)
         payload = redact_sensitive(bound_collection_response(
             bounded_response_payload(resp), limit=clamp_limit(None), offset=0
         ))

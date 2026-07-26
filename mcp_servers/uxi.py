@@ -37,6 +37,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from mcp_servers._middleware import RateLimitMiddleware
+from mcp_servers.openapi_gen.http_exec import apply_request_body
 from mcp_servers.shared import (
     DESTRUCTIVE,
     IDEMPOTENT_WRITE,
@@ -814,6 +815,8 @@ async def _uxi_generated_read(
     path: str,
     query: dict[str, Any],
     headers: dict[str, str],
+    body: Any = None,
+    content_type: str = "application/json",
 ) -> dict[str, Any]:
     """Read executor for generated UXI tools (throttled, bounded, direct)."""
     host, client_id, client_secret, token_url, error = _uxi_generated_prepare(path)
@@ -827,9 +830,16 @@ async def _uxi_generated_read(
         for key, value in (headers or {}).items():
             if key.strip().lower() not in {"authorization", "cookie"}:
                 req_headers[key] = value
+        request_kwargs: dict[str, Any] = {
+            "headers": req_headers,
+            "params": clean_params,
+        }
+        body_error = apply_request_body(request_kwargs, req_headers, body, content_type)
+        if body_error is not None:
+            return body_error
         await _uxi_throttle()
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.request(method, url, headers=req_headers, params=clean_params)
+            resp = await client.request(method, url, **request_kwargs)
         payload = redact_sensitive(bound_collection_response(
             bounded_response_payload(resp), limit=clamp_limit(None), offset=0
         ))

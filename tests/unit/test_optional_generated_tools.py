@@ -11,10 +11,13 @@ response bounding, and the write gate (blocked by default; dry-run/confirm).
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import mcp_servers.aos8 as aos8
 import mcp_servers.apstra as apstra
 import mcp_servers.clearpass as clearpass
+import mcp_servers.edgeconnect as edgeconnect
+import mcp_servers.mist as mist
 import mcp_servers.uxi as uxi
 from mcp_servers.openapi_gen import manifest_operation_count
 
@@ -119,6 +122,21 @@ def test_apstra_login_endpoints_not_registered():
     assert not any("aaa_login" in n.lower() for n in names)
 
 
+def test_custom_generated_read_executors_accept_request_bodies():
+    executors = (
+        aos8._aos8_generated_read,
+        apstra._apstra_generated_read,
+        clearpass._clearpass_generated_read,
+        edgeconnect._edgeconnect_generated_read,
+        mist._mist_generated_read,
+        uxi._uxi_generated_read,
+    )
+    for executor in executors:
+        parameters = inspect.signature(executor).parameters
+        assert parameters["body"].default is None
+        assert parameters["content_type"].default == "application/json"
+
+
 def test_clearpass_disconnect_all_is_destructive():
     tool = _tool(clearpass, "clearpass_session_action_disconnect_post")
     assert tool.annotations.destructiveHint is True
@@ -218,6 +236,33 @@ def test_apstra_readonly_query_post_dispatches_directly(monkeypatch):
     assert cap["method"] == "POST"
     assert cap["url"].endswith("/api/blueprints/bp1/obj-policy-application-points")
     assert cap["headers"]["AuthToken"] == "statictok"
+    assert out["status_code"] == 200
+
+
+def test_apstra_readonly_query_post_forwards_required_json_body(monkeypatch):
+    monkeypatch.setenv("APSTRA_BASE_URL", "https://apstra.example.com")
+    monkeypatch.setenv("APSTRA_API_TOKEN", "statictok")
+    cap: dict = {}
+    _fake_httpx(monkeypatch, apstra, cap, payload={"items": [{"id": "ct1"}]})
+    _, tool = _find_tool(
+        apstra, "apstra_search_connectivity_templates", apstra.GENERATED_APSTRA_TOOLS
+    )
+    props = _props(tool)
+    assert tool.annotations.readOnlyHint is True
+    assert "body" in (tool.parameters.get("required") or [])
+    assert "dry_run" not in props
+    assert "confirm" not in props
+
+    out = asyncio.run(
+        tool.fn(
+            blueprint_id="bp1",
+            body={"search_string": "leaf", "policy_type": "batch"},
+        )
+    )
+
+    assert cap["method"] == "POST"
+    assert cap["url"].endswith("/api/blueprints/bp1/obj-policy-search")
+    assert cap["kw"]["json"] == {"search_string": "leaf", "policy_type": "batch"}
     assert out["status_code"] == 200
 
 

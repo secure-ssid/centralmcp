@@ -985,6 +985,8 @@ async def _apstra_generated_read(
     path: str,
     query: dict[str, Any],
     headers: dict[str, str],
+    body: Any = None,
+    content_type: str = "application/json",
 ) -> dict[str, Any]:
     """Read executor for generated Apstra tools (AuthToken session, bounded)."""
     base_url, error = _apstra_generated_prepare(path)
@@ -992,7 +994,14 @@ async def _apstra_generated_read(
         return {"error": error}
     url = f"{base_url}{path}"
     clean_params = {k: v for k, v in query.items() if v is not None}
-    out = await _apstra_authenticated_request(method, url, params=clean_params)
+    if body is not None and content_type != "application/json":
+        return {"error": f"Unsupported Apstra read request body type: {content_type}"}
+    out = await _apstra_authenticated_request(
+        method,
+        url,
+        params=clean_params,
+        json_body=body,
+    )
     if isinstance(out, dict) and "data" in out:
         out["data"] = redact_sensitive(
             bound_collection_response(out["data"], limit=clamp_limit(None), offset=0)
