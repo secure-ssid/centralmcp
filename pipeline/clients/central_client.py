@@ -156,13 +156,14 @@ class CentralClient:
         self.last_deprecation: Optional[DeprecationStatus] = None
         self._refresh_auth_header()
 
-    def _refresh_auth_header(self) -> None:
-        token = self.token_manager.get_access_token()
-        self._token_generation = self.token_manager.generation
+    def _refresh_auth_header(self) -> int:
+        token, generation = self.token_manager.get_access_token_with_generation()
+        self._token_generation = generation
         self.session.headers.update({"Authorization": f"Bearer {token}"})
+        return generation
 
-    def _ensure_valid_token(self) -> None:
-        self._refresh_auth_header()
+    def _ensure_valid_token(self) -> int:
+        return self._refresh_auth_header()
 
     def _record_response_metadata(self, response: httpx.Response, endpoint: str) -> None:
         """Capture rate-limit / deprecation metadata from ``response`` and
@@ -247,7 +248,7 @@ class CentralClient:
         retry_5xx_delay = _SERVER_ERROR_INITIAL_DELAY
 
         for attempt in range(max_retries + 1):
-            self._ensure_valid_token()
+            request_generation = self._ensure_valid_token()
             response = self.session.request(method, url, **kwargs)
             self._record_response_metadata(response, endpoint)
 
@@ -263,7 +264,8 @@ class CentralClient:
                 # set — if another thread already refreshed since then, this
                 # collapses into a no-op check instead of a redundant fetch.
                 self.token_manager.get_access_token(
-                    force_refresh=True, observed_generation=self._token_generation
+                    force_refresh=True,
+                    observed_generation=request_generation,
                 )
                 self._refresh_auth_header()
                 continue
