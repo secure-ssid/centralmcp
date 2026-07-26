@@ -27,7 +27,7 @@ indexed into both the prose RAG corpus and the structured `advisories` /
 | HPE Networking End of Sale XML archive | All legacy HP/H3C/3Com/ProCurve networking categories | **Historical.** No current Aruba-branded entries; most recent published date is 2020 |
 | Aruba hardware End of Sale PDF | SKU-level EoS dates and replacements | Static snapshot (document metadata records a 2020-05-06 last modification); not refreshed on a schedule |
 | Juniper Mist/Apstra EOL pages | The 3 official Mist/Apstra hardware+software lifecycle tables, plus any page the official EOL index nav adds | Juniper renders these server-side rather than via a public structured feed |
-| Juniper Mist/Apstra security bulletins | Discovered via the official sitemap, filtered to Mist/Apstra Security Bulletin articles | Limited to sitemap-discoverable articles |
+| Juniper Mist/Apstra security bulletins | Discovered via the official sitemap index's topic-article child sitemaps, filtered to Mist/Apstra Security Bulletin articles | Limited to sitemap-discoverable articles |
 
 ## The current-Aruba-lifecycle coverage gap
 
@@ -115,3 +115,18 @@ official Juniper EOL index page (`support.juniper.net/support/eol/`)
 currently discloses under a Mist/Apstra label, deduplicated by absolute URL
 so a future officially-added page is picked up automatically without a code
 change, while the reviewed slugs for already-known pages are preserved.
+
+`ingestion.scrape_security_lifecycle.discover_juniper_security_sitemaps()`
+fetches and parses the official Juniper support-portal sitemap index
+(`supportportal.juniper.net/s/sitemap.xml`) into its current topic-article
+child sitemap URLs (`sitemap-topicarticle-*.xml`). Only this index URL is
+provenance-pinned; individual child filenames are not, because Juniper has
+changed one without notice before (a previously hardcoded
+`sitemap-topicarticle-weekly.xml` child started 404ing -- GitHub Actions
+run 30218562473). `parse_juniper_security_sitemap_index()` fails closed on
+malformed XML, an unexpected root element, an implausible number of
+children, any child URL off the reviewed host/scheme or carrying
+credentials/query/fragment/path-traversal, and zero matching topic-article
+children -- it never falls back to a previously known child URL.
+`discover_juniper_security_urls()` then reads each discovered child
+sitemap and filters to Mist/Apstra Security Bulletin articles.

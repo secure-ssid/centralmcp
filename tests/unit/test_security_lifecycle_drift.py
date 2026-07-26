@@ -251,11 +251,16 @@ def test_evaluate_juniper_lifecycle_changed_when_page_content_missing(monkeypatc
 
 
 # ---------------------------------------------------------------------------
-# Juniper security bulletins
+# Juniper security bulletins -- sitemap-index discovery
 # ---------------------------------------------------------------------------
 
 
-def test_evaluate_juniper_security_fresh(monkeypatch):
+def test_evaluate_juniper_security_fresh_with_one_child(monkeypatch):
+    monkeypatch.setattr(
+        sources,
+        "discover_juniper_security_sitemaps",
+        lambda: ["https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml"],
+    )
     monkeypatch.setattr(sources, "fetch_text", lambda url: "<urlset></urlset>")
     monkeypatch.setattr(
         sources, "parse_juniper_security_sitemap", lambda text: {"https://example.test/bulletin"}
@@ -267,11 +272,14 @@ def test_evaluate_juniper_security_fresh(monkeypatch):
     assert entry["count"] == 1
 
 
-def test_evaluate_juniper_security_unavailable_on_ssl_failure(monkeypatch):
-    def _raise(url):
-        raise sources.SourceFetchError(f"failed to fetch {url}: certificate verify failed")
+def test_evaluate_juniper_security_unavailable_when_index_fetch_fails(monkeypatch):
+    def _raise():
+        raise sources.SourceFetchError(
+            "failed to fetch https://supportportal.juniper.net/s/sitemap.xml: "
+            "certificate verify failed"
+        )
 
-    monkeypatch.setattr(sources, "fetch_text", _raise)
+    monkeypatch.setattr(sources, "discover_juniper_security_sitemaps", _raise)
 
     entry = drift.evaluate_juniper_security()
 
@@ -279,7 +287,49 @@ def test_evaluate_juniper_security_unavailable_on_ssl_failure(monkeypatch):
     assert "certificate verify failed" in entry["detail"]
 
 
-def test_evaluate_juniper_security_changed_on_invalid_sitemap(monkeypatch):
+def test_evaluate_juniper_security_unavailable_when_index_malformed(monkeypatch):
+    # A malformed/off-host/removed-family index failure is discovered while
+    # assembling the set of child sitemaps to read (inside the *fetch*
+    # phase, alongside network failures), not while parsing an
+    # already-fetched child body -- so it is reported the same as an
+    # unreachable index, not as "changed".
+    def _raise():
+        raise sources.SourceFetchError(
+            "Juniper sitemap index no longer lists any topic-article sitemap children"
+        )
+
+    monkeypatch.setattr(sources, "discover_juniper_security_sitemaps", _raise)
+
+    entry = drift.evaluate_juniper_security()
+
+    assert entry["status"] == drift.STATUS_UNAVAILABLE
+    assert "no longer lists any topic-article" in entry["detail"]
+
+
+def test_evaluate_juniper_security_unavailable_on_child_fetch_failure(monkeypatch):
+    monkeypatch.setattr(
+        sources,
+        "discover_juniper_security_sitemaps",
+        lambda: ["https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml"],
+    )
+
+    def _raise(url):
+        raise sources.SourceFetchError(f"failed to fetch {url}: 404 Not Found")
+
+    monkeypatch.setattr(sources, "fetch_text", _raise)
+
+    entry = drift.evaluate_juniper_security()
+
+    assert entry["status"] == drift.STATUS_UNAVAILABLE
+    assert "404 Not Found" in entry["detail"]
+
+
+def test_evaluate_juniper_security_changed_on_child_malformed_xml(monkeypatch):
+    monkeypatch.setattr(
+        sources,
+        "discover_juniper_security_sitemaps",
+        lambda: ["https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml"],
+    )
     monkeypatch.setattr(sources, "fetch_text", lambda url: "not xml")
 
     def _raise(text):
@@ -290,6 +340,61 @@ def test_evaluate_juniper_security_changed_on_invalid_sitemap(monkeypatch):
     entry = drift.evaluate_juniper_security()
 
     assert entry["status"] == drift.STATUS_CHANGED
+    assert "invalid Juniper sitemap XML" in entry["detail"]
+
+
+def test_evaluate_juniper_security_changed_on_source_identity_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        sources,
+        "discover_juniper_security_sitemaps",
+        lambda: ["https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml"],
+    )
+    monkeypatch.setattr(sources, "fetch_text", lambda url: "<urlset></urlset>")
+    monkeypatch.setattr(
+        sources, "parse_juniper_security_sitemap", lambda text: {"https://example.test/bulletin"}
+    )
+
+    def _raise(family, actual_urls):
+        raise provenance.SourceProvenanceError(f"{family} source URLs no longer match")
+
+    monkeypatch.setattr(provenance, "validate_source_identity", _raise)
+
+    entry = drift.evaluate_juniper_security()
+
+    assert entry["status"] == drift.STATUS_CHANGED
+    assert "no longer match" in entry["detail"]
+
+
+def test_evaluate_juniper_security_successful_discovery_end_to_end(monkeypatch):
+    # Exercises the real index parser and child parser together (only the
+    # network layer is mocked) so the full sitemap-index -> child sitemaps
+    # -> Mist/Apstra bulletin URLs chain is covered, not just its pieces.
+    pages = {
+        sources.JUNIPER_SECURITY_SITEMAP_INDEX_URL: (
+            '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<sitemap><loc>https://supportportal.juniper.net/s/sitemap-topic-1.xml</loc></sitemap>"
+            "<sitemap><loc>https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml</loc></sitemap>"
+            "<sitemap><loc>https://supportportal.juniper.net/s/sitemap-view-1.xml</loc></sitemap>"
+            "</sitemapindex>"
+        ),
+        "https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml": (
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<url><loc>https://supportportal.juniper.net/s/article/2026-Security-Bulletin-Apstra-CVE-1</loc></url>"
+            "<url><loc>https://supportportal.juniper.net/s/article/not-a-bulletin</loc></url>"
+            "</urlset>"
+        ),
+    }
+    monkeypatch.setattr(sources, "fetch_text", lambda url: pages[url])
+
+    def _validate_identity(family, urls):
+        assert urls == [sources.JUNIPER_SECURITY_SITEMAP_INDEX_URL]
+
+    monkeypatch.setattr(provenance, "validate_source_identity", _validate_identity)
+
+    entry = drift.evaluate_juniper_security()
+
+    assert entry["status"] == drift.STATUS_FRESH
+    assert entry["count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +434,11 @@ def _patch_all_fresh(monkeypatch):
         lambda: dict(sources.JUNIPER_LIFECYCLE_URLS),
     )
     monkeypatch.setattr(sources, "render_juniper_lifecycle_page", lambda text, url: "rendered")
+    monkeypatch.setattr(
+        sources,
+        "discover_juniper_security_sitemaps",
+        lambda: ["https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml"],
+    )
     monkeypatch.setattr(
         sources, "parse_juniper_security_sitemap", lambda text: {"https://example.test/bulletin"}
     )
