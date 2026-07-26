@@ -242,7 +242,7 @@ index with 244 specs, 3,796 endpoints, 11,293 schemas, 60,568 fields,
 python3 scripts/setup_wizard.py --yes --skip-credentials --skip-catalog
 uv run python scripts/doctor.py
 uv run pytest tests/unit -q
-uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6162
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6699
 ```
 
 `scripts/doctor.py` is a non-mutating local setup diagnostic. It checks Python

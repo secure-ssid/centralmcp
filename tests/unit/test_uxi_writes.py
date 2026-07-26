@@ -261,13 +261,15 @@ def test_uxi_rate_limiter_is_shared_5rps_bucket():
 def test_uxi_write_throttles_outbound_requests(monkeypatch):
     """Every real write call must pass through the shared 5 req/s limiter."""
     calls = {"count": 0}
-    original_acquire = uxi._UXI_RATE_LIMITER._acquire
+    # ``acquire`` is the public token-bucket entry point (``_acquire`` remains
+    # as a backwards-compatible alias); ``before_call`` dispatches through it.
+    original_acquire = uxi._UXI_RATE_LIMITER.acquire
 
     async def _counting_acquire():
         calls["count"] += 1
         return await original_acquire()
 
-    monkeypatch.setattr(uxi._UXI_RATE_LIMITER, "_acquire", _counting_acquire)
+    monkeypatch.setattr(uxi._UXI_RATE_LIMITER, "acquire", _counting_acquire)
     fake_cls, _ = _fake_client(request_resp=_Resp(200, {"ok": True}))
     _configure_uxi(monkeypatch)
     monkeypatch.setattr(uxi.httpx, "AsyncClient", fake_cls)

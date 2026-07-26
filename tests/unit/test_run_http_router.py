@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 from scripts import setup_wizard
@@ -112,3 +113,82 @@ def test_http_router_warns_about_public_binding_allowlist_requirement():
 
     assert "MCP_ALLOWED_HOSTS" in text
     assert "UnsafeHttpBindingError" in text
+
+
+# ---------------------------------------------------------------------------
+# Allowlist completeness (regression)
+# ---------------------------------------------------------------------------
+#
+# The .env allowlist is a hand-maintained set, so it silently drifted behind
+# the CENTRALMCP_* knobs the router actually reads: an operator setting, say,
+# CENTRALMCP_ROUTER_RESPONSE_MAX_BYTES in .env saw it quietly ignored. These
+# tests recompute the knob set from the source tree instead of restating it.
+
+_RUNTIME_ENV_RE = re.compile(r"CENTRALMCP_[A-Z0-9_]+")
+
+#: Knobs deliberately excluded from the .env allowlist.
+#: - CENTRALMCP_LIVE_TEST_*: opt-in live-test switches, never a server knob.
+#: - CENTRALMCP_TOOL_IDS__ / CENTRALMCP_LIVE_TEST_: dynamic name prefixes, not
+#:   complete variable names.
+_EXCLUDED_ENV_KEYS = {"CENTRALMCP_TOOL_IDS__", "CENTRALMCP_LIVE_TEST_"}
+_EXCLUDED_ENV_PREFIXES = ("CENTRALMCP_LIVE_TEST_",)
+
+
+def _runtime_centralmcp_keys() -> set[str]:
+    keys: set[str] = set()
+    for directory in ("mcp_servers", "pipeline", "ingestion"):
+        for path in (REPO_ROOT / directory).rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            keys.update(_RUNTIME_ENV_RE.findall(path.read_text(encoding="utf-8")))
+    return {
+        key
+        for key in keys
+        if key not in _EXCLUDED_ENV_KEYS
+        and not key.startswith(_EXCLUDED_ENV_PREFIXES)
+    }
+
+
+def test_http_router_allowlist_covers_every_runtime_centralmcp_key():
+    allowed_keys = _http_helper_allowed_keys()
+
+    missing = sorted(_runtime_centralmcp_keys() - allowed_keys)
+
+    assert not missing, f"missing from run_http_router.sh allowed_keys: {missing}"
+
+
+def test_http_router_allowlist_includes_router_response_budget_keys():
+    allowed_keys = _http_helper_allowed_keys()
+
+    assert "CENTRALMCP_ROUTER_RESPONSE_MAX_ITEMS" in allowed_keys
+    assert "CENTRALMCP_ROUTER_RESPONSE_MAX_BYTES" in allowed_keys
+    assert "CENTRALMCP_ROUTER_BATCH_RESPONSE_MAX_BYTES" in allowed_keys
+    assert "CENTRALMCP_ROUTER_CURSOR_TTL_SECONDS" in allowed_keys
+
+
+def test_http_router_allowlist_includes_generated_tool_opt_ins():
+    allowed_keys = _http_helper_allowed_keys()
+
+    for platform in ("CENTRAL", "GLP", "AOS8", "APSTRA", "CLEARPASS", "MIST", "UXI"):
+        assert f"CENTRALMCP_{platform}_GENERATED_TOOLS" in allowed_keys
+
+
+def test_http_router_allowlist_includes_rag_and_embedding_knobs():
+    allowed_keys = _http_helper_allowed_keys()
+
+    assert "CENTRALMCP_RAG_BACKEND" in allowed_keys
+    assert "CENTRALMCP_EMBED_PROVIDERS" in allowed_keys
+    assert "CENTRALMCP_NOMIC_PREFIXES" in allowed_keys
+    assert "CENTRALMCP_BOUND_LISTS" in allowed_keys
+    assert "CENTRALMCP_NORMALIZE_MACS" in allowed_keys
+
+
+def test_http_router_allowlist_includes_glp_region():
+    """Every curated GLP compute/storage/virtualization tool needs it."""
+    assert "GLP_GENERATED_REGION" in _http_helper_allowed_keys()
+
+
+def test_http_router_allowlist_excludes_live_test_switches():
+    allowed_keys = _http_helper_allowed_keys()
+
+    assert not [key for key in allowed_keys if key.startswith("CENTRALMCP_LIVE_TEST_")]

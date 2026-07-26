@@ -324,3 +324,31 @@ def test_with_products_catalog_uses_all_products_without_tokens(monkeypatch):
         "CENTRALMCP_PRODUCTS": products,
         "CENTRALMCP_PRODUCT_ACCESS": "read-only",
     }
+
+
+def test_write_secret_file_is_owner_only(tmp_path):
+    """Secret files (credentials.yaml / .env) are created 0600, not
+    world-readable under the default umask."""
+    import stat
+
+    target = tmp_path / "credentials.yaml"
+    setup_wizard._write_secret_file(target, "client_secret: hunter2\n")
+
+    assert target.read_text() == "client_secret: hunter2\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_write_secret_file_tightens_preexisting_world_readable_file(tmp_path):
+    """A pre-existing 0644 file is tightened to 0600 before the secret bytes
+    land in it (O_CREAT's mode only applies to newly-created files)."""
+    import os
+    import stat
+
+    target = tmp_path / ".env"
+    target.write_text("PLACEHOLDER=1\n")
+    os.chmod(target, 0o644)
+
+    setup_wizard._write_secret_file(target, "MIST_API_TOKEN=secret\n")
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_text() == "MIST_API_TOKEN=secret\n"

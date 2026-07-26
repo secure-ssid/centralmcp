@@ -1034,6 +1034,53 @@ def list_scope_devices(
 # ── Inventory ─────────────────────────────────────────────────────────────────
 
 
+# Device-inventory (getDeviceInventoryV1) supports server-side OData filtering
+# on deviceType/isProvisioned (both `eq` and `in`); the bare `deviceType=`
+# query param this tool used to send was silently ignored, so filtering only
+# ever happened client-side over a single cursor page (incomplete results).
+# The canonical values come straight from the Monitoring OpenAPI schema:
+# DeviceType enum = ACCESS_POINT|SWITCH|GATEWAY, IsProvisioned = YES|NO.
+_DEVICE_TYPE_FILTER_ALIASES = {
+    "AP": "ACCESS_POINT",
+    "ACCESS_POINT": "ACCESS_POINT",
+    "ACCESS-POINT": "ACCESS_POINT",
+    "ACCESSPOINT": "ACCESS_POINT",
+    "ACCESS_POINTS": "ACCESS_POINT",
+    "SWITCH": "SWITCH",
+    "SWITCHES": "SWITCH",
+    "GATEWAY": "GATEWAY",
+    "GATEWAYS": "GATEWAY",
+    "GW": "GATEWAY",
+}
+_PROVISIONED_TRUE = {"YES", "Y", "TRUE", "PROVISIONED", "1"}
+_PROVISIONED_FALSE = {"NO", "N", "FALSE", "CLAIMED", "UNPROVISIONED", "0"}
+
+
+def _odata_quote(value: Any) -> str:
+    """Escape a value for interpolation inside a single-quoted OData string."""
+    return str(value).replace("'", "''")
+
+
+def _normalize_device_type_filter(device_type: str) -> str:
+    """Normalize a caller device_type to the DeviceType enum value.
+
+    Maps the common ``AP`` alias to ``ACCESS_POINT`` and folds friendly
+    plurals/abbreviations onto the documented enum; anything unrecognized is
+    passed through upper-cased so a future enum value still forms a filter.
+    """
+    key = device_type.strip().upper()
+    return _DEVICE_TYPE_FILTER_ALIASES.get(key, key)
+
+
+def _normalize_provisioned_filter(status: str) -> str:
+    """Normalize a caller status to the IsProvisioned value (YES/NO)."""
+    key = status.strip().upper()
+    if key in _PROVISIONED_TRUE:
+        return "YES"
+    if key in _PROVISIONED_FALSE:
+        return "NO"
+    return key
+
 @mcp.tool(annotations=READ_ONLY)
 def list_inventory(
     status: str | None = None,
@@ -1042,8 +1089,12 @@ def list_inventory(
     offset: int = 0,
     next_cursor: str | None = None,
 ) -> dict[str, Any]:
-    """List claimed/unprovisioned devices. status: "Yes"=provisioned, "No"=claimed-only.
-    device_type e.g. ACCESS_POINT/SWITCH/GATEWAY.
+    """List claimed/unprovisioned devices via server-side filtering.
+
+    status: "YES"=provisioned, "NO"=claimed-only (case-insensitive; common
+    aliases accepted). device_type: ACCESS_POINT/SWITCH/GATEWAY ("AP" is
+    normalized to ACCESS_POINT). Both are translated into a getDeviceInventoryV1
+    OData `filter` so results span the whole inventory rather than one page.
 
     Uses device-inventory v1 (getdeviceinventoryv1), falling back to
     v1alpha1 automatically if v1 is unavailable on this tenant. Both
@@ -1055,26 +1106,33 @@ def list_inventory(
     errors: list[str] = []
     off = max(0, offset)
     cursor = next_cursor or (str(off + 1) if off > 0 else None)
-    filters: dict[str, Any] = {}
+
+    # Build a server-side OData filter (getDeviceInventoryV1 supports only the
+    # `and` conjunction) so filtering happens across the whole inventory, not
+    # just the current cursor page. No filter is sent when neither argument is
+    # given, preserving the unfiltered listing.
+    clauses: list[str] = []
     if device_type:
-        filters["deviceType"] = device_type
+        normalized_type = _normalize_device_type_filter(device_type)
+        clauses.append(f"deviceType eq '{_odata_quote(normalized_type)}'")
+    if status:
+        normalized_status = _normalize_provisioned_filter(status)
+        clauses.append(f"isProvisioned eq '{_odata_quote(normalized_status)}'")
+    filters: dict[str, Any] | None = (
+        {"filter": " and ".join(clauses)} if clauses else None
+    )
+
     try:
         items, returned_cursor = get_mcp_client().get_devices_page(
-            filters or None, limit=clamp_limit(limit), next_cursor=cursor
+            filters, limit=clamp_limit(limit), next_cursor=cursor
         )
     except Exception as exc:
         errors.append(str(exc))
         return {"items": [], "total": 0, "errors": errors}
     if not isinstance(items, list):
         items = []
-    # deviceType query param is ignored server-side; apply client-side post-filter.
-    if device_type:
-        want = device_type.upper()
-        if want == "AP":
-            want = "ACCESS_POINT"
-        items = [d for d in items if want in (d.get("deviceType") or "").upper()]
-    if status:
-        items = [d for d in items if d.get("isProvisioned") == status]
+    # Server-side filtering already narrowed the page; `total` reports this
+    # page's size (cursor pagination exposes no full-collection count).
     return {
         "items": items,
         "total": len(items),
@@ -2353,12 +2411,18 @@ def detect_ssh_brute_force(
 
     Scans switch events for SSH login failures (eventId 5210) and SSH session
     denials (eventId 5214), groups by source IP, and flags any IP that hits
-    >= min_failures within the time window.
+    >= min_failures within the time window (min_failures is clamped to >= 1 so
+    a zero/negative threshold can't flag every source).
 
-    Returns flagged IPs sorted by failure count descending.
+    Events whose description carries no parseable IPv4 source are counted
+    separately as ``unattributed_failures`` rather than aggregated under a
+    single ``"unknown"`` pseudo-attacker (which would fabricate a false
+    positive from unrelated events). Returns flagged IPs sorted by failure
+    count descending.
     """
     import re
 
+    min_failures = max(1, min_failures)
     events = get_mcp_client().get_events(serial_number, hours=hours, api_limit=1000)
 
     ssh_events = [e for e in events if str(e.get("eventId", "")) in ("5210", "5214")]
@@ -2366,11 +2430,17 @@ def detect_ssh_brute_force(
     _ip_re = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
 
     ip_failures: dict[str, list[dict[str, Any]]] = {}
+    unattributed = 0
     for e in ssh_events:
         desc = e.get("description", "")
         match = _ip_re.search(desc)
-        ip = match.group(1) if match else "unknown"
-        ip_failures.setdefault(ip, []).append(
+        if match is None:
+            # No parseable IPv4 source (IPv6/hostname-only description) —
+            # aggregating these into one pseudo-attacker would inflate a
+            # false positive from unrelated events.
+            unattributed += 1
+            continue
+        ip_failures.setdefault(match.group(1), []).append(
             {
                 "event_id": e.get("eventId"),
                 "event_name": e.get("eventName"),
@@ -2379,17 +2449,20 @@ def detect_ssh_brute_force(
             }
         )
 
-    flagged = [
-        {
-            "source_ip": ip,
-            "failure_count": len(evts),
-            "first_seen": min(e["time"] for e in evts if e["time"]) if evts else None,
-            "last_seen": max(e["time"] for e in evts if e["time"]) if evts else None,
-            "event_types": list({e["event_name"] for e in evts}),
-        }
-        for ip, evts in ip_failures.items()
-        if len(evts) >= min_failures
-    ]
+    flagged = []
+    for ip, evts in ip_failures.items():
+        if len(evts) < min_failures:
+            continue
+        times = [e["time"] for e in evts if e["time"]]
+        flagged.append(
+            {
+                "source_ip": ip,
+                "failure_count": len(evts),
+                "first_seen": min(times) if times else None,
+                "last_seen": max(times) if times else None,
+                "event_types": list({e["event_name"] for e in evts}),
+            }
+        )
     flagged.sort(key=lambda x: x["failure_count"], reverse=True)
 
     return {
@@ -2397,6 +2470,7 @@ def detect_ssh_brute_force(
         "hours_analyzed": hours,
         "min_failures_threshold": min_failures,
         "total_ssh_failure_events": len(ssh_events),
+        "unattributed_failures": unattributed,
         "flagged_sources": flagged,
         "flagged_count": len(flagged),
     }

@@ -212,3 +212,58 @@ def test_freshness_summary_rejects_malformed_artifact(tmp_path):
 
     with pytest.raises(contracts.ArtifactValidationError):
         rag_diagnostics.freshness_summary(path)
+
+
+def test_full_corpus_delta_covers_every_known_vector_source_family(tmp_path, monkeypatch):
+    sources_dir = tmp_path / "sources"
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(ingest_docs, "SOURCES_DIR", sources_dir)
+
+    result = rag_diagnostics.full_corpus_delta(sources_dir=sources_dir, data_dir=data_dir)
+
+    expected_families = {
+        folder
+        for folder in ingest_docs.SOURCE_META
+        if not ingest_docs.source_uses_structured_index(folder, "lancedb")
+    }
+    assert set(result["sources"]) == expected_families
+    assert "openapi_specs" not in result["sources"]
+    # None of the fixture directories exist yet -- every family should
+    # report the same bounded "missing_source_dir" shape as ingestion_delta.
+    for entry in result["sources"].values():
+        assert entry == {
+            "status": "missing_source_dir",
+            "new": 0,
+            "changed": 0,
+            "removed": 0,
+            "unchanged": 0,
+        }
+
+
+def test_full_corpus_delta_diffs_a_non_security_lifecycle_family(tmp_path, monkeypatch):
+    sources_dir = tmp_path / "sources"
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(ingest_docs, "SOURCES_DIR", sources_dir)
+
+    # "devhub" is outside ingestion_delta's four security/lifecycle
+    # families, exercising exactly the corpus-wide generalization.
+    _write_sources(sources_dir, "devhub", {"guide.md": "devhub guide body"})
+
+    result = rag_diagnostics.full_corpus_delta(sources_dir=sources_dir, data_dir=data_dir)
+
+    entry = result["sources"]["devhub"]
+    assert entry["status"] == "not_yet_indexed"
+    assert entry["new"] == 1
+    assert entry["removed"] == 0
+
+
+def test_full_corpus_delta_suppresses_collect_points_stdout(tmp_path, capsys, monkeypatch):
+    sources_dir = tmp_path / "sources"
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(ingest_docs, "SOURCES_DIR", sources_dir)
+    _write_sources(sources_dir, "devhub", {"guide.md": "devhub guide body"})
+
+    rag_diagnostics.full_corpus_delta(sources_dir=sources_dir, data_dir=data_dir)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""

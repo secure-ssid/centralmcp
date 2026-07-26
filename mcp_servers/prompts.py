@@ -8,11 +8,36 @@ and the compact RAG tools.
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from mcp.server.fastmcp import FastMCP
 
+#: Prompts that instruct the model to call ``aos8_*`` tools by name. They are
+#: useless (and actively misleading) when the AOS 8 backend is not enabled,
+#: because every tool they name is absent from the tool list.
+AOS8_PROMPT_NAMES = ("aos8_migration_readiness", "aos8_staged_migration_plan")
 
-def register_router_prompts(mcp: FastMCP) -> None:
-    """Register guided workflows on the unified tool router."""
+#: Backend server name that must be enabled for AOS8_PROMPT_NAMES to register.
+AOS8_BACKEND_SERVER = "aos8-core"
+
+
+def register_router_prompts(
+    mcp: FastMCP, enabled_backends: Collection[str] | None = None
+) -> None:
+    """Register guided workflows on the unified tool router.
+
+    Args:
+        enabled_backends: Optional collection of enabled backend server names
+            (the keys of ``tool_router._BACKENDS``). When supplied, prompts
+            that depend on a backend which is not enabled are skipped -- today
+            that is :data:`AOS8_PROMPT_NAMES`, which are only registered when
+            :data:`AOS8_BACKEND_SERVER` is present. When omitted (the default),
+            every prompt is registered, preserving the previous behavior for
+            any caller that does not know its backend set.
+    """
+    aos8_enabled = enabled_backends is None or AOS8_BACKEND_SERVER in set(
+        enabled_backends
+    )
 
     @mcp.prompt(
         name="network_health_overview",
@@ -122,6 +147,9 @@ Workflow:
 3. Group failed clients by SSID, VLAN, band, AP, and failure reason when available.
 4. Check the top 5 implicated APs/devices for health, radio, and alert signals.
 5. Return probable pattern, supporting evidence, and the safest next checks."""
+
+    if not aos8_enabled:
+        return
 
     @mcp.prompt(
         name="aos8_migration_readiness",

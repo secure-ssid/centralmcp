@@ -13,6 +13,7 @@ Query:   python -m pipeline.clients.specs_index --query "auth-type"
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -81,11 +82,19 @@ def _walk_fields(node: Any, path: str, depth: int = 0):
 
 
 def build(specs_dir: Path = SPECS_DIR, db_path: Path = DB_PATH) -> dict[str, int]:
-    """Parse all OpenAPI specs into the SQLite index. Recreates tables."""
+    """Parse all OpenAPI specs into the SQLite index. Recreates tables.
+
+    Builds into a sibling temp file and atomically ``os.replace()``s it over
+    the live path only after the full build commits — an interrupted build
+    (Ctrl-C, disk full, a parse blow-up) leaves the previous good index in
+    place instead of unlinking it up front and leaving a missing or
+    valid-but-empty DB that ``lookup`` would silently serve ``[]`` from.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    if db_path.exists():
-        db_path.unlink()
-    conn = connect(db_path)
+    tmp_path = db_path.with_name(db_path.name + ".tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    conn = connect(tmp_path)
     conn.executescript(_SCHEMA)
 
     counts = {"specs": 0, "endpoints": 0, "schemas": 0, "fields": 0, "skipped": 0}
@@ -150,6 +159,7 @@ def build(specs_dir: Path = SPECS_DIR, db_path: Path = DB_PATH) -> dict[str, int
             )
     conn.commit()
     conn.close()
+    os.replace(tmp_path, db_path)
     return counts
 
 

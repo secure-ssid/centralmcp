@@ -122,3 +122,54 @@ class TestToolsTable:
     def test_missing_tools_table_returns_empty(self, tmp_path):
         empty = lc.connect(tmp_path / "empty")
         assert lc.search_tools(empty, "anything", _vec(99)) == []
+
+
+class TestPromoteStagingTable:
+    def test_swap_replaces_live_and_drops_staging(self, tmp_path):
+        db = lc.connect(tmp_path)
+        # A stale "live" table that must be fully replaced by the staged data.
+        lc.create_docs_table(
+            db,
+            [{"id": "old", "text": "stale", "source": "developer_docs",
+              "doc_type": "developer-docs", "file_path": "old.md",
+              "chunk_index": 0, "content_hash": "old-hash", "vector": _vec(1)}],
+        )
+        staging = f"{lc.DOCS_TABLE}__staging"
+        lc.create_docs_table(
+            db,
+            [{"id": "new", "text": "fresh", "source": "tech_docs",
+              "doc_type": "tech-docs", "file_path": "new.md",
+              "chunk_index": 0, "content_hash": "new-hash", "vector": _vec(2)}],
+            table_name=staging,
+        )
+
+        lc.promote_staging_table(db, staging)
+
+        ids = {row["id"] for row in lc.docs_metadata(db)}
+        assert ids == {"new"}  # old fully replaced
+        # Staging table dropped after promotion.
+        assert lc.docs_table(db, staging) is None
+
+
+class TestFtsFallback:
+    def test_hybrid_search_falls_back_to_vector_only_without_fts(self, tmp_path):
+        db = lc.connect(tmp_path)
+        # Build the docs table but deliberately DO NOT build the FTS index —
+        # mimics a crash between the staging swap and build_fts_index.
+        lc.create_docs_table(
+            db,
+            [{"id": "1", "text": "Create a WPA3 SSID with SAE security",
+              "source": "developer_docs", "doc_type": "developer-docs",
+              "file_path": "ssid.md", "chunk_index": 0, "vector": _vec(1)},
+             {"id": "2", "text": "Configure the VLAN on the switch",
+              "source": "tech_docs", "doc_type": "tech-docs",
+              "file_path": "vlan.md", "chunk_index": 1, "vector": _vec(2)}],
+        )
+
+        hits = lc.hybrid_search(db, "WPA3 SSID", _vec(1), top_k=2)
+
+        assert hits  # degraded, not errored
+        for h in hits:
+            assert set(h) == {"text", "source", "doc_type", "file_path",
+                              "chunk_index", "score"}
+            assert isinstance(h["score"], float)

@@ -212,8 +212,23 @@ def push_aruba_device_profiles(dry_run: bool = False) -> dict[str, Any]:
     creds_path = os.environ.get("CREDS_PATH", "config/credentials.yaml")
     _, target_ctx = build_account_contexts(creds_path)
     target_ctx.central_client = client
-    _ensure_device_profiles(client, target_ctx)
-    return {"profiles": [p["name"] for p in ARUBA_DEVICE_PROFILES], "pushed": True}
+    # Scope IDs are resolved at runtime now, so this can fail before anything
+    # is written (e.g. the org scope is undiscoverable). Surface that as a
+    # normal tool error rather than an exception, and pass through non-fatal
+    # per-profile failures instead of dropping them.
+    try:
+        profile_errors = _ensure_device_profiles(client, target_ctx)
+    except Exception as exc:
+        return {
+            "profiles": [p["name"] for p in ARUBA_DEVICE_PROFILES],
+            "pushed": False,
+            "errors": [str(exc)],
+        }
+    return {
+        "profiles": [p["name"] for p in ARUBA_DEVICE_PROFILES],
+        "pushed": True,
+        "errors": profile_errors,
+    }
 
 
 # ── Firmware ──────────────────────────────────────────────────────────────────
@@ -1492,17 +1507,33 @@ def assign_device_to_site(
     client = get_client()
     errors: list[str] = []
 
-    candidates = [
+    # The legacy fallbacks require a *numeric* site_id; building their payloads
+    # with int(site_id) eagerly used to raise ValueError before the primary
+    # string-id candidate was ever tried, crashing the tool for scope-name /
+    # non-numeric site ids. Resolve the legacy payload lazily and skip those
+    # candidates (rather than crash) when the id isn't numeric.
+    def _legacy_payload() -> dict[str, Any] | None:
+        try:
+            numeric_site_id = int(site_id)
+        except (TypeError, ValueError):
+            return None
+        return {
+            "site_id": numeric_site_id,
+            "device_id": [serial_number],
+            **({"device_type": device_type} if device_type else {}),
+        }
+
+    legacy_payload = _legacy_payload()
+    candidates: list[tuple[str, str, dict[str, Any] | None]] = [
         ("POST", f"/network-monitoring/v1/sites/{site_id}/devices", {"serials": [serial_number]}),
-        ("POST", "/central/v2/sites/associate",
-         {"site_id": int(site_id), "device_id": [serial_number],
-          **({"device_type": device_type} if device_type else {})}),
-        ("POST", "/monitoring/v1/site/assign",
-         {"site_id": int(site_id), "device_id": [serial_number],
-          **({"device_type": device_type} if device_type else {})}),
+        ("POST", "/central/v2/sites/associate", legacy_payload),
+        ("POST", "/monitoring/v1/site/assign", legacy_payload),
     ]
 
     for method, endpoint, payload in candidates:
+        if payload is None:
+            errors.append(f"skipped {endpoint}: site_id {site_id!r} is not numeric")
+            continue
         try:
             response = client._request(method, endpoint, json=payload)
             if response.status_code == 404:

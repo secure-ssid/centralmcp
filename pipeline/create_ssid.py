@@ -18,6 +18,7 @@ Notes:
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 from urllib.parse import quote
 
@@ -38,22 +39,42 @@ DEPRECATED_OPMODE_ALIASES: dict[str, str] = {
     "WPA2_PSK": "WPA2_PERSONAL",
 }
 
+# Aliases already warned about in this process. Bulk SSID builds call
+# `_normalize_opmode` once per SSID (and twice per overlay build), so an
+# undeduplicated warning turned a single stale CSV column into hundreds of
+# identical log lines. The returned `warnings` list on each result still
+# reports the normalization every time -- only the *log* is deduplicated.
+_warned_opmode_aliases: set[str] = set()
+_warned_opmode_lock = threading.Lock()
+
+
+def reset_opmode_deprecation_warnings() -> None:
+    """Clear the process-wide opmode deprecation-warning cache (tests only)."""
+    with _warned_opmode_lock:
+        _warned_opmode_aliases.clear()
+
 
 def _normalize_opmode(opmode: str) -> str:
     """Normalize a caller-supplied opmode token to the authoritative
     New Central WLAN security enum value, logging a concise deprecation
     warning the first time a stale alias (currently only `WPA2_PSK`) is
-    seen. Unrecognized tokens are returned unchanged -- normalization only
-    ever touches a token in `DEPRECATED_OPMODE_ALIASES`.
+    seen in this process. Unrecognized tokens are returned unchanged --
+    normalization only ever touches a token in `DEPRECATED_OPMODE_ALIASES`.
     """
     canonical = DEPRECATED_OPMODE_ALIASES.get(opmode)
     if canonical is None:
         return opmode
-    logger.warning(
-        "opmode '%s' is deprecated — use '%s' instead. Normalizing automatically for this call.",
-        opmode,
-        canonical,
-    )
+    with _warned_opmode_lock:
+        first_time = opmode not in _warned_opmode_aliases
+        if first_time:
+            _warned_opmode_aliases.add(opmode)
+    if first_time:
+        logger.warning(
+            "opmode '%s' is deprecated — use '%s' instead. Normalizing automatically "
+            "(this warning is logged once per process).",
+            opmode,
+            canonical,
+        )
     return canonical
 
 
@@ -366,6 +387,12 @@ def build_overlay_ssid(
         `warnings` carries a deprecation notice when `opmode='WPA2_PSK'` is
         passed (see `DEPRECATED_OPMODE_ALIASES`); the payload opmode is
         still normalized to `WPA2_PERSONAL`.
+
+        This function always returns that dict — including when `dry_run=True`
+        and org-level scope discovery is unavailable, which is reported in
+        `warnings` instead of propagating an exception. Outside dry-run the
+        same failure is recorded in `errors` and the build stops before any
+        write is attempted.
     """
     canonical_opmode = _normalize_opmode(opmode)
     warnings: list[str] = []
@@ -388,6 +415,41 @@ def build_overlay_ssid(
         "errors": [],
         "warnings": warnings,
     }
+
+    # ------------------------------------------------------------------
+    # Step 0: Resolve the org-level global scope-id exactly once
+    # ------------------------------------------------------------------
+    # It is needed by both the role scope-maps (Step 1) and the policy
+    # scope-maps (Step 1c). Three things were wrong before:
+    #   1. The lookup ran unconditionally and unguarded, so a tenant where
+    #      scope discovery fails made this function *raise* — including under
+    #      dry_run, whose documented contract is "never write, always return
+    #      the result dict".
+    #   2. A second, identical lookup ran later for the policy scope-maps,
+    #      doubling the API calls and letting the two halves of one build
+    #      disagree if the account changed in between.
+    #   3. It ran *after* the role had already been created, so a failure left
+    #      a half-built SSID behind. It is now resolved before any write.
+    from pipeline.stages.s6_configure import _fetch_global_scope_id
+
+    global_scope_id: str | None = None
+    try:
+        global_scope_id = _fetch_global_scope_id(central_client)
+    except Exception as exc:
+        message = f"resolve_global_scope: {exc}"
+        if dry_run:
+            # Preview only — report it and keep going so the caller still gets
+            # the full plan (and the result dict) back.
+            result["warnings"].append(
+                f"{message} — global-scope scope-maps cannot be previewed."
+            )
+            logger.warning("[dry-run] Could not resolve global scope-id: %s", exc)
+        else:
+            result["errors"].append(message)
+            logger.error(
+                "Could not resolve global scope-id — aborting before any write: %s", exc
+            )
+            return result
 
     # ------------------------------------------------------------------
     # Step 1: Create allow-all role first (must exist before SSID references it)
@@ -414,13 +476,15 @@ def build_overlay_ssid(
     # Scope-map the role at global scope (CAMPUS_AP + MOBILITY_GW) AND at the
     # device group scope for MOBILITY_GW — gateways only resolve roles scoped
     # to their own device group, not just global.
-    from pipeline.stages.s6_configure import _fetch_global_scope_id
-    global_scope_id = _fetch_global_scope_id(central_client)
+    # Uses the scope-id resolved once in Step 0 above.
     role_scope_targets = [
-        (global_scope_id, "CAMPUS_AP"),
-        (global_scope_id, "MOBILITY_GW"),
         (scope_id, "MOBILITY_GW"),  # device group scope — required for GW role resolution
     ]
+    if global_scope_id:
+        role_scope_targets = [
+            (global_scope_id, "CAMPUS_AP"),
+            (global_scope_id, "MOBILITY_GW"),
+        ] + role_scope_targets
     for r_scope_id, persona in role_scope_targets:
         for resource in (f"roles/{ssid_name}", f"role-gpids/{ssid_name}"):
             role_scope_map = {
@@ -596,8 +660,10 @@ def build_overlay_ssid(
         else:
             logger.info("Using existing policy '%s' — skipping creation", policy_name)
 
-        global_scope_id_pol = _fetch_global_scope_id(central_client)
-        for persona in ("CAMPUS_AP", "MOBILITY_GW"):
+        # Reuse the scope-id resolved once at the top of this function rather
+        # than issuing a second, late lookup.
+        global_scope_id_pol = global_scope_id
+        for persona in ("CAMPUS_AP", "MOBILITY_GW") if global_scope_id_pol else ():
             pol_scope_map = {
                 "scope-map": [{
                     "scope-name": global_scope_id_pol,

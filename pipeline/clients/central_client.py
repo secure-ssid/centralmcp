@@ -11,6 +11,7 @@ import asyncio
 import email.utils
 import logging
 import random
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -41,12 +42,58 @@ def error_body(exc: Exception) -> str:
     return getattr(resp, "text", "") or ""
 
 
+class ResponseParseError(ValueError):
+    """Raised when a 2xx response carries a body that is not valid JSON.
+
+    Previously these were logged and swallowed as ``{}``, which callers could
+    not distinguish from a genuinely empty (204 / zero-length) response — a
+    gateway error page returned with a 200 looked like a successful no-op.
+    The exception carries the originating ``response`` (mirroring
+    ``httpx.HTTPStatusError``) plus a truncated body preview for diagnosis.
+    """
+
+    def __init__(self, response: httpx.Response, reason: str) -> None:
+        body = response.text or ""
+        preview = body[:300]
+        if len(body) > 300:
+            preview = f"{preview}... [truncated {len(body) - 300} chars]"
+        content_type = response.headers.get("Content-Type", "")
+        super().__init__(
+            f"Malformed JSON in HTTP {response.status_code} response from "
+            f"{response.request.method if response.request else '?'} "
+            f"{response.request.url if response.request else '?'} "
+            f"(Content-Type={content_type!r}, body_len={len(body)}): {reason} — "
+            f"body preview: {preview!r}"
+        )
+        self.response = response
+        self.reason = reason
+        self.body_preview = preview
+
+
 _INITIAL_RETRY_DELAY = 60  # seconds — Central rate-limit window
 _MAX_RETRY_DELAY = 300
 # 5xx retry uses a much smaller floor — these are usually transient, not
 # quota exhaustion. Exponential backoff with jitter.
 _SERVER_ERROR_INITIAL_DELAY = 1.0
 _SERVER_ERROR_MAX_DELAY = 30.0
+
+# Endpoints already warned about, so a deprecated endpoint on a hot path logs
+# once per process instead of once per call (what the docstring always
+# promised). Keyed by (endpoint, Deprecation, Sunset) so a *changed* notice
+# still surfaces. Guarded by a lock because CentralClient is shared across
+# threads via mcp_servers.shared.get_client().
+# Human-facing platform names for write-gate errors, so a blocked write reads
+# "Central write requests are disabled" / "GLP write requests are disabled".
+_PLATFORM_DISPLAY_NAMES = {"central": "Central", "glp": "GLP"}
+
+_deprecation_warned: set[tuple[str, str, str]] = set()
+_deprecation_warned_lock = threading.Lock()
+
+
+def reset_deprecation_warning_cache() -> None:
+    """Clear the process-wide deprecation-warning dedup cache (tests only)."""
+    with _deprecation_warned_lock:
+        _deprecation_warned.clear()
 
 
 def _parse_retry_after(value: str) -> Optional[float]:
@@ -73,6 +120,39 @@ def _parse_retry_after(value: str) -> Optional[float]:
     now = time.time()
     target_ts = target.timestamp()
     return max(0.0, target_ts - now)
+
+
+# ``RateLimit-Reset`` (IETF draft) is delta-seconds, but the older
+# ``X-RateLimit-Reset`` convention that several gateways in front of Central
+# use carries an *absolute* Unix epoch instead. Treating an epoch as
+# delta-seconds yields a ~55-year wait, so values large enough to only make
+# sense as timestamps are converted back into a delta here. Thresholds:
+# >= 1e12 -> epoch milliseconds, >= 1e9 (2001-09-09) -> epoch seconds.
+_EPOCH_SECONDS_THRESHOLD = 1_000_000_000.0
+_EPOCH_MILLIS_THRESHOLD = 1_000_000_000_000.0
+
+
+def _parse_rate_limit_reset(value: Optional[str]) -> Optional[float]:
+    """Parse a ``RateLimit-Reset`` / ``X-RateLimit-Reset`` header into the
+    number of seconds until the quota window resets.
+
+    Accepts delta-seconds, an absolute Unix epoch (seconds or milliseconds),
+    or an HTTP-date. Returns ``None`` when the value is unparseable.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        numeric = float(text)
+    except ValueError:
+        return _parse_retry_after(text)
+    if numeric >= _EPOCH_MILLIS_THRESHOLD:
+        return max(0.0, numeric / 1000.0 - time.time())
+    if numeric >= _EPOCH_SECONDS_THRESHOLD:
+        return max(0.0, numeric - time.time())
+    return max(0.0, numeric)
 
 
 @dataclass(frozen=True)
@@ -114,7 +194,7 @@ def _extract_rate_limit(headers: Any) -> Optional[RateLimitStatus]:
     return RateLimitStatus(
         limit=_parse_int_header(limit),
         remaining=_parse_int_header(remaining),
-        reset_seconds=_parse_retry_after(reset) if reset else None,
+        reset_seconds=_parse_rate_limit_reset(reset),
         raw_reset=reset,
     )
 
@@ -137,9 +217,22 @@ class CentralClient:
         self,
         base_url: str,
         token_manager: TokenManager,
+        write_platform: str = "central",
     ):
+        """
+        Args:
+            base_url: API host root (no trailing slash required).
+            token_manager: supplies/refreshes the bearer token.
+            write_platform: which platform write gate governs non-GET verbs on
+                this transport. Defaults to ``"central"``. GLPClient wraps this
+                same transport but passes ``"glp"`` so GreenLake writes are
+                gated by ``CENTRALMCP_GLP_V2BETA1_WRITES`` and are *not*
+                collaterally blocked (nor accidentally enabled) by
+                ``CENTRALMCP_CENTRAL_WRITES``.
+        """
         self.base_url = base_url.rstrip("/")
         self.token_manager = token_manager
+        self.write_platform = write_platform
         self.timeout = 30.0
         self.session = httpx.Client(timeout=self.timeout)
         self.session.headers.update({"Content-Type": "application/json"})
@@ -155,6 +248,26 @@ class CentralClient:
         self.last_rate_limit: Optional[RateLimitStatus] = None
         self.last_deprecation: Optional[DeprecationStatus] = None
         self._refresh_auth_header()
+
+    def _enforce_write_gate(self, method: str) -> None:
+        """Raise ``PermissionError`` if this transport's platform write gate
+        is closed. The message names the platform and *its own* env var, so a
+        blocked GLP write never tells the operator to flip a Central flag."""
+        if method.upper() in ("GET", "HEAD", "OPTIONS"):
+            return
+        from mcp_servers.shared import platform_write_gate_state, platform_writes_allowed
+
+        platform = self.write_platform
+        if platform_writes_allowed(platform):
+            return
+        gate = platform_write_gate_state(platform)
+        display = _PLATFORM_DISPLAY_NAMES.get(platform, platform)
+        raise PermissionError(
+            f"{display} write requests are disabled "
+            f"({gate['env_var']} resolved to {gate['state']!r} via {gate['source']}). "
+            f"Set {gate['env_var']}=1 to enable {display} writes. "
+            "This gate is independent of the other platforms' write gates."
+        )
 
     def _refresh_auth_header(self) -> int:
         token, generation = self.token_manager.get_access_token_with_generation()
@@ -175,13 +288,23 @@ class CentralClient:
         deprecation = _extract_deprecation(response.headers)
         if deprecation is not None:
             self.last_deprecation = deprecation
-            logger.warning(
-                "Deprecated endpoint called: %s (Deprecation=%r Sunset=%r Link=%r)",
+            key = (
                 endpoint,
-                deprecation.deprecation,
-                deprecation.sunset,
-                deprecation.link,
+                deprecation.deprecation or "",
+                deprecation.sunset or "",
             )
+            with _deprecation_warned_lock:
+                first_time = key not in _deprecation_warned
+                if first_time:
+                    _deprecation_warned.add(key)
+            if first_time:
+                logger.warning(
+                    "Deprecated endpoint called: %s (Deprecation=%r Sunset=%r Link=%r)",
+                    endpoint,
+                    deprecation.deprecation,
+                    deprecation.sunset,
+                    deprecation.link,
+                )
 
     def rate_limit_status(self) -> Optional[dict[str, Any]]:
         """Most recent rate-limit metadata as a plain dict, or ``None`` if
@@ -228,14 +351,7 @@ class CentralClient:
         Central gateway rejects before the handler runs) and on 5xx the
         caller opts in with ``retry_5xx=True``.
         """
-        if method.upper() not in ("GET", "HEAD", "OPTIONS"):
-            from mcp_servers.shared import platform_writes_allowed
-
-            if not platform_writes_allowed("central"):
-                raise PermissionError(
-                    "Central write requests are disabled. "
-                    "Set CENTRALMCP_CENTRAL_WRITES=1 to enable them."
-                )
+        self._enforce_write_gate(method)
 
         # Caller opt-in to retry 5xx on non-GET verbs. GET/HEAD retry 5xx
         # unconditionally because they're safe.
@@ -323,14 +439,7 @@ class CentralClient:
         **kwargs: Any,
     ) -> httpx.Response:
         """Async counterpart to ``_request`` for MCP tools running on an event loop."""
-        if method.upper() not in ("GET", "HEAD", "OPTIONS"):
-            from mcp_servers.shared import platform_writes_allowed
-
-            if not platform_writes_allowed("central"):
-                raise PermissionError(
-                    "Central write requests are disabled. "
-                    "Set CENTRALMCP_CENTRAL_WRITES=1 to enable them."
-                )
+        self._enforce_write_gate(method)
 
         retry_5xx = kwargs.pop("retry_5xx", None)
         if retry_5xx is None:
@@ -500,11 +609,25 @@ class CentralClient:
         return _parse_json(response)
 
 def _parse_json(response: httpx.Response) -> dict[str, Any]:
+    """Decode a successful response body.
+
+    An empty body (204 / zero-length 200) is a legitimate "no content" result
+    and still maps to ``{}``. A *non-empty* body that is not valid JSON is a
+    real defect — an HTML error page, a truncated payload, or a gateway
+    interstitial served with a 2xx — and now raises ``ResponseParseError``
+    instead of being silently reported to callers as an empty success.
+    """
     if not response.text or not response.text.strip():
         return {}
     try:
         result = response.json()
-        return result if isinstance(result, dict) else {"items": result}
     except ValueError as exc:
-        logger.error("Failed to parse JSON: %s (body_len=%d)", exc, len(response.text or ""))
-        return {}
+        logger.error(
+            "Failed to parse JSON from %s (status=%d body_len=%d): %s",
+            response.request.url if response.request else "?",
+            response.status_code,
+            len(response.text or ""),
+            exc,
+        )
+        raise ResponseParseError(response, str(exc)) from exc
+    return result if isinstance(result, dict) else {"items": result}

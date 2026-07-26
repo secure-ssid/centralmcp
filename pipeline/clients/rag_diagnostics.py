@@ -1,22 +1,27 @@
 """Bounded ingestion-delta and source-freshness diagnostics for RAG.
 
-Two read-only diagnostics, both scoped to the security-advisory/lifecycle
-source families this v0.7 workstream owns (not the full prose corpus, which
-is other workstreams' ingestion concern), and both reusing existing building
-blocks instead of reimplementing them:
+Three read-only diagnostics, all reusing existing building blocks instead of
+reimplementing them:
 
 1. :func:`ingestion_delta` — new/changed/removed/unchanged content-hash
-   counts, computed against the current LanceDB ``docs`` table. Reuses
-   ``ingestion.ingest_docs.collect_points``/``content_hash`` — the exact
-   functions ``ingest_docs.py --incremental`` uses — purely to *diff*; it
-   never embeds a vector or writes a row (no live writes).
-2. :func:`freshness_summary` — reduces the ``source_freshness_result``
+   counts, computed against the current LanceDB ``docs`` table, scoped to
+   the four security-advisory/lifecycle source families this v0.7
+   workstream owns. Reuses ``ingestion.ingest_docs.collect_points``/
+   ``content_hash`` — the exact functions ``ingest_docs.py --incremental``
+   uses — purely to *diff*; it never embeds a vector or writes a row (no
+   live writes).
+2. :func:`full_corpus_delta` — the same bounded diff generalized to every
+   LanceDB-vector source family in ``ingest_docs.SOURCE_META``, for callers
+   that want corpus-wide staleness rather than just the security/lifecycle
+   slice. Shares the exact diff logic with :func:`ingestion_delta` via the
+   private ``_content_hash_delta`` helper.
+3. :func:`freshness_summary` — reduces the ``source_freshness_result``
    artifact written by ``scripts/check_security_lifecycle_drift.py`` to
    per-status counts plus each source's bounded entry, re-validated through
    ``pipeline.artifact_contracts`` so a malformed/stale file is rejected
    loudly instead of silently misread.
 
-Neither function makes a network call, and neither exposes a raw source
+None of these functions make a network call, and none expose a raw source
 body — only counts, statuses, and the already-bounded ``detail`` strings
 the persisted artifact/table already carry.
 """
@@ -82,9 +87,6 @@ def ingestion_delta(
         rows in the docs table (nothing to diff against yet, not an error),
         or ``missing_source_dir`` when the source folder does not exist.
     """
-    from ingestion import ingest_docs
-    from pipeline.clients import lance_client
-
     families = tuple(sources) if sources else DELTA_SOURCE_FAMILIES
     unknown = [family for family in families if family not in DELTA_SOURCE_FAMILIES]
     if unknown:
@@ -92,6 +94,75 @@ def ingestion_delta(
             f"unsupported source families for this diagnostic: {unknown}; "
             f"choose from {DELTA_SOURCE_FAMILIES}"
         )
+
+    return _content_hash_delta(
+        families, _DOC_TYPE_BY_FAMILY, sources_dir=sources_dir, data_dir=data_dir
+    )
+
+
+def full_corpus_delta(
+    *,
+    sources_dir: Path = SOURCES_DIR,
+    data_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Return new/changed/removed/unchanged content-hash counts across every
+    known LanceDB-vector source family, not just the four security/lifecycle
+    ones :func:`ingestion_delta` is scoped to.
+
+    Generalizes :func:`ingestion_delta` to every folder in
+    ``ingestion.ingest_docs.SOURCE_META`` -- the exact catalog a real
+    ``ingest_docs.py`` run walks -- minus ``openapi_specs``, which the
+    embedded backend indexes as a structured SQLite table rather than
+    LanceDB vector chunks (see ``ingest_docs.source_uses_structured_index``)
+    and so has no content-hash chunks to diff here.
+
+    Still bounded and read-only, reusing the exact same
+    ``collect_points``/``content_hash`` diff as :func:`ingestion_delta`: no
+    vector is embedded, no row is written, and only per-source
+    counts/status come back, never a raw chunk body. This is a superset of
+    :func:`ingestion_delta`'s four families, so calling both is redundant --
+    prefer this one when a caller wants corpus-wide staleness rather than
+    just the security/lifecycle slice.
+
+    Args:
+        sources_dir: Override for ``ingestion/sources`` (tests only). See
+            :func:`ingestion_delta` for the same ``ingest_docs.SOURCES_DIR``
+            monkeypatch caveat.
+        data_dir: Override for the LanceDB ``data/`` directory (tests only).
+
+    Returns:
+        Same shape as :func:`ingestion_delta`:
+        ``{"sources": {family: {status, new, changed, removed, unchanged}}}``.
+    """
+    from ingestion import ingest_docs
+
+    families = tuple(
+        folder
+        for folder in ingest_docs.SOURCE_META
+        if not ingest_docs.source_uses_structured_index(folder, "lancedb")
+    )
+    doc_type_by_family = {folder: ingest_docs.SOURCE_META[folder] for folder in families}
+
+    return _content_hash_delta(
+        families, doc_type_by_family, sources_dir=sources_dir, data_dir=data_dir
+    )
+
+
+def _content_hash_delta(
+    families: tuple[str, ...],
+    doc_type_by_family: dict[str, str],
+    *,
+    sources_dir: Path,
+    data_dir: Path | None,
+) -> dict[str, Any]:
+    """Shared new/changed/removed/unchanged content-hash diff.
+
+    Factored out of :func:`ingestion_delta` so :func:`full_corpus_delta` can
+    reuse the identical, already-reviewed diff logic over a larger family
+    set instead of duplicating it.
+    """
+    from ingestion import ingest_docs
+    from pipeline.clients import lance_client
 
     connect_kwargs = {} if data_dir is None else {"data_dir": data_dir}
     db = lance_client.connect(**connect_kwargs)
@@ -123,7 +194,7 @@ def ingestion_delta(
         # safe to call from a stdio-transport MCP tool (stdout carries the
         # JSON-RPC stream there).
         with contextlib.redirect_stdout(io.StringIO()):
-            records = ingest_docs.collect_points(source_dir, _DOC_TYPE_BY_FAMILY[family])
+            records = ingest_docs.collect_points(source_dir, doc_type_by_family[family])
 
         current = {str(record["id"]): str(record["content_hash"]) for record in records}
         if legacy_table:

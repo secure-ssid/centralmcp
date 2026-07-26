@@ -18,6 +18,12 @@ _BLOCKED_STATUS_HTTP = {
     "not_found": 404,
     "forbidden": 403,
     "error": 500,
+    # Terminal failure status from a device operation the backend itself
+    # reports as failed without raising (e.g. atroubleshoot_poll in shared.py
+    # returning status="FAILED"). Without this the result carries no `error`
+    # key and would escape as an un-enveloped implicit success.
+    "failed": 500,
+    "failure": 500,
 }
 
 

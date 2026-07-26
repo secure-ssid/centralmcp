@@ -224,10 +224,57 @@ class TestLookup:
             specs_index.lookup("auth-type enum", db_path=bad)
 
     def test_schemaless_db_raises_filenotfound(self, tmp_path):
-        # An interrupted --build leaves a present-but-empty DB (build() unlinks
-        # then recreates); lookup during that window must stay graceful.
+        # A present-but-empty/partial DB (e.g. a stray file) must still make
+        # lookup fail gracefully rather than raising a raw sqlite error.
         import sqlite3
         empty = tmp_path / "specs.sqlite"
         sqlite3.connect(empty).close()  # creates a 0-byte file
         with pytest.raises(FileNotFoundError, match="--build"):
             specs_index.lookup("firmware compliance", db_path=empty)
+
+
+# ---------------------------------------------------------------------------
+# Atomic build (crash-safe rebuild)
+# ---------------------------------------------------------------------------
+
+
+def _write_specs(specs_dir):
+    specs_dir.mkdir(parents=True, exist_ok=True)
+    for fname, spec in FIXTURE_SPECS.items():
+        (specs_dir / fname).write_text(json.dumps(spec))
+
+
+class TestAtomicBuild:
+    def test_build_leaves_no_tmp_and_produces_usable_db(self, tmp_path):
+        specs_dir = tmp_path / "specs"
+        _write_specs(specs_dir)
+        db_path = tmp_path / "specs.sqlite"
+
+        specs_index.build(specs_dir=specs_dir, db_path=db_path)
+
+        assert db_path.exists()
+        assert not db_path.with_name(db_path.name + ".tmp").exists()
+        # Sanity: the freshly-built index answers a lookup.
+        assert specs_index.lookup("auth-type enum", db_path=db_path)
+
+    def test_interrupted_build_preserves_prior_good_index(self, tmp_path, monkeypatch):
+        specs_dir = tmp_path / "specs"
+        _write_specs(specs_dir)
+        db_path = tmp_path / "specs.sqlite"
+
+        # First build establishes a good index.
+        specs_index.build(specs_dir=specs_dir, db_path=db_path)
+        good_bytes = db_path.read_bytes()
+        assert specs_index.lookup("auth-type enum", db_path=db_path)
+
+        # Second build crashes exactly at the atomic swap.
+        def _boom(src, dst):
+            raise RuntimeError("simulated crash during swap")
+
+        monkeypatch.setattr(specs_index.os, "replace", _boom)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            specs_index.build(specs_dir=specs_dir, db_path=db_path)
+
+        # The live index is byte-for-byte the previous good one, still usable.
+        assert db_path.read_bytes() == good_bytes
+        assert specs_index.lookup("auth-type enum", db_path=db_path)

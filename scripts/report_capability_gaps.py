@@ -210,6 +210,7 @@ def curated_capabilities(module_names: tuple[str, ...]) -> Counter[str]:
                 annotation = _annotation_name(decorator)
                 capability = {
                     "read_only": "read",
+                    "read_only_local": "read",
                     "diagnostic": "diagnostic",
                     "write": "write",
                     "idempotent_write": "write",

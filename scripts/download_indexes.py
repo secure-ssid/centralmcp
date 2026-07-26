@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
 import tarfile
 import urllib.request
@@ -78,6 +79,47 @@ def _extract_data_archive(tar: tarfile.TarFile, output_dir: Path) -> None:
             shutil.copyfileobj(source, destination)
 
 
+def _remove(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif path.exists() or path.is_symlink():
+        path.unlink()
+
+
+def _swap_into_place(staging_data: Path, data_dir: Path) -> None:
+    """Move each extracted artifact over its live counterpart via renames.
+
+    Extracting straight into the live ``data/`` interleaved old and new
+    files: an interrupted run corrupted the Lance tables, and stale local
+    files not present in the archive (e.g. higher-numbered Lance version
+    manifests from local ingests) survived the extract — so a "successful"
+    download could keep serving the old index. Renaming whole artifacts
+    replaces them completely, and the old copy is only deleted after the new
+    one is in place.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for entry in sorted(staging_data.iterdir()):
+        live = data_dir / entry.name
+        old = data_dir / f"{entry.name}.old-tmp"
+        _remove(old)
+        moved_aside = False
+        if live.exists() or live.is_symlink():
+            # Same-directory rename — always same-filesystem as live.
+            os.rename(live, old)
+            moved_aside = True
+        try:
+            # shutil.move copies when staging and data/ are on different
+            # filesystems (os.rename would raise EXDEV — and an exception
+            # here used to cascade into deleting BOTH the new copy, via the
+            # staging cleanup, and the .old-tmp backup on the next run).
+            shutil.move(str(entry), str(live))
+        except BaseException:
+            if moved_aside and not (live.exists() or live.is_symlink()):
+                os.rename(old, live)
+            raise
+        _remove(old)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=DEFAULT_URL, help="Release asset URL")
@@ -127,8 +169,21 @@ def main() -> int:
         _verify_checksum(args.archive, checksum_file)
 
     print(f"Unpacking {args.archive} into {args.output_dir}")
-    with tarfile.open(args.archive, "r:gz") as tar:
-        _extract_data_archive(tar, args.output_dir)
+    # Extract into a staging dir on the same filesystem, then swap artifacts
+    # into the live data/ via renames — never write into live data/ directly,
+    # so an interrupted unpack leaves the previous good index in place.
+    staging_root = args.output_dir / ".index-download-staging"
+    if staging_root.exists():
+        shutil.rmtree(staging_root)
+    try:
+        with tarfile.open(args.archive, "r:gz") as tar:
+            _extract_data_archive(tar, staging_root)
+        staging_data = staging_root / "data"
+        if not staging_data.is_dir():
+            raise SystemExit("Archive contained no data/ directory")
+        _swap_into_place(staging_data, args.output_dir / "data")
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
     print("Indexes restored under data/")
     return 0
 

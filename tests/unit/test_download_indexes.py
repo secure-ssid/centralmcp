@@ -99,3 +99,50 @@ def test_extract_data_archive_rejects_symlink_members(tmp_path):
     with tarfile.open(archive, "r:gz") as tar:
         with pytest.raises(SystemExit, match="Unsafe archive member type"):
             download_indexes._extract_data_archive(tar, tmp_path / "restore")
+
+
+def test_swap_into_place_replaces_artifact_entirely(tmp_path):
+    """A whole artifact (e.g. docs.lance/) is replaced completely, so stale
+    files inside the live copy that are absent from the new one do not
+    survive."""
+    data_dir = tmp_path / "data"
+    live_artifact = data_dir / "docs.lance"
+    live_artifact.mkdir(parents=True)
+    (live_artifact / "stale.txt").write_text("old")
+
+    staging = tmp_path / "staging" / "data"
+    new_artifact = staging / "docs.lance"
+    new_artifact.mkdir(parents=True)
+    (new_artifact / "fresh.txt").write_text("new")
+
+    download_indexes._swap_into_place(staging, data_dir)
+
+    assert (data_dir / "docs.lance" / "fresh.txt").read_text() == "new"
+    assert not (data_dir / "docs.lance" / "stale.txt").exists()
+    assert not list(data_dir.glob("*.old-tmp"))
+
+
+def test_swap_into_place_rolls_back_on_move_failure(tmp_path, monkeypatch):
+    """If moving the new artifact fails, the previous live artifact is
+    restored — never left deleted."""
+    data_dir = tmp_path / "data"
+    live_artifact = data_dir / "docs.lance"
+    live_artifact.mkdir(parents=True)
+    (live_artifact / "keep.txt").write_text("original")
+
+    staging = tmp_path / "staging" / "data"
+    new_artifact = staging / "docs.lance"
+    new_artifact.mkdir(parents=True)
+    (new_artifact / "fresh.txt").write_text("new")
+
+    def _boom(src, dst):
+        raise RuntimeError("simulated move failure")
+
+    monkeypatch.setattr(download_indexes.shutil, "move", _boom)
+
+    with pytest.raises(RuntimeError, match="simulated move failure"):
+        download_indexes._swap_into_place(staging, data_dir)
+
+    # Live artifact restored intact; no dangling .old-tmp backup.
+    assert (data_dir / "docs.lance" / "keep.txt").read_text() == "original"
+    assert not list(data_dir.glob("*.old-tmp"))

@@ -33,6 +33,17 @@ READ_ONLY = ToolAnnotations(
     openWorldHint=True,
 )
 
+# Same safety profile as READ_ONLY, but ``openWorldHint=False`` for tools that
+# only query a local index (LanceDB/SQLite/Ollama) and never reach the live
+# Central/GLP API -- there is no unpredictable external system to interact
+# with. Used by the local-only RAG tools (search_docs / lookup_api / ask_docs).
+READ_ONLY_LOCAL = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+
 DIAGNOSTIC = ToolAnnotations(
     title="Diagnostic",
     readOnlyHint=False,
@@ -98,7 +109,19 @@ def redact_sensitive(value: Any) -> Any:
     if isinstance(value, dict):
         out: dict[Any, Any] = {}
         for key, item in value.items():
-            if _is_sensitive_key(key):
+            # ``bound_collection_response``'s "_pagination" block is helper-
+            # generated metadata whose "list_key" field trips the "_key"
+            # sensitive-suffix rule. Redacting it corrupts pagination metadata
+            # the router's cursor/truncation logic reads. Exempt ONLY that one
+            # field: the rest of the "_pagination" subtree is still recursively
+            # redacted, so a real secret nested under a key named _pagination
+            # never gets a blanket pass.
+            if key == "_pagination" and isinstance(item, dict):
+                scrubbed = redact_sensitive(dict(item))
+                if "list_key" in item:
+                    scrubbed["list_key"] = item["list_key"]
+                out[key] = scrubbed
+            elif _is_sensitive_key(key):
                 out[key] = _REDACTED
             else:
                 out[key] = redact_sensitive(item)
@@ -140,6 +163,39 @@ def optional_product_write_blocked(tool_name: str) -> dict[str, Any]:
             f"Tool '{tool_name}' is disabled because CENTRALMCP_PRODUCT_ACCESS=read-only "
             "or invalid. "
             "Set CENTRALMCP_PRODUCT_ACCESS=read-write for lab write workflows."
+        ),
+        "tool": tool_name,
+        "status": "blocked",
+    }
+
+
+_TRUTHY_FLAG_VALUES = {"1", "true", "yes", "on"}
+
+
+def env_flag(name: str) -> bool:
+    """Parse a boolean env flag ("1"/"true"/"yes"/"on", case/space-insensitive)."""
+    return os.getenv(name, "").strip().lower() in _TRUTHY_FLAG_VALUES
+
+
+def global_readonly_enabled() -> bool:
+    """Server-wide write kill switch (``CENTRALMCP_READONLY``).
+
+    Independent of, and composed with, the per-product
+    ``CENTRALMCP_PRODUCT_ACCESS`` gate and the per-platform write gates: when
+    set it blocks every ``write``/``destructive`` tool on every backend (core
+    or optional), while leaving ``read`` and ``diagnostic`` tools untouched.
+    Off (writes allowed, subject to the per-platform gates) unless explicitly
+    enabled -- for demo/dashboard deployments that must never reach a write.
+    """
+    return env_flag("CENTRALMCP_READONLY")
+
+
+def global_write_blocked(tool_name: str) -> dict[str, Any]:
+    """Blocked-write response for a tool refused by ``CENTRALMCP_READONLY``."""
+    return {
+        "error": (
+            f"Tool '{tool_name}' is disabled because CENTRALMCP_READONLY is set. "
+            "Unset CENTRALMCP_READONLY to allow write/destructive tools."
         ),
         "tool": tool_name,
         "status": "blocked",
@@ -669,6 +725,9 @@ class BearerAuthASGIMiddleware:
     def __init__(self, app: Any, token: str, exempt_paths: tuple[str, ...] = _HEALTH_PATHS):
         self.app = app
         self._token = token
+        # Pre-encoded once: the comparison itself is done on bytes (see
+        # __call__) so a non-ASCII presented token can never raise.
+        self._expected_token = token.encode("utf-8")
         self.exempt_paths = exempt_paths
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -676,10 +735,20 @@ class BearerAuthASGIMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Compare raw bytes, never decoded ``str``. ``hmac.compare_digest``
+        # raises TypeError on a ``str`` containing non-ASCII characters, so a
+        # request with (say) a latin-1 high byte in the Authorization header
+        # used to surface as a 500 from an unhandled exception instead of a
+        # clean 401. Bytes have no such restriction, so a garbage header is
+        # simply an unauthorized header.
         headers = dict(scope.get("headers") or [])
-        raw_auth = headers.get(b"authorization", b"").decode("latin-1")
-        scheme, _, presented = raw_auth.partition(" ")
-        authorized = scheme.lower() == "bearer" and hmac.compare_digest(presented, self._token)
+        raw_auth = headers.get(b"authorization") or b""
+        if not isinstance(raw_auth, (bytes, bytearray)):
+            raw_auth = str(raw_auth).encode("utf-8", errors="replace")
+        scheme, _, presented = bytes(raw_auth).partition(b" ")
+        authorized = scheme.lower() == b"bearer" and hmac.compare_digest(
+            presented, self._expected_token
+        )
 
         if not authorized:
             from starlette.responses import JSONResponse
@@ -713,6 +782,141 @@ async def _serve_streamable_http_with_bearer(mcp_instance: Any, token: str) -> N
     await server.serve()
 
 
+# ---------------------------------------------------------------------------
+# Standalone backend write gate
+# ---------------------------------------------------------------------------
+#
+# The unified router (mcp_servers/tool_router.py) enforces the per-platform
+# write gates itself before dispatching into a backend. A backend module run
+# *standalone* -- ``python -m mcp_servers.glp``, or any of the entries in
+# .cursor/mcp.dev.json -- bypasses the router entirely, so until now the only
+# thing standing between a client and a GLP/Central write was whatever the
+# individual tool happened to check. That made the gate's coverage depend on
+# how the server was launched, which is exactly the sort of asymmetry a
+# safety gate must not have.
+#
+# ``install_platform_write_gate`` closes that gap at the same seam
+# ``install_middleware`` uses (ToolManager.call_tool), keyed off the MCP
+# server's own name and each tool's published annotations, so it needs no
+# per-tool registration and cannot drift from the tool list.
+
+#: MCP server name -> platform key in :data:`_PLATFORM_WRITE_GATES`. Server
+#: names are the strings passed to ``FastMCP(...)`` in each backend module.
+_SERVER_NAME_PLATFORMS: dict[str, str] = {
+    "aruba-config": "central",
+    "aruba-monitoring": "central",
+    "aruba-nac": "central",
+    "aruba-ops": "central",
+    "aruba-central-generated": "central",
+    "aruba-glp": "glp",
+    "clearpass-core": "clearpass",
+    "mist-core": "mist",
+    "apstra-core": "apstra",
+    "aos8-core": "aos8",
+    "edgeconnect-core": "edgeconnect",
+    "uxi-core": "uxi",
+    "axis-core": "axis",
+}
+
+_WRITE_GATE_INSTALLED_ATTR = "_centralmcp_write_gate_original"
+
+
+def platform_for_server_name(server_name: str | None) -> str | None:
+    """Resolve an MCP server name to a gated platform key, or ``None``.
+
+    Falls back to the ``<product>-core`` / ``aruba-<x>`` naming convention so a
+    newly added optional-product backend is gated by default rather than
+    silently ungated. Returns ``None`` for anything that is not a known write
+    gate (e.g. ``aruba-rag``, ``aruba-tool-router``).
+    """
+    if not server_name:
+        return None
+    name = str(server_name).strip().lower()
+    platform = _SERVER_NAME_PLATFORMS.get(name)
+    if platform is None:
+        platform = name.removesuffix("-core").removeprefix("aruba-")
+    return platform if platform in _PLATFORM_WRITE_GATES else None
+
+
+def tool_write_capability(tool: Any) -> str:
+    """Normalized capability of a FastMCP tool from its annotations.
+
+    Mirrors ``mcp_servers.tool_router._tool_capability`` so the standalone
+    gate and the router gate classify a tool identically.
+    """
+    annotations = getattr(tool, "annotations", None)
+    if bool(getattr(annotations, "readOnlyHint", False)):
+        return "read"
+    if bool(getattr(annotations, "destructiveHint", False)):
+        return "destructive"
+    if annotations == DIAGNOSTIC:
+        return "diagnostic"
+    return "write"
+
+
+def install_platform_write_gate(mcp_instance: Any) -> bool:
+    """Enforce this server's platform write gate on every tool call.
+
+    Wraps ``mcp_instance._tool_manager.call_tool`` so any tool whose
+    annotations classify it as ``write``/``destructive`` is refused *before*
+    the tool body runs whenever either (a) the global ``CENTRALMCP_READONLY``
+    kill switch is set -- returning :func:`global_write_blocked` -- or (b) the
+    server's platform gate is disabled -- returning
+    :func:`platform_write_blocked`. Read-only and diagnostic tools are never
+    affected, and a server whose name maps to no gated platform (e.g.
+    ``aruba-rag`` or the router ``aruba-tool-router``) is left completely
+    untouched (the router enforces both gates itself before dispatch).
+
+    Idempotent: installing twice replaces the wrapper rather than stacking it,
+    and composes safely with :func:`mcp_servers._middleware.install_middleware`
+    in either order (each keeps its own saved original).
+
+    Returns:
+        ``True`` if a gate was installed (or refreshed), ``False`` if this
+        server has no gated platform.
+    """
+    platform = platform_for_server_name(getattr(mcp_instance, "name", None))
+    if platform is None:
+        return False
+
+    manager = mcp_instance._tool_manager
+    original = getattr(manager, _WRITE_GATE_INSTALLED_ATTR, None) or manager.call_tool
+    if not getattr(manager, _WRITE_GATE_INSTALLED_ATTR, None):
+        setattr(manager, _WRITE_GATE_INSTALLED_ATTR, original)
+
+    async def gated_call_tool(name, arguments, context=None, convert_result=False):  # noqa: ANN001,ANN202
+        tool = manager.get_tool(name)
+        if tool is not None:
+            capability = tool_write_capability(tool)
+            if capability in ("write", "destructive") and (
+                global_readonly_enabled() or not platform_writes_allowed(platform)
+            ):
+                # CENTRALMCP_READONLY overrides an otherwise-open platform gate
+                # and reports itself as the reason; the per-platform gate is
+                # preserved for every other case.
+                blocked = (
+                    global_write_blocked(name)
+                    if global_readonly_enabled()
+                    else platform_write_blocked(platform, name, capability=capability)
+                )
+                if convert_result:
+                    try:
+                        return tool.fn_metadata.convert_result(blocked)
+                    except Exception:
+                        from mcp.server.fastmcp.utilities.func_metadata import (
+                            _convert_to_content,
+                        )
+
+                        return _convert_to_content(blocked)
+                return blocked
+        return await original(
+            name, arguments, context=context, convert_result=convert_result
+        )
+
+    manager.call_tool = gated_call_tool  # type: ignore[method-assign]
+    return True
+
+
 def run_server(mcp_instance, default_port: int | None = None) -> None:
     """Run an MCP server with transport configured by environment.
 
@@ -733,7 +937,13 @@ def run_server(mcp_instance, default_port: int | None = None) -> None:
 
     Always registers /livez, /readyz, /healthz on HTTP transports -- see
     ``_register_health_routes``.
+
+    Also installs this server's platform write gate (see
+    ``install_platform_write_gate``) on every transport, so a backend run
+    standalone fails write/destructive calls closed exactly like the router
+    does. This is idempotent and a no-op for servers with no gated platform.
     """
+    install_platform_write_gate(mcp_instance)
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport == "stdio":
         mcp_instance.run()
@@ -1113,6 +1323,15 @@ def safe_api_path(path: str, allowed_prefixes: tuple[str, ...]) -> str:
     return decoded
 
 
+#: ``_pagination`` members this module computes and therefore owns. Anything
+#: else found in an incoming ``_pagination`` block belongs to the backend
+#: (most importantly an opaque ``next_cursor``) and is preserved verbatim by
+#: :func:`bound_collection_response`.
+CANONICAL_PAGINATION_KEYS = frozenset(
+    {"offset", "limit", "total", "truncated", "list_key"}
+)
+
+
 def bound_collection_response(
     data: Any,
     *,
@@ -1125,6 +1344,10 @@ def bound_collection_response(
     - If ``data`` is a list, wraps as ``{"items": [...], "_pagination": ...}``.
     - If ``data`` is a dict, slices ``list_key`` or the longest top-level list
       (excluding ``_pagination``) and adds ``_pagination`` metadata.
+
+    Any non-canonical key already present in ``data``'s ``_pagination`` (see
+    :data:`CANONICAL_PAGINATION_KEYS`) -- for example a backend-issued
+    ``next_cursor`` -- is preserved in the returned ``_pagination``.
     """
     lim = clamp_limit(limit)
     off = max(0, offset)
@@ -1168,13 +1391,29 @@ def bound_collection_response(
         existing_pagination.get("truncated")
     )
     out[key] = page
-    out["_pagination"] = {
+    pagination: dict[str, Any] = {
         "offset": off,
         "limit": lim,
         "total": total,
         "truncated": total > off + len(page) or was_truncated,
         "list_key": key,
     }
+    if isinstance(existing_pagination, dict):
+        # Carry through every key this function does not own. Backends that
+        # page with an opaque continuation token surface it as a
+        # non-canonical ``_pagination`` member (``next_cursor`` / ``next`` /
+        # ``has_more`` / ...); rebuilding ``_pagination`` from scratch dropped
+        # it silently, which made an upstream-paginated collection look
+        # complete and left the caller with no way to fetch the next page.
+        # The canonical slice keys are always recomputed here and always win.
+        carried = {
+            key_name: value
+            for key_name, value in existing_pagination.items()
+            if key_name not in CANONICAL_PAGINATION_KEYS
+        }
+        if carried:
+            pagination = {**carried, **pagination}
+    out["_pagination"] = pagination
     return out
 
 
@@ -1391,7 +1630,15 @@ def device_type_for_troubleshoot(serial_number: str, device_type: str | None) ->
     """
     if device_type:
         upper = device_type.upper()
-        return _DTYPE_MAP.get(upper, upper.lower())
+        if upper in _DTYPE_MAP:
+            return _DTYPE_MAP[upper]
+        # "SWITCH"/"SWITCHES" is the generic deviceType value inventory
+        # records use (see list_devices' device_type filter). It is not a
+        # valid troubleshooting URL segment on its own, so fall through to
+        # inventory-based CX/AOS-S disambiguation instead of passing a literal
+        # "switch" that the API would reject.
+        if upper not in ("SWITCH", "SWITCHES"):
+            return upper.lower()
     device = get_mcp_client().get_device_by_serial(serial_number)
     if not device:
         return None
