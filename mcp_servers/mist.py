@@ -41,7 +41,7 @@ from mcp.server.fastmcp import FastMCP
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import PayloadTooBig
 
-from mcp_servers.openapi_gen.http_exec import build_multipart_files
+from mcp_servers.openapi_gen.http_exec import apply_request_body, build_multipart_files
 from mcp_servers.shared import (
     DESTRUCTIVE,
     IDEMPOTENT_WRITE,
@@ -1836,8 +1836,10 @@ async def _mist_generated_read(
     path: str,
     query: dict[str, Any],
     headers: dict[str, str],
+    body: Any = None,
+    content_type: str = "application/json",
 ) -> dict[str, Any]:
-    """Read executor for generated Mist tools (GET/HEAD, bounded, direct)."""
+    """Read executor for generated Mist tools (bounded, direct)."""
     host, token, error = _mist_prepare(path)
     if error:
         return {"error": error}
@@ -1846,9 +1848,16 @@ async def _mist_generated_read(
         token, headers, include_session=not _mist_is_public_path(path)
     )
     clean_params = {k: v for k, v in query.items() if v is not None}
+    request_kwargs: dict[str, Any] = {
+        "headers": req_headers,
+        "params": clean_params,
+    }
+    body_error = apply_request_body(request_kwargs, req_headers, body, content_type)
+    if body_error is not None:
+        return body_error
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.request(method, url, headers=req_headers, params=clean_params)
+            resp = await client.request(method, url, **request_kwargs)
         requested_limit = query.get("limit")
         output_limit = clamp_limit(requested_limit if isinstance(requested_limit, int) else None)
         payload = redact_sensitive(bound_collection_response(

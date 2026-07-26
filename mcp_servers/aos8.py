@@ -3087,6 +3087,8 @@ async def _aos8_generated_read(
     path: str,
     query: dict[str, Any],
     headers: dict[str, str],
+    body: Any = None,
+    content_type: str = "application/json",
 ) -> dict[str, Any]:
     """Read executor for generated AOS8 tools (GET, bounded, session-authed)."""
     base_url, full_path, error = _aos8_generated_prepare(path)
@@ -3094,7 +3096,9 @@ async def _aos8_generated_read(
         return {"error": error}
     url = f"{base_url}{full_path}"
     clean_params = {k: v for k, v in query.items() if v is not None}
-    result = await _aos8_send(method, base_url, full_path, clean_params, None)
+    if body is not None and content_type != "application/json":
+        return {"error": f"Unsupported AOS8 read request body type: {content_type}"}
+    result = await _aos8_send(method, base_url, full_path, clean_params, body)
     if isinstance(result, dict):
         return {**redact_sensitive(result), "url": url}
     resp = result
