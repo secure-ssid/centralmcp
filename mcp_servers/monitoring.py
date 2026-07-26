@@ -1,11 +1,11 @@
-"""MCP server — Aruba Central monitoring and operational health tools (87 tools).
+"""MCP server — Aruba Central monitoring and operational health tools (88 tools).
 
 Covers: sites, devices, clients, alerts, events, scopes, inventory,
 audit logs, device health/trends, switch ports/VLANs/PoE, AP radios/ports,
 SLE metrics, WLANs, gateway clusters, anomaly detection (client flapping,
 SSH brute force), site health summary, client roaming history, switch stacking,
 rogue APs, AP neighbors, channel utilization, client signal history, air quality,
-SSID clients, client location, topology, swarm inventory, AP tunnel telemetry,
+SSID clients, client location, topology, BSSID inventory, swarm inventory, AP tunnel telemetry,
 application visibility, reporting (reports/report-runs/metadata/health, plus
 manifest-confirmed report create/get/update/delete and report-run
 delete/download-link execution), client onboarding events, best-effort
@@ -16,7 +16,7 @@ remediation workflow (plan_config_health_remediation +
 execute_config_health_remediation: chunked resync with per-chunk read-back
 and partial-failure reporting).
 
-Cursor pagination note: clients/radios/gateways/WLANs/alerts/device-inventory
+Cursor pagination note: clients/radios/BSSIDs/gateways/WLANs/alerts/device-inventory
 paginate with a `next` cursor (not offset) per the v1 reference docs — list
 tools accept both `next_cursor` (preferred) and a legacy `offset` that is
 translated to an approximate starting cursor.
@@ -756,6 +756,61 @@ def list_radios(
         return client.get("/network-monitoring/v1/radios", params=params)
     except Exception as exc:
         return {"error": str(exc), "endpoint_used": "/network-monitoring/v1/radios"}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_bssids(
+    site_id: str | None = None,
+    site_name: str | None = None,
+    serial_number: str | None = None,
+    mac_address: str | None = None,
+    radio_mac_address: str | None = None,
+    filter: str | None = None,
+    sort: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    next_cursor: str | None = None,
+) -> dict[str, Any]:
+    """List BSSID-to-AP/radio/WLAN mappings from network-monitoring/v1/bssids.
+
+    Structured filters use exact OData equality matches for siteId, siteName,
+    serialNumber, macAddress, and radioMacAddress. Use ``filter`` for documented
+    ``in`` expressions or to combine other supported clauses; Central supports
+    only ``and`` conjunctions for this endpoint. Supported sort fields are
+    siteId, siteName, serialNumber, deviceName, and wlanName.
+
+    Paginates with a ``next`` cursor (getBssidsV1), not offset. Pass
+    next_cursor from a prior response's ``next`` field to page forward;
+    offset is translated to an approximate starting cursor when
+    next_cursor is omitted.
+    """
+    params: dict[str, Any] = {"limit": clamp_limit(limit, default=20)}
+    off = max(0, offset)
+    cursor = next_cursor or (str(off + 1) if off > 0 else None)
+    if cursor:
+        params["next"] = cursor
+
+    filter_parts: list[str] = []
+    if filter and filter.strip():
+        filter_parts.append(filter.strip())
+    for field, value in (
+        ("siteId", site_id),
+        ("siteName", site_name),
+        ("serialNumber", serial_number),
+        ("macAddress", mac_address),
+        ("radioMacAddress", radio_mac_address),
+    ):
+        if value and value.strip():
+            filter_parts.append(f"{field} eq '{_odata_string(value.strip())}'")
+    if filter_parts:
+        params["filter"] = " and ".join(filter_parts)
+    if sort and sort.strip():
+        params["sort"] = sort.strip()
+
+    try:
+        return get_client().get("/network-monitoring/v1/bssids", params=params)
+    except Exception as exc:
+        return {"error": str(exc), "endpoint_used": "/network-monitoring/v1/bssids"}
 
 
 @mcp.tool(annotations=READ_ONLY)

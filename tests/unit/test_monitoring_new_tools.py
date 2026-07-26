@@ -86,6 +86,66 @@ def test_list_clients_forwards_offset(monkeypatch):
     )
 
 
+def test_list_bssids_builds_structured_filters_and_cursor(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"items": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_bssids(
+        site_id="site-1",
+        site_name="Branch O'Hare",
+        serial_number="AP123",
+        mac_address="aa:bb:cc:dd:ee:ff",
+        radio_mac_address="aa:bb:cc:dd:ee:00",
+        sort="wlanName desc",
+        limit=500,
+        offset=9,
+    )
+
+    assert result == {"items": []}
+    client.get.assert_called_once_with(
+        "/network-monitoring/v1/bssids",
+        params={
+            "limit": 200,
+            "next": "10",
+            "filter": (
+                "siteId eq 'site-1' and siteName eq 'Branch O''Hare' "
+                "and serialNumber eq 'AP123' and macAddress eq 'aa:bb:cc:dd:ee:ff' "
+                "and radioMacAddress eq 'aa:bb:cc:dd:ee:00'"
+            ),
+            "sort": "wlanName desc",
+        },
+    )
+
+
+def test_list_bssids_combines_raw_filter_with_structured_filter(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"items": []}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    monitoring.list_bssids(
+        site_id="site-1",
+        filter="serialNumber in ('AP1','AP2')",
+        next_cursor="opaque-cursor",
+    )
+
+    client.get.assert_called_once_with(
+        "/network-monitoring/v1/bssids",
+        params={
+            "limit": 20,
+            "next": "opaque-cursor",
+            "filter": "serialNumber in ('AP1','AP2') and siteId eq 'site-1'",
+        },
+    )
+
+
+def test_list_bssids_is_registered_read_only():
+    tool = monitoring.mcp._tool_manager._tools["list_bssids"]
+
+    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.destructiveHint is False
+
+
 def test_list_alert_classifications_calls_expected_endpoint(monkeypatch):
     client = MagicMock()
     client.get.return_value = {"Critical": 2}

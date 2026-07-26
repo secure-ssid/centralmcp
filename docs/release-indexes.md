@@ -15,7 +15,7 @@ larger, so public releases can include a prebuilt archive.
 | Security advisories | 102 |
 | Lifecycle records | 346 |
 | Generated operation manifests | 6,143 |
-| Complete backend tool catalog | 6,699 |
+| Complete backend tool catalog | 6,700 |
 
 OpenAPI documents are parsed only into SQLite exact lookup. They are not
 embedded into LanceDB, which keeps prose retrieval smaller and avoids lossy

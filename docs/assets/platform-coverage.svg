@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
   <title id="title">centralmcp platform and tool coverage</title>
-  <desc id="desc">The low-token router searches 6,699 backend tools and 6,143 generated operations across nine HPE Networking, Juniper, and Axis platforms.</desc>
+  <desc id="desc">The low-token router searches 6,700 backend tools and 6,143 generated operations across nine HPE Networking, Juniper, and Axis platforms.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#071426"/>
@@ -22,7 +22,7 @@
   <g transform="translate(60 150)">
     <rect width="250" height="140" rx="18" fill="#0d2239" stroke="#2d668d"/>
     <text x="22" y="38" class="boxTitle">Aruba Central</text>
-    <text x="22" y="72" class="count">1,924 tools</text>
+    <text x="22" y="72" class="count">1,925 tools</text>
     <text x="22" y="101" class="boxText">config, monitoring, NAC, ops</text>
     <text x="22" y="124" class="boxText">routing, rollback, diagnostics</text>
 
@@ -82,7 +82,7 @@
 
     <rect x="550" y="330" width="525" height="140" rx="18" fill="#69e2d7"/>
     <text x="580" y="372" class="router">Catalog tiers</text>
-    <text x="580" y="408" class="router">6,143 generated | 6,699 backend | 6,706 direct-all</text>
+    <text x="580" y="408" class="router">6,143 generated | 6,700 backend | 6,707 direct-all</text>
     <text x="580" y="444" class="router">Writes remain dry-run and confirmation gated</text>
   </g>
 </svg>

@@ -190,7 +190,7 @@ to just that optional backend.
 </div>
 
 Combined with the Central/GLP/RAG surfaces, the backend catalog contains 3,147
-read-only-annotated tools and 6,699 registered tools. Diagnostic tools are
+read-only-annotated tools and 6,700 registered tools. Diagnostic tools are
 available in optional read-only mode but are not included in the read-only
 annotation count.
 

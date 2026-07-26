@@ -39,7 +39,10 @@ location fields), or a <code>{"items": [...], "_pagination": {...}}</code>
 wrapper only if the result needed clipping.</p>
 <p><strong>Variation:</strong> swap in <code>list_devices</code> with
 <code>device_type</code>/<code>site_id</code> filters to inventory APs or
-switches instead of sites.</p>
+switches instead of sites. For wireless troubleshooting, use
+<code>list_bssids</code> with <code>site_id</code>,
+<code>serial_number</code>, or MAC filters to map each BSSID to its AP,
+radio, WLAN, band, and site.</p>
 </div>
 
 <div class="example-card" markdown="1">

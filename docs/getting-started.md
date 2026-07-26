@@ -353,7 +353,7 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 ```
 
 This exposes only the router discovery/dispatch surface and keeps tool-list
-token cost low. The router can search 6,699 backend tools when all platforms
+token cost low. The router can search 6,700 backend tools when all platforms
 and guarded writes are indexed, while minimal mode exposes only three
 client-visible tools: `find_tool`, `invoke_read_tool`, and `invoke_tool`.
 
@@ -380,7 +380,7 @@ Include optional product starters:
 uv run python scripts/ingest_tools.py --products all
 ```
 
-The safe default hides optional write tools. Build all 6,699 backend tools only
+The safe default hides optional write tools. Build all 6,700 backend tools only
 for an intentional lab read/write profile:
 
 ```bash
@@ -465,7 +465,7 @@ check [troubleshooting.md](troubleshooting.md) for the matching fix.
 python3 scripts/setup_wizard.py --yes --skip-credentials --skip-catalog
 uv run python scripts/doctor.py
 uv run pytest tests/unit -q
-uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6699
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6700
 ```
 
 `scripts/doctor.py` is a non-mutating local setup diagnostic. It checks Python
