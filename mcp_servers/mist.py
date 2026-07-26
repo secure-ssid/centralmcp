@@ -1,4 +1,4 @@
-"""MCP server — optional Juniper Mist backend (28 curated + 1050 generated OpenAPI tools).
+"""MCP server — optional Juniper Mist backend (30 curated + 1050 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=mist
@@ -1661,6 +1661,93 @@ async def mist_collect_diagnostic_results(
     if error:
         result["error"] = error
     return result
+
+
+# ---------------------------------------------------------------------------
+# SLE / assurance convenience wrappers
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def mist_get_org_sle_overview(
+    org_id: str,
+    metric: str = "throughput",
+    start: str | None = None,
+    end: str | None = None,
+    duration: str = "1d",
+) -> dict[str, Any]:
+    """Get Mist org-level SLE (Service Level Experience) metric insight.
+
+    Uses `GET /api/v1/orgs/{org_id}/insights/{metric}`. Common `metric`
+    values: ``throughput``, ``wifi-success-connecting``, ``time-to-connect``,
+    ``roam-success``, ``coverage``. Pass `start`/`end` as epoch seconds or
+    `duration` (e.g. ``1d``, ``7d``) to scope the time window.
+    The response payload is bounded to prevent oversized context consumption.
+    """
+    if not org_id:
+        return {"error": "org_id is required."}
+    params: dict[str, Any] = {
+        "duration": duration,
+        "start": start,
+        "end": end,
+    }
+    out = await _mist_get_request(
+        f"/api/v1/orgs/{_path_segment(org_id)}/insights/{_path_segment(metric)}",
+        params,
+        bound=False,
+    )
+    if "data" in out:
+        out["metric"] = metric
+        out["org_id"] = org_id
+        out["sle"] = bound_collection_response(out.pop("data"), limit=clamp_limit(None), offset=0)
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def mist_get_site_sle_metric_summary(
+    site_id: str,
+    scope: str,
+    scope_id: str,
+    metric: str = "wifi",
+    start: str | None = None,
+    end: str | None = None,
+    duration: str = "1d",
+) -> dict[str, Any]:
+    """Get Mist site SLE metric summary for a given scope and scope entity.
+
+    Uses `GET /api/v1/sites/{site_id}/sle/{scope}/{scope_id}/metric/{metric}/summary`.
+    `scope` should be one of ``ap``, ``band``, ``client``, ``device-os``,
+    ``device-type``, ``wlan``, ``gateway``, ``switch``. `scope_id` is the
+    identifier of the scoped entity (e.g. an AP MAC). `metric` selects the
+    SLE metric to summarise. Pass `start`/`end` as epoch seconds or
+    `duration` to scope the time window.
+    The response payload is bounded to prevent oversized context consumption.
+    """
+    if not site_id or not scope or not scope_id:
+        return {"error": "site_id, scope, and scope_id are all required."}
+    params: dict[str, Any] = {
+        "duration": duration,
+        "start": start,
+        "end": end,
+    }
+    out = await _mist_get_request(
+        (
+            f"/api/v1/sites/{_path_segment(site_id)}/sle"
+            f"/{_path_segment(scope)}/{_path_segment(scope_id)}"
+            f"/metric/{_path_segment(metric)}/summary"
+        ),
+        params,
+        bound=False,
+    )
+    if "data" in out:
+        out["metric"] = metric
+        out["scope"] = scope
+        out["scope_id"] = scope_id
+        out["site_id"] = site_id
+        out["summary"] = bound_collection_response(
+            out.pop("data"), limit=clamp_limit(None), offset=0
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central configuration and provisioning tools (75 tools).
+"""MCP server — Aruba Central configuration and provisioning tools (80 tools).
 
 Covers: VLANs, SSIDs, overlay WLANs, port profiles, firmware compliance, device management,
 webhooks, device groups, gateway clusters, interface and static route config, and
@@ -6,7 +6,10 @@ generic bounded network-profile helpers (get/set/delete_network_profile) backing
 typed build_* workflows for routing overlays (BGP/OSPF/VRF), high availability
 (VSX+VRRP), telemetry, application experience (bandwidth contracts + ARC), and
 configuration checkpoint policy (see get_config_rollback_status for what New
-Central's checkpoint API does and does not support).
+Central's checkpoint API does and does not support). Also covers the v0.7
+stricter dry_run+confirm+gate+read-back workflows: VSF stacking-template
+lifecycle (build_vsf_template/delete_vsf_template), bulk site/site-collection
+delete, and multi-target firmware-compliance campaigns.
 """
 import os
 import uuid
@@ -22,6 +25,7 @@ from mcp_servers.shared import (
     bound_collection_response,
     clamp_limit,
     compact_http_error,
+    enforce_platform_write,
     get_client,
     get_mcp_client,
     resp_json,
@@ -2132,6 +2136,16 @@ def list_config_templates(limit: int = 100, offset: int = 0) -> dict[str, Any]:
 
     Returns template names, types, and scope assignments. Tries multiple
     known New Central endpoints and surfaces whichever responds.
+
+    v0.7 note: none of the endpoints probed below are confirmed in the
+    committed New Central network-config manifest — they are speculative
+    Classic-Central-shaped guesses kept only for back-compat on tenants
+    where they happen to respond. The one schema-confirmed, generic
+    "template" resource in New Central today is the VSF stacking template
+    (see build_vsf_template / delete_vsf_template / get_network_profile
+    with profile_type="vsf-template"). There is no New Central endpoint for
+    Classic-style templates with %variable% substitution or a separate
+    template-group assignment step; do not expect one from this tool.
     """
     client = get_client()
     lim = clamp_limit(limit)
@@ -2274,6 +2288,13 @@ _NETWORK_PROFILE_TYPES: dict[str, str] = {
     "app-bandwidth-contract": "app-bandwidth-contracts",
     "app-recognition": "arc",
     "config-checkpoint": "config-checkpoint",
+    # VSF stacking templates (manifest-confirmed: vsf-template.json) — the
+    # only schema-backed generic "template" resource in the New Central
+    # network-config API. See build_vsf_template/delete_vsf_template below
+    # for the stricter dry_run+confirm+gate+read-back lifecycle contract;
+    # get_network_profile/set_network_profile/delete_network_profile also
+    # work generically against profile_type="vsf-template".
+    "vsf-template": "vsf-templates",
 }
 
 _READ_ONLY_NETWORK_PROFILE_TYPES: dict[str, str] = {
@@ -2703,6 +2724,360 @@ def get_config_rollback_status() -> dict[str, Any]:
             "post-checkpoint generation, and list_devices_config_health / "
             "get_device_config_issues to see current config-health state."
         ),
+    }
+
+
+# ── VSF Template Lifecycle (v0.7 bounded workflow) ────────────────────────────
+#
+# Stricter write contract than the build_*/set_network_profile pair above:
+# dry_run=True by default, an explicit confirm=True is required to execute,
+# the write is gated behind the existing Central write gate
+# (CENTRALMCP_CENTRAL_WRITES, enforce_platform_write), the executed result is
+# validated, and a read-back GET confirms what Central actually stored.
+# Schema: GET/POST/PATCH/DELETE /network-config/v1alpha1/vsf-templates[/{name}]
+# (manifest-confirmed: ingestion/sources/openapi_specs/vsf-template.json,
+# also central.json operations central_read_vsf_templates /
+# central_create_vsf_templates / central_update_vsf_templates /
+# central_delete_vsf_templates). number-of-members is the only
+# schema-required body field (1-10); name/description/conductor-serials are
+# optional. There is no New Central endpoint for Classic-style config
+# templates with %variable% substitution or a separate template-assignment
+# step — object-type=LOCAL on create *is* the assignment (bound directly to
+# scope_id + device_function). Do not probe for a Classic-shaped
+# variables/assignment endpoint; none exists in this manifest.
+
+_VSF_TEMPLATE_PROFILE_TYPE = "vsf-template"
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def build_vsf_template(
+    name: str,
+    number_of_members: int,
+    scope_id: str,
+    device_function: str = "ACCESS_SWITCH",
+    description: str | None = None,
+    conductor_serials: list[str] | None = None,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create a LOCAL-scoped VSF (Virtual Switching Framework) stacking template, then read it back.
+
+    number_of_members must be 1-10 (schema minimum/maximum). The template
+    is bound directly to scope_id + device_function (object-type=LOCAL) —
+    this *is* the assignment step; there is no separate assignment call.
+    dry_run=True (default) returns the request preview with no network
+    call. Set dry_run=False and confirm=True to execute — this also
+    requires CENTRALMCP_CENTRAL_WRITES=1 (enabled by default). On success
+    the response is validated (raises WriteResultError on a non-2xx or
+    error-shaped result) and a GET read-back is attached under
+    result["read_back"] to confirm what Central actually stored.
+    Cleanup: call delete_vsf_template(name, scope_id=..., device_function=...,
+    dry_run=False, confirm=True) to remove a disposable/lab template.
+    """
+    if not (1 <= number_of_members <= 10):
+        raise ValueError("number_of_members must be between 1 and 10")
+    if not scope_id:
+        raise ValueError("scope_id is required (VSF templates are always LOCAL-scoped)")
+
+    body: dict[str, Any] = {"number-of-members": number_of_members}
+    if description:
+        body["description"] = description
+    if conductor_serials:
+        body["conductor-serials"] = conductor_serials
+    params = _profile_write_params("LOCAL", scope_id, device_function)
+    endpoint = f"{_profile_base(_VSF_TEMPLATE_PROFILE_TYPE)}/{quote(name, safe='')}"
+
+    if dry_run:
+        return {
+            "dry_run": True, "name": name, "endpoint": endpoint,
+            "params": params, "payload": body,
+        }
+    blocked = enforce_platform_write("central", "build_vsf_template")
+    if blocked:
+        return blocked
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True, "name": name, "endpoint": endpoint,
+            "params": params, "payload": body,
+        }
+
+    client = get_client()
+    response = client._request("POST", endpoint, json=body, params=params or None)
+    action = "created"
+    if response.status_code == 412:
+        action = "updated"
+        response = client._request("PATCH", endpoint, json=body, params=params or None)
+    validate_write_result(response, context=f"{action} {endpoint}")
+    result = resp_json(response)
+    validate_write_result(result, context=f"{action} {endpoint}")
+
+    read_back_resp = client._request("GET", endpoint, params=params or None)
+    read_back = resp_json(read_back_resp) if read_back_resp.is_success else {
+        "error": compact_http_error(read_back_resp, endpoint)
+    }
+    return {"action": action, "name": name, "response": result, "read_back": read_back}
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def delete_vsf_template(
+    name: str,
+    scope_id: str,
+    device_function: str = "ACCESS_SWITCH",
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Delete a LOCAL-scoped VSF stacking template, then read back to confirm removal.
+
+    dry_run=True (default) returns the request preview with no network
+    call. Set dry_run=False and confirm=True to execute — this also
+    requires CENTRALMCP_CENTRAL_WRITES=1 (enabled by default). On success
+    the response is validated (raises WriteResultError on a non-2xx or
+    error-shaped result) and a read-back GET is attached under
+    result["read_back"]; an HTTP 404 on read-back confirms the template no
+    longer exists (surfaced as read_back={"deleted_confirmed": True}).
+    """
+    params = _profile_write_params("LOCAL", scope_id, device_function)
+    endpoint = f"{_profile_base(_VSF_TEMPLATE_PROFILE_TYPE)}/{quote(name, safe='')}"
+
+    if dry_run:
+        return {"dry_run": True, "name": name, "endpoint": endpoint, "params": params}
+    blocked = enforce_platform_write("central", "delete_vsf_template")
+    if blocked:
+        return blocked
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True, "name": name, "endpoint": endpoint, "params": params,
+        }
+
+    client = get_client()
+    response = client._request("DELETE", endpoint, params=params or None)
+    validate_write_result(response, context=f"DELETE {endpoint}")
+    result = resp_json(response)
+    validate_write_result(result, context=f"DELETE {endpoint}")
+
+    read_back_resp = client._request("GET", endpoint, params=params or None)
+    if read_back_resp.status_code == 404:
+        read_back = {"deleted_confirmed": True}
+    elif read_back_resp.is_success:
+        read_back = {"deleted_confirmed": False, "still_present": resp_json(read_back_resp)}
+    else:
+        read_back = {
+            "deleted_confirmed": None,
+            "error": compact_http_error(read_back_resp, endpoint),
+        }
+    return {"name": name, "response": result, "read_back": read_back}
+
+
+# ── Bulk Site / Site-Collection Delete (v0.7 bounded workflow) ───────────────
+#
+# Schema: DELETE /network-config/v1/sites/bulk and
+# /network-config/v1/site-collections/bulk (manifest-confirmed:
+# scope-management-1fkx1wmq0s.json — same request shape as the existing
+# delete_device_groups: {"items": [{"id": ...}, ...]}). The v1alpha1
+# equivalents are deprecated in favor of these v1 paths. Same
+# dry_run+confirm+gate contract as build_vsf_template above; these are
+# irreversible so no read-back GET is attempted for a deleted site/
+# site-collection.
+
+_MAX_BULK_DELETE_ITEMS = 100
+
+
+def _bulk_delete_ids(ids: list[str], field_name: str) -> list[str]:
+    if not ids:
+        raise ValueError(f"{field_name} must be a non-empty list")
+    if len(ids) > _MAX_BULK_DELETE_ITEMS:
+        raise ValueError(
+            f"{field_name} cannot exceed {_MAX_BULK_DELETE_ITEMS} entries (got {len(ids)})"
+        )
+    cleaned = [str(i).strip() for i in ids]
+    if any(not i for i in cleaned):
+        raise ValueError(f"{field_name} entries must be non-empty strings")
+    return cleaned
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def delete_sites_bulk(
+    site_ids: list[str],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Bulk-delete sites by scope ID list (up to 100 per call).
+
+    DELETE /network-config/v1/sites/bulk (manifest-confirmed). dry_run=True
+    (default) returns the payload preview with no network call. Set
+    dry_run=False and confirm=True to execute — requires
+    CENTRALMCP_CENTRAL_WRITES=1 (enabled by default). Irreversible: there is
+    no undo/read-back for a deleted site — verify site_ids with list_sites
+    first.
+    """
+    ids = _bulk_delete_ids(site_ids, "site_ids")
+    endpoint = "/network-config/v1/sites/bulk"
+    payload = {"items": [{"id": sid} for sid in ids]}
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": payload}
+    blocked = enforce_platform_write("central", "delete_sites_bulk")
+    if blocked:
+        return blocked
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True, "endpoint": endpoint, "payload": payload,
+        }
+    client = get_client()
+    response = client._request("DELETE", endpoint, json=payload)
+    validate_write_result(response, context=f"DELETE {endpoint}")
+    result = resp_json(response)
+    validate_write_result(result, context=f"DELETE {endpoint}")
+    return result
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def delete_site_collections_bulk(
+    site_collection_ids: list[str],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Bulk-delete site collections by scope ID list (up to 100 per call).
+
+    DELETE /network-config/v1/site-collections/bulk (manifest-confirmed).
+    dry_run=True (default) returns the payload preview with no network
+    call. Set dry_run=False and confirm=True to execute — requires
+    CENTRALMCP_CENTRAL_WRITES=1 (enabled by default). Irreversible: there is
+    no undo/read-back for a deleted site collection.
+    """
+    ids = _bulk_delete_ids(site_collection_ids, "site_collection_ids")
+    endpoint = "/network-config/v1/site-collections/bulk"
+    payload = {"items": [{"id": sid} for sid in ids]}
+    if dry_run:
+        return {"dry_run": True, "endpoint": endpoint, "payload": payload}
+    blocked = enforce_platform_write("central", "delete_site_collections_bulk")
+    if blocked:
+        return blocked
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True, "endpoint": endpoint, "payload": payload,
+        }
+    client = get_client()
+    response = client._request("DELETE", endpoint, json=payload)
+    validate_write_result(response, context=f"DELETE {endpoint}")
+    result = resp_json(response)
+    validate_write_result(result, context=f"DELETE {endpoint}")
+    return result
+
+
+# ── Firmware Compliance Campaign (v0.7 bounded workflow) ─────────────────────
+#
+# Orchestrates the existing manifest-confirmed set_firmware_compliance /
+# get_firmware_compliance calls (POST-then-PATCH-on-409 against
+# /network-config/v1alpha1/firmware-compliance) across multiple
+# scope_id/device_function targets in one bounded call. There is no bulk
+# firmware-compliance endpoint in the New Central schema — this composes
+# the single-target endpoint per target rather than inventing one. Every
+# target is attempted independently: one target's failure never aborts the
+# rest of the campaign (partial failure is reported per-target, not
+# swallowed).
+
+_MAX_CAMPAIGN_TARGETS = 25
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def run_firmware_compliance_campaign(
+    targets: list[dict[str, str]],
+    firmware_version: str,
+    upgrade_mode: str = "REGULAR",
+    reboot_schedule_mode: str = "IMMEDIATE",
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Apply one firmware-compliance policy across multiple scopes/personas in a bounded campaign.
+
+    targets: list of {"scope_id": ..., "device_function": ...} dicts, up to
+    25 entries. Each target calls the same manifest-confirmed
+    /network-config/v1alpha1/firmware-compliance POST-then-PATCH-on-409
+    flow as set_firmware_compliance — one HTTP call per target; this tool
+    does not invent a bulk-firmware endpoint. dry_run=True (default) returns
+    every target's payload preview with no network calls. Set dry_run=False
+    and confirm=True to execute — requires CENTRALMCP_CENTRAL_WRITES=1
+    (enabled by default). Every target is attempted even if an earlier one
+    fails (see result["targets_failed"] / each entry's "error"); after a
+    successful write each target is read back via get_firmware_compliance
+    into that entry's "read_back". Cleanup/rollback: call
+    set_firmware_compliance again per target with the prior firmware
+    version.
+    """
+    if not targets:
+        raise ValueError("targets must be a non-empty list")
+    if len(targets) > _MAX_CAMPAIGN_TARGETS:
+        raise ValueError(
+            f"targets cannot exceed {_MAX_CAMPAIGN_TARGETS} entries (got {len(targets)})"
+        )
+    for index, target in enumerate(targets):
+        if (
+            not isinstance(target, dict)
+            or not str(target.get("scope_id", "")).strip()
+            or not str(target.get("device_function", "")).strip()
+        ):
+            raise ValueError(
+                f"targets[{index}] must be a dict with non-empty 'scope_id' and 'device_function'"
+            )
+
+    if not dry_run:
+        blocked = enforce_platform_write("central", "run_firmware_compliance_campaign")
+        if blocked:
+            return blocked
+        if not confirm:
+            return {
+                "error": "confirm=True is required when dry_run=False.",
+                "dry_run": True,
+                "targets": targets,
+                "firmware_version": firmware_version,
+            }
+
+    results: list[dict[str, Any]] = []
+    for target in targets:
+        scope_id = str(target["scope_id"]).strip()
+        device_function = str(target["device_function"]).strip()
+        if dry_run:
+            results.append(
+                set_firmware_compliance(
+                    scope_id, device_function, firmware_version,
+                    upgrade_mode, reboot_schedule_mode, dry_run=True,
+                )
+            )
+            continue
+        try:
+            write_result = set_firmware_compliance(
+                scope_id, device_function, firmware_version,
+                upgrade_mode, reboot_schedule_mode, dry_run=False,
+            )
+        except Exception as exc:
+            results.append({
+                "scope_id": scope_id, "device_function": device_function, "error": str(exc),
+            })
+            continue
+        if write_result.get("errors"):
+            results.append({
+                "scope_id": scope_id, "device_function": device_function,
+                "error": "; ".join(write_result["errors"]), "write_result": write_result,
+            })
+            continue
+        read_back = get_firmware_compliance(scope_id, device_function)
+        results.append({
+            "scope_id": scope_id, "device_function": device_function,
+            "write_result": write_result, "read_back": read_back,
+        })
+
+    succeeded = sum(1 for entry in results if "error" not in entry)
+    return {
+        "dry_run": dry_run,
+        "firmware_version": firmware_version,
+        "targets_attempted": len(targets),
+        "targets_succeeded": succeeded,
+        "targets_failed": len(targets) - succeeded,
+        "results": results,
     }
 
 

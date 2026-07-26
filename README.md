@@ -7,7 +7,7 @@
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-0969da)](https://secure-ssid.github.io/centralmcp/)
 [![Release](https://img.shields.io/github/v/release/secure-ssid/centralmcp?display_name=tag)](https://github.com/secure-ssid/centralmcp/releases)
 
-![centralmcp 0.6.0 - low-token HPE Networking MCP toolkit](docs/assets/centralmcp-hero.svg)
+![centralmcp 0.7.0 - low-token HPE Networking MCP toolkit](docs/assets/centralmcp-hero.svg)
 
 **Low-token Model Context Protocol (MCP) server for HPE Networking automation: Aruba Central, HPE GreenLake Platform (GLP) automation, ClearPass, Juniper Mist, Apstra, ArubaOS 8 migration automation, EdgeConnect, HPE Aruba UXI, and Axis Atmos Cloud.**
 
@@ -15,14 +15,35 @@ centralmcp gives MCP-capable AI clients a low-token way to search Aruba/HPE docs
 
 It is built around direct REST calls with `httpx`.
 
+## Version 0.7.0 highlights
+
+Version 0.7.0 expands the executable backend catalog to 6,699 tools:
+360 core tools / 2813 read-only optional starters / 5795 read-write optional starters.
+It adds versioned/redacted artifact contracts and credential-gated live-test
+configuration used across every workstream, deepens Central (VSF templates,
+bulk site delete, firmware-compliance campaigns, config-health remediation,
+troubleshooting orchestration), GLP (Compute/Storage/Virtualization/Backup/
+Data Services reads plus guarded VM power and reconciliation planning), and
+every optional product (ClearPass, Mist, Apstra, AOS8 rollback planning,
+EdgeConnect, UXI, Axis); expands RAG with exact structured advisory/lifecycle
+listing and correlation (24 → 31 eval questions, all passing); documents the
+current-Aruba lifecycle source coverage gap explicitly; adds router-native
+workflow/reconciliation planning with opaque response-continuation cursors;
+adds opt-in audit logging and metrics; and ships end-to-end release artifact
+automation (validation matrix, deterministic release bundle with SBOM/
+provenance, and restore/smoke-test). No live vendor writes were performed to
+produce this release. See the [complete 0.7.0 release
+notes](docs/release-notes-0.7.0.md).
+
 ## Version 0.6.0 highlights
 
-The current 0.6 branch expands the executable backend catalog to 6,545 tools:
-319 core tools / 2712 read-only optional starters / 5641 read-write optional starters.
-It also adds fail-closed AAA server-group lifecycle tools and AOS8 adapter
-wiring, corrects New Central config-assignment and device-auth profile request
-shapes, and grows the RAG corpus to 51,737 prose chunks with official HPE Aruba
-and Juniper security advisories plus HPE/Mist/Apstra lifecycle notices.
+The 0.6.0 branch expanded the executable backend catalog to 6,545 tools: 319
+core tools, 2,712 read-only optional starters, and 5,641 read-write optional
+starters. It also adds fail-closed AAA server-group lifecycle tools and AOS8
+adapter wiring, corrects New Central config-assignment and device-auth
+profile request shapes, and grows the RAG corpus to 51,737 prose chunks with
+official HPE Aruba and Juniper security advisories plus HPE/Mist/Apstra
+lifecycle notices.
 
 ## Version 0.5.0 highlights
 
@@ -144,7 +165,10 @@ EdgeConnect link integrity diagnostics, low-token MCP router.
 | See the architecture diagrams | [docs/architecture/system-overview.md](docs/architecture/system-overview.md) |
 | Browse the documentation map | [docs/README.md](docs/README.md) |
 | Review the RAG design | [docs/architecture/RAG-ARCHITECTURE.md](docs/architecture/RAG-ARCHITECTURE.md) |
-| Review everything added in 0.6.0 | [docs/release-notes-0.6.0.md](docs/release-notes-0.6.0.md) |
+| Review everything added in 0.7.0 | [docs/release-notes-0.7.0.md](docs/release-notes-0.7.0.md) |
+| Review Central v0.7 depth workflows | [docs/central-v07-workflows.md](docs/central-v07-workflows.md) |
+| Review release artifact automation | [docs/release-artifact-automation.md](docs/release-artifact-automation.md), [docs/artifact-contracts.md](docs/artifact-contracts.md) |
+| Review the prior 0.6.0 expansion (historical) | [docs/release-notes-0.6.0.md](docs/release-notes-0.6.0.md) |
 | Review the prior 0.5.0 AOS8 expansion | [docs/release-notes-0.5.0.md](docs/release-notes-0.5.0.md) |
 | Review the AOS8 migration contract matrix and live evaluation | [docs/aos8-migration-contract-matrix.md](docs/aos8-migration-contract-matrix.md), [docs/aos8-live-dryrun-evaluation.md](docs/aos8-live-dryrun-evaluation.md) |
 | Review the prior 0.4.0 expansion (historical) | [docs/release-notes-0.4.0.md](docs/release-notes-0.4.0.md) |
@@ -159,11 +183,11 @@ EdgeConnect link integrity diagnostics, low-token MCP router.
 
 | Area | Current coverage |
 |---|---|
-| MCP tools | 6,056 generated operations (6,039 active); 506 curated; 6,545 backend tools; 6,548 tools in direct-all router mode |
+| MCP tools | 6,143 generated operations (6,126 active); 573 curated; 6,699 backend tools; 6,704 tools in direct-all router mode |
 | Core servers | Central monitoring, configuration, operations, NAC, GLP, and RAG |
 | Router | `find_tool`, `invoke_read_tool`, `invoke_tool`, optional convenience wrappers, and MCP prompts |
 | RAG | Embedded LanceDB docs index + SQLite OpenAPI lookup; no Docker required |
-| GLP | Current devices, documented device attribute grouping, subscriptions, users, Audit Logs v2beta1, workspaces, reporting, service catalog, 22 typed RBAC/events/locations/SCIM reads, guarded GLP GET, and feature-gated writes |
+| GLP | Current devices, documented device attribute grouping, subscriptions, users, Audit Logs v2beta1, workspaces, reporting, service catalog, 22 typed RBAC/events/locations/SCIM reads, guarded GLP GET, feature-gated writes, region-aware Compute/Storage Fleet/Block Storage/Virtualization/Backup & Recovery/Data Services reads plus guarded VM power and run-protection-job-now writes, and read-only cross-resource reconciliation |
 | Optional products | ClearPass Insight/OnGuard, Mist NAC/Marvis/Wired/WAN plus WebSocket diagnostic collection, Apstra SDK-derived workflows, AOS8 resumable migration execution, EdgeConnect fail-closed compatibility diagnostics, UXI guarded writes, and Axis Atmos Cloud with a deterministic manifest generator |
 | Pipeline | 8-stage migration flow, AOS8 Classic/New Central resumable migration execution, and SSID build/delete helpers |
 
@@ -174,20 +198,20 @@ EdgeConnect link integrity diagnostics, low-token MCP router.
 | Backend | Read-only annotated | Registered total |
 |---|---:|---:|
 | Central generated configuration | 680 | 1,678 |
-| Central configuration | 26 | 75 |
-| Central monitoring | 71 | 85 |
+| Central configuration | 26 | 80 |
+| Central monitoring | 72 | 87 |
 | Central NAC | 15 | 38 |
-| Central operations | 2 | 40 |
-| GreenLake Platform | 544 | 980 |
-| RAG/OpenAPI | 5 | 5 |
-| ClearPass | 272 | 829 |
-| Juniper Mist | 545 | 1,078 |
-| Apstra | 46 | 68 |
-| ArubaOS 8 | 130 | 308 |
-| EdgeConnect | 684 | 1,265 |
+| Central operations | 2 | 41 |
+| GreenLake Platform | 570 | 1,009 |
+| RAG/OpenAPI | 9 | 9 |
+| ClearPass | 285 | 845 |
+| Juniper Mist | 547 | 1,080 |
+| Apstra | 86 | 155 |
+| ArubaOS 8 | 132 | 311 |
+| EdgeConnect | 687 | 1,270 |
 | HPE Aruba UXI | 24 | 49 |
 | Axis Atmos Cloud | 12 | 47 |
-| **Backend total** | **3,056** | **6,545** |
+| **Backend total** | **3,147** | **6,699** |
 
 ## Why the router matters
 
@@ -256,7 +280,7 @@ For optional product starters too:
 uv run python scripts/ingest_tools.py --products all
 ```
 
-That default hides optional write tools. To index all 6,545 backend tools, set
+That default hides optional write tools. To index all 6,699 backend tools, set
 `CENTRALMCP_PRODUCT_ACCESS=read-write` (and `CENTRALMCP_GLP_GENERATED_TOOLS=1`
 to include generated GLP tools) while rebuilding.
 
@@ -379,6 +403,9 @@ allow-lists; set `MCP_HTTP_BEARER_TOKEN` to require a shared bearer token.
 | `CENTRALMCP_TROUBLESHOOTING_API_VERSION` | Pin troubleshooting API to `v1` or legacy `v1alpha1` | `v1` with fallback |
 | `CENTRALMCP_TOKENIZE_SECRETS` | Enable bounded session-scoped secret tokenization middleware | off |
 | `CENTRALMCP_NORMALIZE_MACS` | Normalize outbound MAC strings in router responses | off |
+| `CENTRALMCP_AUDIT_LOG` | Enable redacted JSONL router audit log (`1`/`true`/path) with bounded run/session correlation | off |
+| `CENTRALMCP_METRICS` | Enable bounded in-process tool metrics (counts/latency/outcomes, allow-listed labels only) | off |
+| `CENTRALMCP_METRICS_HTTP` | Also expose the metrics snapshot at `GET /metrics` (streamable-HTTP transport only) | off |
 | `GLP_TOKEN_URL` | Override GLP workspace OAuth token URL | derived from `GLP_BASE_URL` and workspace ID |
 | `GLP_BASE_URL` | Override GLP API base URL | HPE default |
 | `MCP_TRANSPORT` | `stdio` or `streamable-http` | `stdio` |
@@ -496,7 +523,7 @@ uv run pytest tests/unit -q
 Run the local release gate:
 
 ```bash
-uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6162
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6699
 ```
 
 The release helper runs unit tests, optional RAG/API eval when indexes exist, tool catalog floor checks, and local tool-index freshness checks. Unit tests also include static guards for the active MCP/pipeline code, committed low-token MCP config examples, local-only config files, router product/toolset docs, bounded generic read-only GET tools, MCP list default bounds, RAG/search top_k bounds, public tool-count claims, tool-count docstrings, tracked Markdown local links and images, Pages sitemap and robots metadata, documented router example arguments, product workflow tool-name tables, and wizard optional-product env tables.

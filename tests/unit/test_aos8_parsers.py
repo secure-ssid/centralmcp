@@ -9,17 +9,23 @@ from pipeline.aos8_parsers import (
     parse_auth_profiles,
     parse_auth_servers,
     parse_controllers,
+    parse_cp_auth_profiles,
     parse_ethernet_acls,
     parse_export,
     parse_export_report,
+    parse_krb_auth_profiles,
     parse_network_destinations,
+    parse_ntlm_auth_profiles,
     parse_policies,
     parse_roles,
     parse_routes,
     parse_server_groups,
+    parse_stateful_dot1x_auth_profiles,
     parse_vlans,
     parse_vrrp,
     parse_whitelist_rules,
+    parse_wired_auth_profiles,
+    parse_wispr_auth_profiles,
     parse_wlans,
 )
 
@@ -455,6 +461,12 @@ def test_parse_export_returns_all_object_types():
         "network_destinations",
         "ethernet_acls",
         "whitelist_rules",
+        "wired_auth_profiles",
+        "stateful_dot1x_auth_profiles",
+        "wispr_auth_profiles",
+        "cp_auth_profiles",
+        "krb_auth_profiles",
+        "ntlm_auth_profiles",
     }
     assert len(parsed["wlans"]) == 3
     assert len(parsed["roles"]) == 2
@@ -671,5 +683,201 @@ def test_parse_export_report_never_warns_for_new_families_when_absent():
     assert not any(
         family in warning
         for warning in warnings
-        for family in ("netdst", "acl_eth", "whitelist_rule")
+        for family in (
+            "netdst",
+            "acl_eth",
+            "whitelist_rule",
+            "wired_auth_profile",
+            "stateful_dot1x_auth_profile",
+            "wispr_auth_profile",
+            "cp_auth_profile",
+            "krb_auth_profile",
+            "ntlm_auth_profile",
+        )
     )
+
+
+# ---------------------------------------------------------------------------
+# Wired / captive-portal / WISPr / Kerberos / NTLM / stateful-802.1X
+# authentication-profile families (reference-only; see
+# `pipeline.aos8_schema.REFERENCE_ONLY_OBJECT_TYPES`).
+# ---------------------------------------------------------------------------
+
+_WIRED_AUTH_PROFILE_EXPORT = {
+    "aaa": {
+        "wired_auth_profiles": [
+            {"wired_aaa_profile": "corp-aaa", "wired_blacklist_time": 3600}
+        ]
+    }
+}
+
+
+def test_parse_wired_auth_profiles_reads_singleton_and_settings():
+    profiles = parse_wired_auth_profiles(_WIRED_AUTH_PROFILE_EXPORT)
+    assert len(profiles) == 1
+    assert profiles[0].aaa_profile == "corp-aaa"
+    assert profiles[0].blacklist_time == 3600
+    assert profiles[0].settings == {}
+
+
+def test_parse_wired_auth_profiles_warns_on_more_than_one_entry():
+    warnings: list[str] = []
+    export = {
+        "aaa": {
+            "wired_auth_profiles": [
+                {"wired_aaa_profile": "corp-aaa"},
+                {"wired_aaa_profile": "guest-aaa"},
+            ]
+        }
+    }
+    profiles = parse_wired_auth_profiles(export, warnings)
+    assert len(profiles) == 2
+    assert any("singleton object" in warning for warning in warnings)
+
+
+def test_parse_wired_auth_profiles_tolerates_entirely_absent_section():
+    warnings: list[str] = []
+    assert parse_wired_auth_profiles({}, warnings) == []
+    assert warnings == []
+
+
+def test_parse_stateful_dot1x_auth_profiles_reads_singleton_fields():
+    export = {
+        "aaa": {
+            "stateful_dot1x_auth_profiles": [
+                {
+                    "stateful_dot1x_mode": "enabled",
+                    "stateful_dot1x_server_group": "corp-sg",
+                    "statefuldot1x_default_role": "guest",
+                    "timeout": 300,
+                    "unmapped_field": "kept",
+                }
+            ]
+        }
+    }
+    profiles = parse_stateful_dot1x_auth_profiles(export)
+    assert len(profiles) == 1
+    assert profiles[0].mode == "enabled"
+    assert profiles[0].server_group == "corp-sg"
+    assert profiles[0].default_role == "guest"
+    assert profiles[0].timeout == 300
+    assert profiles[0].settings == {"unmapped_field": "kept"}
+
+
+def test_parse_stateful_dot1x_auth_profiles_tolerates_entirely_absent_section():
+    assert parse_stateful_dot1x_auth_profiles({}) == []
+
+
+def test_parse_wispr_auth_profiles_reads_named_profiles_and_settings():
+    export = {
+        "aaa": {
+            "wispr_auth_profiles": [
+                {
+                    "profile-name": "wispr1",
+                    "wispr_default_role": "guest",
+                    "wispr_server_group": "corp-sg",
+                    "wispr_max_delay": 5,
+                }
+            ]
+        }
+    }
+    profiles = parse_wispr_auth_profiles(export)
+    assert len(profiles) == 1
+    assert profiles[0].profile_name == "wispr1"
+    assert profiles[0].default_role == "guest"
+    assert profiles[0].server_group == "corp-sg"
+    assert profiles[0].settings == {"wispr_max_delay": 5}
+
+
+def test_parse_wispr_auth_profiles_warns_on_missing_identifier():
+    warnings: list[str] = []
+    export = {"aaa": {"wispr_auth_profiles": [{"wispr_default_role": "guest"}]}}
+    profiles = parse_wispr_auth_profiles(export, warnings)
+    assert profiles[0].profile_name == "unknown-0"
+    assert any("wispr_auth_profiles[0]" in warning for warning in warnings)
+
+
+def test_parse_wispr_auth_profiles_tolerates_entirely_absent_section():
+    assert parse_wispr_auth_profiles({}) == []
+
+
+def test_parse_cp_auth_profiles_reads_named_profiles_and_settings():
+    export = {
+        "aaa": {
+            "cp_auth_profiles": [
+                {
+                    "profile-name": "cp1",
+                    "cp_default_role": "guest",
+                    "cp_default_guest_role": "guest2",
+                    "cp_server_group": "corp-sg",
+                    "cp_redirect_url": "http://example.com",
+                }
+            ]
+        }
+    }
+    profiles = parse_cp_auth_profiles(export)
+    assert len(profiles) == 1
+    assert profiles[0].profile_name == "cp1"
+    assert profiles[0].default_role == "guest"
+    assert profiles[0].default_guest_role == "guest2"
+    assert profiles[0].server_group == "corp-sg"
+    assert profiles[0].settings == {"cp_redirect_url": "http://example.com"}
+
+
+def test_parse_cp_auth_profiles_tolerates_entirely_absent_section():
+    assert parse_cp_auth_profiles({}) == []
+
+
+def test_parse_krb_auth_profiles_reads_named_profiles_and_settings():
+    export = {
+        "aaa": {
+            "krb_auth_profiles": [
+                {
+                    "profile-name": "krb1",
+                    "krb_default_role": "guest",
+                    "krb_server_group": "corp-sg",
+                    "krb_timeout": 30,
+                    "krb_auth_profile_clone": "template1",
+                }
+            ]
+        }
+    }
+    profiles = parse_krb_auth_profiles(export)
+    assert len(profiles) == 1
+    assert profiles[0].profile_name == "krb1"
+    assert profiles[0].default_role == "guest"
+    assert profiles[0].server_group == "corp-sg"
+    assert profiles[0].timeout == 30
+    assert profiles[0].settings == {"krb_auth_profile_clone": "template1"}
+
+
+def test_parse_krb_auth_profiles_tolerates_entirely_absent_section():
+    assert parse_krb_auth_profiles({}) == []
+
+
+def test_parse_ntlm_auth_profiles_reads_named_profiles_and_settings():
+    export = {
+        "aaa": {
+            "ntlm_auth_profiles": [
+                {
+                    "profile-name": "ntlm1",
+                    "ntlm_default_role": "guest",
+                    "ntlm_server_group": "corp-sg",
+                    "ntlm_enable": True,
+                    "ntlm_timeout": 60,
+                }
+            ]
+        }
+    }
+    profiles = parse_ntlm_auth_profiles(export)
+    assert len(profiles) == 1
+    assert profiles[0].profile_name == "ntlm1"
+    assert profiles[0].default_role == "guest"
+    assert profiles[0].server_group == "corp-sg"
+    assert profiles[0].enabled is True
+    assert profiles[0].timeout == 60
+    assert profiles[0].settings == {}
+
+
+def test_parse_ntlm_auth_profiles_tolerates_entirely_absent_section():
+    assert parse_ntlm_auth_profiles({}) == []

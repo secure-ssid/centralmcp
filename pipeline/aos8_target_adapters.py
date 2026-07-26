@@ -796,13 +796,25 @@ class BaseCentralTargetAdapter:
                 operation.with_dry_run(True).preview_dict()
                 for operation in action.rollback_operations
             ],
-            # 0.5: rollback/reversal is NOT an executable feature. `delete_
-            # operations`/`read_back`/`rollback` above (when present) are
-            # retained purely as non-executable manual/future reference
-            # metadata -- no adapter, orchestrator, or MCP method invokes
-            # them in this release. Do not reintroduce a
-            # "verified_rollback_available"-style claim without also
-            # shipping a real, gated rollback execution path.
+            # `delete_operations`/`read_back`/`rollback` above (when
+            # present) are reference metadata this preview never invokes
+            # itself -- `_invoke_actions` (this adapter's own dry_run/
+            # execute) still never calls them. A real, separately-gated
+            # rollback execution path now exists in
+            # `pipeline.aos8_rollback` (`plan_rollback`/
+            # `execute_rollback_plan`, wired through
+            # `AOS8MigrationOrchestrator.rollback_plan`/`.execute_rollback`
+            # and the `aos8_plan_migration_rollback`/
+            # `aos8_execute_migration_rollback` MCP tools) -- it consumes
+            # exactly these same `delete_operations`/`rollback_operations`
+            # fields, never a separate/duplicated mapping, and is dry-run
+            # by default with its own dedicated write gate
+            # (`CENTRALMCP_AOS8_ROLLBACK_WRITES`). This preview's own
+            # `rollback_supported` flag stays `False` regardless: it
+            # describes only whether *this* preview/dry_run/execute call
+            # invokes rollback automatically (it never does), not whether
+            # a rollback capability exists at all elsewhere in the
+            # repository.
             "rollback_supported": False,
             "dry_run_only": action.dry_run_only,
             "dry_run_only_reason": action.dry_run_only_reason,

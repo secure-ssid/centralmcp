@@ -30,6 +30,9 @@ See individual modules for details:
 - :mod:`mcp_servers._middleware.secret_tokenizer` — opt-in, reversible
   secret/PII tokenization so a value read by one tool can round-trip into
   a later write tool without ever putting plaintext in front of the model.
+- :mod:`mcp_servers._middleware.metrics` — opt-in, bounded in-process
+  request/latency/outcome metrics with allow-listed, capped-cardinality
+  labels; never arguments, results, identifiers, or exception messages.
 
 Retry lives one layer down in
 :mod:`pipeline.clients.central_client` (``_request`` honors
@@ -43,6 +46,7 @@ from __future__ import annotations
 from .audit_log import AuditLogMiddleware
 from .install import Middleware, install_middleware
 from .mac_normalizer import MacNormalizeMiddleware
+from .metrics import MetricsMiddleware, MetricsRegistry, get_default_registry, metrics_enabled
 from .null_strip import NullStripMiddleware
 from .rate_limit import RateLimitMiddleware
 from .response_envelope import ResponseEnvelopeMiddleware
@@ -53,10 +57,14 @@ __all__ = [
     "Middleware",
     "AuditLogMiddleware",
     "MacNormalizeMiddleware",
+    "MetricsMiddleware",
+    "MetricsRegistry",
     "NullStripMiddleware",
     "RateLimitMiddleware",
     "ResponseEnvelopeMiddleware",
     "SecretTokenizeMiddleware",
     "UnknownToolSuggestMiddleware",
+    "get_default_registry",
     "install_middleware",
+    "metrics_enabled",
 ]

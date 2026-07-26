@@ -1,0 +1,13 @@
+{
+  "expected_markers": [],
+  "generator": "ingestion/scrape_security_lifecycle.py",
+  "minimum_count": 1,
+  "note": "Official Juniper sitemap discovery of Mist/Apstra Security Bulletin articles. Content grows over time; only the sitemap endpoint identity is pinned. parse_juniper_security_sitemap already fails closed on invalid sitemap XML.",
+  "reviewed_at": "2026-07-25",
+  "schema_version": 1,
+  "source_family": "juniper_security_advisories",
+  "source_urls": [
+    "https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml",
+    "https://supportportal.juniper.net/s/sitemap-topicarticle-weekly.xml"
+  ]
+}

@@ -261,6 +261,145 @@ class AOS8AuthServer:
 
 
 @dataclass
+class AOS8WiredAuthProfile:
+    """The AOS8 global wired 802.1X/MAC-auth AAA attach point (`wired_auth_profile`).
+
+    Unlike `AOS8AuthProfile` (per-profile-name device dot1x/mac-auth
+    profiles), this is a singleton, unnamed object: AOS8 defines exactly
+    one instance per config node, referencing the AAA profile applied to
+    wired ports plus a blacklist duration. Fields mirror the two
+    request-body properties documented for
+    `aos8_post_object_wired_auth_profile`
+    (`mcp_servers/openapi_gen/manifests/aos8.json`): `wired_aaa_profile`,
+    `wired_blacklist_time`. Because it has no name field at all, every
+    parsed instance is given the fixed identifier `"global"`
+    (`"global-{n}"` for any additional, unexpected instance --
+    `pipeline.aos8_parsers.parse_wired_auth_profiles` always warns rather
+    than silently overwriting or dropping one). Reference-only: see
+    `REFERENCE_ONLY_OBJECT_TYPES`.
+    """
+
+    aaa_profile: str | None = None
+    blacklist_time: Any = None
+    settings: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AOS8StatefulDot1xAuthProfile:
+    """The AOS8 global stateful (captive-portal-style) 802.1X auth config
+    (`stateful_dot1x_auth_profile`). Also a singleton, unnamed object --
+    same identifier convention as `AOS8WiredAuthProfile`. Fields mirror
+    `aos8_post_object_stateful_dot1x_auth_profile`'s request-body
+    properties: `stateful_dot1x_mode`, `stateful_dot1x_server_group`,
+    `statefuldot1x_default_role`, `timeout`. Reference-only: see
+    `REFERENCE_ONLY_OBJECT_TYPES`.
+    """
+
+    mode: Any = None
+    server_group: str | None = None
+    default_role: str | None = None
+    timeout: Any = None
+    settings: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AOS8WisprAuthProfile:
+    """An AOS8 WISPr (Wireless ISP Roaming) authentication profile
+    (`wispr_auth_profile`), named by `profile-name`. Fields mirror the
+    subset of `aos8_post_object_wispr_auth_profile`'s request-body
+    properties with a clear post-auth/authentication meaning
+    (`wispr_default_role`, `wispr_server_group`); every other documented
+    property (`agent_string`, the `wispr_id_*`/`wispr_name_*` location
+    fields, `wispr_load_thresh`, `wispr_max_delay`, `wispr_maxf`,
+    `wispr_min_delay`, `wispr_auth_profile_clone`) is retained verbatim in
+    `.settings`. Reference-only: see `REFERENCE_ONLY_OBJECT_TYPES`.
+    """
+
+    profile_name: str
+    default_role: str | None = None
+    server_group: str | None = None
+    settings: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AOS8CaptivePortalAuthProfile:
+    """An AOS8 captive-portal authentication profile (`cp_auth_profile`),
+    named by `profile-name`. Fields mirror the subset of
+    `aos8_post_object_cp_auth_profile`'s request-body properties with a
+    clear post-auth/authentication meaning (`cp_default_role`,
+    `cp_default_guest_role`, `cp_server_group`); every other documented
+    property (redirect/branding/proxy/AUP/session/black-white-list
+    settings) is retained verbatim in `.settings`. Reference-only: see
+    `REFERENCE_ONLY_OBJECT_TYPES`.
+    """
+
+    profile_name: str
+    default_role: str | None = None
+    default_guest_role: str | None = None
+    server_group: str | None = None
+    settings: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AOS8KerberosAuthProfile:
+    """An AOS8 stateful Kerberos authentication profile
+    (`krb_auth_profile`), named by `profile-name`. Fields mirror
+    `aos8_post_object_krb_auth_profile`'s request-body properties:
+    `krb_default_role`, `krb_server_group`, `krb_timeout`;
+    `krb_auth_profile_clone` is retained in `.settings`. Reference-only:
+    see `REFERENCE_ONLY_OBJECT_TYPES`.
+    """
+
+    profile_name: str
+    default_role: str | None = None
+    server_group: str | None = None
+    timeout: Any = None
+    settings: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AOS8NTLMAuthProfile:
+    """An AOS8 stateful NTLM authentication profile (`ntlm_auth_profile`),
+    named by `profile-name`. Fields mirror
+    `aos8_post_object_ntlm_auth_profile`'s request-body properties:
+    `ntlm_default_role`, `ntlm_server_group`, `ntlm_enable`,
+    `ntlm_timeout`; `ntlm_auth_profile_clone` is retained in `.settings`.
+    Reference-only: see `REFERENCE_ONLY_OBJECT_TYPES`.
+    """
+
+    profile_name: str
+    default_role: str | None = None
+    server_group: str | None = None
+    enabled: Any = None
+    timeout: Any = None
+    settings: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class AOS8Route:
     address_family: Literal["ipv4", "ipv6"]
     destination: str | None = None
@@ -396,5 +535,19 @@ UNSUPPORTED_FIELDS: dict[str, dict[str, str]] = {
 # (e.g. `mcp_servers/aos8.py`'s `aos8_migration_dependency_plan`) instead of
 # re-deriving or duplicating the same set from candidate warning text.
 REFERENCE_ONLY_OBJECT_TYPES: frozenset[str] = frozenset(
-    {"network_destination", "ethernet_acl", "whitelist_rule"}
+    {
+        "network_destination",
+        "ethernet_acl",
+        "whitelist_rule",
+        # Wired/captive-portal/WISPr/Kerberos/NTLM/stateful-802.1X
+        # authentication-profile families (`aos8-migration-contract-matrix.md`
+        # §6.14): normalized and dependency-tracked, but no target adapter
+        # write mapping is proven for any of them yet.
+        "wired_auth_profile",
+        "stateful_dot1x_auth_profile",
+        "wispr_auth_profile",
+        "cp_auth_profile",
+        "krb_auth_profile",
+        "ntlm_auth_profile",
+    }
 )

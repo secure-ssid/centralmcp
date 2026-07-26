@@ -2,7 +2,9 @@
 
 Supports three exposure modes:
   minimal  — find_tool + invoke_read_tool + invoke_tool only
-  default  — minimal plus convenience wrappers
+  default  — minimal plus convenience wrappers, including the read-only
+             automation planners plan_tool_workflow and
+             plan_reconciliation_schedule
   direct   — default plus every enabled backend tool registered directly
 
 Backend servers are imported in-process — no subprocess overhead.
@@ -15,11 +17,33 @@ Toolsets can narrow loaded backends:
 
 Point MCP clients at THIS server instead of individual backend servers to keep
 context cost low and let small local models pick tools reliably.
+
+v0.7 router automation: invoke_tool/invoke_read_tool dispatch enforces a
+configurable, deterministic response item/byte budget (see
+_bound_router_response / CENTRALMCP_ROUTER_RESPONSE_MAX_ITEMS /
+CENTRALMCP_ROUTER_RESPONSE_MAX_BYTES) and plan_tool_workflow /
+plan_reconciliation_schedule provide read-only, catalog-backed dependency
+ordering and recurring-reconciliation planning (pipeline/router_automation.py)
+without ever executing a tool.
+
+invoke_read_tool also accepts an optional opaque `cursor` to resume a
+previously truncated response (see "Continuation cursors" below). Cursors
+are process-local (an HMAC key generated fresh at import time; a server
+restart invalidates every outstanding cursor with an explicit error),
+integrity-protected, bounded in length/TTL, and bound to the exact tool
+name + canonical arguments that issued them. Only capability `read` tools
+ever emit or accept a cursor; the generic destructive invoke_tool never
+gains continuation support.
 """
 
+import base64
+import hashlib
+import hmac
 import importlib
 import json
 import os
+import secrets
+import time
 from typing import Any, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -28,14 +52,18 @@ from mcp_servers.prompts import register_router_prompts
 from mcp_servers.shared import (
     DESTRUCTIVE,
     DIAGNOSTIC,
+    MAX_LIST_LIMIT,
     PLATFORM_WRITE_GATE_NAMES,
     READ_ONLY,
+    bound_collection_response,
     build_write_execution_contract,
     optional_product_access_mode,
     platform_write_blocked,
     platform_write_gate_state,
     platform_writes_allowed,
 )
+from pipeline import artifact_contracts as _artifact_contracts
+from pipeline import router_automation as _router_automation
 
 _BACKEND = os.getenv("CENTRALMCP_RAG_BACKEND", "lancedb").strip().lower()
 _ROUTER_MODE = os.getenv("CENTRALMCP_ROUTER_MODE", "default").strip().lower()
@@ -663,14 +691,388 @@ def find_tool(
     return list(by_name.values())[:top_k]
 
 
+# ── Response budgets / continuation metadata ─────────────────────────────────
+#
+# A configurable, deterministic safety net applied to every dispatched
+# backend result (invoke_tool / invoke_read_tool only -- find_tool's own
+# results are already bounded by top_k). Most curated tools already bound
+# their own output (limit/offset, bound_collection_response); this exists
+# for the remaining/optional/generated tools that don't, and to guarantee a
+# hard ceiling regardless of backend behavior. A response already within
+# budget is returned byte-for-byte unchanged -- no new keys are added --
+# so this is invisible to existing callers/tests until a response actually
+# needs clipping.
+
+_RESPONSE_BUDGET_ITEMS_ENV = "CENTRALMCP_ROUTER_RESPONSE_MAX_ITEMS"
+_RESPONSE_BUDGET_BYTES_ENV = "CENTRALMCP_ROUTER_RESPONSE_MAX_BYTES"
+_RESPONSE_BUDGET_DEFAULT_ITEMS = MAX_LIST_LIMIT
+_RESPONSE_BUDGET_DEFAULT_BYTES = 200_000
+_RESPONSE_BUDGET_MIN_BYTES = 1024
+_RESPONSE_BUDGET_MIN_ITEMS = 1
+_RESPONSE_BUDGET_SHRINK_STEPS = 6
+
+
+def _env_positive_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= minimum else default
+
+
+def _response_budget_items() -> int:
+    return min(
+        _env_positive_int(
+            _RESPONSE_BUDGET_ITEMS_ENV,
+            _RESPONSE_BUDGET_DEFAULT_ITEMS,
+        ),
+        MAX_LIST_LIMIT,
+    )
+
+
+def _response_budget_bytes() -> int:
+    return _env_positive_int(
+        _RESPONSE_BUDGET_BYTES_ENV,
+        _RESPONSE_BUDGET_DEFAULT_BYTES,
+        minimum=_RESPONSE_BUDGET_MIN_BYTES,
+    )
+
+
+def _json_byte_size(value: Any) -> int | None:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _dict_primary_list_len(data: dict[str, Any]) -> tuple[str | None, int]:
+    """Mirror bound_collection_response's own list-key selection so the
+    "does this need bounding" pre-check never disagrees with the bounding
+    it then applies."""
+    candidates = [
+        (key, len(value))
+        for key, value in data.items()
+        if key != "_pagination" and isinstance(value, list)
+    ]
+    if not candidates:
+        return None, 0
+    key, length = max(candidates, key=lambda kv: (kv[1], kv[0]))
+    return key, length
+
+
+def _response_bounds_marker(
+    *, reason: str, item_limit: int | None, byte_limit: int, size_bytes: int | None = None
+) -> dict[str, Any]:
+    marker: dict[str, Any] = {
+        "truncated": True,
+        "reason": reason,
+        "byte_limit": byte_limit,
+    }
+    if item_limit is not None:
+        marker["item_limit"] = item_limit
+    if size_bytes is not None:
+        marker["size_bytes"] = size_bytes
+    return marker
+
+
+# ── Continuation cursors (invoke_read_tool only) ─────────────────────────────
+#
+# An opaque, integrity-protected token that lets invoke_read_tool resume a
+# previously truncated response. It is intentionally stateless server-side:
+# it carries only {version, expiry, next-offset, tool-name digest,
+# arguments digest}, never raw arguments/identifiers/results/credentials.
+# Resuming simply re-dispatches the SAME tool + arguments and re-slices the
+# fresh result starting at the stored offset -- safe only for capability
+# "read" tools, which is enforced both here and by invoke_read_tool's own
+# read-only gate (defense in depth). The signing key is a random value
+# generated once per process; a restart silently invalidates every
+# outstanding cursor (signature verification fails), which this module
+# reports as an explicit, safe error rather than ever calling the backend.
+
+_CURSOR_VERSION = 1
+_CURSOR_TTL_ENV = "CENTRALMCP_ROUTER_CURSOR_TTL_SECONDS"
+_CURSOR_DEFAULT_TTL_SECONDS = 900
+_CURSOR_MIN_TTL_SECONDS = 30
+_CURSOR_MAX_TTL_SECONDS = 3600
+_CURSOR_MAX_LENGTH = 512
+_CURSOR_DIGEST_HEX_CHARS = 16  # 64-bit truncated SHA-256; the HMAC (not this
+# digest) is the anti-forgery boundary, so this only needs to be
+# practically collision-free for distinct tool/argument combinations.
+_CURSOR_MAC_BYTES = 16  # 128-bit truncated HMAC-SHA256; keeps cursors compact
+# while remaining infeasible to forge without the process-local secret key.
+_CURSOR_HMAC_KEY = secrets.token_bytes(32)
+
+
+class CursorError(Exception):
+    """Raised for any malformed/tampered/expired/mismatched cursor.
+
+    Always caught before a backend call is made -- the message is safe to
+    return directly to the caller (never includes raw arguments/secrets)."""
+
+
+def _cursor_ttl_seconds() -> int:
+    raw = _env_positive_int(_CURSOR_TTL_ENV, _CURSOR_DEFAULT_TTL_SECONDS, minimum=1)
+    return max(_CURSOR_MIN_TTL_SECONDS, min(raw, _CURSOR_MAX_TTL_SECONDS))
+
+
+def _strip_null_arguments(arguments: dict[str, Any] | None) -> dict[str, Any]:
+    return {k: v for k, v in (arguments or {}).items() if v is not None}
+
+
+def _cursor_digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:_CURSOR_DIGEST_HEX_CHARS]
+
+
+def _cursor_args_digest(arguments: dict[str, Any]) -> str:
+    canonical = json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str)
+    return _cursor_digest(canonical)
+
+
+def _b64u_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64u_decode(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(data + padding)
+
+
+def _sign_cursor_payload(payload_bytes: bytes) -> bytes:
+    return hmac.new(_CURSOR_HMAC_KEY, payload_bytes, hashlib.sha256).digest()[:_CURSOR_MAC_BYTES]
+
+
+def _encode_continuation_cursor(*, name: str, arguments: dict[str, Any], next_offset: int) -> str:
+    payload = {
+        "v": _CURSOR_VERSION,
+        "exp": int(time.time()) + _cursor_ttl_seconds(),
+        "off": int(next_offset),
+        "t": _cursor_digest(name),
+        "a": _cursor_args_digest(arguments),
+    }
+    payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = _sign_cursor_payload(payload_bytes)
+    return f"{_b64u_encode(payload_bytes)}.{_b64u_encode(signature)}"
+
+
+def _decode_and_verify_continuation_cursor(
+    cursor: str, *, name: str, arguments: dict[str, Any]
+) -> int:
+    """Validate ``cursor`` against ``name``/``arguments`` and return the
+    resume offset. Raises :class:`CursorError` (never touches the backend)
+    for anything malformed, tampered, expired, or bound to a different
+    tool/arguments -- including a signature mismatch caused by a server
+    restart (a fresh random key invalidates every prior cursor)."""
+    if not isinstance(cursor, str) or not cursor:
+        raise CursorError("cursor is missing or malformed")
+    if len(cursor) > _CURSOR_MAX_LENGTH:
+        raise CursorError("cursor exceeds the maximum allowed length")
+    parts = cursor.split(".")
+    if len(parts) != 2:
+        raise CursorError("cursor is malformed")
+    payload_b64, signature_b64 = parts
+    try:
+        payload_bytes = _b64u_decode(payload_b64)
+        signature_bytes = _b64u_decode(signature_b64)
+    except Exception as exc:
+        raise CursorError("cursor is malformed") from exc
+    expected_signature = _sign_cursor_payload(payload_bytes)
+    if not hmac.compare_digest(signature_bytes, expected_signature):
+        raise CursorError(
+            "cursor signature is invalid (tampered, or the server process restarted)"
+        )
+    try:
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise CursorError("cursor is malformed") from exc
+    if not isinstance(payload, dict):
+        raise CursorError("cursor is malformed")
+    if payload.get("v") != _CURSOR_VERSION:
+        raise CursorError("cursor version is unsupported")
+    expiry = payload.get("exp")
+    if not isinstance(expiry, int) or isinstance(expiry, bool):
+        raise CursorError("cursor is malformed")
+    if int(time.time()) >= expiry:
+        raise CursorError("cursor has expired")
+    offset = payload.get("off")
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        raise CursorError("cursor is malformed")
+    if payload.get("t") != _cursor_digest(name):
+        raise CursorError("cursor does not match the requested tool")
+    if payload.get("a") != _cursor_args_digest(arguments):
+        raise CursorError("cursor does not match the requested arguments")
+    return offset
+
+
+def _bound_router_response(
+    result: Any,
+    *,
+    max_items: int | None = None,
+    max_bytes: int | None = None,
+    offset: int = 0,
+    enable_cursor: bool = False,
+    tool_name: str | None = None,
+    tool_arguments: dict[str, Any] | None = None,
+) -> Any:
+    """Deterministically bound one dispatched tool result to a configurable
+    item-count/byte-size budget, adding a stable ``_response_bounds``
+    continuation marker only when clipping actually happened, plus an
+    opaque MCP-style ``next_cursor`` when the caller is eligible to resume
+    (``enable_cursor`` -- only ever set True by invoke_read_tool for
+    capability ``read`` tools; invoke_tool never sets it).
+
+    Never touches a non-dict/non-list scalar, and never touches a dict
+    that already looks like an error response (an ``error`` key present)
+    -- error/blocked payload shapes are preserved exactly. Reuses
+    ``mcp_servers.shared.bound_collection_response`` for item-count
+    slicing (the same ``_pagination`` shape already recognized by the
+    audit/metrics truncation detectors) before falling back to a bounded
+    text preview for content with nothing sliceable (mirroring
+    ``mcp_servers.shared.bounded_response_payload``'s raw-body fallback).
+    A single item too large to fit the byte budget is reported as
+    explicitly non-resumable rather than emitting a cursor that would loop
+    forever on the same oversized item.
+    """
+    if isinstance(result, dict) and "error" in result:
+        return result
+    if not isinstance(result, (dict, list)):
+        return result
+
+    requested_items_budget = (
+        max_items if max_items is not None else _response_budget_items()
+    )
+    items_budget = max(1, min(requested_items_budget, MAX_LIST_LIMIT))
+    bytes_budget = max_bytes if max_bytes is not None else _response_budget_bytes()
+    resume_offset = max(0, int(offset or 0))
+
+    if isinstance(result, list):
+        primary_key, item_count = None, len(result)
+        nothing_sliceable = False
+    else:
+        primary_key, item_count = _dict_primary_list_len(result)
+        nothing_sliceable = primary_key is None
+
+    if nothing_sliceable:
+        # A stale/mismatched resume offset against a shape with nothing
+        # sliceable is ignored defensively rather than corrupting output.
+        resume_offset = 0
+
+    size = _json_byte_size(result)
+    remaining_count = max(0, item_count - resume_offset)
+    item_overflow = remaining_count > items_budget
+    byte_overflow = (
+        resume_offset == 0
+        and size is not None
+        and size > bytes_budget
+    )
+    needs_paging = item_overflow or byte_overflow or resume_offset > 0
+    if not needs_paging:
+        return result
+
+    if nothing_sliceable:
+        # Nothing sliceable (byte overflow from scalar/nested-object bloat,
+        # never from a bounded list) -- bounded text preview. Never
+        # resumable: there is no list to page through.
+        encoded = json.dumps(result, ensure_ascii=False, default=str)
+        raw = encoded.encode("utf-8")
+        marker = _response_bounds_marker(
+            reason="byte_budget", item_limit=None, byte_limit=bytes_budget, size_bytes=len(raw)
+        )
+        marker["resumable"] = False
+        marker["resumable_reason"] = "no_sliceable_collection"
+        return {"_response_bounds": marker, "preview": raw[:bytes_budget].decode(
+            "utf-8", errors="replace"
+        )}
+
+    limit = items_budget
+    page = bound_collection_response(result, limit=limit, offset=resume_offset)
+    encoded_size = _json_byte_size(page)
+    byte_shrunk = False
+    for _ in range(_RESPONSE_BUDGET_SHRINK_STEPS):
+        if encoded_size is not None and encoded_size <= bytes_budget:
+            break
+        if limit <= _RESPONSE_BUDGET_MIN_ITEMS:
+            break
+        limit = max(_RESPONSE_BUDGET_MIN_ITEMS, limit // 2)
+        byte_shrunk = True
+        page = bound_collection_response(result, limit=limit, offset=resume_offset)
+        encoded_size = _json_byte_size(page)
+
+    if encoded_size is not None and encoded_size > bytes_budget:
+        # Even a single item (limit already at the floor) can't fit the
+        # byte budget -- fall back to a bounded text preview instead of
+        # returning an over-budget payload, and explicitly mark this
+        # non-resumable so a caller never loops forever on the same item.
+        encoded = json.dumps(result, ensure_ascii=False, default=str)
+        raw = encoded.encode("utf-8")
+        marker = _response_bounds_marker(
+            reason="byte_budget", item_limit=limit, byte_limit=bytes_budget, size_bytes=len(raw)
+        )
+        marker["resumable"] = False
+        marker["resumable_reason"] = "single_item_exceeds_byte_budget"
+        return {"_response_bounds": marker, "preview": raw[:bytes_budget].decode(
+            "utf-8", errors="replace"
+        )}
+
+    slice_key = "items" if isinstance(result, list) else primary_key
+    actual_count = (
+        len(page.get(slice_key, [])) if isinstance(page, dict) and slice_key else 0
+    )
+    next_offset = resume_offset + actual_count
+    pagination = page.get("_pagination") if isinstance(page, dict) else None
+    truncated_by_items = bool(pagination and pagination.get("truncated"))
+    was_clipped = truncated_by_items or byte_shrunk
+    if not was_clipped:
+        # A cursor-resume request that landed exactly on the final,
+        # complete tail: still paginated (see _pagination), but nothing
+        # was clipped relative to budget, so no _response_bounds/cursor.
+        return page
+
+    reasons = [
+        reason
+        for reason, present in (
+            ("item_budget", item_overflow),
+            ("byte_budget", byte_shrunk),
+        )
+        if present
+    ] or ["item_budget"]
+    can_emit_cursor = (
+        enable_cursor
+        and truncated_by_items
+        and tool_name is not None
+        and tool_arguments is not None
+    )
+    marker = _response_bounds_marker(
+        reason="+".join(reasons), item_limit=limit, byte_limit=bytes_budget
+    )
+    marker["resumable"] = bool(can_emit_cursor)
+    if isinstance(page, dict):
+        page = {**page, "_response_bounds": marker}
+        if can_emit_cursor:
+            page["next_cursor"] = _encode_continuation_cursor(
+                name=tool_name, arguments=tool_arguments, next_offset=next_offset
+            )
+            page["cursor_expires_in_seconds"] = _cursor_ttl_seconds()
+    return page
+
+
 # ── invoke_read_tool / invoke_tool ───────────────────────────────────────────
 
-async def _dispatch_tool(ctx: Context, name: str, arguments: dict[str, Any] | None = None) -> Any:
+async def _dispatch_tool(
+    ctx: Context,
+    name: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    resume_offset: int = 0,
+    enable_cursor: bool = False,
+) -> Any:
     _load_all_backends()
     backend = _tool_servers.get(name)
     if backend is None:
         return {"error": f"Unknown tool '{name}'. Use find_tool to discover."}
-    args = {k: v for k, v in (arguments or {}).items() if v is not None}
+    args = _strip_null_arguments(arguments)
     tool = _tool_index[name]
     server = _tool_backend_names.get(name)
     schema = tool.parameters if isinstance(tool.parameters, dict) else {}
@@ -693,6 +1095,17 @@ async def _dispatch_tool(ctx: Context, name: str, arguments: dict[str, Any] | No
         result = await backend._tool_manager.call_tool(name, args, context=ctx)
     except Exception as e:
         result = {"error": f"{type(e).__name__}: {e}"}
+    # Cursors are only ever eligible for capability "read" tools; this is a
+    # redundant, defense-in-depth check -- enable_cursor is only ever passed
+    # True by invoke_read_tool, which already refuses non-read-only tools.
+    cursor_eligible = enable_cursor and capability == "read"
+    result = _bound_router_response(
+        result,
+        offset=resume_offset,
+        enable_cursor=cursor_eligible,
+        tool_name=name,
+        tool_arguments=args,
+    )
     if contract is None:
         return result
     contract = _execution_contract(
@@ -712,11 +1125,21 @@ async def invoke_read_tool(
     ctx: Context,
     name: str,
     arguments: dict[str, Any] | None = None,
+    cursor: str | None = None,
 ) -> Any:
     """Call a read-only Aruba tool by name (from find_tool).
 
     This refuses tools that are not annotated read-only. Use invoke_tool only
     for write/destructive tools after explicit user intent.
+
+    Args:
+        cursor: Opaque ``next_cursor`` value from a previous truncated
+            response, to resume it from where it left off. Only ever
+            returned by this tool for capability "read" tools -- it is
+            process-local (invalidated by a server restart), integrity
+            protected, time-limited, and bound to this exact tool name and
+            these exact arguments. A malformed/tampered/expired/mismatched
+            cursor returns an error and never reaches the backend.
     """
     _load_all_backends()
     tool = _tool_index.get(name)
@@ -731,7 +1154,18 @@ async def invoke_read_tool(
             "tool": name,
             "status": "blocked",
         }
-    return await _dispatch_tool(ctx, name, arguments)
+    resume_offset = 0
+    if cursor is not None:
+        canonical_args = _strip_null_arguments(arguments)
+        try:
+            resume_offset = _decode_and_verify_continuation_cursor(
+                cursor, name=name, arguments=canonical_args
+            )
+        except CursorError as exc:
+            return {"error": str(exc), "tool": name, "status": "invalid_cursor"}
+    return await _dispatch_tool(
+        ctx, name, arguments, resume_offset=resume_offset, enable_cursor=True
+    )
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -846,8 +1280,423 @@ if _ROUTER_MODE != "minimal" and "aruba-rag" in _BACKENDS:
         return await invoke_tool(ctx, "lookup_api", {"query": query, "top_k": top_k})
 
 
+# ── Router automation: dependency planning + reconciliation scheduling ──────
+#
+# Both tools below are strictly read-only/plan-only: they resolve tool
+# references against the already-loaded, enabled backend catalog (never
+# inferring an unavailable tool), and never call invoke_tool/invoke_read_tool
+# themselves. Excluded from `minimal` mode to keep that profile's tool-list
+# token cost at exactly find_tool + invoke_read_tool + invoke_tool.
+if _ROUTER_MODE != "minimal":
+    _PLAN_AMBIGUITY_MARGIN = 0.15
+
+    def _plan_step_metadata(name: str) -> dict[str, Any]:
+        tool = _tool_index[name]
+        server = _tool_backend_names.get(name)
+        capability = _tool_capability(tool)
+        return {
+            "server": server,
+            "platform": _server_platform(server),
+            "capability": capability,
+            "recommended_dispatcher": (
+                "invoke_read_tool" if capability == "read" else "invoke_tool"
+            ),
+        }
+
+    def _resolve_plan_step_tool(
+        step: dict[str, Any],
+    ) -> tuple[str | None, bool, bool, list[dict[str, Any]]]:
+        """Resolve one plan step to a catalog tool name.
+
+        Returns ``(tool_name_or_None, resolved, ambiguous, candidates)``. An
+        explicit ``"tool"`` name is resolved only against the currently
+        loaded catalog (``_tool_index``) -- never guessed; an unknown name
+        resolves to ``(None, False, False, [])``. A ``"hint"`` falls back to
+        the same bounded, deterministic keyword search ``find_tool`` uses
+        (no semantic/embedding call), and is marked ambiguous when more than
+        one candidate scores within ``_PLAN_AMBIGUITY_MARGIN`` of the top
+        score.
+        """
+        explicit = step.get("tool")
+        if explicit:
+            name = str(explicit)
+            if name not in _tool_index:
+                return None, False, False, []
+            return name, True, False, [{"name": name, **_plan_step_metadata(name)}]
+        hint = step.get("hint")
+        if not hint:
+            return None, False, False, []
+        candidates = _keyword_hits(str(hint), _router_automation.MAX_PLAN_CANDIDATES_PER_STEP)
+        if not candidates:
+            return None, False, False, []
+        top_score = candidates[0].get("score", 0.0)
+        close = [
+            c for c in candidates if top_score - c.get("score", 0.0) <= _PLAN_AMBIGUITY_MARGIN
+        ]
+        ambiguous = len(close) > 1
+        return candidates[0]["name"], True, ambiguous, candidates
+
+    @mcp.tool(annotations=READ_ONLY)
+    def plan_tool_workflow(
+        steps: list[dict[str, Any]],
+        include_candidates: bool = False,
+    ) -> dict[str, Any]:
+        """Build a deterministic, read-only dependency/order plan across enabled backend tools.
+
+        Never executes any tool. Every resolved tool reference is checked only
+        against the currently loaded, enabled backend catalog (the same index
+        find_tool searches) -- an unresolved or ambiguous reference is
+        reported explicitly, never guessed or silently dropped.
+
+        Args:
+            steps: bounded (max 25) list of step specs. Each step is a dict:
+                - "id": optional stable step id (str); defaults to "step_<index>".
+                - "tool": exact tool name to resolve via the loaded catalog
+                  (preferred -- deterministic, exact match, never guessed).
+                - "hint": free-text action description used only when "tool"
+                  is omitted; resolved via the same bounded keyword search
+                  find_tool uses (no semantic/embedding guessing). Marked
+                  "ambiguous" when multiple close-scoring candidates exist.
+                - "depends_on": list of step ids (or exact tool names) that
+                  must run before this step.
+            include_candidates: include up to 5 scored candidate tools per
+                unresolved/ambiguous step. Defaults to False to keep the plan
+                compact.
+
+        Returns "ok", "steps" (resolved metadata per step), "order"
+        (topological order, or None whenever any step/dependency is
+        unresolved or the graph has a cycle), "acyclic", "cycles",
+        "unresolved_step_ids", "unresolved_dependencies", and "artifact" (a
+        router_dependency_plan-shaped payload suitable for
+        pipeline.artifact_contracts.write_artifact -- never written to disk
+        by this tool). This never calls invoke_tool/invoke_read_tool.
+        """
+        _load_all_backends()
+        if not isinstance(steps, list) or not steps:
+            return {"ok": False, "error": "steps must be a non-empty list", "steps": []}
+        if len(steps) > _router_automation.MAX_PLAN_STEPS:
+            return {
+                "ok": False,
+                "error": (
+                    f"steps has {len(steps)} entries, exceeding the "
+                    f"{_router_automation.MAX_PLAN_STEPS} bound"
+                ),
+                "steps": [],
+            }
+
+        step_ids: list[str] = []
+        by_tool_name: dict[str, str] = {}
+        resolved_steps: list[dict[str, Any]] = []
+        errors: list[str] = []
+
+        for index, raw_step in enumerate(steps):
+            if not isinstance(raw_step, dict):
+                errors.append(f"steps[{index}] must be an object")
+                step_id = f"step_{index}"
+                step_ids.append(step_id)
+                resolved_steps.append(
+                    {
+                        "id": step_id,
+                        "tool": None,
+                        "resolved": False,
+                        "ambiguous": False,
+                        "server": None,
+                        "platform": None,
+                        "capability": "unknown",
+                        "recommended_dispatcher": None,
+                        "depends_on": [],
+                    }
+                )
+                continue
+            step_id = str(raw_step.get("id") or f"step_{index}")
+            if step_id in step_ids:
+                errors.append(f"duplicate step id: {step_id!r}")
+            step_ids.append(step_id)
+            tool_name, resolved, ambiguous, candidates = _resolve_plan_step_tool(raw_step)
+            entry: dict[str, Any] = {
+                "id": step_id,
+                "tool": tool_name,
+                "resolved": resolved,
+                "ambiguous": ambiguous,
+                "depends_on": [str(d) for d in (raw_step.get("depends_on") or [])],
+            }
+            if resolved and tool_name is not None:
+                entry.update(_plan_step_metadata(tool_name))
+                by_tool_name[tool_name] = step_id
+            else:
+                entry.update(
+                    {
+                        "server": None,
+                        "platform": None,
+                        "capability": "unknown",
+                        "recommended_dispatcher": None,
+                    }
+                )
+            if include_candidates and (not resolved or ambiguous):
+                entry["candidates"] = [
+                    {"name": c["name"], "server": c.get("server"), "score": c.get("score")}
+                    for c in candidates[: _router_automation.MAX_PLAN_CANDIDATES_PER_STEP]
+                ]
+            resolved_steps.append(entry)
+
+        # depends_on may reference a step id OR a resolved tool name.
+        edges: dict[str, list[str]] = {}
+        unresolved_dependencies: list[dict[str, str]] = []
+        for entry in resolved_steps:
+            deps: list[str] = []
+            for dep in entry["depends_on"]:
+                if dep in step_ids:
+                    deps.append(dep)
+                elif dep in by_tool_name:
+                    deps.append(by_tool_name[dep])
+                else:
+                    unresolved_dependencies.append({"step": entry["id"], "missing": dep})
+            edges[entry["id"]] = deps
+
+        order, cycles = _router_automation.resolve_dependency_order(step_ids, edges)
+        acyclic = not cycles
+        unresolved_step_ids = [e["id"] for e in resolved_steps if not e["resolved"]]
+        blocked = (
+            bool(errors)
+            or bool(unresolved_dependencies)
+            or bool(unresolved_step_ids)
+            or not acyclic
+        )
+        effective_order = order if not blocked else None
+
+        artifact: dict[str, Any] | None = None
+        artifact_error: str | None = None
+        try:
+            artifact_steps = [
+                {
+                    "step_id": entry["id"],
+                    "tool": entry["tool"],
+                    "resolved": entry["resolved"],
+                    "ambiguous": entry["ambiguous"],
+                    "capability": entry["capability"],
+                    "platform": entry["platform"],
+                    "depends_on": entry["depends_on"],
+                }
+                for entry in resolved_steps
+            ]
+            payload = _router_automation.build_dependency_plan_payload(
+                steps=artifact_steps,
+                order=effective_order,
+                acyclic=acyclic,
+                cycles=cycles,
+                unresolved_step_ids=unresolved_step_ids,
+            )
+            built = _artifact_contracts.build_artifact(
+                _artifact_contracts.ROUTER_DEPENDENCY_PLAN, payload
+            )
+            artifact = _artifact_contracts.to_json_dict(built)
+        except _artifact_contracts.ArtifactValidationError as exc:
+            artifact_error = str(exc)
+
+        return {
+            "ok": not errors and not blocked,
+            "steps": resolved_steps,
+            "order": effective_order,
+            "acyclic": acyclic,
+            "cycles": cycles,
+            "unresolved_step_ids": unresolved_step_ids,
+            "unresolved_dependencies": unresolved_dependencies,
+            "errors": errors,
+            "artifact": artifact,
+            "artifact_error": artifact_error,
+        }
+
+    @mcp.tool(annotations=READ_ONLY)
+    def plan_reconciliation_schedule(
+        cadence: dict[str, Any] | str,
+        tools: list[str] | None = None,
+        platforms: list[str] | None = None,
+        servers: list[str] | None = None,
+        max_entries: int = 50,
+    ) -> dict[str, Any]:
+        """Build a bounded, read-only, plan-only recurring reconciliation schedule.
+
+        Never creates an OS timer, cron job, or GitHub Actions schedule, and
+        never executes a tool -- this only validates a cadence and resolves a
+        bounded set of currently enabled tools into a schedule
+        *specification*. Write/destructive tools are always excluded from the
+        executable entry list (reported in "excluded" instead, with a
+        reason), regardless of whether the caller explicitly requested them.
+
+        Args:
+            cadence: either a named cadence string ("hourly", "daily",
+                "weekly") or an object such as
+                {"kind": "interval_minutes", "interval_minutes": 30} or
+                {"kind": "cron", "expression": "*/15 * * * *"}. Validated
+                structurally only -- never parsed into an actual next-run
+                time or registered as a real schedule.
+            tools: exact tool names to resolve via the loaded catalog. Omit
+                to fall back to the platforms/servers filters below.
+            platforms: normalized platform filter (e.g. "central", "glp")
+                applied to the loaded catalog when tools is omitted.
+            servers: exact backend server name filter (e.g.
+                "aruba-monitoring") applied to the loaded catalog when tools
+                is omitted.
+            max_entries: safety ceiling on schedule entries (default 50, max
+                100).
+
+        Returns "ok", "cadence" (validated descriptor), "entries"
+        (read/diagnostic tools only), "excluded" (everything else, with a
+        reason), "dry_run" (always True), and "artifact" (a
+        router_reconciliation_plan-shaped payload suitable for
+        pipeline.artifact_contracts.write_artifact -- never written to disk
+        by this tool).
+        """
+        _load_all_backends()
+        cadence_result = _router_automation.validate_cadence(cadence)
+        if not cadence_result.get("valid"):
+            return {
+                "ok": False,
+                "error": cadence_result.get("reason"),
+                "cadence": cadence_result,
+            }
+
+        bounded_max_entries = max(
+            1, min(max_entries, _router_automation.MAX_RECONCILIATION_ENTRIES)
+        )
+        _max_tools_input = (
+            _router_automation.MAX_RECONCILIATION_ENTRIES
+            + _router_automation.MAX_RECONCILIATION_EXCLUDED_DETAIL
+        )
+        if tools is not None and len(tools) > _max_tools_input:
+            return {
+                "ok": False,
+                "error": (
+                    f"tools has {len(tools)} entries, exceeding the {_max_tools_input} bound"
+                ),
+                "cadence": cadence_result,
+            }
+        platform_filter = {str(p).strip().lower() for p in (platforms or []) if p}
+        server_filter = {str(s).strip().lower() for s in (servers or []) if s}
+
+        if tools:
+            candidate_names = [str(t) for t in tools]
+        else:
+            candidate_names = []
+            for name, backend_name in _tool_backend_names.items():
+                if backend_name not in _BACKENDS:
+                    continue
+                if server_filter and backend_name.lower() not in server_filter:
+                    continue
+                platform = _server_platform(backend_name)
+                if platform_filter and (platform or "").lower() not in platform_filter:
+                    continue
+                candidate_names.append(name)
+            candidate_names.sort()
+
+        candidates: list[dict[str, Any]] = []
+        excluded: list[dict[str, Any]] = []
+        excluded_total = 0
+        for name in candidate_names:
+            tool = _tool_index.get(name)
+            server = _tool_backend_names.get(name)
+            if tool is None or server not in _BACKENDS:
+                excluded_total += 1
+                if len(excluded) < _router_automation.MAX_RECONCILIATION_EXCLUDED_DETAIL:
+                    excluded.append(
+                        {"tool": name, "capability": "unknown", "reason": "unresolved_tool"}
+                    )
+                continue
+            candidates.append(
+                {
+                    "tool": name,
+                    "server": server,
+                    "platform": _server_platform(server),
+                    "capability": _tool_capability(tool),
+                    "enabled": True,
+                }
+            )
+
+        entries, capability_excluded, capability_excluded_total = (
+            _router_automation.partition_reconciliation_candidates(
+                candidates, max_entries=bounded_max_entries
+            )
+        )
+        excluded.extend(capability_excluded)
+        excluded_total += capability_excluded_total
+        # Each source above is independently bounded to
+        # MAX_RECONCILIATION_EXCLUDED_DETAIL, but their concatenation is not
+        # -- re-cap the combined detail list so this router-native tool
+        # (called directly, not proxied through _dispatch_tool's response
+        # budgeting) never returns an unbounded payload. excluded_total
+        # already reflects the true count regardless of this cap.
+        if len(excluded) > _router_automation.MAX_RECONCILIATION_EXCLUDED_DETAIL:
+            excluded = excluded[: _router_automation.MAX_RECONCILIATION_EXCLUDED_DETAIL]
+
+        artifact: dict[str, Any] | None = None
+        artifact_error: str | None = None
+        try:
+            payload = _router_automation.build_reconciliation_plan_payload(
+                cadence=cadence_result,
+                entries=entries,
+                excluded=excluded,
+                excluded_count=excluded_total,
+            )
+            built = _artifact_contracts.build_artifact(
+                _artifact_contracts.ROUTER_RECONCILIATION_PLAN, payload
+            )
+            artifact = _artifact_contracts.to_json_dict(built)
+        except _artifact_contracts.ArtifactValidationError as exc:
+            artifact_error = str(exc)
+
+        return {
+            "ok": artifact_error is None,
+            "cadence": cadence_result,
+            "entries": entries,
+            "excluded": excluded,
+            "excluded_count": excluded_total,
+            "dry_run": True,
+            "artifact": artifact,
+            "artifact_error": artifact_error,
+        }
+
+
 if _ROUTER_MODE == "direct":
     _register_direct_backend_tools()
+
+
+# ── Observability label/classification helpers ───────────────────────────────
+#
+# Shared by MetricsMiddleware's label_resolver and AuditLogMiddleware's
+# classifier so the two never diverge on "what backend tool actually ran".
+# Bounded by construction: for invoke_tool/invoke_read_tool this resolves to
+# the finite, already-loaded backend tool catalog (falling back to
+# "unknown" for anything not found there); for every other router-native
+# tool it is just that tool's own (fixed, small) name. Never reads any
+# argument value beyond the single expected "name" key, and never reads
+# result content at all.
+def _router_call_labels(name: str, arguments: dict[str, Any]) -> tuple[str, str, str]:
+    """Resolve bounded ``(tool, backend, capability)`` labels for one call."""
+    if name in {"invoke_tool", "invoke_read_tool"} and isinstance(arguments, dict):
+        target = arguments.get("name")
+        target_name = str(target) if target else None
+        if target_name and target_name in _tool_index:
+            backend = _tool_backend_names.get(target_name, "router")
+            capability = _tool_capability(_tool_index[target_name])
+            return (target_name, backend, capability)
+        return (name, "router", "unknown")
+    tool = mcp._tool_manager._tools.get(name)
+    capability = _tool_capability(tool) if tool is not None else "unknown"
+    return (name, "router", capability)
+
+
+def _router_call_classification(name: str, arguments: dict[str, Any]) -> str:
+    """Audit-log write/destructive classification -- reuses the same
+    resolution as metrics so the two never disagree."""
+    return _router_call_labels(name, arguments)[2]
+
+
+def _router_call_target(name: str, arguments: dict[str, Any]) -> str | None:
+    """Return only a catalog-resolved dispatch target for audit records."""
+    if name not in {"invoke_tool", "invoke_read_tool"}:
+        return None
+    target, backend, _capability = _router_call_labels(name, arguments)
+    return target if backend != "router" else "unknown"
 
 
 if __name__ == "__main__":
@@ -855,12 +1704,15 @@ if __name__ == "__main__":
     from mcp_servers._middleware import (
         AuditLogMiddleware,
         MacNormalizeMiddleware,
+        MetricsMiddleware,
         NullStripMiddleware,
         RateLimitMiddleware,
         ResponseEnvelopeMiddleware,
         SecretTokenizeMiddleware,
         UnknownToolSuggestMiddleware,
+        get_default_registry,
         install_middleware,
+        metrics_enabled,
     )
 
     def _suggest_router_tool(name: str, limit: int) -> list[dict[str, Any]]:
@@ -874,16 +1726,25 @@ if __name__ == "__main__":
             for item in _keyword_hits(name.replace("_", " "), limit)
         ]
 
+    _metrics_registry = get_default_registry()
+    _metrics_on = metrics_enabled()
     middlewares = [
         NullStripMiddleware(),
-        RateLimitMiddleware(rate=8.0),
+        RateLimitMiddleware(
+            rate=8.0,
+            on_wait=_metrics_registry.record_rate_limit_wait if _metrics_on else None,
+        ),
         UnknownToolSuggestMiddleware(
             lambda: mcp._tool_manager._tools,
             suggestion_provider=_suggest_router_tool,
         ),
         ResponseEnvelopeMiddleware(),
         SecretTokenizeMiddleware(),
-        AuditLogMiddleware(),
+        MetricsMiddleware(_metrics_registry, label_resolver=_router_call_labels),
+        AuditLogMiddleware(
+            classifier=_router_call_classification,
+            target_resolver=_router_call_target,
+        ),
     ]
     if os.getenv("CENTRALMCP_NORMALIZE_MACS", "").strip().lower() in {"1", "true", "yes"}:
         middlewares.append(MacNormalizeMiddleware())

@@ -86,9 +86,11 @@ _PRESENCE_ONLY_BOOLEAN_METADATA_KEYS = {
     "psk_hexkey_present",
 }
 _TERMINAL_SUCCESS = {"applied", "skipped"}
-# 0.5: there is no rollback execution path, so "rolled_back" is not a
-# reachable candidate status (see AOS8MigrationOrchestrator's module
-# docstring / docs/aos8-migration-contract-matrix.md §2.1/§5).
+# A candidate's own `status` never becomes "rolled_back": rollback
+# progress is tracked separately, per run, in `run["rollback"]["resume_state"]`
+# (see `AOS8MigrationOrchestrator.rollback_plan`/`.execute_rollback` and
+# `pipeline.aos8_rollback`), never by mutating this field -- so this apply()
+# terminal-state machine is unaffected by rollback execution existing.
 _TERMINAL = {*_TERMINAL_SUCCESS, "unsupported"}
 
 
@@ -2100,6 +2102,163 @@ class AOS8MigrationOrchestrator:
             if _severity.get(assignment_status, 2) > _severity.get(primary_status, 0):
                 result["verification_status"] = assignment_status
         return result
+
+    def rollback_plan(
+        self,
+        run_id: str,
+        *,
+        target_secrets: Mapping[str, Mapping[str, str]] | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Build a reverse-dependency-order rollback plan for one migration
+        run's already-*applied* candidates (see `pipeline.aos8_rollback`).
+
+        Read-only and stateless: never writes to the run's persisted
+        state. `target_secrets` is used only transiently to construct the
+        target adapter -- some mappings need a caller-supplied secret to
+        re-derive a candidate's `CandidateAction` at all (e.g. a WLAN
+        mapping requires `security.mode`'s passphrase-required check) --
+        and is never persisted, matching `apply()`'s own secret-handling
+        contract.
+        """
+        from pipeline.aos8_rollback import plan_rollback
+
+        _validate_runtime_secret_lengths(target_secrets or {})
+        run = self.store.load(run_id)
+        applied = [
+            entry["candidate"]
+            for entry in run["candidates"]
+            if entry.get("status") == "applied"
+        ]
+        adapter = self._adapter(
+            run["target"], applied, secret_inputs=target_secrets or {}
+        )
+        plan = plan_rollback(applied, adapter.candidate_action)
+        serialized = plan.to_dict()
+        steps = serialized["steps"]
+        bounded_limit = max(1, min(int(limit), 200))
+        bounded_offset = max(0, int(offset))
+        serialized["steps"] = steps[bounded_offset : bounded_offset + bounded_limit]
+        serialized["pagination"] = {
+            "offset": bounded_offset,
+            "limit": bounded_limit,
+            "total": len(steps),
+            "truncated": bounded_offset + bounded_limit < len(steps),
+        }
+        serialized["run_id"] = run_id
+        secret_values = tuple(
+            value
+            for bundle in (target_secrets or {}).values()
+            for value in bundle.values()
+            if isinstance(value, str) and value
+        )
+        return _sanitize(serialized, secret_values=secret_values)
+
+    def execute_rollback(
+        self,
+        run_id: str,
+        *,
+        dry_run: bool,
+        confirmation: bool,
+        target_secrets: Mapping[str, Mapping[str, str]] | None = None,
+        conflict_policy: str = "abort",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Dry-run or execute a reverse-dependency-order rollback of one
+        migration run's already-*applied* candidates, resuming from any
+        prior partial rollback attempt persisted on this same run (see
+        `pipeline.aos8_rollback.execute_rollback_plan`).
+
+        Real (non-dry-run) execution requires `confirmation=True` *and*
+        `pipeline.aos8_rollback.rollback_writes_enabled()` (a gate
+        separate from, and in addition to, the ordinary migration-apply
+        write gate governing `adapter.write_invoker` itself) *and* the
+        ordinary per-target write gate
+        (`adapter.writes_enabled(adapter.target_type)`) -- rollback is
+        never authorized by only one of these. `target_secrets` is never
+        persisted (same contract as `apply()`); only which steps
+        completed (`resume_state`, by candidate key) is persisted, so a
+        resumed rollback never re-issues a delete against an object it
+        already confirmed gone.
+        """
+        from pipeline.aos8_rollback import (
+            RollbackConflictPolicy,
+            execute_rollback_plan,
+            plan_rollback,
+        )
+
+        try:
+            policy = RollbackConflictPolicy(conflict_policy)
+        except ValueError as exc:
+            raise MigrationRunError(
+                f"Unknown rollback conflict_policy {conflict_policy!r}; expected "
+                f"one of {[item.value for item in RollbackConflictPolicy]}"
+            ) from exc
+        _validate_runtime_secret_lengths(target_secrets or {})
+        secret_values = tuple(
+            value
+            for bundle in (target_secrets or {}).values()
+            for value in bundle.values()
+            if isinstance(value, str) and value
+        )
+
+        with self.store.lock_run(run_id):
+            run = self.store.load(run_id)
+            applied = [
+                entry["candidate"]
+                for entry in run["candidates"]
+                if entry.get("status") == "applied"
+            ]
+            adapter = self._adapter(
+                run["target"], applied, secret_inputs=target_secrets or {}
+            )
+            if not dry_run and not adapter.writes_enabled(adapter.target_type):
+                raise WriteGateError(
+                    f"Platform writes are disabled for {adapter.target_type.value}."
+                )
+            plan = plan_rollback(applied, adapter.candidate_action)
+            resume_state = dict(run.get("rollback", {}).get("resume_state", {}))
+            result = execute_rollback_plan(
+                plan,
+                dry_run=dry_run,
+                confirmation=confirmation,
+                write_invoker=adapter.write_invoker,
+                conflict_policy=policy,
+                resume_from=resume_state,
+            )
+            if not dry_run:
+                for entry in result["results"]:
+                    if entry["status"] in {"applied", "already_applied"}:
+                        resume_state[entry["candidate"]] = {
+                            "status": "applied",
+                            "completed_operations": entry["operation_count"],
+                        }
+                    elif entry["status"] == "failed" and entry["completed_operations"]:
+                        resume_state[entry["candidate"]] = {
+                            "status": "failed",
+                            "completed_operations": entry["completed_operations"],
+                        }
+                run["rollback"] = {
+                    "resume_state": resume_state,
+                    "last_run_at": _now(),
+                    "last_summary": result["summary"],
+                }
+                self.store.save(run)
+
+        result["run_id"] = run_id
+        steps = result["results"]
+        bounded_limit = max(1, min(int(limit), 200))
+        bounded_offset = max(0, int(offset))
+        result["results"] = steps[bounded_offset : bounded_offset + bounded_limit]
+        result["pagination"] = {
+            "offset": bounded_offset,
+            "limit": bounded_limit,
+            "total": len(steps),
+            "truncated": bounded_offset + bounded_limit < len(steps),
+        }
+        return _sanitize(result, secret_values=secret_values)
 
     @staticmethod
     def _validate_candidates(

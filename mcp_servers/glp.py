@@ -1,5 +1,5 @@
 """MCP server — GreenLake Platform (GLP): inventory, licensing, users, and
-service catalog (76 curated + 904 active generated tools; 918 in provenance manifest).
+service catalog (105 curated + 904 active generated tools; 918 in provenance manifest).
 
 Covers: GLP device lifecycle (v1 + v2beta1), device grouping summaries,
 subscription assignment/bulk-add, auto-subscription-setting reads/updates,
@@ -9,6 +9,13 @@ workflows also cover RBAC role-assignment and scope-group lifecycle
 (create/update/delete), identity user lifecycle (invite/update-preferences/
 disassociate), event webhooks/subscriptions/deliveries, workspace tags/
 locations, and SCIM user/group membership reads (see list_glp_api_families).
+v0.7 adds bounded, region-aware curated reads for Compute Ops Management,
+Storage Fleet, Block Storage, Virtualization, Backup & Recovery, and Data
+Services (each served from regional hosts, not global.api.greenlake.hpe.com --
+set GLP_GENERATED_REGION; see list_glp_api_families), a few guarded writes in
+those families (VM power on/off incl. a bounded bulk composite, and
+run-protection-job-now), and a read-only cross-resource reconciliation/
+planning composite (plan_glp_reconciliation).
 Uses the target_account (glp_account) credentials.
 """
 import asyncio
@@ -19,6 +26,7 @@ from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_servers.openapi_gen.http_exec import make_read_executor, make_write_executor
 from mcp_servers.shared import (
     DESTRUCTIVE,
     IDEMPOTENT_WRITE,
@@ -56,6 +64,11 @@ _GLP_GET_PREFIXES = (
 )
 _SENSITIVE_QUERY_PARAMS = {"unredacted"}
 
+# Auth header/cookie names never forwarded from model-supplied header params
+# for either the opt-in generated GLP tools or the curated region-aware
+# family tools below -- trusted GLP auth is always injected last.
+_GLP_AUTH_HEADER_NAMES = {"authorization", "cookie"}
+
 
 @mcp.tool(annotations=READ_ONLY)
 def glp_write_status() -> dict[str, Any]:
@@ -84,6 +97,9 @@ def glp_write_status() -> dict[str, Any]:
             "update_glp_user_preferences",
             "disassociate_glp_user",
             "update_glp_auto_subscription_settings",
+            "set_glp_virtual_machine_power",
+            "set_glp_virtual_machines_power_bulk",
+            "run_glp_backup_protection_job",
         ],
         "message": (
             "GLP write tools can execute."
@@ -1397,6 +1413,883 @@ def glp_add_subscriptions(subscription_keys: list[str], dry_run: bool = False) -
         return {"result": None, "errors": errors}
 
 
+# ── Compute, Storage, Virtualization, Backup & Data Services (curated,
+#    region-aware) ────────────────────────────────────────────────────────
+#
+# These families are declared in the committed manifest
+# (mcp_servers/openapi_gen/manifests/glp.json: compute-ops-mgmt.json,
+# storage-fleet.json, block-storage.json, virtualization.json,
+# backup-recovery.json, data-services.json) but -- unlike
+# devices/subscriptions/identity/authorization/workspaces/reporting above --
+# they are served from region-specific hosts, never
+# global.api.greenlake.hpe.com. Every tool below requires
+# GLP_GENERATED_REGION to be set to a region valid for that family (see
+# _GLP_FAMILY_HOSTS); an unset/invalid region surfaces as a clear entry in
+# `errors` rather than silently hitting the wrong host. glp_get cannot reach
+# these paths (its _GLP_GET_PREFIXES intentionally excludes them for the
+# same reason) -- use these dedicated tools instead.
+#
+# All are read-only except set_glp_virtual_machine_power (+ its bulk
+# composite) and run_glp_backup_protection_job, gated behind the same
+# CENTRALMCP_GLP_V2BETA1_WRITES flag as the other guarded GLP writes (see
+# glp_write_status).
+
+_GLP_REGIONAL_API_HOSTS: dict[str, str] = {
+    "us-west": "https://us-west.api.greenlake.hpe.com",
+    "eu-west": "https://eu-west.api.greenlake.hpe.com",
+    "eu-central": "https://eu-central.api.greenlake.hpe.com",
+    "ap-northeast": "https://ap-northeast.api.greenlake.hpe.com",
+}
+_GLP_REGIONAL_DATA_HOSTS: dict[str, str] = {
+    "us-west": "https://us1.data.cloud.hpe.com",
+    "us1": "https://us1.data.cloud.hpe.com",
+    "eu-west": "https://eu1.data.cloud.hpe.com",
+    "eu-central": "https://eu1.data.cloud.hpe.com",
+    "eu1": "https://eu1.data.cloud.hpe.com",
+    "ap-northeast": "https://jp1.data.cloud.hpe.com",
+    "jp1": "https://jp1.data.cloud.hpe.com",
+}
+
+# Manifest-declared server_urls per source_file (every operation within one
+# source_file shares the same host tuple in the committed manifest --
+# verified in tests/unit/test_glp_v07_depth.py against the manifest itself
+# so upstream host-list drift fails loudly instead of silently mis-routing).
+_GLP_FAMILY_HOSTS: dict[str, tuple[str, ...]] = {
+    "compute-ops-mgmt": (
+        "https://us-west.api.greenlake.hpe.com",
+        "https://eu-central.api.greenlake.hpe.com",
+        "https://ap-northeast.api.greenlake.hpe.com",
+    ),
+    "storage-fleet": (
+        "https://eu1.data.cloud.hpe.com",
+        "https://us1.data.cloud.hpe.com",
+        "https://jp1.data.cloud.hpe.com",
+    ),
+    "block-storage": (
+        "https://eu1.data.cloud.hpe.com",
+        "https://us1.data.cloud.hpe.com",
+        "https://jp1.data.cloud.hpe.com",
+    ),
+    "virtualization": (
+        "https://us-west.api.greenlake.hpe.com",
+        "https://eu-west.api.greenlake.hpe.com",
+        "https://eu-central.api.greenlake.hpe.com",
+        "https://ap-northeast.api.greenlake.hpe.com",
+    ),
+    "backup-recovery": (
+        "https://us-west.api.greenlake.hpe.com",
+        "https://eu-west.api.greenlake.hpe.com",
+        "https://eu-central.api.greenlake.hpe.com",
+        "https://ap-northeast.api.greenlake.hpe.com",
+    ),
+    "data-services": (
+        "https://us-west.api.greenlake.hpe.com",
+        "https://eu-west.api.greenlake.hpe.com",
+        "https://eu-central.api.greenlake.hpe.com",
+        "https://ap-northeast.api.greenlake.hpe.com",
+    ),
+}
+_GLP_FAMILY_PREFIXES: dict[str, tuple[str, ...]] = {
+    family: (f"/{family}/",) for family in _GLP_FAMILY_HOSTS
+}
+
+
+def _glp_family_server(family: str) -> str:
+    """Resolve the region-specific host for a curated GLP service family.
+
+    Raises ValueError (surfaced in the tool's `errors` list, never raised
+    through to the MCP transport) when GLP_GENERATED_REGION is unset or not
+    valid for this family.
+    """
+    hosts = _GLP_FAMILY_HOSTS[family]
+    region = os.environ.get("GLP_GENERATED_REGION", "").strip().lower()
+    lookup = (
+        _GLP_REGIONAL_DATA_HOSTS
+        if any(".data.cloud.hpe.com" in host for host in hosts)
+        else _GLP_REGIONAL_API_HOSTS
+    )
+    requested = lookup.get(region)
+    if requested in hosts:
+        return requested
+    valid_regions = sorted({key for key, url in lookup.items() if url in hosts})
+    raise ValueError(
+        f"GLP {family} operations are region-specific. Set GLP_GENERATED_REGION "
+        f"to one of {valid_regions}."
+    )
+
+
+def _glp_family_resolver(family: str):
+    """Build an auth resolver bound to one curated region-aware GLP family.
+
+    Reuses the target-account GLPClient's token manager (its workspace-scoped
+    bearer token), fixing the base URL to _glp_family_server(family) rather
+    than the opt-in generated-tool route table (_GLP_GENERATED_ROUTES, only
+    populated when CENTRALMCP_GLP_GENERATED_TOOLS is set) -- these curated
+    tools resolve the correct regional host even on the default, curated-only
+    aruba-glp server.
+    """
+
+    async def _resolve(
+        path: str, extra: dict[str, str] | None = None
+    ) -> tuple[str, dict[str, str]]:
+        client = get_glp_client()._client
+        token = await asyncio.to_thread(client.token_manager.get_access_token)
+        headers: dict[str, str] = {"Accept": "application/json"}
+        for key, value in (extra or {}).items():
+            if key.strip().lower() in _GLP_AUTH_HEADER_NAMES:
+                continue
+            headers[key] = str(value)
+        headers["Authorization"] = f"Bearer {token}"
+        return _glp_family_server(family), headers
+
+    return _resolve
+
+
+async def _glp_family_refresh_auth() -> None:
+    client = get_glp_client()._client
+    await asyncio.to_thread(client.token_manager.get_access_token, True)
+
+
+_GLP_FAMILY_READ_EXECUTORS: dict[str, Any] = {}
+_GLP_FAMILY_WRITE_EXECUTORS: dict[str, Any] = {}
+
+
+def _glp_family_read_executor(family: str):
+    executor = _GLP_FAMILY_READ_EXECUTORS.get(family)
+    if executor is None:
+        executor = make_read_executor(
+            resolve=_glp_family_resolver(family),
+            allowed_prefixes=lambda f=family: _GLP_FAMILY_PREFIXES[f],
+            not_configured="GLP not configured",
+            refresh_auth=_glp_family_refresh_auth,
+        )
+        _GLP_FAMILY_READ_EXECUTORS[family] = executor
+    return executor
+
+
+def _glp_family_write_executor(family: str):
+    executor = _GLP_FAMILY_WRITE_EXECUTORS.get(family)
+    if executor is None:
+        executor = make_write_executor(
+            resolve=_glp_family_resolver(family),
+            allowed_prefixes=lambda f=family: _GLP_FAMILY_PREFIXES[f],
+            writes_allowed=lambda: platform_writes_allowed("glp"),
+            blocked_response=lambda name: platform_write_blocked("glp", name),
+            execute_hint=(
+                "Re-run with dry_run=False and confirm=True to execute this GLP "
+                f"write (requires {_V2BETA1_WRITES_FLAG}=1)."
+            ),
+            not_configured="GLP not configured",
+            refresh_auth=_glp_family_refresh_auth,
+        )
+        _GLP_FAMILY_WRITE_EXECUTORS[family] = executor
+    return executor
+
+
+async def _glp_family_get(
+    family: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+    *,
+    limit: int | None = None,
+    list_key: str | None = "items",
+) -> dict[str, Any]:
+    """Bounded, region-aware GET for one curated GLP service family."""
+    try:
+        safe_path = safe_api_path(path, _GLP_FAMILY_PREFIXES[family])
+    except ValueError as exc:
+        return {"data": None, "endpoint_used": path, "errors": [f"Invalid path. {exc}"]}
+    safe_params, warnings = _safe_read_params(params)
+    result = await _glp_family_read_executor(family)("GET", safe_path, safe_params, {})
+    if "error" in result:
+        payload: dict[str, Any] = {
+            "data": None,
+            "endpoint_used": safe_path,
+            "errors": [result["error"]],
+        }
+        if warnings:
+            payload["warnings"] = warnings
+        return payload
+    status_code = result.get("status_code")
+    data = result.get("data")
+    errors: list[str] = []
+    if isinstance(status_code, int) and not (200 <= status_code < 300):
+        errors.append(f"GLP {family} request returned HTTP {status_code}: {data}"[:400])
+    if limit is not None:
+        data = bound_collection_response(
+            data, limit=clamp_limit(limit), offset=0, list_key=list_key
+        )
+    payload = {
+        "data": data,
+        "endpoint_used": safe_path,
+        "status_code": status_code,
+        "errors": errors,
+    }
+    if warnings:
+        payload["warnings"] = warnings
+    return payload
+
+
+# ── Compute Ops Management ───────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_compute_servers(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List HPE Compute Ops Management servers (iLO-managed compute inventory).
+
+    Region-specific -- set GLP_GENERATED_REGION to us-west, eu-central, or
+    ap-northeast. `filter` is an OData-subset expression per the manifest
+    (e.g. "name eq 'server1'").
+    """
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "compute-ops-mgmt",
+        "/compute-ops-mgmt/v1/servers",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_glp_compute_server(server_id: str) -> dict[str, Any]:
+    """Fetch one HPE Compute Ops Management server by ID."""
+    return await _glp_family_get(
+        "compute-ops-mgmt",
+        f"/compute-ops-mgmt/v1/servers/{_path_part(server_id)}",
+        list_key=None,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_compute_server_alerts(
+    server_id: str, limit: int = 100, offset: int = 0
+) -> dict[str, Any]:
+    """List active alerts for one Compute Ops Management server."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "compute-ops-mgmt",
+        f"/compute-ops-mgmt/v1/servers/{_path_part(server_id)}/alerts",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_compute_groups(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List Compute Ops Management server groups."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "compute-ops-mgmt",
+        "/compute-ops-mgmt/v1/groups",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_compute_jobs(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List Compute Ops Management jobs (firmware/config actions) and their status."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "compute-ops-mgmt",
+        "/compute-ops-mgmt/v1/jobs",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+# ── Storage Fleet ─────────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_storage_systems(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List HPE GreenLake Storage Fleet systems (cross-device-type inventory).
+
+    Region-specific -- set GLP_GENERATED_REGION to us-west, eu-west, or
+    ap-northeast (routed to the us1/eu1/jp1 data hosts).
+    """
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "storage-fleet",
+        "/storage-fleet/v1alpha1/storage-systems",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_glp_storage_system(system_id: str) -> dict[str, Any]:
+    """Fetch one Storage Fleet system by ID."""
+    return await _glp_family_get(
+        "storage-fleet",
+        f"/storage-fleet/v1alpha1/storage-systems/{_path_part(system_id)}",
+        list_key=None,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_storage_system_types() -> dict[str, Any]:
+    """List the storage device types supported by Storage Fleet."""
+    return await _glp_family_get(
+        "storage-fleet", "/storage-fleet/v1alpha1/storage-types", limit=100
+    )
+
+
+# ── Block Storage ─────────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_block_storage_volumes(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List HPE GreenLake Block Storage volumes across the fleet."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "block-storage",
+        "/block-storage/v1alpha1/volumes",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_glp_block_storage_volume(volume_id: str) -> dict[str, Any]:
+    """Fetch one Block Storage volume by ID."""
+    return await _glp_family_get(
+        "block-storage",
+        f"/block-storage/v1alpha1/volumes/{_path_part(volume_id)}",
+        list_key=None,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_block_storage_hosts(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List Block Storage host initiators (registered application hosts)."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "block-storage",
+        "/block-storage/v1alpha1/host-initiators",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+# ── Virtualization ────────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_virtual_machines(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List virtual machines managed via the GLP Virtualization service."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "virtualization",
+        "/virtualization/v1beta1/virtual-machines",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_glp_virtual_machine(vm_id: str) -> dict[str, Any]:
+    """Fetch one GLP-managed virtual machine by ID."""
+    return await _glp_family_get(
+        "virtualization",
+        f"/virtualization/v1beta1/virtual-machines/{_path_part(vm_id)}",
+        list_key=None,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_hypervisor_managers(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List registered hypervisor managers (e.g. vCenter instances)."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "virtualization",
+        "/virtualization/v1beta1/hypervisor-managers",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_hypervisor_clusters(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List hypervisor clusters visible to GLP Virtualization."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "virtualization",
+        "/virtualization/v1beta1/hypervisor-clusters",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_datastores(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List datastores visible to GLP Virtualization."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "virtualization",
+        "/virtualization/v1beta1/datastores",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def set_glp_virtual_machine_power(
+    vm_id: str,
+    action: Literal["power-on", "power-off"],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Power a single GLP-managed virtual machine on or off.
+
+    No request body per the manifest -- `vm_id`/`action` alone select the
+    endpoint. Defaults to a dry-run preview; re-run with dry_run=False and
+    confirm=True to execute. Gated behind the same guardrail as other GLP
+    v2beta1-style writes -- see glp_write_status. Prefer
+    set_glp_virtual_machines_power_bulk for more than one VM (adds per-VM
+    partial-failure reporting instead of one all-or-nothing call).
+    """
+    path = f"/virtualization/v1beta1/virtual-machines/{_path_part(vm_id)}/{action}"
+    executor = _glp_family_write_executor("virtualization")
+    return await executor(
+        f"set_glp_virtual_machine_power:{action}",
+        "POST",
+        path,
+        {},
+        {},
+        None,
+        "application/json",
+        dry_run,
+        confirm,
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def set_glp_virtual_machines_power_bulk(
+    vm_ids: list[str],
+    action: Literal["power-on", "power-off"],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Power on/off up to 20 GLP-managed virtual machines, one request per VM.
+
+    Composite over set_glp_virtual_machine_power: runs sequentially and
+    reports a per-VM outcome plus succeeded/failed counts, so one VM
+    rejecting the action (e.g. already powered off) never masks the
+    outcome of the others. Defaults to a dry-run preview for every VM;
+    re-run with dry_run=False and confirm=True to execute. Gated behind the
+    same guardrail as other GLP v2beta1-style writes -- see
+    glp_write_status.
+    """
+    if not vm_ids:
+        return {
+            "results": [],
+            "succeeded": 0,
+            "failed": 0,
+            "errors": ["vm_ids must not be empty"],
+        }
+    if len(vm_ids) > 20:
+        return {
+            "results": [],
+            "succeeded": 0,
+            "failed": 0,
+            "errors": [f"vm_ids exceeds the 20-item safety bound (got {len(vm_ids)})"],
+        }
+    results: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for vm_id in vm_ids:
+        outcome = await set_glp_virtual_machine_power(
+            vm_id, action, dry_run=dry_run, confirm=confirm
+        )
+        if outcome.get("dry_run"):
+            status = "dry_run"
+        elif "error" in outcome:
+            status = "failed"
+        elif isinstance(outcome.get("status_code"), int) and outcome["status_code"] >= 300:
+            status = "failed"
+        else:
+            status = "ok"
+        if status == "failed":
+            errors.append(f"{vm_id}: {outcome.get('error') or outcome.get('status_code')}")
+        results.append({"vm_id": vm_id, "status": status, "detail": outcome})
+    return {
+        "action": action,
+        "dry_run": dry_run,
+        "requested": len(vm_ids),
+        "succeeded": sum(1 for r in results if r["status"] == "ok"),
+        "failed": sum(1 for r in results if r["status"] == "failed"),
+        "results": results,
+        "errors": errors,
+    }
+
+
+# ── Backup & Recovery ─────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_backup_protection_jobs(
+    limit: int = 100,
+    offset: int = 0,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """List Backup & Recovery protection jobs and their run status."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "backup-recovery",
+        "/backup-recovery/v1beta1/protection-jobs",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_glp_backup_protection_job(job_id: str) -> dict[str, Any]:
+    """Fetch one Backup & Recovery protection job by ID."""
+    return await _glp_family_get(
+        "backup-recovery",
+        f"/backup-recovery/v1beta1/protection-jobs/{_path_part(job_id)}",
+        list_key=None,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_backup_protection_stores(
+    limit: int = 100, offset: int = 0, filter: str | None = None
+) -> dict[str, Any]:
+    """List Backup & Recovery protection stores (backup target capacity/health)."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "backup-recovery",
+        "/backup-recovery/v1beta1/protection-stores",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_backup_storeonces(limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """List registered HPE StoreOnce appliances under Backup & Recovery."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "backup-recovery",
+        "/backup-recovery/v1beta1/storeonces",
+        _paged_params(bounded_limit, offset),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_backup_vm_protection_groups(
+    limit: int = 100, offset: int = 0, filter: str | None = None
+) -> dict[str, Any]:
+    """List virtual-machine protection groups under Backup & Recovery."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "backup-recovery",
+        "/backup-recovery/v1beta1/virtual-machine-protection-groups",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def run_glp_backup_protection_job(
+    job_id: str,
+    full_backup: bool = False,
+    include_resources: list[str] | None = None,
+    schedule_ids: list[str] | None = None,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Trigger an existing Backup & Recovery protection job to run now.
+
+    Per the manifest, the request body declares `fullBackup`/
+    `includeResources`/`scheduleIds` -- pass `include_resources`/
+    `schedule_ids` as empty lists (the default) to run the job's full
+    default scope. See list_glp_backup_protection_jobs /
+    get_glp_backup_protection_job for the job shape and its configured
+    schedule IDs. Defaults to a dry-run preview; re-run with dry_run=False
+    and confirm=True to execute. Gated behind the same guardrail as other
+    GLP v2beta1-style writes -- see glp_write_status.
+    """
+    body = {
+        "fullBackup": full_backup,
+        "includeResources": include_resources or [],
+        "scheduleIds": schedule_ids or [],
+    }
+    path = f"/backup-recovery/v1beta1/protection-jobs/{_path_part(job_id)}/run"
+    executor = _glp_family_write_executor("backup-recovery")
+    return await executor(
+        "run_glp_backup_protection_job",
+        "POST",
+        path,
+        {},
+        {},
+        body,
+        "application/json",
+        dry_run,
+        confirm,
+    )
+
+
+# ── Data Services ─────────────────────────────────────────────────────────────
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_data_services_issues(
+    limit: int = 100, offset: int = 0, filter: str | None = None
+) -> dict[str, Any]:
+    """List open Data Services issues (cross-resource health/status feed).
+
+    `filter` supports issueType/severity/category/state/createdAt/services/
+    sourceResourceId/sourceResourceType per the manifest.
+    """
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "data-services",
+        "/data-services/v1beta1/issues",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_glp_data_services_issue(issue_id: str) -> dict[str, Any]:
+    """Fetch one Data Services issue by ID."""
+    return await _glp_family_get(
+        "data-services",
+        f"/data-services/v1beta1/issues/{_path_part(issue_id)}",
+        list_key=None,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_data_services_async_operations(
+    limit: int = 100, offset: int = 0, filter: str | None = None
+) -> dict[str, Any]:
+    """List Data Services async-operation status (job tracking)."""
+    bounded_limit = clamp_limit(limit)
+    return await _glp_family_get(
+        "data-services",
+        "/data-services/v1beta1/async-operations",
+        _paged_params(bounded_limit, offset, filter=filter),
+        limit=bounded_limit,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_glp_data_services_storage_locations(filter: str | None = None) -> dict[str, Any]:
+    """List Data Services storage locations (no server-side pagination per the manifest)."""
+    return await _glp_family_get(
+        "data-services",
+        "/data-services/v1beta1/storage-locations",
+        _params(filter=filter),
+        limit=100,
+    )
+
+
+# ── Reconciliation / planning (read-only) ────────────────────────────────────
+
+_GLP_RECONCILIATION_FAILURE_STATUS_MARKERS = {"failed", "failure", "error"}
+
+
+def _glp_extract_items(result: Any) -> list[Any]:
+    if not isinstance(result, dict):
+        return []
+    if isinstance(result.get("items"), list):
+        return result["items"]
+    data = result.get("data")
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    if isinstance(data, list):
+        return data
+    return []
+
+
+def _glp_extract_errors(result: Any) -> list[str]:
+    if not isinstance(result, dict):
+        return []
+    errors = result.get("errors")
+    if isinstance(errors, list):
+        return [str(item) for item in errors]
+    return []
+
+
+def _glp_has_failure_status(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    for key in ("status", "state"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip().lower() in (
+            _GLP_RECONCILIATION_FAILURE_STATUS_MARKERS
+        ):
+            return True
+    return False
+
+
+@mcp.tool(annotations=READ_ONLY)
+def plan_glp_reconciliation(sample_size: int = 100) -> dict[str, Any]:
+    """Read-only cross-resource reconciliation/planning aid. Never writes.
+
+    Fetches one bounded page each of devices, subscriptions, users, RBAC
+    role assignments, scope groups, recent audit logs, and reporting
+    statuses, then flags likely drift for a human to plan around (e.g.
+    devices with no subscription, RBAC role assignments whose scope-group
+    isn't in this sample, reporting statuses reporting failure). This is a
+    planning aid over one sample page per resource, not an exhaustive
+    audit -- page through list_glp_devices / list_glp_subscriptions / etc.
+    directly with `offset` for a full workspace sweep.
+
+    Args:
+        sample_size: bounded page size for every underlying fetch (clamped
+            to the MCP list limit).
+
+    A `sections` block always reports whether each underlying fetch
+    actually succeeded, so one API returning e.g. 403 shows up as a failed
+    section instead of silently narrowing the findings.
+    """
+    bounded = clamp_limit(sample_size)
+    sections: dict[str, Any] = {}
+    errors: list[str] = []
+
+    def _fetch(name: str, fn: Any, **kwargs: Any) -> list[Any]:
+        try:
+            result = fn(**kwargs)
+        except Exception as exc:  # defensive: a single family must not abort the plan
+            sections[name] = {"ok": False, "count": 0}
+            errors.append(f"{name}: {exc}")
+            return []
+        items = _glp_extract_items(result)
+        section_errors = _glp_extract_errors(result)
+        sections[name] = {"ok": not section_errors, "count": len(items)}
+        errors.extend(f"{name}: {item}" for item in section_errors)
+        return items
+
+    device_items = _fetch("devices", list_glp_devices, limit=bounded, offset=0)
+    subscription_items = _fetch("subscriptions", list_glp_subscriptions, limit=bounded, offset=0)
+    user_items = _fetch("users", list_glp_users, limit=bounded, offset=0)
+    role_assignment_items = _fetch(
+        "role_assignments", list_glp_role_assignments, limit=bounded, offset=0
+    )
+    scope_group_items = _fetch("scope_groups", list_glp_scope_groups, limit=bounded, offset=0)
+    _fetch("audit_logs", list_glp_audit_logs, limit=min(bounded, 50), offset=0)
+    reporting_items = _fetch(
+        "reporting_statuses", list_glp_reporting_statuses, limit=min(bounded, 50), offset=0
+    )
+
+    findings: list[dict[str, Any]] = []
+
+    unlicensed_devices = [
+        d.get("serialNumber") or d.get("id")
+        for d in device_items
+        if isinstance(d, dict)
+        and not (d.get("subscription") or d.get("subscriptionId") or d.get("subscriptionKey"))
+    ]
+    if unlicensed_devices:
+        findings.append(
+            {
+                "type": "device_without_subscription",
+                "severity": "warning",
+                "count": len(unlicensed_devices),
+                "sample": unlicensed_devices[:10],
+                "recommendation": (
+                    "Assign a subscription with glp_assign_subscription "
+                    "(dry-run first)."
+                ),
+            }
+        )
+
+    if scope_group_items:
+        scope_group_ids = {
+            str(sg.get("id")) for sg in scope_group_items if isinstance(sg, dict) and sg.get("id")
+        }
+        dangling_role_assignments = [
+            ra.get("id")
+            for ra in role_assignment_items
+            if isinstance(ra, dict)
+            and isinstance(ra.get("scope"), dict)
+            and ra["scope"].get("type") == "scope-group"
+            and str(ra["scope"].get("id")) not in scope_group_ids
+        ]
+        if dangling_role_assignments:
+            findings.append(
+                {
+                    "type": "role_assignment_scope_group_not_in_sample",
+                    "severity": "info",
+                    "count": len(dangling_role_assignments),
+                    "sample": dangling_role_assignments[:10],
+                    "recommendation": (
+                        "Confirm with get_glp_scope_group -- this may just be "
+                        "outside this bounded sample page rather than actually "
+                        "missing."
+                    ),
+                }
+            )
+
+    if user_items and not role_assignment_items:
+        findings.append(
+            {
+                "type": "users_present_without_any_sampled_role_assignment",
+                "severity": "info",
+                "count": len(user_items),
+                "recommendation": "Review RBAC coverage with list_glp_role_assignments.",
+            }
+        )
+
+    failed_reports = [r for r in reporting_items if _glp_has_failure_status(r)]
+    if failed_reports:
+        findings.append(
+            {
+                "type": "reporting_status_failure",
+                "severity": "warning",
+                "count": len(failed_reports),
+                "sample": [
+                    r.get("id") for r in failed_reports[:10] if isinstance(r, dict)
+                ],
+                "recommendation": (
+                    "Inspect with get_glp_reporting_status -- this heuristic reads "
+                    "a status/state field that is not independently confirmed "
+                    "against the reporting response schema."
+                ),
+            }
+        )
+
+    return {
+        "sample_size": bounded,
+        "sections": sections,
+        "counts": {
+            "devices": len(device_items),
+            "subscriptions": len(subscription_items),
+            "users": len(user_items),
+            "role_assignments": len(role_assignment_items),
+            "scope_groups": len(scope_group_items),
+            "reporting_statuses": len(reporting_items),
+        },
+        "findings": findings,
+        "errors": errors,
+        "note": (
+            "Read-only planning over one bounded sample page per resource -- "
+            "never writes. Re-run the underlying list_glp_* tools with "
+            "offset to page through a full workspace before acting on a "
+            "finding."
+        ),
+    }
+
+
 # ── API family discovery ──────────────────────────────────────────────────────
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1431,10 +2324,33 @@ def list_glp_api_families() -> dict[str, Any]:
         "list_glp_scim_groups", "get_glp_scim_group",
         "list_glp_scim_group_users", "list_glp_scim_user_groups",
     ]
+    region_aware_family_tools = [
+        "list_glp_compute_servers", "get_glp_compute_server", "list_glp_compute_server_alerts",
+        "list_glp_compute_groups", "list_glp_compute_jobs",
+        "list_glp_storage_systems", "get_glp_storage_system", "list_glp_storage_system_types",
+        "list_glp_block_storage_volumes", "get_glp_block_storage_volume",
+        "list_glp_block_storage_hosts",
+        "list_glp_virtual_machines", "get_glp_virtual_machine", "list_glp_hypervisor_managers",
+        "list_glp_hypervisor_clusters", "list_glp_datastores",
+        "set_glp_virtual_machine_power", "set_glp_virtual_machines_power_bulk",
+        "list_glp_backup_protection_jobs", "get_glp_backup_protection_job",
+        "list_glp_backup_protection_stores", "list_glp_backup_storeonces",
+        "list_glp_backup_vm_protection_groups", "run_glp_backup_protection_job",
+        "list_glp_data_services_issues", "get_glp_data_services_issue",
+        "list_glp_data_services_async_operations", "list_glp_data_services_storage_locations",
+    ]
     return {
         "guarded_get_prefixes": list(_GLP_GET_PREFIXES),
         "confirmed_typed_tools": manifest_backed_tools,
         "curated_manifest_backed_tools": manifest_backed_tools,
+        "region_aware_family_tools": region_aware_family_tools,
+        "region_aware_families": {
+            family: {
+                "hosts": list(hosts),
+                "path_prefix": _GLP_FAMILY_PREFIXES[family][0],
+            }
+            for family, hosts in _GLP_FAMILY_HOSTS.items()
+        },
         "best_effort_typed_tools": [
             "group_glp_devices",
             "glp_add_subscriptions",
@@ -1443,12 +2359,18 @@ def list_glp_api_families() -> dict[str, Any]:
             "notifications": "/notifications/...",
             "API client credentials": "no confirmed path — not exposed via glp_get yet",
         },
+        "reconciliation_tools": ["plan_glp_reconciliation"],
         "note": (
             "Named RBAC, event-webhook, tag, location, and SCIM reads are backed by "
             "the committed GLP OpenAPI manifest. RBAC role-assignment/scope-group "
             "lifecycle, identity user lifecycle, and auto-subscription-setting writes "
             "are also manifest-backed and gated behind glp_write_status. Use glp_get "
-            "only for other documented resources under an allowed prefix."
+            "only for other documented resources under an allowed prefix. "
+            "region_aware_family_tools (compute/storage-fleet/block-storage/"
+            "virtualization/backup-recovery/data-services) are NOT reachable via "
+            "glp_get — they are served from region-specific hosts (never "
+            "global.api.greenlake.hpe.com); set GLP_GENERATED_REGION to a region "
+            "valid for that family (see region_aware_families) before calling them."
         ),
     }
 
@@ -1466,16 +2388,16 @@ def list_glp_api_families() -> dict[str, Any]:
 # _glp_generated_enabled below) except in `direct` router mode with the
 # `glp`/`all` toolset, so the default curated aruba-glp catalog stays small.
 #
-# The 76 curated GLP tools above are the confirmed-working, hand-tuned surface;
+# The 105 curated GLP tools above are the confirmed-working, hand-tuned surface;
 # the generated glp_* tools broaden coverage to the full workspace/inventory/
 # licensing/service-catalog/storage/compute surface. Generated writes stay
 # fail-closed behind the same CENTRALMCP_GLP_V2BETA1_WRITES gate and default to
 # dry_run=True.
 # ---------------------------------------------------------------------------
 
-# Auth header/cookie names never forwarded from model-supplied header params;
-# trusted GLP auth is injected last by _glp_generated_auth_headers.
-_GLP_AUTH_HEADER_NAMES = {"authorization", "cookie"}
+# _GLP_AUTH_HEADER_NAMES is shared with the curated region-aware family
+# tools above (see _glp_family_resolver) -- defined once near the top of
+# this module.
 
 # Populated at registration time from the committed manifest (defense-in-depth
 # path allow-list). The shared runtime already URL-escapes path values and
@@ -1522,25 +2444,12 @@ def _glp_generated_server(path: str, configured_base_url: str) -> str:
         return server_urls[0]
 
     region = os.environ.get("GLP_GENERATED_REGION", "").strip().lower()
-    regional_hosts = {
-        "us-west": "https://us-west.api.greenlake.hpe.com",
-        "eu-west": "https://eu-west.api.greenlake.hpe.com",
-        "eu-central": "https://eu-central.api.greenlake.hpe.com",
-        "ap-northeast": "https://ap-northeast.api.greenlake.hpe.com",
-    }
-    data_hosts = {
-        "us-west": "https://us1.data.cloud.hpe.com",
-        "us1": "https://us1.data.cloud.hpe.com",
-        "eu-west": "https://eu1.data.cloud.hpe.com",
-        "eu-central": "https://eu1.data.cloud.hpe.com",
-        "eu1": "https://eu1.data.cloud.hpe.com",
-        "ap-northeast": "https://jp1.data.cloud.hpe.com",
-        "jp1": "https://jp1.data.cloud.hpe.com",
-    }
+    # Shared with the curated region-aware family tools' _glp_family_server
+    # (see _GLP_REGIONAL_API_HOSTS / _GLP_REGIONAL_DATA_HOSTS above).
     requested = (
-        data_hosts.get(region)
+        _GLP_REGIONAL_DATA_HOSTS.get(region)
         if any(".data.cloud.hpe.com" in url for url in server_urls)
-        else regional_hosts.get(region)
+        else _GLP_REGIONAL_API_HOSTS.get(region)
     )
     if requested in server_urls:
         return requested
@@ -1593,7 +2502,7 @@ def _glp_generated_enabled() -> bool:
 
     Opt-in and **default OFF**: unlike the optional-product starter backends,
     the ~918 generated GLP tools are a very large surface, so we keep the
-    default ``aruba-glp`` catalog to the 76 curated tools and only expand when
+    default ``aruba-glp`` catalog to the 105 curated tools and only expand when
     an operator sets ``CENTRALMCP_GLP_GENERATED_TOOLS`` truthy. (Central's
     generated tools live on a separate ``aruba-central-generated`` server, so
     they can default on without inflating a shared catalog; the GLP generated

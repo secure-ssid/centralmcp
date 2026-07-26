@@ -4,24 +4,26 @@ Low-token Model Context Protocol tooling for HPE Aruba Central, HPE GreenLake
 Platform, embedded docs/API lookup, and optional ClearPass, Mist, Apstra,
 ArubaOS 8, EdgeConnect, UXI, and Axis backends.
 
-![centralmcp 0.6.0](assets/centralmcp-hero.svg)
+![centralmcp 0.7.0](assets/centralmcp-hero.svg)
 
-## Version 0.6.0 project snapshot
+## Version 0.7.0 project snapshot
 
 | Area | Current snapshot |
 |---|---|
-| Tool catalog | 6,056 generated operations (6,039 active) / 506 curated / 6,545 backend tools / 6,548 direct-all |
-| Capability totals | 3,056 read, 164 diagnostic, 2,501 write, 824 destructive |
+| Tool catalog | 6,143 generated operations (6,126 active) / 573 curated / 6,699 backend tools / 6,702 direct-all |
+| Capability totals | 3,147 read, 165 diagnostic, 2,544 write, 843 destructive |
 | RAG | 51,737 prose chunks in LanceDB |
 | Structured lookup | 244 specs, 3,796 endpoints, 11,293 schemas, 60,568 fields, 102 advisories, 346 lifecycle records |
 | API provenance | Aruba ReadMe registries, official Mist/Apstra sources, pinned GLP and EdgeConnect snapshots, SHA-pinned Axis generator |
 | Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis Atmos Cloud |
-| Safety | Per-platform gates, dry-run writes, confirmation, HTTP host/origin and bearer controls |
+| Safety | Per-platform gates, dry-run writes, confirmation, HTTP host/origin and bearer controls, credential-gated live-test config, versioned/redacted artifact contracts |
 
-Read the [0.6.0 release notes](release-notes-0.6.0.md) for expanded Central,
-GLP, AOS8, Axis, Mist, structured advisory/lifecycle RAG, provenance checks,
-router auditing, and migration reporting. Earlier release notes remain
-available for historical context.
+Read the [0.7.0 release notes](release-notes-0.7.0.md) for artifact/live-test
+gates, source lifecycle provenance, structured RAG intelligence (advisory/
+lifecycle listing and correlation), Central/GLP/AOS8/optional-product depth,
+observability/security hardening, router automation with opaque cursors, and
+release artifact automation. Earlier release notes remain available for
+historical context.
 
 See the [capability gap matrix](capability-gap-matrix.md) for reproducible
 executable-tool, generated-operation, benchmark, and practical-gap comparisons.
@@ -98,9 +100,14 @@ flowchart TD
 | Plan typed product-specific workflows | [Typed product workflow roadmap](product-workflows.md) |
 | Fix setup, credentials, HTTP, or catalog issues | [Troubleshooting](troubleshooting.md) |
 | Download or package prebuilt RAG/OpenAPI indexes | [Prebuilt RAG/OpenAPI indexes](release-indexes.md) |
-| Review the complete 0.6.0 expansion | [0.6.0 release notes](release-notes-0.6.0.md) |
+| Review the complete 0.7.0 expansion | [0.7.0 release notes](release-notes-0.7.0.md) |
+| Review Central v0.7 depth workflows (templates, bulk delete, firmware campaigns, config-health remediation, troubleshooting bundles) | [Central v0.7 workflows](central-v07-workflows.md) |
+| Review the prior 0.6.0 expansion (historical) | [0.6.0 release notes](release-notes-0.6.0.md) |
 | Review the prior 0.5.0 AOS8 migration expansion | [0.5.0 release notes](release-notes-0.5.0.md) |
 | Review the AOS8 migration contract matrix and live evaluation | [Contract matrix](aos8-migration-contract-matrix.md), [live/dry-run evaluation](aos8-live-dryrun-evaluation.md) |
+| Reuse v0.7 artifact schemas and credential-gated live-test config | [Artifact contracts and live-test configuration](artifact-contracts.md) |
+| Build, restore, and smoke-test release artifact bundles (SBOM, checksums, provenance) | [Release artifact automation](release-artifact-automation.md) |
+| Understand security/lifecycle source freshness, provenance, and coverage boundaries | [Source lifecycle coverage](source-lifecycle-coverage.md) |
 | Review the prior 0.4.0 expansion (historical) | [0.4.0 release notes](release-notes-0.4.0.md) |
 | Review the prior 0.3.0 expansion (historical) | [0.3.0 release notes](release-notes-0.3.0.md) |
 | Understand the low-token router | [Tool router](tool-router.md) |

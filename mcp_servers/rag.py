@@ -1,8 +1,11 @@
-"""MCP server — Aruba/HPE documentation RAG tools (5 tools).
+"""MCP server — Aruba/HPE documentation RAG tools (9 tools).
 
 Covers: hybrid (vector + BM25) search over ingested Aruba Central developer
 docs, tech docs, NAC docs, VSG docs, and HTML tech docs; exact API
-endpoint/schema/enum lookup via the SQLite specs index.
+endpoint/schema/enum lookup via the SQLite specs index; exact structured
+security-advisory/lifecycle lookup, bounded list/filter/pagination, an
+exact-only advisory<->lifecycle correlation, and bounded RAG index
+diagnostics (ingestion delta, source freshness, citation completeness).
 
 Default backend is the embedded stack — LanceDB + fastembed, no servers
 needed (`clone -> uv sync -> run`). Set CENTRALMCP_RAG_BACKEND=redis for the
@@ -10,12 +13,15 @@ optional Redis Stack + Ollama server deployment (vector-only + source boost).
 """
 
 import os
+import re
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from mcp_servers.shared import READ_ONLY
+from pipeline import artifact_contracts as contracts
 from pipeline.clients import advisory_index, specs_index
+from pipeline.clients import rag_diagnostics as rag_diagnostics_client
 
 mcp = FastMCP("aruba-rag")
 
@@ -226,6 +232,14 @@ def check_product_lifecycle(
     Searches the structured HPE Networking and Juniper Mist/Apstra lifecycle
     tables and returns notice IDs, dates, product/replacement SKUs, source
     family, file path, and authoritative source URL.
+
+    Coverage boundary: the HPE Networking notices are a historical archive
+    (legacy HP/H3C/3Com/ProCurve categories; nothing published after 2020)
+    plus a static Aruba hardware End of Sale PDF snapshot -- there is no
+    reliable official machine-readable source yet for current, post-2020
+    Aruba-branded lifecycle notices (see docs/source-lifecycle-coverage.md).
+    Do not imply this table is exhaustive for current Aruba products; treat
+    an empty result as "not found in these sources", not "still supported".
     """
     try:
         return advisory_index.lookup_lifecycle(
@@ -236,12 +250,230 @@ def check_product_lifecycle(
         return [{"error": str(exc)}]
 
 
+@mcp.tool(annotations=READ_ONLY)
+def list_advisories(
+    product: str | None = None,
+    cve: str | None = None,
+    advisory_id: str | None = None,
+    min_severity: str | None = None,
+    source_family: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List/paginate security advisories with exact filters — no identifier required.
+
+    Companion to `lookup_advisory` (which requires an identifier): this
+    lists and paginates across every advisory matching zero or more exact
+    filters, and reports how many rows matched in total so a caller knows
+    whether to page further.
+
+    Args:
+        product: Product/model/version text contained in the advisory.
+        cve: Exact CVE identifier, such as CVE-2025-13914.
+        advisory_id: Exact vendor advisory ID, such as HPESBNW04987.
+        min_severity: Optional low, medium, high, or critical threshold.
+        source_family: Exact source authority — security_advisories or
+            juniper_security_advisories.
+        since: Inclusive lower-bound date (YYYY-MM-DD) on the advisory's
+            release date.
+        until: Inclusive upper-bound date (YYYY-MM-DD) on the advisory's
+            release date.
+        limit: Rows per page (default 20, range 1-200).
+        offset: Rows to skip for pagination (default 0).
+    """
+    try:
+        return advisory_index.list_advisories(
+            product=product,
+            cve=cve,
+            advisory_id=advisory_id,
+            min_severity=min_severity,
+            source_family=source_family,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def list_lifecycle_events(
+    product: str | None = None,
+    product_sku: str | None = None,
+    replacement_sku: str | None = None,
+    category: str | None = None,
+    event_type: str | None = None,
+    source_family: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List/paginate lifecycle notices with exact filters — no identifier required.
+
+    Companion to `check_product_lifecycle` (which requires a product/SKU
+    text match): this lists and paginates across every lifecycle record
+    matching zero or more exact filters, with the same coverage boundary
+    (see `check_product_lifecycle` and docs/source-lifecycle-coverage.md) —
+    an empty result means "not found in these sources", not "still
+    supported".
+
+    Args:
+        product: Free-text product/model search across the indexed record.
+        product_sku: Exact product SKU in the record's parsed `product_skus`
+            list (case-insensitive).
+        replacement_sku: Exact replacement SKU in the record's parsed
+            `replacement_skus` list (case-insensitive).
+        category: Exact product category, e.g. Switches or Wireless.
+        event_type: Exact lifecycle event type/state, e.g.
+            end-of-sale/end-of-life.
+        source_family: Exact source authority — lifecycle_notices or
+            juniper_lifecycle.
+        since: Inclusive lower-bound date (YYYY-MM-DD) on the published date.
+        until: Inclusive upper-bound date (YYYY-MM-DD) on the published date.
+        limit: Rows per page (default 20, range 1-200).
+        offset: Rows to skip for pagination (default 0).
+    """
+    try:
+        return advisory_index.list_lifecycle_events(
+            product=product,
+            product_sku=product_sku,
+            replacement_sku=replacement_sku,
+            category=category,
+            event_type=event_type,
+            source_family=source_family,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def correlate_advisory_lifecycle(
+    product: str | None = None,
+    advisory_id: str | None = None,
+    cve: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Link advisory product applicability to lifecycle records — exact only.
+
+    For each matching advisory, its listed product/model strings are
+    normalized (case/whitespace only) and compared against every lifecycle
+    record's product/replacement SKUs. A link is reported only on exact
+    normalized equality — this is never a fuzzy or semantic claim. An
+    advisory product with no such match is reported under
+    `unresolved_products`, not silently dropped and not implied "not
+    affected" or "still supported".
+
+    Args:
+        product: Product/model/version text (at least one of product,
+            advisory_id, or cve is required).
+        advisory_id: Exact vendor advisory ID, such as HPESBNW04987.
+        cve: Exact CVE identifier, such as CVE-2025-13914.
+        limit: Advisories to correlate (default 20, range 1-200).
+    """
+    try:
+        return advisory_index.correlate_advisory_lifecycle(
+            product=product,
+            advisory_id=advisory_id,
+            cve=cve,
+            limit=limit,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def rag_diagnostics(include_ingestion_delta: bool = True) -> dict[str, Any]:
+    """Report bounded RAG security/lifecycle index freshness and completeness.
+
+    Combines three read-only, network-free diagnostics scoped to the
+    structured advisory/lifecycle sources (not the full prose corpus):
+
+    - `citation_completeness`: per source authority, what fraction of
+      records have their key citation fields populated (advisory
+      severity/date, lifecycle published date/SKUs, source URL, ID).
+    - `source_freshness`: the latest `source_freshness_result` artifact from
+      `scripts/check_security_lifecycle_drift.py`, reduced to per-status
+      counts (fresh/stale/unavailable/changed/coverage_gap) plus each
+      source's bounded entry. Reported as an error (not "fresh") until that
+      script has produced an artifact.
+    - `ingestion_delta`: new/changed/removed/unchanged content-hash counts
+      for the security-advisory and lifecycle source families versus the
+      current LanceDB docs table — no embedding, no writes.
+
+    Never returns raw source bodies — only counts, statuses, and short
+    bounded strings already stored in the persisted artifacts/tables.
+
+    Args:
+        include_ingestion_delta: set False to skip the slightly slower
+            content-hash diff and return only freshness + citation counts.
+    """
+    result: dict[str, Any] = {}
+    try:
+        result["citation_completeness"] = advisory_index.citation_completeness()
+    except FileNotFoundError as exc:
+        result["citation_completeness"] = {"error": str(exc)}
+
+    try:
+        result["source_freshness"] = rag_diagnostics_client.freshness_summary()
+    except (FileNotFoundError, contracts.ArtifactValidationError) as exc:
+        result["source_freshness"] = {"error": str(exc)}
+
+    if include_ingestion_delta:
+        try:
+            result["ingestion_delta"] = rag_diagnostics_client.ingestion_delta()
+        except (FileNotFoundError, ValueError) as exc:
+            result["ingestion_delta"] = {"error": str(exc)}
+
+    return result
+
+
+_CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
+_ADVISORY_ID_RE = re.compile(r"\bHPESBNW\d{4,}\b", re.IGNORECASE)
+
+
 def _is_api_question(question: str) -> bool:
     tokens = {
         tok.strip(".,:;?!()[]{}\"'").lower()
         for tok in question.replace("/", " ").replace("-", " ").split()
     }
     return bool(tokens & _API_QUERY_HINTS)
+
+
+def _extract_exact_identifier(question: str) -> dict[str, str] | None:
+    """Return an exact lookup_advisory kwarg found in the question, if any.
+
+    Only an unambiguous, literal CVE ID or vendor advisory ID triggers exact
+    routing — never a guessed/extracted product name, which would risk a
+    wrong (fuzzy) filter presented as authoritative.
+    """
+    cve_match = _CVE_RE.search(question)
+    if cve_match:
+        return {"cve": cve_match.group(0).upper()}
+    advisory_match = _ADVISORY_ID_RE.search(question)
+    if advisory_match:
+        return {"advisory_id": advisory_match.group(0).upper()}
+    return None
+
+
+def _summarize_advisory(hit: dict[str, Any]) -> str:
+    """Bounded, non-body summary for an ask_docs answer over lookup_advisory hits."""
+    parts = [str(hit.get("advisory_id") or hit.get("title") or "advisory")]
+    if hit.get("title") and hit.get("advisory_id"):
+        parts.append(f"— {hit['title']}")
+    if hit.get("severity"):
+        parts.append(f"(severity: {hit['severity']})")
+    if hit.get("current_release"):
+        parts.append(f"current release: {hit['current_release']}")
+    text = " ".join(parts)
+    return text[:900] + "…" if len(text) > 900 else text
 
 
 def _citation(hit: dict[str, Any]) -> dict[str, Any]:
@@ -255,12 +487,19 @@ def _citation(hit: dict[str, Any]) -> dict[str, Any]:
         "source_url",
         "advisory_id",
         "severity",
+        "status",
         "current_release",
         "notice_id",
         "published",
+        "category",
+        "event_type",
     ):
         if hit.get(key) is not None:
             citation[key] = hit[key]
+    for key in ("cves", "product_skus", "replacement_skus"):
+        value = hit.get(key)
+        if isinstance(value, list) and value:
+            citation[key] = value[:5]
     return citation
 
 
@@ -274,14 +513,24 @@ def ask_docs(
 
     Token-saving companion to `search_docs`: it returns the shortest useful
     extractive answer plus citations instead of dumping multiple long chunks.
-    API-shaped questions consult `lookup_api` first and fall back to prose RAG
-    when no exact OpenAPI match exists.
+    A question containing a literal CVE ID or vendor advisory ID consults
+    `lookup_advisory` first (exact, never a guessed product filter);
+    otherwise API-shaped questions consult `lookup_api` first; both fall
+    back to prose RAG when no exact match exists.
     """
     k = max(1, min(top_k, 5))
     mode = "search_docs"
     hits: list[dict[str, Any]] = []
 
-    if source is None and _is_api_question(question):
+    if source is None:
+        identifier = _extract_exact_identifier(question)
+        if identifier:
+            advisory_hits = lookup_advisory(limit=k, **identifier)
+            if advisory_hits and "error" not in advisory_hits[0]:
+                mode = "lookup_advisory"
+                hits = advisory_hits
+
+    if not hits and source is None and _is_api_question(question):
         api_hits = lookup_api(question, top_k=k)
         if api_hits and "error" not in api_hits[0]:
             mode = "lookup_api"
@@ -301,8 +550,11 @@ def ask_docs(
         return {"answer": hits[0]["error"], "citations": [], "mode": mode}
 
     top = hits[0]
-    text = str(top.get("text", "")).strip()
-    answer = text[:900] + "…" if len(text) > 900 else text
+    if mode == "lookup_advisory":
+        answer = _summarize_advisory(top)
+    else:
+        text = str(top.get("text", "")).strip()
+        answer = text[:900] + "…" if len(text) > 900 else text
     return {
         "answer": answer,
         "citations": [_citation(hit) for hit in hits[:k]],

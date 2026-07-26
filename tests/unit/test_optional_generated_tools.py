@@ -91,15 +91,17 @@ def test_manifest_counts_are_deterministic():
     assert manifest_operation_count("clearpass") == 816
     assert manifest_operation_count("uxi") == 25
     assert manifest_operation_count("aos8") == 258
-    assert manifest_operation_count("apstra") == 48
+    assert manifest_operation_count("apstra") == 135
 
 
 def test_generated_tools_registered_on_each_backend():
     assert len(clearpass.GENERATED_CLEARPASS_TOOLS) == 815
     assert len(uxi.GENERATED_UXI_TOOLS) == 25
     assert len(aos8.GENERATED_AOS8_TOOLS) == 258
-    # Apstra: 48 reviewed operations, the 2 Auth login endpoints are not tools.
-    assert len(apstra.GENERATED_APSTRA_TOOLS) == 46
+    # Apstra: 135 reviewed operations (v0.7 added resource pools, device/rack
+    # profiles, system agents, telemetry, and blueprint-scoped IBA), the 2 Auth
+    # login endpoints are not tools.
+    assert len(apstra.GENERATED_APSTRA_TOOLS) == 133
     assert "clearpass_token_endpoint_post" not in clearpass.mcp._tool_manager._tools
 
     assert "clearpass_certificate_chain_by_cert_id_chain_get" in clearpass.mcp._tool_manager._tools

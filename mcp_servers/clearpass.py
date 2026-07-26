@@ -1,4 +1,4 @@
-"""MCP server — optional ClearPass backend (14 curated + 815 generated API tools).
+"""MCP server — optional ClearPass backend (30 curated + 815 generated API tools).
 
 The committed manifest contains 816 operations; the unauthenticated `/oauth`
 bootstrap operation is intentionally not model-visible because access and
@@ -32,12 +32,16 @@ from mcp_servers.shared import (
     bound_collection_response,
     bounded_response_payload,
     clamp_limit,
-    platform_write_blocked as _platform_write_blocked,
-    platform_writes_allowed as _platform_writes_allowed,
     redact_sensitive,
     response_payload,
     safe_api_path,
     validate_product_base_url,
+)
+from mcp_servers.shared import (
+    platform_write_blocked as _platform_write_blocked,
+)
+from mcp_servers.shared import (
+    platform_writes_allowed as _platform_writes_allowed,
 )
 
 mcp = FastMCP("clearpass-core")
@@ -676,6 +680,463 @@ async def clearpass_delete_guest(
 
 
 # ---------------------------------------------------------------------------
+# Access Tracker (session monitoring)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_list_access_tracker_sessions(
+    status: str | None = None,
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List ClearPass Access Tracker sessions with optional status filter.
+
+    Uses `GET /api/session` with a bounded page. Pass `status` to filter by
+    ``auth_status`` (e.g. ``FAILED``, ``REJECT``, ``ALLOW``, ``DISCONNECT``);
+    omit to return sessions of any status. For failures-only, prefer
+    `clearpass_list_auth_failures` which defaults to ``FAILED``. Results are
+    compact (username, MAC, NAD, status, reason fields).
+    """
+    safe_limit = clamp_limit(limit, default=25)
+    params: dict[str, Any] = {
+        "sort": "-acctstarttime",
+        "offset": max(0, offset),
+        "limit": safe_limit,
+        "calculate_count": "false",
+    }
+    if status is not None:
+        params["filter"] = json.dumps({"auth_status": status}, separators=(",", ":"))
+    out = await _clearpass_get_request(
+        "/api/session",
+        params,
+        limit=safe_limit,
+        offset=0,
+    )
+    if "data" in out:
+        items = [_compact_session(item) for item in _extract_items(out["data"])]
+        out["data"] = bound_collection_response(items, limit=safe_limit, offset=0)
+        if isinstance(out["data"], dict):
+            if status is not None:
+                out["data"]["filter"] = {"auth_status": status}
+            out["data"]["server_offset"] = max(0, offset)
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_get_access_tracker_session(session_id: str) -> dict[str, Any]:
+    """Get one ClearPass Access Tracker session by ID.
+
+    Uses `GET /api/session/{id}`. Returns compact session fields (username,
+    MAC, NAD, status, reason).
+    """
+    out = await _clearpass_get_request(
+        f"/api/session/{_path_segment(session_id)}",
+        bound=False,
+    )
+    if "data" in out:
+        out["session"] = _compact_session(out.pop("data"))
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+async def clearpass_disconnect_session(
+    session_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Disconnect an active ClearPass session via Change of Authorization.
+
+    Uses `POST /api/session/{id}/disconnect`. Defaults to `dry_run=True`;
+    execution requires `dry_run=False` and `confirm=True`.
+    """
+    return await _clearpass_write_request(
+        "POST",
+        f"/api/session/{_path_segment(session_id)}/disconnect",
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoint management
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_list_endpoints(
+    limit: int = 25,
+    offset: int = 0,
+    status: str | None = None,
+) -> dict[str, Any]:
+    """List ClearPass endpoints with optional status filter and bounded pagination.
+
+    Uses `GET /api/endpoint`. Pass `status` to filter (e.g. ``Known``,
+    ``Unknown``, ``Disabled``). Returns compact profile/status fields.
+    Use `clearpass_get_endpoint_by_mac` for a single MAC lookup.
+    """
+    safe_limit = clamp_limit(limit, default=25)
+    params: dict[str, Any] = {
+        "offset": max(0, offset),
+        "limit": safe_limit,
+        "calculate_count": "false",
+    }
+    if status is not None:
+        params["filter"] = json.dumps({"status": status}, separators=(",", ":"))
+    out = await _clearpass_get_request(
+        "/api/endpoint",
+        params,
+        limit=safe_limit,
+        offset=0,
+    )
+    if "data" in out:
+        items = [_compact_endpoint(item) for item in _extract_items(out["data"])]
+        out["endpoints"] = bound_collection_response(items, limit=safe_limit, offset=0)
+        if isinstance(out["endpoints"], dict):
+            out["endpoints"]["server_offset"] = max(0, offset)
+        del out["data"]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Guest management
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_list_guests(
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List ClearPass guest accounts with bounded pagination.
+
+    Uses `GET /api/guest`. Returns compact guest identity fields.
+    Use `clearpass_find_guest` to search by username, email, or name.
+    """
+    safe_limit = clamp_limit(limit, default=25)
+    params: dict[str, Any] = {
+        "offset": max(0, offset),
+        "limit": safe_limit,
+        "calculate_count": "false",
+    }
+    out = await _clearpass_get_request(
+        "/api/guest",
+        params,
+        limit=safe_limit,
+        offset=0,
+    )
+    if "data" in out:
+        items = [_compact_guest(item) for item in _extract_items(out["data"])]
+        out["guests"] = bound_collection_response(items, limit=safe_limit, offset=0)
+        if isinstance(out["guests"], dict):
+            out["guests"]["server_offset"] = max(0, offset)
+        del out["data"]
+    return out
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def clearpass_create_guest(
+    username: str,
+    password: str | None = None,
+    role_name: str | None = None,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Create a ClearPass guest account.
+
+    Uses `POST /api/guest`. The `password` field is redacted in any dry-run
+    preview or echoed response. Defaults to `dry_run=True`; execution requires
+    `dry_run=False` and `confirm=True`.
+    """
+    body: dict[str, Any] = {"username": username}
+    if password is not None:
+        body["password"] = password
+    if role_name is not None:
+        body["role_name"] = role_name
+    return await _clearpass_write_request(
+        "POST",
+        "/api/guest",
+        body=body,
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Policy (roles, enforcement policies)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_list_roles(
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List ClearPass roles with bounded pagination.
+
+    Uses `GET /api/role`. Returns id and name for each role.
+    """
+    safe_limit = clamp_limit(limit, default=25)
+    params: dict[str, Any] = {
+        "offset": max(0, offset),
+        "limit": safe_limit,
+        "calculate_count": "false",
+    }
+    out = await _clearpass_get_request(
+        "/api/role",
+        params,
+        limit=safe_limit,
+        offset=0,
+    )
+    if "data" in out:
+        items = _extract_items(out["data"])
+        out["roles"] = bound_collection_response(items, limit=safe_limit, offset=0)
+        if isinstance(out["roles"], dict):
+            out["roles"]["server_offset"] = max(0, offset)
+        del out["data"]
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_list_enforcement_policies(
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List ClearPass enforcement policies with bounded pagination.
+
+    Uses `GET /api/enforcement-policy`. Returns id, name, type, and default
+    action for each policy.
+    """
+    safe_limit = clamp_limit(limit, default=25)
+    params: dict[str, Any] = {
+        "offset": max(0, offset),
+        "limit": safe_limit,
+        "calculate_count": "false",
+    }
+    out = await _clearpass_get_request(
+        "/api/enforcement-policy",
+        params,
+        limit=safe_limit,
+        offset=0,
+    )
+    if "data" in out:
+        items = _extract_items(out["data"])
+        out["enforcement_policies"] = bound_collection_response(
+            items, limit=safe_limit, offset=0
+        )
+        if isinstance(out["enforcement_policies"], dict):
+            out["enforcement_policies"]["server_offset"] = max(0, offset)
+        del out["data"]
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_get_enforcement_policy(name: str) -> dict[str, Any]:
+    """Get one ClearPass enforcement policy by name.
+
+    Uses `GET /api/enforcement-policy/name/{name}`.
+    """
+    out = await _clearpass_get_request(
+        f"/api/enforcement-policy/name/{_path_segment(name)}",
+        bound=False,
+    )
+    if "data" in out:
+        out["enforcement_policy"] = out.pop("data")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Service management
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_list_services(
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List ClearPass authentication services with bounded pagination.
+
+    Uses `GET /api/config/service`. Returns id, name, type, status, and
+    order for each service.
+    """
+    safe_limit = clamp_limit(limit, default=25)
+    params: dict[str, Any] = {
+        "offset": max(0, offset),
+        "limit": safe_limit,
+        "calculate_count": "false",
+    }
+    out = await _clearpass_get_request(
+        "/api/config/service",
+        params,
+        limit=safe_limit,
+        offset=0,
+    )
+    if "data" in out:
+        items = _extract_items(out["data"])
+        out["services"] = bound_collection_response(items, limit=safe_limit, offset=0)
+        if isinstance(out["services"], dict):
+            out["services"]["server_offset"] = max(0, offset)
+        del out["data"]
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_get_service(name: str) -> dict[str, Any]:
+    """Get one ClearPass authentication service by name.
+
+    Uses `GET /api/config/service/name/{services_name}`.
+    """
+    out = await _clearpass_get_request(
+        f"/api/config/service/name/{_path_segment(name)}",
+        bound=False,
+    )
+    if "data" in out:
+        out["service"] = out.pop("data")
+    return out
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def clearpass_set_service_enabled(
+    name: str,
+    enabled: bool,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Enable or disable a ClearPass authentication service by name.
+
+    Uses `PATCH /api/config/service/name/{services_name}/enable` or
+    `.../disable` based on `enabled`. Defaults to `dry_run=True`;
+    execution requires `dry_run=False` and `confirm=True`.
+    """
+    action = "enable" if enabled else "disable"
+    return await _clearpass_write_request(
+        "PATCH",
+        f"/api/config/service/name/{_path_segment(name)}/{action}",
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Syslog / export
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_list_syslog_targets(
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List ClearPass syslog targets with bounded pagination.
+
+    Uses `GET /api/syslog-target`. Returns id, host-address, port, and
+    protocol for each syslog target.
+    """
+    safe_limit = clamp_limit(limit, default=25)
+    params: dict[str, Any] = {
+        "offset": max(0, offset),
+        "limit": safe_limit,
+        "calculate_count": "false",
+    }
+    out = await _clearpass_get_request(
+        "/api/syslog-target",
+        params,
+        limit=safe_limit,
+        offset=0,
+    )
+    if "data" in out:
+        items = _extract_items(out["data"])
+        out["syslog_targets"] = bound_collection_response(items, limit=safe_limit, offset=0)
+        if isinstance(out["syslog_targets"], dict):
+            out["syslog_targets"]["server_offset"] = max(0, offset)
+        del out["data"]
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_list_syslog_export_filters(
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List ClearPass syslog export filters with bounded pagination.
+
+    Uses `GET /api/syslog-export-filter`. Returns id, name, and enabled
+    status for each export filter.
+    """
+    safe_limit = clamp_limit(limit, default=25)
+    params: dict[str, Any] = {
+        "offset": max(0, offset),
+        "limit": safe_limit,
+        "calculate_count": "false",
+    }
+    out = await _clearpass_get_request(
+        "/api/syslog-export-filter",
+        params,
+        limit=safe_limit,
+        offset=0,
+    )
+    if "data" in out:
+        items = _extract_items(out["data"])
+        out["syslog_export_filters"] = bound_collection_response(
+            items, limit=safe_limit, offset=0
+        )
+        if isinstance(out["syslog_export_filters"], dict):
+            out["syslog_export_filters"]["server_offset"] = max(0, offset)
+        del out["data"]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic / server info
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_get_server_version() -> dict[str, Any]:
+    """Get the ClearPass server version.
+
+    Uses `GET /api/server/version`. Returns the server version string and
+    any additional metadata reported by the API.
+    """
+    out = await _clearpass_get_request("/api/server/version", bound=False)
+    if "data" in out:
+        out["version"] = out.pop("data")
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def clearpass_list_cluster_servers(
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List ClearPass cluster server nodes with bounded pagination.
+
+    Uses `GET /api/cluster/server`. Returns compact server UUID, name,
+    and role information for each node in the cluster.
+    """
+    safe_limit = clamp_limit(limit, default=25)
+    params: dict[str, Any] = {
+        "offset": max(0, offset),
+        "limit": safe_limit,
+        "calculate_count": "false",
+    }
+    out = await _clearpass_get_request(
+        "/api/cluster/server",
+        params,
+        limit=safe_limit,
+        offset=0,
+    )
+    if "data" in out:
+        items = _extract_items(out["data"])
+        out["cluster_servers"] = bound_collection_response(items, limit=safe_limit, offset=0)
+        if isinstance(out["cluster_servers"], dict):
+            out["cluster_servers"]["server_offset"] = max(0, offset)
+        del out["data"]
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Generated OpenAPI tools (see mcp_servers/openapi_gen). The committed manifest
 # at mcp_servers/openapi_gen/manifests/clearpass.json is a derived operation
 # manifest built from the current ClearPass 6.12.x OpenAPI definitions published
@@ -694,7 +1155,9 @@ def _clearpass_generated_prepare(path: str) -> tuple[str | None, str | None, str
     """Return (base_url, token, error) for a generated ClearPass request path."""
     base_url, token = _clearpass_config()
     if not base_url or not token:
-        return None, None, "ClearPass not configured. Set CLEARPASS_BASE_URL and CLEARPASS_API_TOKEN."
+        return None, None, (
+            "ClearPass not configured. Set CLEARPASS_BASE_URL and CLEARPASS_API_TOKEN."
+        )
     if not path.startswith("/"):
         return None, None, "Generated path must be absolute."
     try:

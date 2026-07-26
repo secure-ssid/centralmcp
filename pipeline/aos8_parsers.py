@@ -15,17 +15,23 @@ from pipeline.aos8_schema import (
     AOS8ApGroup,
     AOS8AuthProfile,
     AOS8AuthServer,
+    AOS8CaptivePortalAuthProfile,
     AOS8Controller,
     AOS8EthernetACL,
     AOS8EthernetACLRule,
+    AOS8KerberosAuthProfile,
     AOS8NetworkDestination,
+    AOS8NTLMAuthProfile,
     AOS8Policy,
     AOS8PolicyRule,
     AOS8Role,
     AOS8Route,
     AOS8ServerGroup,
+    AOS8StatefulDot1xAuthProfile,
     AOS8Vlan,
     AOS8WhitelistRule,
+    AOS8WiredAuthProfile,
+    AOS8WisprAuthProfile,
     AOS8Wlan,
 )
 
@@ -70,6 +76,26 @@ def _optional_dict_items(
     if key not in export:
         return []
     return _dict_items(export.get(key), key, warnings)
+
+
+def _optional_aaa_items(
+    export: dict[str, Any],
+    key: str,
+    warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Like `_optional_dict_items`, but for a section nested one level under
+    `export["aaa"]`: the wired/WISPr/captive-portal/Kerberos/NTLM/stateful
+    802.1X authentication-profile families
+    (`aos8_export_all()` fetches them alongside the existing
+    `aaa.dot1x_auth_profiles`/`aaa.mac_auth_profiles`). An export whose
+    `aaa` section entirely omits this key is the expected, common case for
+    any export predating these families (same "not yet fetched" tolerance
+    as `_optional_dict_items`), not a malformed export.
+    """
+    aaa = export.get("aaa")
+    if not isinstance(aaa, dict) or key not in aaa:
+        return []
+    return _dict_items(aaa.get(key), f"aaa.{key}", warnings)
 
 
 def _first(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -884,6 +910,202 @@ def parse_whitelist_rules(
     return out
 
 
+def parse_wired_auth_profiles(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8WiredAuthProfile]:
+    """Parse the AOS8 singleton wired-auth AAA attach object
+    (`wired_auth_profile`, `aaa.wired_auth_profiles` in
+    `aos8_export_all()`'s export). AOS8 defines this as an unnamed,
+    single-instance object (no `profile-name` in its request-body schema);
+    every parsed instance is identified `"global"` (`"global-{n}"` for any
+    additional entry beyond the first, which is unexpected and always
+    warned about rather than silently dropped or overwritten).
+    """
+    items = _optional_aaa_items(export, "wired_auth_profiles", warnings)
+    consumed = {"wired_aaa_profile", "wired_blacklist_time"}
+    out: list[AOS8WiredAuthProfile] = []
+    for index, item in enumerate(items):
+        if index > 0:
+            _warn(
+                warnings,
+                "export: aaa.wired_auth_profiles has more than one entry; "
+                "AOS8 defines this as a singleton object -- every entry is "
+                "retained for review rather than guessed at.",
+            )
+        out.append(
+            AOS8WiredAuthProfile(
+                aaa_profile=_first(item, ("wired_aaa_profile",)),
+                blacklist_time=item.get("wired_blacklist_time"),
+                settings=_remaining(item, consumed),
+                raw=item,
+            )
+        )
+    return out
+
+
+def parse_stateful_dot1x_auth_profiles(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8StatefulDot1xAuthProfile]:
+    """Parse the AOS8 singleton stateful (captive-portal-style) 802.1X
+    auth config (`stateful_dot1x_auth_profile`,
+    `aaa.stateful_dot1x_auth_profiles` in the export). Same singleton
+    identifier convention as `parse_wired_auth_profiles`.
+    """
+    items = _optional_aaa_items(export, "stateful_dot1x_auth_profiles", warnings)
+    consumed = {
+        "stateful_dot1x_mode",
+        "stateful_dot1x_server_group",
+        "statefuldot1x_default_role",
+        "timeout",
+    }
+    out: list[AOS8StatefulDot1xAuthProfile] = []
+    for index, item in enumerate(items):
+        if index > 0:
+            _warn(
+                warnings,
+                "export: aaa.stateful_dot1x_auth_profiles has more than one "
+                "entry; AOS8 defines this as a singleton object -- every "
+                "entry is retained for review rather than guessed at.",
+            )
+        out.append(
+            AOS8StatefulDot1xAuthProfile(
+                mode=item.get("stateful_dot1x_mode"),
+                server_group=_first(item, ("stateful_dot1x_server_group",)),
+                default_role=_first(item, ("statefuldot1x_default_role",)),
+                timeout=item.get("timeout"),
+                settings=_remaining(item, consumed),
+                raw=item,
+            )
+        )
+    return out
+
+
+def parse_wispr_auth_profiles(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8WisprAuthProfile]:
+    """Parse AOS8 WISPr authentication profiles (`wispr_auth_profile`,
+    `aaa.wispr_auth_profiles` in the export), named by `profile-name`.
+    """
+    items = _optional_aaa_items(export, "wispr_auth_profiles", warnings)
+    consumed = {"profile-name", "name", "wispr_default_role", "wispr_server_group"}
+    out: list[AOS8WisprAuthProfile] = []
+    for index, item in enumerate(items):
+        name = _identifier(
+            item, ("profile-name", "name"), "aaa.wispr_auth_profiles", index, warnings
+        )
+        out.append(
+            AOS8WisprAuthProfile(
+                profile_name=name,
+                default_role=_first(item, ("wispr_default_role",)),
+                server_group=_first(item, ("wispr_server_group",)),
+                settings=_remaining(item, consumed),
+                raw=item,
+            )
+        )
+    return out
+
+
+def parse_cp_auth_profiles(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8CaptivePortalAuthProfile]:
+    """Parse AOS8 captive-portal authentication profiles
+    (`cp_auth_profile`, `aaa.cp_auth_profiles` in the export), named by
+    `profile-name`.
+    """
+    items = _optional_aaa_items(export, "cp_auth_profiles", warnings)
+    consumed = {
+        "profile-name",
+        "name",
+        "cp_default_role",
+        "cp_default_guest_role",
+        "cp_server_group",
+    }
+    out: list[AOS8CaptivePortalAuthProfile] = []
+    for index, item in enumerate(items):
+        name = _identifier(
+            item, ("profile-name", "name"), "aaa.cp_auth_profiles", index, warnings
+        )
+        out.append(
+            AOS8CaptivePortalAuthProfile(
+                profile_name=name,
+                default_role=_first(item, ("cp_default_role",)),
+                default_guest_role=_first(item, ("cp_default_guest_role",)),
+                server_group=_first(item, ("cp_server_group",)),
+                settings=_remaining(item, consumed),
+                raw=item,
+            )
+        )
+    return out
+
+
+def parse_krb_auth_profiles(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8KerberosAuthProfile]:
+    """Parse AOS8 stateful Kerberos authentication profiles
+    (`krb_auth_profile`, `aaa.krb_auth_profiles` in the export), named by
+    `profile-name`.
+    """
+    items = _optional_aaa_items(export, "krb_auth_profiles", warnings)
+    consumed = {"profile-name", "name", "krb_default_role", "krb_server_group", "krb_timeout"}
+    out: list[AOS8KerberosAuthProfile] = []
+    for index, item in enumerate(items):
+        name = _identifier(
+            item, ("profile-name", "name"), "aaa.krb_auth_profiles", index, warnings
+        )
+        out.append(
+            AOS8KerberosAuthProfile(
+                profile_name=name,
+                default_role=_first(item, ("krb_default_role",)),
+                server_group=_first(item, ("krb_server_group",)),
+                timeout=item.get("krb_timeout"),
+                settings=_remaining(item, consumed),
+                raw=item,
+            )
+        )
+    return out
+
+
+def parse_ntlm_auth_profiles(
+    export: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> list[AOS8NTLMAuthProfile]:
+    """Parse AOS8 stateful NTLM authentication profiles
+    (`ntlm_auth_profile`, `aaa.ntlm_auth_profiles` in the export), named
+    by `profile-name`.
+    """
+    items = _optional_aaa_items(export, "ntlm_auth_profiles", warnings)
+    consumed = {
+        "profile-name",
+        "name",
+        "ntlm_default_role",
+        "ntlm_server_group",
+        "ntlm_enable",
+        "ntlm_timeout",
+    }
+    out: list[AOS8NTLMAuthProfile] = []
+    for index, item in enumerate(items):
+        name = _identifier(
+            item, ("profile-name", "name"), "aaa.ntlm_auth_profiles", index, warnings
+        )
+        out.append(
+            AOS8NTLMAuthProfile(
+                profile_name=name,
+                default_role=_first(item, ("ntlm_default_role",)),
+                server_group=_first(item, ("ntlm_server_group",)),
+                enabled=item.get("ntlm_enable"),
+                timeout=item.get("ntlm_timeout"),
+                settings=_remaining(item, consumed),
+                raw=item,
+            )
+        )
+    return out
+
+
 def parse_export_report(
     export: dict[str, Any],
 ) -> tuple[dict[str, list[Any]], list[str]]:
@@ -908,6 +1130,14 @@ def parse_export_report(
         "network_destinations": parse_network_destinations(export, warnings),
         "ethernet_acls": parse_ethernet_acls(export, warnings),
         "whitelist_rules": parse_whitelist_rules(export, warnings),
+        "wired_auth_profiles": parse_wired_auth_profiles(export, warnings),
+        "stateful_dot1x_auth_profiles": parse_stateful_dot1x_auth_profiles(
+            export, warnings
+        ),
+        "wispr_auth_profiles": parse_wispr_auth_profiles(export, warnings),
+        "cp_auth_profiles": parse_cp_auth_profiles(export, warnings),
+        "krb_auth_profiles": parse_krb_auth_profiles(export, warnings),
+        "ntlm_auth_profiles": parse_ntlm_auth_profiles(export, warnings),
     }
     return parsed, sorted(set(warnings))
 
@@ -930,6 +1160,12 @@ def _empty_parse() -> dict[str, list[Any]]:
         "network_destinations": [],
         "ethernet_acls": [],
         "whitelist_rules": [],
+        "wired_auth_profiles": [],
+        "stateful_dot1x_auth_profiles": [],
+        "wispr_auth_profiles": [],
+        "cp_auth_profiles": [],
+        "krb_auth_profiles": [],
+        "ntlm_auth_profiles": [],
     }
 
 

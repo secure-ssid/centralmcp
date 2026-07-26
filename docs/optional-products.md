@@ -17,17 +17,17 @@ python3 scripts/setup_wizard.py --with-products
 
 | Product | Read-only annotated / total | Enables | Required settings | Safety surface |
 |---|---:|---|---|---|
-| ClearPass | 272 / 829 | CPPM 6.12.7 APIs plus verified Insight endpoint and OnGuard activity workflows | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | `/oauth` is excluded; writes dry-run by default |
-| Juniper Mist | 544 / 1,077 | Official 1,050-operation OpenAPI plus NAC, Marvis, inventory, Wired and WAN Assurance, and bounded authenticated regional WebSocket diagnostic-result collection | `MIST_HOST`, `MIST_API_TOKEN`; optional session cookie/CSRF | Writes dry-run by default; diagnostics are distinct from config writes |
-| Apstra | 46 / 68 | Official 6.1 SDK-derived blueprints, tasks, endpoint policies, object policies, topology, and protocols | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional `APSTRA_API_TOKEN` | Current `/api/aaa/login` with older `/api/user/login` fallback |
-| ArubaOS 8 | 129 / 307 | UIDARUBA/X-CSRF/SESSION auth, 258 generated config operations, exhaustive exports, and resumable Classic/New Central migration runs | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN`, optional `AOS8_CLIENT_IP`, optional `AOS8_SESSION_TTL_SECONDS` | Writes dry-run by default and require write-memory to persist |
-| EdgeConnect | 684 / 1,265 | 1,216 generated operations, multipart uploads, fail-closed Swagger compatibility diagnostics, and curated SD-WAN workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` and session overrides | Source artifact is reproducible but must be checked against live Orchestrator Swagger |
+| ClearPass | 285 / 845 | CPPM 6.12.7 APIs plus verified Insight endpoint and OnGuard activity workflows, and (v0.7) typed Access Tracker session search/disconnect, endpoint list, guest list/create, role and enforcement-policy reads, service list/get/enable-disable, syslog target/export-filter reads, and server-version/cluster-server diagnostics | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` | `/oauth` is excluded; writes dry-run by default |
+| Juniper Mist | 547 / 1,080 | Official 1,050-operation OpenAPI plus NAC, Marvis, inventory, Wired and WAN Assurance, bounded authenticated regional WebSocket diagnostic-result collection, and (v0.7) typed org/site SLE assurance summary reads | `MIST_HOST`, `MIST_API_TOKEN`; optional session cookie/CSRF | Writes dry-run by default; diagnostics are distinct from config writes |
+| Apstra | 86 / 155 | Official 6.1 SDK-derived blueprints, tasks, endpoint policies, object policies, topology, and protocols, plus (v0.7) top-level resource pools (IP/IPv6/VLAN/ASN/VNI/integer/device), device/rack profiles, system agents, telemetry, and blueprint-scoped IBA | `APSTRA_BASE_URL`, preferred `APSTRA_USERNAME`/`APSTRA_PASSWORD`, optional `APSTRA_API_TOKEN` | Current `/api/aaa/login` with older `/api/user/login` fallback |
+| ArubaOS 8 | 132 / 311 | UIDARUBA/X-CSRF/SESSION auth, 258 generated config operations, exhaustive exports, and resumable Classic/New Central migration runs | `AOS8_BASE_URL`, preferred `AOS8_USERNAME`/`AOS8_PASSWORD`, optional legacy `AOS8_API_TOKEN`, optional `AOS8_CLIENT_IP`, optional `AOS8_SESSION_TTL_SECONDS` | Writes dry-run by default and require write-memory to persist |
+| EdgeConnect | 687 / 1,270 | 1,216 generated operations, multipart uploads, fail-closed Swagger compatibility diagnostics, curated SD-WAN workflows, and (v0.7) confirmed alarm acknowledge/clear/summary and flow list/stats workflows | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER` and session overrides | Source artifact is reproducible but must be checked against live Orchestrator Swagger |
 | HPE Aruba UXI | 24 / 49 | Current 25-operation API plus OAuth, sensor/agent/group/network/test inventories and documented writes | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` | Generic writes accept only documented method/path pairs; 5 requests/second |
-| Axis Atmos Cloud | 12 / 25 | Reviewed application, connector, tunnel, location, policy, status, and commit workflows from the deterministic SHA-pinned manifest generator | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Writes dry-run by default |
-| **Optional subtotal** | **1,711 / 3,620** | Seven opt-in product backends | Product-specific | Hidden and blocked unless enabled |
+| Axis Atmos Cloud | 12 / 47 | Reviewed application, connector, tunnel, location, policy, status, and commit workflows from the deterministic SHA-pinned manifest generator, plus (v0.7) a read-only split-CRUD contract verification harness and a gated, plan-only disposable-write harness | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Writes dry-run by default |
+| **Optional subtotal** | **1,773 / 3,757** | Seven opt-in product backends | Product-specific | Hidden and blocked unless enabled |
 
-Combined with the Central/GLP/RAG surfaces, the backend catalog contains 3,056
-read-only-annotated tools and 6,545 registered tools. Diagnostic tools are
+Combined with the Central/GLP/RAG surfaces, the backend catalog contains 3,147
+read-only-annotated tools and 6,699 registered tools. Diagnostic tools are
 available in optional read-only mode but are not included in the read-only
 annotation count.
 
@@ -162,6 +162,15 @@ mandatory, runs in reverse candidate order, refuses candidates without a
 verified delete path, and verifies target absence. This is disposable-lab
 cleanup, not general migration rollback.
 
+Future per-platform live-evaluation harnesses should reuse the shared,
+credential-gated live-test configuration in `pipeline/live_test_config.py`
+(`CENTRALMCP_LIVE_TEST_<PLATFORM>_READ`/`_WRITE`, default disabled, never
+inferred from credential presence) and write any evidence file through
+`pipeline/artifact_contracts.py`'s versioned, bounded, redacted
+`live_lifecycle_evidence` contract instead of hand-rolling another ad hoc
+JSON shape -- see
+[Artifact contracts and live-test configuration](artifact-contracts.md).
+
 EdgeConnect API generations differ materially. Run
 `edgeconnect_doctor` against the target Orchestrator before using operational
 tools. The pinned artifact is named for 9.7 but declares API version 7.2.0
@@ -197,6 +206,67 @@ committed pin offline with
 `uv run python scripts/generate_axis_manifest.py --check`. Regenerate from a
 pinned local checkout with `--source-dir PATH`, or use the explicit
 digest-validated network path with `--fetch`.
+
+### v0.7 optional-product depth (`v07-optional-depth`)
+
+Each optional backend gained authoritative-source-grounded depth without
+inventing an endpoint anywhere:
+
+- **Apstra**: the reviewed `aos-sdk-api` 6.1.2.post1 wheel was re-inspected
+  (its `RestResources`/`RestResource` class definitions in
+  `aos/sdk/api/_client.py`) to confirm and add top-level resource pools
+  (IP/IPv6/VLAN/ASN/VNI/integer/device), device/rack profiles
+  (device/linecard/chassis profiles, device-profile digests+clone,
+  rack-types), system agents (agents, manager-config, jobs,
+  profiles+assign), telemetry (service registry, collectors), and
+  blueprint-scoped IBA (dashboards, anomalous-stages, probes,
+  predefined-probes) — see `scripts/_apstra_operations.py`. Where the pinned
+  SDK does not expose a schema for a verb (device-profile digests are
+  read-only; rack-type creation and telemetry-collector deletion have no
+  pinned schema; IBA widgets/import/export and the binary
+  streaming-telemetry-schema endpoint are out of scope), the manifest
+  provenance records an explicit, source-cited coverage gap instead of
+  guessing — see the `coverage_gaps` list in
+  `mcp_servers/openapi_gen/provenance/apstra.json`.
+- **ClearPass**: added typed Access Tracker (session search/get/disconnect),
+  endpoint list, guest list/create, policy (roles, enforcement policies),
+  service (list/get/enable-disable), syslog (targets, export filters), and
+  diagnostic (server version, cluster servers) workflows, all wrapping
+  paths already present in the committed 816-operation manifest.
+- **EdgeConnect**: added confirmed alarm acknowledge/clear/summary and flow
+  list/stats curated workflows on top of the existing fail-closed Swagger
+  compatibility checker (`scripts/generate_edgeconnect_tools.py`,
+  `mcp_servers/openapi_gen/compatibility.py`).
+- **Mist**: added typed org/site SLE assurance summary reads
+  (`mist_get_org_sle_overview`, `mist_get_site_sle_metric_summary`)
+  alongside the existing `mist_get_site_assurance_snapshot` composite and
+  alarm/event tools.
+- **Axis**: added `scripts/evaluate_axis_lab.py`, a three-layer harness —
+  (1) an always-on, offline, no-network static check that every one of the
+  11 Axis entity families, including nested sub-locations, exposes a complete
+  split query/create/update/delete
+  contract; (2) a bounded, opt-in, read-only live check
+  (`CENTRALMCP_LIVE_TEST_AXIS_READ=1`) that calls up to five list queries
+  once; (3) a disposable-write **plan** (opt-in via
+  `CENTRALMCP_LIVE_TEST_AXIS_WRITE=1`, which requires the read gate too) that
+  is only ever generated and hashed, never executed — no create/delete call
+  is ever made with `dry_run=False` by this harness.
+- **UXI**: confirmed the committed 25-operation manifest is already fully
+  exposed (curated + generated tools); the one permanent upstream omission
+  (service tests have no create/update/delete API, only list, and only their
+  group *assignment* is writable) is recorded rather than worked around.
+
+Every backend also gets one bounded, redacted evidence artifact via
+`scripts/build_optional_product_evidence.py`
+(`pipeline/optional_product_evidence.py`), which compares each committed
+manifest against its own git history baseline (adding zero network
+dependency) and republishes each manifest's own documented coverage gaps.
+Add `--platform <name>` to build one backend at a time; omit it to build all
+six. A platform's live-evidence artifact is only added when that platform's
+`CENTRALMCP_LIVE_TEST_<PLATFORM>_READ=1` gate is set and its credentials are
+configured (see [Artifact contracts and live-test configuration](artifact-contracts.md));
+neither is ever enabled automatically. All artifacts land in
+`outputs/optional-product-evidence/` (git-ignored, regenerable).
 
 Generated EdgeConnect multipart upload tools accept file fields as
 `{"filename": "...", "content_base64": "...", "content_type": "..."}` and

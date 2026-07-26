@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO, StringIO
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -54,10 +54,71 @@ JUNIPER_LIFECYCLE_URLS = {
     "apstra-hardware": "https://support.juniper.net/support/eol/product/apstra/",
     "apstra-software": "https://support.juniper.net/support/eol/software/apstra/",
 }
+# Official EOL/EOSL index page. Juniper server-renders its full product/
+# software EOL navigation into this page (a `"label": ..., "url": ...` list
+# embedded in inline JSON, not a public API) -- reviewed on 2026-07-25 to
+# contain exactly the three JUNIPER_LIFECYCLE_URLS entries above under
+# "Juniper Mist Access Points and Mist Edge" and "Juniper Apstra" (hardware
+# and software). discover_juniper_lifecycle_urls() re-derives this set from
+# the official page so a future Juniper-added Mist/Apstra EOL page is
+# discovered automatically instead of requiring a code change to notice it.
+JUNIPER_EOL_INDEX_URL = "https://support.juniper.net/support/eol/"
 JUNIPER_SITEMAPS = (
     "https://supportportal.juniper.net/s/sitemap-topicarticle-1.xml",
     "https://supportportal.juniper.net/s/sitemap-topicarticle-weekly.xml",
 )
+
+# Explicit coverage-gap status for current (post-2020) Aruba-branded HPE
+# Networking product lifecycle notices. Reviewed 2026-07-25:
+#
+# - The HPE Networking End of Sale XML archive (HPE_LIFECYCLE_XML) only
+#   contains legacy HP/H3C/3Com/ProCurve networking gear; none of its 343
+#   entries carry an "Aruba" branded name, and the most recent published
+#   date in the archive is in 2020.
+# - The official Aruba hardware End of Sale PDF (ARUBA_HARDWARE_EOS_PDF) is
+#   a static snapshot whose embedded document metadata records a last
+#   modification date of 2020-05-06; it is not refreshed on a schedule.
+# - Current individual Aruba EoS/EoL bulletins are published to
+#   unpredictable per-announcement URLs under
+#   asp-documents.arubanetworks.com/portals/0/<varying-filename>.pdf with
+#   no official public sitemap, index, or feed enumerating them (confirmed
+#   by web search: e.g. "7010 EoS Announcementv2.pdf",
+#   "AP 303 End of Sale Announcement.pdf" exist but no listing page links
+#   them together). The authenticated Aruba Support Portal (asp.arubanetworks.com)
+#   requires login and is not a reproducible offline/CI source.
+# - HPE does not publish a public RSS/JSON feed for Aruba Networking EOL
+#   notifications (only a generic security-bulletin RSS feed and an opt-in
+#   "Product Alerts" email subscription exist).
+#
+# Rather than scrape an unstable, unofficial, or authentication-gated page
+# and present it as authoritative, this is recorded as an explicit,
+# evidenced coverage gap. Revisit if HPE/Aruba publishes a reproducible
+# machine-readable current lifecycle feed.
+HPE_ARUBA_CURRENT_LIFECYCLE_COVERAGE_GAP = {
+    "source": "hpe_aruba_current_lifecycle",
+    "status": "coverage_gap",
+    "reviewed_at": "2026-07-25",
+    "reason": (
+        "No reliable, reproducible, official machine-readable source exists "
+        "for current (post-2020) Aruba-branded HPE Networking product "
+        "lifecycle notices beyond the historical all-product EOS XML "
+        "archive and the static 2020-05-06 Aruba hardware EOS PDF."
+    ),
+    "evidence": (
+        f"{HPE_LIFECYCLE_XML} contains only legacy HP/H3C/3Com/ProCurve "
+        "entries with no 'Aruba' branded product names and no entries "
+        "published after 2020.",
+        f"{ARUBA_HARDWARE_EOS_PDF} embeds a document ModDate of "
+        "2020-05-06 and is not refreshed on a schedule.",
+        "Current per-product Aruba EoS/EoL bulletins are published to "
+        "unpredictable asp-documents.arubanetworks.com/portals/0/*.pdf "
+        "URLs with no official sitemap, index, or feed enumerating them.",
+        "The authenticated Aruba Support Portal (asp.arubanetworks.com) "
+        "requires login and is not a reproducible offline/CI source.",
+        "HPE publishes no public RSS/JSON feed for Aruba Networking EOL "
+        "notifications.",
+    ),
+}
 
 HEADERS = {
     "User-Agent": "centralmcp-rag-ingestion/1.0 (+https://github.com/secure-ssid/centralmcp)",
@@ -384,24 +445,24 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")[:100] or "notice"
 
 
-def sync_hpe_lifecycle() -> int:
-    LIFECYCLE_DIR.mkdir(parents=True, exist_ok=True)
-    notices = parse_hpe_lifecycle_xml(fetch_text(HPE_LIFECYCLE_XML))
-    for notice in notices:
-        output = LIFECYCLE_DIR / f"{notice['id']}-{_slug(notice['name'])}.md"
-        output.write_text(render_hpe_lifecycle_notice(notice), encoding="utf-8")
-
-    policy_html = fetch_text(HPE_LIFECYCLE_POLICY)
-    policy_text = BeautifulSoup(policy_html, "html.parser").get_text("\n", strip=True)
-    (LIFECYCLE_DIR / "hpe-networking-lifecycle-policy.md").write_text(
-        f"<!-- source: {HPE_LIFECYCLE_POLICY} -->\n\n"
-        "# HPE Networking product lifecycle policy\n\n"
-        f"{policy_text}\n",
-        encoding="utf-8",
+def extract_hpe_lifecycle_policy_text(policy_html: str) -> str:
+    """Extract non-empty text from the official HPE lifecycle policy page."""
+    policy_text = BeautifulSoup(policy_html, "html.parser").get_text(
+        "\n",
+        strip=True,
     )
+    if not policy_text:
+        raise SourceFetchError(
+            "official HPE Networking lifecycle policy contained no text"
+        )
+    return policy_text
+
+
+def extract_aruba_hardware_eos_text(pdf_bytes: bytes) -> str:
+    """Extract non-empty text from the official Aruba hardware EoS PDF."""
     from pypdf import PdfReader
 
-    hardware_pdf = PdfReader(BytesIO(fetch_bytes(ARUBA_HARDWARE_EOS_PDF)))
+    hardware_pdf = PdfReader(BytesIO(pdf_bytes))
     hardware_text = "\n\n".join(
         page.extract_text() or "" for page in hardware_pdf.pages
     ).strip()
@@ -409,6 +470,28 @@ def sync_hpe_lifecycle() -> int:
         raise SourceFetchError(
             "official Aruba hardware End of Sale PDF contained no extractable text"
         )
+    return hardware_text
+
+
+def sync_hpe_lifecycle() -> int:
+    LIFECYCLE_DIR.mkdir(parents=True, exist_ok=True)
+    notices = parse_hpe_lifecycle_xml(fetch_text(HPE_LIFECYCLE_XML))
+    for notice in notices:
+        output = LIFECYCLE_DIR / f"{notice['id']}-{_slug(notice['name'])}.md"
+        output.write_text(render_hpe_lifecycle_notice(notice), encoding="utf-8")
+
+    policy_text = extract_hpe_lifecycle_policy_text(
+        fetch_text(HPE_LIFECYCLE_POLICY)
+    )
+    (LIFECYCLE_DIR / "hpe-networking-lifecycle-policy.md").write_text(
+        f"<!-- source: {HPE_LIFECYCLE_POLICY} -->\n\n"
+        "# HPE Networking product lifecycle policy\n\n"
+        f"{policy_text}\n",
+        encoding="utf-8",
+    )
+    hardware_text = extract_aruba_hardware_eos_text(
+        fetch_bytes(ARUBA_HARDWARE_EOS_PDF)
+    )
     (LIFECYCLE_DIR / "aruba-hardware-end-of-sale-list.md").write_text(
         f"<!-- source: {ARUBA_HARDWARE_EOS_PDF} -->\n\n"
         "# HPE Aruba hardware End of Sale list\n\n"
@@ -445,12 +528,82 @@ def render_juniper_lifecycle_page(page_html: str, source_url: str) -> str:
 
 def sync_juniper_lifecycle() -> int:
     JUNIPER_LIFECYCLE_DIR.mkdir(parents=True, exist_ok=True)
-    for slug, url in JUNIPER_LIFECYCLE_URLS.items():
+    urls = discover_juniper_lifecycle_urls()
+    for slug, url in urls.items():
         output = JUNIPER_LIFECYCLE_DIR / f"{slug}.md"
         output.write_text(
             render_juniper_lifecycle_page(fetch_text(url), url), encoding="utf-8"
         )
-    return len(JUNIPER_LIFECYCLE_URLS)
+    return len(urls)
+
+
+_JUNIPER_EOL_NAV_RE = re.compile(
+    r'"label"\s*:\s*"(?P<label>.*?)"\s*,\s*"url"\s*:\s*"(?P<url>.*?)"', re.DOTALL
+)
+
+
+def parse_juniper_eol_index(page_html: str) -> dict[str, str]:
+    """Return official Mist/Apstra EOL page slug -> absolute URL pairs.
+
+    Juniper's EOL index (JUNIPER_EOL_INDEX_URL) server-renders its full
+    product/software navigation as an inline ``"label": ..., "url": ...``
+    list. This filters that list to Mist/Apstra entries (case-insensitive
+    label match) so newly added official pages are discovered without a
+    code change, while unrelated Juniper product lines are ignored.
+    """
+    matches = list(_JUNIPER_EOL_NAV_RE.finditer(page_html))
+    if not matches:
+        raise SourceFetchError(
+            "no EOL navigation entries found in the Juniper EOL index page"
+        )
+    discovered: dict[str, str] = {}
+    for match in matches:
+        label = html.unescape(match.group("label")).strip()
+        relative_url = match.group("url").replace("\\/", "/").strip()
+        if not label or not relative_url:
+            continue
+        lowered = label.lower()
+        if "mist" not in lowered and "apstra" not in lowered:
+            continue
+        absolute_url = urljoin(JUNIPER_EOL_INDEX_URL, relative_url)
+        expected_host = urlparse(JUNIPER_EOL_INDEX_URL).netloc
+        parsed = urlparse(absolute_url)
+        if parsed.scheme != "https" or parsed.netloc != expected_host:
+            raise SourceFetchError(
+                "Juniper EOL index disclosed a Mist/Apstra URL outside "
+                "the reviewed support.juniper.net host"
+            )
+        # Use the full relative path (not just the label) so two distinct
+        # official pages sharing one label -- e.g. "Juniper Apstra" for
+        # both its hardware and software EOL tables -- never collide on
+        # the same discovered slug.
+        slug = _slug(f"{label}-{relative_url.strip('/')}")
+        discovered[slug] = absolute_url
+    if not discovered:
+        raise SourceFetchError(
+            "Juniper EOL index page no longer lists any Mist or Apstra entries"
+        )
+    return discovered
+
+
+def discover_juniper_lifecycle_urls() -> dict[str, str]:
+    """Merge the reviewed static Mist/Apstra URLs with the official EOL index.
+
+    Preserves the stable, human-reviewed slugs in JUNIPER_LIFECYCLE_URLS
+    for the pages already known, and adds any additional official
+    Mist/Apstra EOL page the index nav discloses, deduplicated by absolute
+    URL (never by slug, since two labels can point at the same page).
+    Returns a deterministically sorted mapping.
+    """
+    discovered = parse_juniper_eol_index(fetch_text(JUNIPER_EOL_INDEX_URL))
+    merged: dict[str, str] = dict(JUNIPER_LIFECYCLE_URLS)
+    seen_urls = set(merged.values())
+    for slug, url in sorted(discovered.items()):
+        if url in seen_urls:
+            continue
+        merged[slug] = url
+        seen_urls.add(url)
+    return dict(sorted(merged.items()))
 
 
 def parse_juniper_security_sitemap(xml_text: str) -> set[str]:

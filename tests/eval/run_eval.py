@@ -61,8 +61,26 @@ def run(k: int, verbose: bool) -> dict:
     check_product_lifecycle = _resolve(
         ("mcp_servers.rag", "check_product_lifecycle")
     )
+    list_advisories = _resolve(("mcp_servers.rag", "list_advisories"))
+    list_lifecycle_events = _resolve(("mcp_servers.rag", "list_lifecycle_events"))
+    correlate_advisory_lifecycle = _resolve(
+        ("mcp_servers.rag", "correlate_advisory_lifecycle")
+    )
+    rag_diagnostics = _resolve(("mcp_servers.rag", "rag_diagnostics"))
     if search_docs is None:
         sys.exit("Could not import mcp_servers.rag.search_docs — is the backend reachable?")
+
+    # Bounded, dict-shaped structured tools (list/correlate/diagnostics) are
+    # scored by treating the *whole* returned dict as one "hit" — the
+    # generic blob-matching below then scans its full JSON, including
+    # nested pagination/correlation fields, rather than requiring a
+    # top-level source/file_path key.
+    _DICT_TOOLS = {
+        "list-advisories": list_advisories,
+        "list-lifecycle": list_lifecycle_events,
+        "correlate": correlate_advisory_lifecycle,
+        "diagnostics": rag_diagnostics,
+    }
 
     questions = load_questions()
     rows = []
@@ -88,6 +106,12 @@ def run(k: int, verbose: bool) -> dict:
                 results = check_product_lifecycle(**q["arguments"])
             except Exception:
                 results = None
+        elif q["type"] in _DICT_TOOLS and _DICT_TOOLS[q["type"]] is not None:
+            try:
+                results = [_DICT_TOOLS[q["type"]](**q.get("arguments", {}))]
+            except Exception as e:
+                rows.append({**_blank(q), "error": str(e)})
+                continue
         if results is None:
             try:
                 results = search_docs(q["query"], top_k=k)
@@ -96,13 +120,30 @@ def run(k: int, verbose: bool) -> dict:
                 continue
 
         hits = results if isinstance(results, list) else [results]
-        # source_hit + mrr
+
+        # A row tagged expect_empty asserts the tool correctly found
+        # *nothing* in these official sources (a fabricated/non-official
+        # non-empty answer would be worse than an honest empty one) — e.g.
+        # the documented current-Aruba-lifecycle coverage gap, or a
+        # deliberately bogus CVE/SKU. Score it on emptiness, not keywords.
+        if q.get("expect_empty"):
+            empty_ok = len(hits) == 0
+            rows.append({
+                "id": q["id"], "type": q["type"],
+                "source_hit": empty_ok, "rank": 1 if empty_ok else 0,
+                "keyword_hit": empty_ok,
+                "mrr": 1.0 if empty_ok else 0.0,
+            })
+            if verbose:
+                print(f"  {q['id']:<28} expect_empty={empty_ok!s}")
+            continue
+
+        # source_hit + mrr — matched against each hit's full JSON dump (not
+        # just source/source_family/file_path) so structured list/correlate/
+        # diagnostics results can be matched on any nested field.
         src_rank = 0
         for i, h in enumerate(hits[:k], start=1):
-            blob = (
-                f"{h.get('source', '')} {h.get('source_family', '')} "
-                f"{h.get('file_path', '')}"
-            ).lower()
+            blob = json.dumps(h, sort_keys=True, default=str).lower()
             if any(s.lower() in blob for s in q.get("expect_sources", [])):
                 src_rank = i
                 break
@@ -130,10 +171,28 @@ def _blank(q):
             "rank": 0, "keyword_hit": False, "mrr": 0.0}
 
 
+# New v0.7 structured tool types (bounded list/correlate/diagnostics) — kept
+# separate from "structured_exact" (advisory/lifecycle lookup) so a stale
+# baseline expectation for the original two types is never silently diluted
+# by averaging in unrelated new types.
+_NEW_STRUCTURED_TYPES = ("list-advisories", "list-lifecycle", "correlate", "diagnostics")
+
+
 def _aggregate(rows: list[dict]) -> dict:
     def frac(pred, subset=None):
         rs = [r for r in rows if (subset is None or r["type"] == subset)]
         return (sum(1 for r in rs if pred(r)) / len(rs)) if rs else 0.0
+
+    present_new = [t for t in _NEW_STRUCTURED_TYPES if any(r["type"] == t for r in rows)]
+    structured_list_exact = (
+        round(
+            sum(frac(lambda r: r["source_hit"] and r["keyword_hit"], t) for t in present_new)
+            / len(present_new),
+            3,
+        )
+        if present_new
+        else 0.0
+    )
 
     summary = {
         "n": len(rows),
@@ -154,6 +213,7 @@ def _aggregate(rows: list[dict]) -> dict:
             3,
         )
         / 2,
+        "structured_list_exact": structured_list_exact,
         "rows": rows,
     }
     return summary
@@ -165,6 +225,7 @@ _DEFAULT_THRESHOLDS = {
     "howto_recall@k": 0.85,
     "api_exact": 0.95,
     "structured_exact": 1.0,
+    "structured_list_exact": 1.0,
 }
 
 
@@ -188,6 +249,7 @@ def main():
     ap.add_argument("--min-howto-recall", type=float, default=None)
     ap.add_argument("--min-api-exact", type=float, default=None)
     ap.add_argument("--min-structured-exact", type=float, default=None)
+    ap.add_argument("--min-structured-list-exact", type=float, default=None)
     args = ap.parse_args()
 
     print(f"Running RAG eval (top_k={args.k})...")
@@ -201,6 +263,7 @@ def main():
         "howto_recall@k",
         "api_exact",
         "structured_exact",
+        "structured_list_exact",
     ):
         print(f"  {key:<16} {summary[key]}")
     if args.json:
@@ -220,6 +283,7 @@ def main():
         "howto_recall@k": args.min_howto_recall,
         "api_exact": args.min_api_exact,
         "structured_exact": args.min_structured_exact,
+        "structured_list_exact": args.min_structured_list_exact,
     }
     thresholds.update({metric: value for metric, value in explicit.items() if value is not None})
     if thresholds:

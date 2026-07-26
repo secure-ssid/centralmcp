@@ -81,6 +81,24 @@ def test_http_router_loads_troubleshooting_version_and_tokenize_keys():
     assert "CENTRALMCP_TOKENIZE_SECRETS" in allowed_keys
 
 
+def test_http_router_loads_observability_env_keys():
+    allowed_keys = _http_helper_allowed_keys()
+
+    assert "CENTRALMCP_AUDIT_LOG" in allowed_keys
+    assert "CENTRALMCP_METRICS" in allowed_keys
+    assert "CENTRALMCP_METRICS_HTTP" in allowed_keys
+
+
+def test_http_router_banner_shows_metrics_and_audit_status():
+    text = _script_text()
+
+    assert "metrics:" in text
+    assert "CENTRALMCP_METRICS" in text
+    assert "CENTRALMCP_METRICS_HTTP" in text
+    assert "audit:" in text
+    assert "CENTRALMCP_AUDIT_LOG" in text
+
+
 def test_http_router_banner_shows_health_endpoints_and_bearer_status():
     text = _script_text()
 

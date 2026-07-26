@@ -50,6 +50,60 @@ def _json_body() -> dict:
     return {"required": True, "content": {"application/json": {"schema": {"type": "object"}}}}
 
 
+def _resource_family(
+    *,
+    path: str,
+    id_arg: str,
+    resource_name: str,
+    operation_prefix: str,
+    tags: list[str],
+    create: bool = True,
+    update: bool = True,
+    delete: bool = True,
+) -> dict:
+    """Build list/get/create/update/delete path entries for one top-level entity.
+
+    Mirrors one ``aos_sdk_api._client.resources(...)`` call: every family here
+    is confirmed (by inspecting the pinned wheel's ``_client.py``) to expose an
+    explicit ``get_schema``/``collection_schema`` (list+get, always present)
+    plus ``post_schema`` (create, only when ``create=True``) and
+    ``put_schema`` (update, only when ``update=True``). ``delete`` defaults to
+    True for entities the pinned SDK models with an explicit create/update
+    schema pair (ordinary user-managed config objects); set it False only
+    where the source has no writable schema at all (e.g. computed digests).
+    """
+    id_param = {
+        "name": id_arg,
+        "in": "path",
+        "required": True,
+        "schema": {"type": "string"},
+        "description": f"Apstra {resource_name} ID.",
+    }
+    item_path = f"{path}/{{{id_arg}}}"
+    collection: dict = {
+        "get": _op(f"list{operation_prefix}", f"List Apstra {resource_name}s.", tags),
+    }
+    if create:
+        collection["post"] = {
+            **_op(f"create{operation_prefix}", f"Create an Apstra {resource_name}.", tags),
+            "requestBody": _json_body(),
+        }
+    item: dict = {
+        "parameters": [id_param],
+        "get": _op(f"get{operation_prefix}", f"Get one Apstra {resource_name} by ID.", tags),
+    }
+    if update:
+        item["put"] = {
+            **_op(f"update{operation_prefix}", f"Update one Apstra {resource_name}.", tags),
+            "requestBody": _json_body(),
+        }
+    if delete:
+        item["delete"] = _op(
+            f"delete{operation_prefix}", f"Delete one Apstra {resource_name}.", tags
+        )
+    return {path: collection, item_path: item}
+
+
 def apstra_spec() -> dict:
     paths = {
         "/api/blueprints": {
@@ -271,6 +325,278 @@ def apstra_spec() -> dict:
             "parameters": [_BP],
             "get": _op("getBlueprintSystemInfo", "Get managed system info for one blueprint."),
         },
+        # ------------------------------------------------------------------
+        # Resource pools (top-level, not blueprint-scoped). Confirmed via
+        # aos_sdk_api._client.py `resources('/resources/<kind>-pools', ...,
+        # post_schema=..., put_schema=...)` -- every one of the seven pool
+        # kinds below has both post_schema and put_schema pinned in the SDK,
+        # so create/update/delete are source-confirmed, not guessed.
+        # ------------------------------------------------------------------
+        **_resource_family(
+            path="/api/resources/ip-pools",
+            id_arg="pool_id",
+            resource_name="IPv4 resource pool",
+            operation_prefix="IpPool",
+            tags=["Resources"],
+        ),
+        **_resource_family(
+            path="/api/resources/ipv6-pools",
+            id_arg="pool_id",
+            resource_name="IPv6 resource pool",
+            operation_prefix="Ipv6Pool",
+            tags=["Resources"],
+        ),
+        **_resource_family(
+            path="/api/resources/vlan-pools",
+            id_arg="pool_id",
+            resource_name="VLAN resource pool",
+            operation_prefix="VlanPool",
+            tags=["Resources"],
+        ),
+        **_resource_family(
+            path="/api/resources/asn-pools",
+            id_arg="pool_id",
+            resource_name="ASN resource pool",
+            operation_prefix="AsnPool",
+            tags=["Resources"],
+        ),
+        **_resource_family(
+            path="/api/resources/vni-pools",
+            id_arg="pool_id",
+            resource_name="VNI resource pool",
+            operation_prefix="VniPool",
+            tags=["Resources"],
+        ),
+        **_resource_family(
+            path="/api/resources/integer-pools",
+            id_arg="pool_id",
+            resource_name="integer resource pool",
+            operation_prefix="IntegerPool",
+            tags=["Resources"],
+        ),
+        **_resource_family(
+            path="/api/resources/device-pools",
+            id_arg="pool_id",
+            resource_name="device resource pool",
+            operation_prefix="DevicePool",
+            tags=["Resources"],
+        ),
+        # ------------------------------------------------------------------
+        # Device / rack profiles (top-level). device-profiles/linecard-
+        # profiles/chassis-profiles each pin post_schema+put_schema in the
+        # SDK (full CRUD confirmed). device-profile-digests pins only
+        # get_schema/collection_schema (computed data -- read-only, no
+        # create/update/delete: explicit coverage gap, not a guess).
+        # rack-types pins get_schema/collection_schema/put_schema but no
+        # post_schema -- update/delete confirmed, create is an explicit,
+        # documented coverage gap (see provenance note).
+        # ------------------------------------------------------------------
+        **_resource_family(
+            path="/api/device-profiles",
+            id_arg="device_profile_id",
+            resource_name="device profile",
+            operation_prefix="DeviceProfile",
+            tags=["DeviceProfiles"],
+        ),
+        "/api/device-profile-clone": {
+            "post": {
+                **_op(
+                    "cloneDeviceProfile",
+                    "Clone an existing Apstra device profile.",
+                    ["DeviceProfiles"],
+                ),
+                "requestBody": _json_body(),
+            },
+        },
+        "/api/device-profile-digests": {
+            "get": _op(
+                "listDeviceProfileDigests",
+                "List Apstra device profile digests (computed, read-only).",
+                ["DeviceProfiles"],
+            ),
+        },
+        "/api/device-profile-digests/{device_profile_id}": {
+            "parameters": [
+                {
+                    "name": "device_profile_id",
+                    "in": "path",
+                    "required": True,
+                    "schema": {"type": "string"},
+                    "description": "Apstra device profile ID.",
+                }
+            ],
+            "get": _op(
+                "getDeviceProfileDigest",
+                "Get one Apstra device profile digest (computed, read-only).",
+                ["DeviceProfiles"],
+            ),
+        },
+        **_resource_family(
+            path="/api/linecard-profiles",
+            id_arg="linecard_profile_id",
+            resource_name="linecard profile",
+            operation_prefix="LinecardProfile",
+            tags=["DeviceProfiles"],
+        ),
+        **_resource_family(
+            path="/api/chassis-profiles",
+            id_arg="chassis_profile_id",
+            resource_name="chassis profile",
+            operation_prefix="ChassisProfile",
+            tags=["DeviceProfiles"],
+        ),
+        **_resource_family(
+            path="/api/design/rack-types",
+            id_arg="rack_type_id",
+            resource_name="rack type",
+            operation_prefix="RackType",
+            tags=["DeviceProfiles"],
+            create=False,
+        ),
+        # ------------------------------------------------------------------
+        # System agents (top-level). system-agents/system-agent-profiles pin
+        # explicit create/update schemas in the SDK -- full CRUD confirmed.
+        # system-agent (singleton manager-config) and system-agent-jobs
+        # expose only the confirmed custom GET/PUT actions modeled by the
+        # SDK, not a generic resource collection.
+        # ------------------------------------------------------------------
+        **_resource_family(
+            path="/api/system-agents",
+            id_arg="agent_id",
+            resource_name="system agent",
+            operation_prefix="SystemAgent",
+            tags=["SystemAgents"],
+        ),
+        "/api/system-agent/manager-config": {
+            "get": _op(
+                "getSystemAgentManagerConfig",
+                "Get the local system agent manager configuration.",
+                ["SystemAgents"],
+            ),
+            "put": {
+                **_op(
+                    "updateSystemAgentManagerConfig",
+                    "Update the local system agent manager configuration.",
+                    ["SystemAgents"],
+                ),
+                "requestBody": _json_body(),
+            },
+        },
+        "/api/system-agent-jobs/pending-jobs": {
+            "get": _op(
+                "listSystemAgentPendingJobs", "List pending system agent jobs.", ["SystemAgents"]
+            ),
+        },
+        "/api/system-agent-jobs/active-jobs": {
+            "get": _op(
+                "listSystemAgentActiveJobs", "List active system agent jobs.", ["SystemAgents"]
+            ),
+        },
+        **_resource_family(
+            path="/api/system-agent-profiles",
+            id_arg="profile_id",
+            resource_name="system agent profile",
+            operation_prefix="SystemAgentProfile",
+            tags=["SystemAgents"],
+        ),
+        "/api/system-agent-profiles/{profile_id}/assign": {
+            "parameters": [
+                {
+                    "name": "profile_id",
+                    "in": "path",
+                    "required": True,
+                    "schema": {"type": "string"},
+                    "description": "Apstra system agent profile ID.",
+                }
+            ],
+            "post": {
+                **_op(
+                    "assignSystemAgentProfile",
+                    "Assign a system agent profile to one or more system agents.",
+                    ["SystemAgents"],
+                ),
+                "requestBody": _json_body(),
+            },
+        },
+        # ------------------------------------------------------------------
+        # Telemetry (top-level). telemetry-service-registry pins explicit
+        # create/update schemas (full CRUD confirmed). telemetry-collectors
+        # pins list/create/get/update schemas (confirmed) but no delete
+        # schema was found for the per-collector resource -- delete is an
+        # explicit, documented coverage gap rather than a guess.
+        # ------------------------------------------------------------------
+        **_resource_family(
+            path="/api/telemetry-service-registry",
+            id_arg="service_name",
+            resource_name="telemetry service registry entry",
+            operation_prefix="TelemetryServiceRegistryEntry",
+            tags=["Telemetry"],
+        ),
+        **_resource_family(
+            path="/api/telemetry/collectors",
+            id_arg="service_name",
+            resource_name="telemetry collector",
+            operation_prefix="TelemetryCollector",
+            tags=["Telemetry"],
+            delete=False,
+        ),
+        # ------------------------------------------------------------------
+        # IBA (Intent-Based Analytics), blueprint-scoped. Confirmed via the
+        # pinned SDK's nested `.../blueprints/{id}/iba/...` classes. Widgets,
+        # dashboard import/export, and predefined-probe instantiation are
+        # deliberately NOT modeled here (documented coverage gap; see
+        # provenance) -- only the plain list/get/create read+create surface
+        # the SDK exposes unconditionally is included.
+        # ------------------------------------------------------------------
+        "/api/blueprints/{blueprint_id}/iba/dashboards": {
+            "parameters": [_BP],
+            "get": _op(
+                "listBlueprintIbaDashboards", "List IBA dashboards in one blueprint.", ["IBA"]
+            ),
+            "post": {
+                **_op(
+                    "createBlueprintIbaDashboard",
+                    "Create an IBA dashboard in one blueprint.",
+                    ["IBA"],
+                ),
+                "requestBody": _json_body(),
+            },
+        },
+        "/api/blueprints/{blueprint_id}/iba/dashboards/{dashboard_id}": {
+            "parameters": [
+                _BP,
+                {
+                    "name": "dashboard_id",
+                    "in": "path",
+                    "required": True,
+                    "schema": {"type": "string"},
+                    "description": "Apstra IBA dashboard ID.",
+                },
+            ],
+            "get": _op(
+                "getBlueprintIbaDashboard", "Get one IBA dashboard in one blueprint.", ["IBA"]
+            ),
+        },
+        "/api/blueprints/{blueprint_id}/iba/anomalous-stages": {
+            "parameters": [_BP],
+            "get": _op(
+                "getBlueprintIbaAnomalousStages",
+                "Get IBA stages with anomalies in one blueprint.",
+                ["IBA"],
+            ),
+        },
+        "/api/blueprints/{blueprint_id}/iba/probes": {
+            "parameters": [_BP],
+            "get": _op("listBlueprintIbaProbes", "List IBA probes in one blueprint.", ["IBA"]),
+        },
+        "/api/blueprints/{blueprint_id}/iba/predefined-probes": {
+            "parameters": [_BP],
+            "get": _op(
+                "listBlueprintIbaPredefinedProbes",
+                "List IBA predefined probe templates available to one blueprint.",
+                ["IBA"],
+            ),
+        },
         # Auth/login endpoints - documented for provenance; tagged Auth and
         # skipped at registration so the AuthToken session layer stays the sole
         # credential path.
@@ -318,10 +644,37 @@ def build_apstra_manifest() -> dict:
             "operation set is reproducible but is not full API coverage."
         ),
         "source_url": "https://pypi.org/project/aos-sdk-api/6.1.2.post1/",
-        "source_sha256": "f7774cda687655ebb7196314be8383b22a0a02890a567567b7aea0b5b3b274e3",
+        "source_sha256": sha,
         "reviewed_operation_count": len(man["operations"]),
         "auth_endpoints_not_registered": ["POST /api/aaa/login", "POST /api/user/login"],
         "auth_model": "AuthToken header session (see mcp_servers/apstra.py _get_apstra_token).",
+        "v07_optional_depth_additions": (
+            "Added top-level resource pools (ip/ipv6/vlan/asn/vni/integer/device), "
+            "device/rack profiles (device/linecard/chassis profiles, device-profile "
+            "digests+clone, rack-types), system agents (agents, manager-config, jobs, "
+            "profiles+assign), telemetry (service registry, collectors), and "
+            "blueprint-scoped IBA (dashboards, anomalous-stages, probes, "
+            "predefined-probes), all confirmed against the same pinned aos-sdk-api "
+            "6.1.2.post1 wheel (`RestResources`/`RestResource` class definitions in "
+            "`aos/sdk/api/_client.py`)."
+        ),
+        "coverage_gaps": [
+            "Device profile digests are computed/read-only (get_schema/"
+            "collection_schema only, no post_schema/put_schema in the pinned SDK): "
+            "no create/update/delete operations are modeled.",
+            "Rack-type creation has no post_schema in the pinned SDK: only "
+            "list/get/update/delete are modeled for rack-types.",
+            "Telemetry collector deletion has no confirmed schema for the "
+            "per-collector resource in the pinned SDK: only list/create/get/update "
+            "are modeled.",
+            "IBA dashboard import/export and widget/predefined-probe instantiation "
+            "are not modeled (the SDK exposes them as bespoke sub-actions rather "
+            "than the plain list/get/create surface reviewed here); only "
+            "dashboards (list/get/create), anomalous-stages, probes, and "
+            "predefined-probes (list) are modeled.",
+            "The streaming-telemetry-schema endpoint returns a binary protobuf "
+            "descriptor, not JSON, and is not modeled as a tool.",
+        ],
     }
     return man
 

@@ -651,6 +651,69 @@ via the same generic `_aos8_collect_object` helper already used for
 blast-radius scoping choice for this increment — see the "Remaining
 blockers" note in the implementing changeset.
 
+### 6.16 Wired / captive-portal / WISPr / Kerberos / NTLM / stateful-802.1X authentication profiles (`v07-aos8-promotion`, new reference-only source families)
+
+Six additional AOS8 authentication-profile object families were added to the
+parser/schema/migration layers by the `v07-aos8-promotion` todo, using local
+manifest evidence (`mcp_servers/openapi_gen/manifests/aos8.json`
+`aos8_post_object_wired_auth_profile`/`_stateful_dot1x_auth_profile`/
+`_wispr_auth_profile`/`_cp_auth_profile`/`_krb_auth_profile`/
+`_ntlm_auth_profile` request-body properties). All six are **normalized and
+emitted as migration candidates on both targets, reference-only** — the same
+pattern established for network destinations/Ethernet ACLs/whitelist rules
+in §6.15: every candidate carries the explicit
+`"no deterministic Classic/New Central adapter mapping exists..."` warning
+(`pipeline/aos8_migration.py` `_REFERENCE_ONLY_WARNING`), and all six
+`object_type` values were added to the single source-of-truth
+`pipeline.aos8_schema.REFERENCE_ONLY_OBJECT_TYPES` set. No adapter code
+changed: both adapters' existing unmapped-`object_type` fallback already
+covers any new reference-only family with zero adapter-layer changes (same
+mechanism §6.15 describes).
+
+| | `wired_auth_profile` | `stateful_dot1x_auth_profile` | `wispr_auth_profile` | `cp_auth_profile` (captive portal) | `krb_auth_profile` (Kerberos) | `ntlm_auth_profile` |
+|---|---|---|---|---|---|---|
+| **Shape** | singleton, unnamed (no `profile-name` in its request-body schema) | singleton, unnamed | named list (`profile-name`) | named list (`profile-name`) | named list (`profile-name`) | named list (`profile-name`) |
+| **Source dataclass** | `AOS8WiredAuthProfile` | `AOS8StatefulDot1xAuthProfile` | `AOS8WisprAuthProfile` | `AOS8CaptivePortalAuthProfile` | `AOS8KerberosAuthProfile` | `AOS8NTLMAuthProfile` (`pipeline/aos8_schema.py`) |
+| **Parser** | `parse_wired_auth_profiles` | `parse_stateful_dot1x_auth_profiles` | `parse_wispr_auth_profiles` | `parse_cp_auth_profiles` | `parse_krb_auth_profiles` | `parse_ntlm_auth_profiles` (`pipeline/aos8_parsers.py`) |
+| **Export location** | `aaa.wired_auth_profiles` | `aaa.stateful_dot1x_auth_profiles` | `aaa.wispr_auth_profiles` | `aaa.cp_auth_profiles` | `aaa.krb_auth_profiles` | `aaa.ntlm_auth_profiles` — all six nested under the export's existing `aaa` section (`mcp_servers.aos8.aos8_export_all()`'s `object_names` map), alongside `dot1x_auth_profiles`/`mac_auth_profiles` |
+| **Identifier** | `"global"` (`"global-{n}"` for an unexpected additional instance — always warned about, never silently dropped/overwritten) | `"global"` (same convention) | `profile-name` | `profile-name` | `profile-name` | `profile-name` |
+| **Candidate payload fields mapped** | `aaa_profile`, `blacklist_time` | `mode`, `server_group`, `default_role`, `timeout` | `name`, `default_role`, `server_group` | `name`, `default_role`, `default_guest_role`, `server_group` | `name`, `default_role`, `server_group`, `timeout` | `name`, `default_role`, `server_group`, `enabled`, `timeout` |
+| **Dependencies** | `aaa_profile:{aaa_profile}` | `server_group:{server_group}`, `role:{default_role}` | `role:{default_role}`, `server_group:{server_group}` | `role:{default_role}`, `role:{default_guest_role}`, `server_group:{server_group}` | `role:{default_role}`, `server_group:{server_group}` | `role:{default_role}`, `server_group:{server_group}` |
+| **Apply order** | 45 (after `aaa_profile`=40, which it references) | 35 (after `role`=30, before `aaa_profile`=40) | 35 | 35 | 35 | 35 |
+| **Unmapped fields** | every other `wired_auth_profile` property retained in `.settings`/`unsupported_fields` with the standard "not mapped" warning | same | `agent_string`, the `wispr_id_*`/`wispr_name_*` location fields, `wispr_load_thresh`, `wispr_max_delay`, `wispr_maxf`, `wispr_min_delay`, `wispr_auth_profile_clone` | redirect/branding/proxy/AUP/session/black-white-list settings, `cp_auth_profile_clone` | `krb_auth_profile_clone` | `ntlm_auth_profile_clone` |
+| **Target method/path** | none — reference-only by design | none | none | none | none | none |
+| **Classification** | **unsupported** on both targets (candidate emitted for dependency tracking/operator review only) | **unsupported** | **unsupported** | **unsupported** | **unsupported** | **unsupported** |
+
+**Promotion status.** None of these six families is promoted beyond
+reference-only by this revision: there is no committed New Central schema
+evidence for a *direct, 1:1* wired/WISPr/captive-portal/Kerberos/NTLM
+authentication-profile conversion target in
+`ingestion/sources/openapi_specs/*.json`. Central NAC's
+`cda-auth-profile.json`/`cda-authz-policy.json` (§6.6) remain the closest
+documented adjacent New Central authentication-policy surface for the
+device-profile families, and `cda-portal-profile.json` (`x-tag-group:
+"Central NAC"`, `/portals` — "customizations to be applied to Central NAC
+portals (e.g. MPSK provisioning, or captive portals)") is a newly-noted,
+directly-relevant adjacent schema specifically for `cp_auth_profile`. None
+of these is treated as an automatic conversion target for any AOS8
+authentication-profile family, including these six — per §6.6, Central NAC
+is an explicit, operator-selected alternative architecture, never
+auto-selected by the migration pipeline, and no adapter mapping to any of
+these three schemas has been written or tested. Promoting any of these six
+rows to `conditional`/`exact` requires, at minimum: (1) a committed target
+schema for the equivalent New Central concept (now closer for
+`cp_auth_profile` given `cda-portal-profile.json`, but still unmapped), or
+(2) a completed, evidenced live create/assign/read-back/delete round trip
+against a real New Central tenant — neither exists today. Per requirement 4
+of this todo, these rows stay explicitly `unsupported`/reference-only with
+precise blockers recorded above rather than guessed at.
+
+**Regression coverage**: `tests/unit/test_aos8_parsers.py` (parser fixtures,
+alias/settings coverage, singleton-instance-count warning, absent-section
+tolerance) and `tests/unit/test_aos8_migration.py`
+(`test_new_auth_profile_families_are_reference_only`,
+per-family payload/dependency/candidate tests, JSON-serialization check).
+
 ## 7. Implementation order (post-matrix)
 
 1. ~~Fix the §3 prerequisites (`mac_server_group` alias, `ldap_admindn` redaction split, server-group name+type dependency keying) in `pipeline/aos8_parsers.py`/`pipeline/aos8_migration.py`~~ — **done** by the `aos8-source-enrichment` todo (§3 items 1, 4, 5, 6); item 2 (WLAN security normalization) source-layer parsing is done, and adapter/target mappings for `open`/`wpa2_personal`/`wpa3_sae`/`enhanced_open` now exist on New Central (and `open`/`wpa3_sae`/WPA3-Enterprise on Classic) per §6.2. **Not all of these are `conditional`**: `open` is `exact` on both targets (implemented and tested end to end); Classic `wpa3_sae` and WPA3-Enterprise, and every New Central secured mode (`wpa2_personal`/`wpa3_sae`/`enhanced_open`), remain `conditional` pending live apply + secret read-back, not yet `exact` (see §6.2 rows/checklist).
@@ -659,6 +722,8 @@ blockers" note in the implementing changeset.
 4. Implement Classic adapter mappers only from official Classic docs/collections or validated live read shapes — never by reusing a New Central payload shape.
 5. Resolve the §2.1 curated-tool-vs-spec divergence for config-assignments before any role/SHARED-object write path is trusted. **This is now the single blocking item for every implemented-but-`blocked` SHARED profile type** (`auth-servers`, `aaa-profile`, `dot1xauth`, `macauth`, `server-groups` — only `roles` has an independently evidenced `profile-type` literal today).
 6. Re-run this matrix's classification for every row that moved from `unsupported`/`conditional`/`blocked` to `exact`, with the exact live evidence cited.
+7. Run `scripts/evaluate_aos8_070_disposable_lifecycle.py --mode write` (§10.2) for each of `auth_server`/`server_group`/`aaa_profile`/`dot1x_auth_profile`/`mac_auth_profile`/`assignment` against a disposable lab scope, and record the read-back-confirmed result back into §6.3/§6.4/§6.5/§6.7/§6.8/§6.9 before reclassifying any of them past `conditional`/`blocked`.
+8. Once at least one real (non-lab) migration run has reached `applied` candidates, exercise `pipeline.aos8_rollback`/`aos8_execute_migration_rollback` (§10.1) against it in a disposable/lab context and record whether the verified inverse operations actually restore prior state, before ever recommending rollback execution as part of a standard operating procedure.
 
 ## 8. Verification and live-lab gate checklist
 
@@ -678,6 +743,8 @@ All of the following remain **read-only discovery and dry-run only**. No real wr
 - [ ] Confirm VRRP VLAN-interface attachment and tracking field mapping against a live Gateway VRRP read before reclassifying VRRP as anything but `unsupported`.
 - [ ] Confirm `aos8_verify_migration_run`'s role config-assignment check (`scope-id`/`device-function`/`profile-type`/`profile-instance` via `list_config_assignments`) against a live read before trusting its `assignment_verification` result -- it is independent of, and can legitimately disagree with, the role object's own field verification.
 - [ ] Record every supported, lossy, blocked, and unverifiable finding back into this matrix (update classifications, never silently widen scope in adapter code without a matching matrix update).
+- [ ] Run `scripts/evaluate_aos8_070_disposable_lifecycle.py --mode read` then `--mode write` (§10.2) against a disposable lab scope for each adapter-mapping-verified kind before reclassifying its row past `conditional`/`blocked`; `route`/`vrrp`/`ap_group` remain refused until a real adapter mapping exists to test in the first place.
+- [ ] Exercise `aos8_plan_migration_rollback`/`aos8_execute_migration_rollback` (§10.1) against a disposable/lab migration run's applied candidates and confirm the verified inverse operations actually restore prior state before ever relying on rollback execution operationally.
 
 ## 9. Related documentation
 
@@ -685,4 +752,122 @@ All of the following remain **read-only discovery and dry-run only**. No real wr
 - [`docs/aos8-live-dryrun-evaluation.md`](aos8-live-dryrun-evaluation.md) — the `aos8-live-dryrun-eval` todo's sanitized, read-only live/fixture-backed evaluation record (2026-07-25) that corrected the two WLAN-security prose staleness findings above.
 - [`docs/capability-gap-matrix.md`](capability-gap-matrix.md) — ranked practical gap #1 ("Broader verified migration mappings and live evaluation") tracks the same scope at a summary level; this file is the detailed contract behind that ranked gap.
 - `pipeline/aos8_schema.py`, `pipeline/aos8_parsers.py`, `pipeline/aos8_migration.py`, `pipeline/aos8_target_adapters.py` — the implementation this matrix constrains.
-- `tests/unit/test_aos8_parsers.py`, `tests/unit/test_aos8_migration.py`, `tests/unit/test_aos8_target_adapters.py`, `tests/unit/test_aos8_migration_orchestrator.py`, `tests/unit/test_aos8_export_and_migration_tool.py` — current regression coverage; every row moved to `exact` in a future revision must gain a corresponding test here.
+- `pipeline/aos8_rollback.py` — the reverse-dependency-order rollback/compensation planning and separately-gated execution module described in §10.
+- `scripts/evaluate_aos8_070_disposable_lifecycle.py` — the credential-gated disposable create/read-back/delete lifecycle harness described in §10.
+- `tests/unit/test_aos8_parsers.py`, `tests/unit/test_aos8_migration.py`, `tests/unit/test_aos8_target_adapters.py`, `tests/unit/test_aos8_migration_orchestrator.py`, `tests/unit/test_aos8_export_and_migration_tool.py`, `tests/unit/test_aos8_rollback.py`, `tests/unit/test_evaluate_aos8_070_disposable_lifecycle.py` — current regression coverage; every row moved to `exact` in a future revision must gain a corresponding test here.
+
+## 10. Rollback/compensation planning and disposable-lifecycle harness (`v07-aos8-promotion`)
+
+### 10.1 Rollback/compensation (`pipeline/aos8_rollback.py`)
+
+Every mapping's `CandidateAction.delete_operations` (New Central) /
+`.rollback_operations` (Classic) has existed as **non-executable reference
+metadata only** since the 0.5 release (§2.1/§5; `_action_preview`'s
+`"rollback_supported": False`, unchanged by this revision — see that
+field's own updated docstring comment). `pipeline/aos8_rollback.py` adds a
+real, **separately gated** execution path on top of that same metadata,
+without changing `BaseCentralTargetAdapter.execute`/`dry_run`'s own
+behavior (they still never invoke rollback themselves) and without adding a
+`"rolled_back"` candidate status to `AOS8MigrationOrchestrator`'s own
+`apply()` state machine (rollback progress is tracked separately, per run,
+in `run["rollback"]["resume_state"]`).
+
+- **Planning** (`plan_rollback`): given a set of previously-*applied*
+  candidates and the exact same `adapter.candidate_action` mapping function
+  used at apply time, orders them in reverse dependency order (a candidate
+  is rolled back before anything it depends on) and classifies each as
+  `supported=True` (a verified `delete_operations`/`rollback_operations`
+  exists) or `supported=False` with an explicit, specific reason. **`vlan`
+  candidates are always refused** — `NewCentralAdapter._map_vlan` sets
+  neither `delete_operations` nor `rollback_operations` — this is the
+  canonical example of requirement 4's "preserve precise blockers" instead
+  of guessing an inverse operation that has never been verified.
+- **Execution** (`execute_rollback_plan`): mirrors
+  `BaseCentralTargetAdapter.execute`'s gates — real (non-dry-run) execution
+  requires `confirmation=True` **and** the dedicated
+  `CENTRALMCP_AOS8_ROLLBACK_WRITES=1` gate (`rollback_writes_enabled()`),
+  a gate distinct from, and required in addition to, whichever ordinary
+  per-target write gate (e.g. `CENTRALMCP_CENTRAL_WRITES`) the caller's
+  `write_invoker` itself already enforces.
+  `RollbackConflictPolicy.ABORT` (default) stops at the first
+  failed/refused step and marks every later step `"not_attempted"`;
+  `CONTINUE` attempts every remaining step regardless. `resume_from`
+  supports resumable, idempotent retries: any step already recorded
+  `"applied"` is skipped (`"already_applied"`) rather than re-issuing a
+  delete.
+- **Orchestrator/MCP integration**: `AOS8MigrationOrchestrator.rollback_plan`/
+  `.execute_rollback` (`pipeline/aos8_migration_orchestrator.py`) load a
+  persisted run's `"applied"` candidates, build the target adapter the same
+  way `apply()` does, and additionally require the ordinary per-target
+  write gate (`adapter.writes_enabled(...)`) *and* the rollback-specific
+  gate before any real execution — three independent authorizations, none
+  sufficient alone. `aos8_plan_migration_rollback` (read-only) and
+  `aos8_execute_migration_rollback` (destructive, `dry_run=True` by
+  default) are the corresponding MCP tools
+  (`mcp_servers/aos8.py`); `execute_rollback` persists only
+  `{candidate_key: "applied"}` resume-state, never a target secret.
+- **Test coverage**: `tests/unit/test_aos8_rollback.py` (pure planning/
+  execution unit tests: ordering, refusal, gates, conflict policy,
+  resumability) and the rollback-specific tests appended to
+  `tests/unit/test_aos8_migration_orchestrator.py` (full create→apply→
+  rollback-plan→execute-rollback round trip against the existing
+  `FakeBackend` harness, including the dual-gate and resume-state checks).
+
+### 10.2 Disposable-write lifecycle harness (`scripts/evaluate_aos8_070_disposable_lifecycle.py`)
+
+A credential-gated, bounded create/read-back/delete round-trip harness for
+the New Central target object families named in requirement 3 of the
+`v07-aos8-promotion` todo: auth server, server group, AAA profile, dot1x
+and MAC-auth device profiles, and role scope+device-function
+config-assignments (`assignment`, reusing the already-verified `role`
+mapping's assignment lifecycle rather than inventing a separate assignment-
+only object family) all have a real, adapter-mapping-backed lifecycle;
+`route`, `vrrp`, and `ap_group` are explicitly refused for both read and (for
+`ap_group`) write, citing their specific evidence gap from §6.11-§6.13,
+rather than being silently skipped.
+
+Gating uses `pipeline/live_test_config.py` (platform `"central"`, since
+every object family here lives on the New Central *target* account that
+`_platform_writes_allowed("central")`/`get_client()` already write to for
+ordinary migration applies — never the AOS8 *source* platform key): `--mode
+status` never makes a network call; `--mode read` requires
+`CENTRALMCP_LIVE_TEST_CENTRAL_READ=1`; `--mode write` additionally requires
+`CENTRALMCP_LIVE_TEST_CENTRAL_WRITE=1`, `--confirm`, and a
+`--lab-prefix`-prefixed `--lab-name`.
+
+A disposable-write round trip deliberately drives the target adapter's
+`CandidateAction.operations`/`.read_back_operation`/`.delete_operations`
+directly instead of going through `adapter.execute(...)`: every one of
+these five object types is *permanently* `status="blocked"` through the
+normal `execute()` path today
+(`BaseCentralTargetAdapter._assignment_write_blocker` — §6.3/§6.4/§6.5/§6.7/
+§6.8 all cite it) specifically pending the disposable
+create/assign/read-back/unassign/delete lab round trip this harness exists
+to perform; the harness *is* that controlled round trip, so it must reach
+past the standing blocker, not be stopped by it.
+
+Per requirement 3, this harness is **implemented for later confirmed
+execution and was not run live by this todo** — every test in
+`tests/unit/test_evaluate_aos8_070_disposable_lifecycle.py` uses a fake
+read/write invoker; no network call, credential, or live tenant was
+touched. `live_test_status("central")` at the time of writing reports
+`read_enabled: false`, `write_enabled: false`. Once a live pass is recorded
+(read-back matched, cleanup confirmed), the corresponding row(s) in §6.3/
+§6.4/§6.5/§6.7/§6.8/§6.9 may be reclassified per §8's checklist — this
+harness does not itself change any classification in this matrix.
+
+### 10.3 Staged/batch apply planning (`aos8_migration_batch_plan`)
+
+`aos8_migration_batch_plan` (`mcp_servers/aos8.py`) is a new, purely
+additive, read-only report tool: it reuses
+`aos8_migration_dependency_plan`'s existing per-`apply_order` stage
+grouping and further chunks each stage into ordered batches of at most
+`batch_size` candidates (default 10) — a staged/incremental review-and-apply
+unit. It never calls `aos8_apply_migration_run` or any write tool itself and
+never changes that tool's own per-candidate, dependency-ordered execution —
+candidates within a stage are still applied individually, in the same
+deterministic `(apply_order, object_type, identifier)` order
+`build_migration_plan` already produces. This satisfies requirement 6
+("staged/batch apply planning and report metadata integration without
+changing default write behavior") as additive planning metadata layered on
+the existing plan, not a change to `apply()`'s default behavior.

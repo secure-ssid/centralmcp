@@ -23,6 +23,7 @@ BACKEND_MODULES = [
     "mcp_servers.aos8",
     "mcp_servers.edgeconnect",
     "mcp_servers.uxi",
+    "mcp_servers.axis",
 ]
 
 

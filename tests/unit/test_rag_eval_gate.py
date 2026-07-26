@@ -39,6 +39,7 @@ def test_threshold_failures_passes_when_metrics_meet_thresholds():
         "howto_recall@k": 0.9,
         "api_exact": 1.0,
         "structured_exact": 1.0,
+        "structured_list_exact": 1.0,
     }
 
     assert run_eval._threshold_failures(summary, run_eval._DEFAULT_THRESHOLDS) == []

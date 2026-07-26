@@ -21,10 +21,10 @@ coordinator (Redis / file lock) and isn't worth the complexity here.
 
 from __future__ import annotations
 
-import logging
 import asyncio
+import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +32,24 @@ logger = logging.getLogger(__name__)
 class RateLimitMiddleware:
     """Token-bucket rate limiter around every tool call."""
 
-    def __init__(self, rate: float = 8.0, burst: int | None = None):
+    def __init__(
+        self,
+        rate: float = 8.0,
+        burst: int | None = None,
+        *,
+        on_wait: Callable[[float], None] | None = None,
+    ):
         """
         Args:
             rate: Steady-state token refill rate, tokens per second.
             burst: Max tokens in the bucket. Defaults to ``max(2, int(rate))``
                 so short bursts up to ``rate`` calls can fire immediately.
+            on_wait: Optional observer invoked with the actual wait duration
+                (seconds) every time a call has to sleep for a token. Unset
+                by default -- existing callers/behavior are unchanged. Never
+                called with argument/result content, only the numeric wait;
+                any exception it raises is logged and swallowed so a broken
+                observer can never break rate limiting itself.
         """
         if rate <= 0:
             raise ValueError(f"rate must be positive, got {rate}")
@@ -46,6 +58,7 @@ class RateLimitMiddleware:
         self._tokens: float = float(self.burst)
         self._last_refill = time.monotonic()
         self._lock = asyncio.Lock()
+        self._on_wait = on_wait
 
     async def _acquire(self) -> None:
         """Wait until a token is available, then consume one."""
@@ -63,6 +76,11 @@ class RateLimitMiddleware:
             # Sleep outside the lock so other calls can refill too.
             logger.debug("rate limit: sleeping %.3fs", wait)
             await asyncio.sleep(wait)
+            if self._on_wait is not None:
+                try:
+                    self._on_wait(wait)
+                except Exception:
+                    logger.warning("rate limit on_wait observer failed", exc_info=True)
 
     async def before_call(self, name: str, arguments: dict[str, Any]) -> None:
         await self._acquire()

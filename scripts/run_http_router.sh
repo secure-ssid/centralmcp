@@ -30,6 +30,9 @@ allowed_keys = {
     "CENTRALMCP_AXIS_WRITES",
     "CENTRALMCP_TROUBLESHOOTING_API_VERSION",
     "CENTRALMCP_TOKENIZE_SECRETS",
+    "CENTRALMCP_AUDIT_LOG",
+    "CENTRALMCP_METRICS",
+    "CENTRALMCP_METRICS_HTTP",
     "CENTRALMCP_ALLOW_WILDCARD_HTTP_ALLOWLIST",
     "CENTRALMCP_ALLOW_INSECURE_HTTP_BINDING",
     "MCP_HOST",
@@ -152,6 +155,8 @@ Starting centralmcp HTTP router
   products: ${CENTRALMCP_PRODUCTS:-none}
   access:   ${CENTRALMCP_PRODUCT_ACCESS}
   bearer:   ${bearer_status}
+  metrics:  ${CENTRALMCP_METRICS:-0} (http snapshot: ${CENTRALMCP_METRICS_HTTP:-0})
+  audit:    ${CENTRALMCP_AUDIT_LOG:-0}
 
 Foreground stop: Ctrl-C
 Background stop:

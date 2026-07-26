@@ -373,6 +373,36 @@ def test_aos8_export_all_fans_out_and_shapes_result(monkeypatch):
                     {"sipaddr": "10.0.0.1", "eipaddr": "10.0.0.50"}
                 ]
             },
+            "/v1/configuration/object/wired_auth_profile": {
+                "wired_auth_profile": [
+                    {"wired_aaa_profile": "corp-aaa", "wired_blacklist_time": 3600}
+                ]
+            },
+            "/v1/configuration/object/stateful_dot1x_auth_profile": {
+                "stateful_dot1x_auth_profile": [
+                    {"stateful_dot1x_server_group": "corp-sg", "timeout": 300}
+                ]
+            },
+            "/v1/configuration/object/wispr_auth_profile": {
+                "wispr_auth_profile": [
+                    {"profile-name": "wispr1", "wispr_default_role": "guest"}
+                ]
+            },
+            "/v1/configuration/object/cp_auth_profile": {
+                "cp_auth_profile": [
+                    {"profile-name": "cp1", "cp_default_role": "guest"}
+                ]
+            },
+            "/v1/configuration/object/krb_auth_profile": {
+                "krb_auth_profile": [
+                    {"profile-name": "krb1", "krb_server_group": "corp-sg"}
+                ]
+            },
+            "/v1/configuration/object/ntlm_auth_profile": {
+                "ntlm_auth_profile": [
+                    {"profile-name": "ntlm1", "ntlm_server_group": "corp-sg"}
+                ]
+            },
         }
     )
     monkeypatch.setenv("AOS8_BASE_URL", "https://mm.example.com")
@@ -389,6 +419,12 @@ def test_aos8_export_all_fans_out_and_shapes_result(monkeypatch):
     assert out["policies"] == [{"name": "corp-acl"}]
     assert out["aaa"]["aaa_profiles"][0]["profile-name"] == "corp-aaa"
     assert out["aaa"]["radius_servers"][0]["rad_server_name"] == "rad1"
+    assert out["aaa"]["wired_auth_profiles"][0]["wired_aaa_profile"] == "corp-aaa"
+    assert out["aaa"]["stateful_dot1x_auth_profiles"][0]["stateful_dot1x_server_group"] == "corp-sg"
+    assert out["aaa"]["wispr_auth_profiles"][0]["profile-name"] == "wispr1"
+    assert out["aaa"]["cp_auth_profiles"][0]["profile-name"] == "cp1"
+    assert out["aaa"]["krb_auth_profiles"][0]["profile-name"] == "krb1"
+    assert out["aaa"]["ntlm_auth_profiles"][0]["profile-name"] == "ntlm1"
     assert out["routing"]["ipv4_routes"][0]["destip"] == "10.20.0.0"
     assert out["routing"]["vrrp"][0]["id"] == 20
     assert out["netdst"][0]["dstname"] == "corp-servers"
@@ -602,3 +638,99 @@ def test_aos8_migration_dependency_plan_rejects_unknown_target_type():
         target_type="not-a-real-target", migration_plan=plan
     )
     assert "error" in out
+
+
+# ---------------------------------------------------------------------------
+# aos8_migration_batch_plan
+# ---------------------------------------------------------------------------
+
+
+def test_aos8_migration_batch_plan_requires_exactly_one_source():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_batch_plan(
+        target_type="new_central",
+        migration_plan=plan,
+        candidates=plan["candidates"]["new_central"],
+    )
+    assert "error" in out
+    out_none = aos8.aos8_migration_batch_plan(target_type="new_central")
+    assert "error" in out_none
+
+
+def test_aos8_migration_batch_plan_never_exceeds_batch_size():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_batch_plan(
+        target_type="new_central", migration_plan=plan, batch_size=2
+    )
+    for batch in out["batches"]:
+        assert len(batch["candidate_keys"]) <= 2
+    assert sum(len(batch["candidate_keys"]) for batch in out["batches"]) == (
+        out["summary"]["total_candidates"]
+    )
+
+
+def test_aos8_migration_batch_plan_never_mixes_apply_order_stages_in_one_batch():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_batch_plan(
+        target_type="new_central", migration_plan=plan, batch_size=100
+    )
+    # With a batch size larger than any single stage's candidate count,
+    # every batch must still correspond to exactly one apply_order stage.
+    stage_orders = {batch["apply_order"] for batch in out["batches"]}
+    assert len(out["batches"]) == len(stage_orders)
+
+
+def test_aos8_migration_batch_plan_batches_are_deterministic_and_reproducible():
+    plan = _build_dependency_plan_fixture()
+    first = aos8.aos8_migration_batch_plan(
+        target_type="new_central", migration_plan=plan, batch_size=2
+    )
+    second = aos8.aos8_migration_batch_plan(
+        target_type="new_central", migration_plan=plan, batch_size=2
+    )
+    assert first["batches"] == second["batches"]
+
+
+def test_aos8_migration_batch_plan_flags_reference_only_and_secret_counts():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_batch_plan(
+        target_type="new_central", migration_plan=plan, batch_size=100
+    )
+    total_reference_only = sum(batch["reference_only_count"] for batch in out["batches"])
+    assert total_reference_only == 3  # network_destination + ethernet_acl + whitelist_rule
+
+
+def test_aos8_migration_batch_plan_bounds_batches_with_limit_offset():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_batch_plan(
+        target_type="new_central", migration_plan=plan, batch_size=1, limit=1, offset=0
+    )
+    assert len(out["batches"]) == 1
+    assert out["limit"] == 1
+
+
+def test_aos8_migration_batch_plan_accepts_raw_candidates_list():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_batch_plan(
+        target_type="new_central", candidates=plan["candidates"]["new_central"]
+    )
+    assert out["summary"]["total_candidates"] == 5
+
+
+def test_aos8_migration_batch_plan_rejects_unknown_target_type():
+    plan = _build_dependency_plan_fixture()
+    out = aos8.aos8_migration_batch_plan(
+        target_type="not-a-real-target", migration_plan=plan
+    )
+    assert "error" in out
+
+
+def test_aos8_migration_batch_plan_does_not_change_apply_default_behavior():
+    """This tool never invokes `aos8_apply_migration_run` or any write
+    tool -- purely additive report metadata over an already-built plan."""
+    import inspect
+
+    source = inspect.getsource(aos8.aos8_migration_batch_plan)
+    assert "self.write_invoker" not in source
+    assert "write_invoker(" not in source
+    assert "aos8_apply_migration_run(" not in source

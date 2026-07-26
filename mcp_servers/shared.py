@@ -596,6 +596,53 @@ def _register_health_routes(mcp_instance: Any) -> None:
     setattr(mcp_instance, _HEALTH_ROUTES_ATTR, True)
 
 
+_METRICS_ROUTE_ATTR = "_centralmcp_metrics_route_installed"
+
+
+def _register_metrics_route(mcp_instance: Any) -> None:
+    """Register an opt-in ``GET /metrics`` bounded-JSON-snapshot route.
+
+    Only called from ``run_server`` when ``CENTRALMCP_METRICS_HTTP`` is
+    explicitly truthy (see below) -- never registered by default, and never
+    reached at all on the stdio transport. This is a ``custom_route`` on the
+    *same* FastMCP/Starlette app as every other HTTP route on this instance,
+    so it automatically inherits the same loopback/allow-list protections
+    (``_configure_http_transport``) and the same bearer-token gate
+    (``BearerAuthASGIMiddleware`` only exempts ``_HEALTH_PATHS``, so
+    ``/metrics`` requires ``Authorization: Bearer <token>`` whenever
+    ``MCP_HTTP_BEARER_TOKEN`` is set) -- no separate auth mechanism to keep in sync.
+
+    The snapshot itself (``MetricsRegistry.snapshot``) contains only
+    bounded, allow-listed labels and numeric aggregates -- never arguments,
+    results, identifiers, or exception messages.
+    """
+    if getattr(mcp_instance, _METRICS_ROUTE_ATTR, False):
+        return
+
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    async def metrics(_request: Request) -> JSONResponse:
+        from mcp_servers._middleware.metrics import get_default_registry, metrics_enabled
+
+        if not metrics_enabled():
+            return JSONResponse(
+                {
+                    "enabled": False,
+                    "hint": "Set CENTRALMCP_METRICS=1 to enable in-process collection.",
+                }
+            )
+        try:
+            snapshot = get_default_registry().snapshot()
+        except Exception:
+            return JSONResponse({"error": "metrics snapshot unavailable"}, status_code=500)
+        snapshot["enabled"] = True
+        return JSONResponse(snapshot)
+
+    mcp_instance.custom_route("/metrics", methods=["GET"], include_in_schema=False)(metrics)
+    setattr(mcp_instance, _METRICS_ROUTE_ATTR, True)
+
+
 def _http_bearer_token() -> str | None:
     """Optional static bearer token protecting the MCP HTTP endpoint.
 
@@ -677,6 +724,12 @@ def run_server(mcp_instance, default_port: int | None = None) -> None:
       ``_configure_http_transport``.
     MCP_HTTP_BEARER_TOKEN: optional shared secret; when set, every HTTP path
       except /livez, /readyz, /healthz requires ``Authorization: Bearer <token>``.
+    CENTRALMCP_METRICS_HTTP: optional; when explicitly truthy, also registers
+      ``GET /metrics`` (a bounded JSON snapshot of in-process metrics -- see
+      ``mcp_servers._middleware.metrics``) under the same auth/allow-list
+      protections as every other HTTP route here. Collection itself is a
+      separate opt-in (``CENTRALMCP_METRICS=1``); with only the HTTP flag
+      set, the route responds with ``{"enabled": false}``.
 
     Always registers /livez, /readyz, /healthz on HTTP transports -- see
     ``_register_health_routes``.
@@ -691,6 +744,8 @@ def run_server(mcp_instance, default_port: int | None = None) -> None:
     port = int(os.environ.get("MCP_PORT", str(fallback_port)))
     _configure_http_transport(mcp_instance, host, port)
     _register_health_routes(mcp_instance)
+    if _env_bool("CENTRALMCP_METRICS_HTTP", False):
+        _register_metrics_route(mcp_instance)
 
     bearer_token = _http_bearer_token()
     if bearer_token is not None and transport != "streamable-http":

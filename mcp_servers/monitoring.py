@@ -1,4 +1,4 @@
-"""MCP server — Aruba Central monitoring and operational health tools (85 tools).
+"""MCP server — Aruba Central monitoring and operational health tools (87 tools).
 
 Covers: sites, devices, clients, alerts, events, scopes, inventory,
 audit logs, device health/trends, switch ports/VLANs/PoE, AP radios/ports,
@@ -11,7 +11,10 @@ manifest-confirmed report create/get/update/delete and report-run
 delete/download-link execution), client onboarding events, best-effort
 notification-rule CRUD, and a guarded read-only `central_get` escape hatch
 for the Monitoring/Notifications/Reporting/Services/Troubleshooting
-registries in the committed Central manifest.
+registries in the committed Central manifest, and a bounded config-health
+remediation workflow (plan_config_health_remediation +
+execute_config_health_remediation: chunked resync with per-chunk read-back
+and partial-failure reporting).
 
 Cursor pagination note: clients/radios/gateways/WLANs/alerts/device-inventory
 paginate with a `next` cursor (not offset) per the v1 reference docs — list
@@ -35,6 +38,7 @@ from mcp_servers.shared import (
     bound_collection_response,
     clamp_limit,
     compact_http_error,
+    enforce_platform_write,
     get_client,
     get_mcp_client,
     maybe_bound,
@@ -1314,14 +1318,175 @@ def list_devices_config_health(
     return get_client().get("/network-config/v1alpha1/config-health/devices", params=params)
 
 
+# Schema max for one devices-resync call (resyncCfgDevices: maxItems 50,
+# manifest-confirmed: ingestion/sources/openapi_specs/configuration-health-
+# b374ik1cmq.json). execute_config_health_remediation chunks larger batches
+# into calls this size.
+_CONFIG_HEALTH_RESYNC_MAX_PER_CALL = 50
+_MAX_REMEDIATION_SERIALS = 200
+
+
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
 def resync_device_config(serial_numbers: list[str]) -> dict[str, Any]:
-    """Trigger full Central config resync for one or more device serial numbers."""
+    """Trigger full Central config resync for one or more device serial numbers.
+
+    Bounded to 50 serials per call — the schema max for
+    POST /network-config/v1alpha1/config-health/devices-resync
+    (resyncCfgDevices: maxItems 50). Use execute_config_health_remediation
+    for a bounded, chunked, dry_run+confirm+gate remediation workflow over
+    more than 50 devices.
+    """
     serials = _require_non_empty_strings(serial_numbers, "serial_numbers")
+    if len(serials) > _CONFIG_HEALTH_RESYNC_MAX_PER_CALL:
+        raise ValueError(
+            f"serial_numbers cannot exceed {_CONFIG_HEALTH_RESYNC_MAX_PER_CALL} entries per "
+            "call (schema max); chunk the request or use "
+            "execute_config_health_remediation"
+        )
     return get_client().post(
         "/network-config/v1alpha1/config-health/devices-resync",
         data={"serials": serials},
     )
+
+
+@mcp.tool(annotations=READ_ONLY)
+def plan_config_health_remediation(
+    limit: int = 50,
+    offset: int = 0,
+    filter: str | None = None,
+    search: str | None = None,
+    max_devices_scanned: int = 50,
+) -> dict[str, Any]:
+    """Build a bounded, read-only config-health remediation plan.
+
+    Calls list_devices_config_health (same limit/offset/filter/search
+    params) to find devices, skips any whose reported status already looks
+    compliant/healthy, then calls get_device_config_issues for up to
+    max_devices_scanned (<=200) of the remaining devices to attach
+    Central's active-issue detail for each. This tool makes no config
+    changes — the only remediation action the config-health API exposes is
+    a full resync, so the plan's next_step points at
+    execute_config_health_remediation with the collected serial numbers.
+    """
+    if not (1 <= max_devices_scanned <= _MAX_REMEDIATION_SERIALS):
+        raise ValueError(f"max_devices_scanned must be between 1 and {_MAX_REMEDIATION_SERIALS}")
+
+    summary = list_devices_config_health(limit=limit, offset=offset, filter=filter, search=search)
+    devices: list[Any] = []
+    if isinstance(summary, dict):
+        raw = summary.get("items")
+        devices = raw if isinstance(raw, list) else summary.get("devices", [])
+        if not isinstance(devices, list):
+            devices = []
+
+    healthy_statuses = {"SYNCHRONIZED", "COMPLIANT", "IN_SYNC", "HEALTHY", "SUCCESS"}
+    unhealthy: list[dict[str, Any]] = []
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        status = str(
+            device.get("configStatus")
+            or device.get("status")
+            or device.get("configHealthStatus")
+            or ""
+        ).upper()
+        if not status:
+            continue
+        if status in healthy_statuses:
+            continue
+        serial = device.get("serial") or device.get("serialNumber") or device.get("serial_number")
+        if not serial:
+            continue
+        unhealthy.append({"serial_number": serial, "status": status or None})
+        if len(unhealthy) >= max_devices_scanned:
+            break
+
+    plan: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for entry in unhealthy:
+        try:
+            issues = get_device_config_issues(entry["serial_number"])
+        except Exception as exc:
+            errors.append(f"{entry['serial_number']}: {exc}")
+            issues = None
+        plan.append({**entry, "recommended_action": "resync_device_config", "issues": issues})
+
+    return {
+        "scanned": len(devices),
+        "unhealthy_count": len(unhealthy),
+        "plan": plan,
+        "errors": errors,
+        "next_step": (
+            "Call execute_config_health_remediation(serial_numbers=[...], dry_run=False, "
+            "confirm=True) with the serial numbers you want to resync."
+        ),
+    }
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+def execute_config_health_remediation(
+    serial_numbers: list[str],
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Execute a bounded config-health remediation: chunked resync + per-chunk read-back.
+
+    serial_numbers (<=200 total) is split into chunks of at most 50 (the
+    devices-resync schema max) and each chunk is resynced independently —
+    one chunk's failure does not abort the remaining chunks (see
+    result["chunks_failed"] and each chunk's "error"). dry_run=True
+    (default) returns the chunk plan with no network calls. Set
+    dry_run=False and confirm=True to execute — requires
+    CENTRALMCP_CENTRAL_WRITES=1 (enabled by default). After each successful
+    chunk, get_device_config_issues is read back for every serial in that
+    chunk; resync is asynchronous device-side, so a read_back entry may
+    still show the prior issue if the device has not yet reported back —
+    re-run plan_config_health_remediation later to confirm resolution.
+    """
+    serials = _require_non_empty_strings(serial_numbers, "serial_numbers")
+    if len(serials) > _MAX_REMEDIATION_SERIALS:
+        raise ValueError(f"serial_numbers cannot exceed {_MAX_REMEDIATION_SERIALS} entries")
+
+    chunks = [
+        serials[i : i + _CONFIG_HEALTH_RESYNC_MAX_PER_CALL]
+        for i in range(0, len(serials), _CONFIG_HEALTH_RESYNC_MAX_PER_CALL)
+    ]
+
+    if dry_run:
+        return {"dry_run": True, "chunks": chunks, "chunk_count": len(chunks)}
+
+    blocked = enforce_platform_write("central", "execute_config_health_remediation")
+    if blocked:
+        return blocked
+    if not confirm:
+        return {
+            "error": "confirm=True is required when dry_run=False.",
+            "dry_run": True, "chunks": chunks, "chunk_count": len(chunks),
+        }
+
+    results: list[dict[str, Any]] = []
+    for chunk in chunks:
+        try:
+            write_result = resync_device_config(chunk)
+        except Exception as exc:
+            results.append({"serials": chunk, "error": str(exc)})
+            continue
+        read_back: dict[str, Any] = {}
+        for serial in chunk:
+            try:
+                read_back[serial] = get_device_config_issues(serial)
+            except Exception as exc:
+                read_back[serial] = {"error": str(exc)}
+        results.append({"serials": chunk, "write_result": write_result, "read_back": read_back})
+
+    succeeded = sum(1 for entry in results if "error" not in entry)
+    return {
+        "dry_run": False,
+        "chunks_attempted": len(chunks),
+        "chunks_succeeded": succeeded,
+        "chunks_failed": len(chunks) - succeeded,
+        "results": results,
+    }
 
 
 @mcp.tool(annotations=READ_ONLY)

@@ -1,4 +1,4 @@
-# centralmcp — RAG Architecture & Source Provenance (updated 2026-07-24)
+# centralmcp — RAG Architecture & Source Provenance (updated 2026-07-25)
 
 **Repo:** https://github.com/secure-ssid/centralmcp
 
@@ -52,7 +52,7 @@ GitHub Actions job checks Aruba registry hashes and whether the Mist source file
 has advanced.
 
 Generated tool manifests extend this provenance model beyond the exact RAG
-index. The current catalog records 6,056 operations across Aruba Central, GLP,
+index. The current catalog records 6,143 operations across Aruba Central, GLP,
 Mist, ClearPass, AOS8, EdgeConnect, UXI, Apstra, and Axis. Central/GLP preserve
 per-source digests, Mist and EdgeConnect have deterministic pinned generators,
 and Apstra records the official `aos-sdk-api==6.1.2.post1` wheel URL and
@@ -177,10 +177,12 @@ released documentation sources. The 5,419 OpenAPI vector records from the
 previous build were intentionally removed because structured API lookup is
 authoritative. The rebuilt SQLite index contains 244 specs, 3,796 endpoints,
 11,293 schemas, 60,568 fields, 102 advisories, and 346 lifecycle records. The
-rebuilt router index contains 6,545 backend tools. Minimal mode keeps this
+rebuilt router index contains 6,699 backend tools. Minimal mode keeps this
 catalog behind the three-tool discovery/dispatch surface; direct-all mode
-exposes 6,548 tools including the router itself. 22/24 eval questions hit at
-rank 1. Standard catalog profiles contain 319 core tools / 2712 read-only optional starters / 5641 read-write optional starters; the complete index also enables generated GLP.
+exposes 6,702 tools including the router itself. The v0.7 31-question eval set
+(expanded from 24 to add structured list/correlate/diagnostics and negative
+coverage-gap questions) hits rank 1 on all 31 questions. Standard catalog
+profiles contain 360 core tools / 2813 read-only optional starters / 5795 read-write optional starters; the complete index also enables generated GLP.
 
 Tracked RAG refresh targets live in `ingestion/source_manifest.json`. The
 current manifest covers 13 rebuild sources, including DevHub, Switching Feature
@@ -198,6 +200,70 @@ from the reference page's `oasPublicUrl` through the ReadMe API registry.
 provenance metadata for the current 239-spec rebuild. With it indexed,
 **`api_exact` = 1.00**: all API-lookup evaluation questions resolve through
 `lookup_api` without prose fallback.
+
+---
+
+## v0.7 — structured security/lifecycle intelligence expansion
+
+Building on the exact `lookup_advisory`/`check_product_lifecycle` tools and
+the content-hash incremental LanceDB ingest, `aruba-rag` (`mcp_servers/rag.py`)
+adds four more tools, all bounded and read-only, backed by
+`pipeline/clients/advisory_index.py` and `pipeline/clients/rag_diagnostics.py`:
+
+- **`list_advisories` / `list_lifecycle_events`** — paginated (`limit` ≤ 200,
+  plus `offset` and a `total_matched` count) listing with exact filters:
+  product/model text, CVE, advisory/notice ID, severity floor, product/
+  replacement SKU, category, event type, an authoritative `source_family`,
+  and a `[since, until]` date range parsed only from known-exact formats
+  (`YYYY-MM-DD` or the legacy notices' `Month D, YYYY`) — an unparseable date
+  excludes a record from range filtering rather than guessing at it. These
+  complement (not replace) the identifier-required `lookup_advisory`/
+  `check_product_lifecycle`.
+- **`correlate_advisory_lifecycle`** — links an advisory's listed products to
+  lifecycle records only on exact, normalized (case/whitespace-only) string
+  equality against `product_skus`/`replacement_skus`. Every response carries
+  an explicit `match_basis` string and separates `exact_matches` from
+  `unresolved_products` — there is no fuzzy/semantic scoring, and an
+  unresolved product is never presented as "not affected". Empirically, real
+  current advisory product names largely do not literally match the legacy
+  lifecycle archive's SKUs, which is expected given the current-Aruba
+  lifecycle coverage gap below — most correlations report `unresolved`
+  rather than a match, and that is the honest answer.
+- **`rag_diagnostics`** — combines three read-only, network-free checks
+  scoped to the security-advisory/lifecycle sources: `citation_completeness`
+  (per `source_family`, what fraction of records have populated
+  `source_url`/severity/date/SKU citation fields — this is how the Juniper
+  Mist/Apstra table-rendered pages' 0%-populated severity/date/SKU fields
+  are surfaced, rather than silently returned as `null`), `source_freshness`
+  (reduces the `source_freshness_result` artifact from
+  `scripts/check_security_lifecycle_drift.py` to per-status counts, via
+  `pipeline/artifact_contracts`), and `ingestion_delta` (new/changed/removed/
+  unchanged content-hash counts versus the current LanceDB `docs` table,
+  reusing `ingestion/ingest_docs.py`'s `collect_points`/`content_hash` purely
+  as a diff — no embedding, no writes).
+- **`ask_docs`** now recognizes a literal CVE ID or vendor advisory ID in the
+  question and routes to `lookup_advisory` first (exact), the same way it
+  already routes API-shaped questions to `lookup_api` — never a guessed
+  product-name filter. Citations were also extended to include `status`,
+  `category`, `event_type`, and bounded (≤5) `cves`/`product_skus`/
+  `replacement_skus` lists when the underlying record has them.
+
+The eval harness (`tests/eval/rag_eval.yaml` + `tests/eval/run_eval.py`) grew
+from 24 to 31 questions to cover this: two negative queries (a nonexistent
+CVE, a nonexistent SKU), one explicit current-Aruba-lifecycle coverage-gap
+check (querying a real current AP model correctly returns empty, not a
+fabricated "still supported"), and one `list-advisories`/`list-lifecycle`/
+`correlate`/`diagnostics` row each. A row tagged `expect_empty: true` scores
+correctness on emptiness rather than keyword/source presence — a fabricated
+non-empty answer to a negative/coverage-gap query is a failure, not a pass.
+A new `structured_list_exact` metric (alongside the existing
+`structured_exact` for `lookup_advisory`/`check_product_lifecycle`) tracks
+the four new structured tool types separately so neither dilutes the other's
+baseline expectation.
+
+See also [Source coverage, freshness, and provenance](../source-lifecycle-coverage.md)
+for the current-Aruba-lifecycle coverage gap this correlation/diagnostics
+work deliberately does not paper over.
 
 ---
 

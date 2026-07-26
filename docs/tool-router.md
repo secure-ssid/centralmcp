@@ -28,6 +28,8 @@ router-call examples.
 | `invoke_read_tool` | read-only | Dispatch only backend tools annotated read-only |
 | `invoke_tool` | destructive | Generic dispatcher for write/destructive tools |
 | Convenience wrappers | mixed | Available only outside `minimal` mode |
+| `plan_tool_workflow` | read-only | Deterministic, catalog-backed dependency/order planner (outside `minimal` mode) |
+| `plan_reconciliation_schedule` | read-only | Plan-only recurring reconciliation schedule builder (outside `minimal` mode) |
 
 `find_tool` results include normalized routing and safety metadata:
 
@@ -112,14 +114,20 @@ If `CENTRALMCP_ROUTER_MODE` is omitted, the router uses `default` mode and inclu
 | Profile | Client-visible / indexed tools |
 |---|---:|
 | Minimal router | 3 client-visible tools |
-| Default router | 12 client-visible tools |
-| Complete backend index | 6,545 tools |
-| Direct-all router | 6,548 client-visible tools |
+| Default router | 14 client-visible tools[^v07-planner] |
+| Complete backend index | 6,699 tools |
+| Direct-all router | 6,704 client-visible tools |
+
+[^v07-planner]: v0.7 added two read-only router-native tools --
+    `plan_tool_workflow` and `plan_reconciliation_schedule` -- raising the
+    default-mode count from 12 to 14. `minimal` mode is unaffected (both
+    planners are gated behind non-`minimal` router mode, same as the other
+    convenience wrappers).
 
 The complete catalog spans nine platform surfaces plus RAG. Its nine generated
-manifests contain 6,056 reproducible operations (6,039 register as active
-generated tools; 506 curated tools bring the executable backend total to
-6,545). Minimal mode does not expose that schema surface to the MCP client; it
+manifests contain 6,143 reproducible operations (6,126 register as active
+generated tools; 573 curated tools bring the executable backend total to
+6,699). Minimal mode does not expose that schema surface to the MCP client; it
 searches the catalog on demand.
 
 ## Toolsets
@@ -179,6 +187,200 @@ for example `CENTRALMCP_AXIS_WRITES=1` for Axis Atmos Cloud alone.
 Set `CENTRALMCP_TOKENIZE_SECRETS=1` to install the optional session-scoped
 secret-tokenization middleware. Plaintext values remain in bounded TTL vaults
 instead of being repeated through model-visible tool arguments and results.
+
+## Observability: audit log and metrics
+
+Both are opt-in and disabled by default -- installing them changes no
+existing tool behavior, and stdio mode never gains unsolicited output.
+
+**Audit log.** Set `CENTRALMCP_AUDIT_LOG=1` to append one redacted JSONL
+record per completed or failed router call to `state/tool-audit.jsonl`
+(or set the variable to an explicit path). Set it to `0`/unset to disable.
+Each record contains:
+
+- `run_id` -- one random id per server process (`run_<hex>`), so records
+  from the same process/deployment can be grouped without ever reusing a
+  client-supplied identifier.
+- `session_id` -- one random id per connected MCP client session
+  (`sess_<hex>`, or `sess_none` outside a session), held in a bounded map
+  so a long-lived process cannot accumulate one entry per historical
+  connection forever.
+- `classification` -- `read` / `write` / `destructive` / `diagnostic` /
+  `unknown`, resolved from the dispatched backend tool's own annotations.
+- `tool`, `target_tool` (the actual backend tool name for
+  `invoke_tool`/`invoke_read_tool` calls), `argument_keys`, a SHA-256
+  `argument_digest` of a redacted copy of the arguments, `outcome`
+  (`success`/`error`/`blocked`/`cancelled`/`timeout`/`exception`/...),
+  `duration_ms`, and `error_type` (never the exception message).
+
+Argument and result *values* are never written -- only key names and a
+digest.
+
+**Metrics.** Set `CENTRALMCP_METRICS=1` to enable bounded, in-process
+request/latency/outcome counters (no external dependency, no network
+call). Counters are bucketed by a capped set of allow-listed labels --
+`tool`, `backend`, `capability`, and `outcome` -- and every collection
+inside the registry has a hard ceiling (`max_series`, default 512 distinct
+`(tool, backend)` pairs; anything beyond that folds into one fixed
+overflow bucket instead of growing without bound). Metrics never read
+argument values, result values, or exception messages.
+
+Set `CENTRALMCP_METRICS_HTTP=1` (in addition to `CENTRALMCP_METRICS=1`,
+and only on the streamable-HTTP transport -- see
+[Streamable HTTP instead of stdio](getting-started.md#streamable-http-instead-of-stdio))
+to also expose a compact JSON snapshot at `GET /metrics`. That route is a
+`custom_route` on the same app as `/livez`/`/readyz`/`/healthz`, so it
+automatically inherits the same loopback/allow-list protections and the
+same `MCP_HTTP_BEARER_TOKEN` gate as every other HTTP path here -- there is
+no separate auth mechanism to keep in sync. With only
+`CENTRALMCP_METRICS_HTTP=1` set (collection itself still off), the route
+responds `{"enabled": false}` instead of an empty-looking snapshot.
+
+## Response budgets and continuation metadata
+
+Every result dispatched through `invoke_tool`/`invoke_read_tool` passes
+through a deterministic, configurable bounding step before it reaches the
+client. Most curated tools already bound their own output (`limit`/`offset`,
+`bound_collection_response`); this is a hard, backend-agnostic ceiling for
+everything else, including generated/optional-product/direct-mode tools.
+
+A response already inside budget is returned byte-for-byte unchanged -- no
+new keys are added -- so this is invisible until a response actually needs
+clipping. Error/blocked dicts (an `error` key present) and plain scalars are
+never touched, regardless of size.
+
+When clipping is required, the response gains the existing `_pagination`
+shape (from `bound_collection_response`) plus a `_response_bounds` marker:
+
+```json
+{
+  "items": ["...bounded..."],
+  "_pagination": {"limit": 25, "offset": 0, "truncated": true, "total": 400},
+  "_response_bounds": {
+    "truncated": true,
+    "reason": "item_budget",
+    "item_limit": 25,
+    "byte_limit": 200000
+  }
+}
+```
+
+`reason` is `item_budget`, `byte_budget`, or `item_budget+byte_budget`. If a
+result has nothing sliceable (e.g. one oversized scalar/nested field) and
+still exceeds the byte budget, the response falls back to a bounded text
+`preview` instead of an over-budget payload.
+
+Configure the two budgets with environment variables (both optional; invalid
+or missing values fall back to the defaults below rather than raising):
+
+| Variable | Default | Notes |
+|---|---:|---|
+| `CENTRALMCP_ROUTER_RESPONSE_MAX_ITEMS` | 200 | Range 1-200 |
+| `CENTRALMCP_ROUTER_RESPONSE_MAX_BYTES` | 200,000 | Minimum 1024 |
+
+### Continuation cursors (`invoke_read_tool` only)
+
+When a clipped response has more data remaining, it also gains an opaque
+`next_cursor` string plus a `resumable: true` flag inside
+`_response_bounds`. Pass that value back as the optional `cursor` argument
+on a **repeated call to the same tool with the same arguments** to fetch
+the next page:
+
+```json
+{
+  "items": ["...page 1..."],
+  "_pagination": {"limit": 40, "offset": 0, "truncated": true, "total": 100},
+  "_response_bounds": {"truncated": true, "reason": "item_budget", "item_limit": 40, "byte_limit": 200000, "resumable": true},
+  "next_cursor": "eyJ2IjoxLCJl...",
+  "cursor_expires_in_seconds": 900
+}
+```
+
+```
+invoke_read_tool("list_devices", {"site_id": "hq"}, cursor="eyJ2IjoxLCJl...")
+```
+
+Cursor semantics:
+
+- **`invoke_read_tool` only** -- the generic, destructive-annotated
+  `invoke_tool` has no `cursor` parameter and never emits or accepts one,
+  even when dispatching a capability-`read` tool. Only capability `read`
+  tools can produce or consume a cursor; `invoke_read_tool` already refuses
+  write/destructive tools outright before any cursor logic runs.
+- **Opaque and integrity-protected** -- the token is HMAC-signed with a
+  random key generated once per server process. It carries only a version,
+  an expiry, the next offset, and short digests binding it to the exact
+  tool name and canonical (null-stripped) arguments -- never raw arguments,
+  identifiers, credentials, or result data.
+- **Process-local** -- a server restart generates a new key, so every
+  outstanding cursor from before the restart is rejected. A cursor is also
+  rejected if it is malformed, tampered, expired (`CENTRALMCP_ROUTER_CURSOR_TTL_SECONDS`,
+  default 900s, clamped to 30-3600s), reused against a different tool, or
+  reused against different arguments. Any rejection returns
+  `{"error": ..., "tool": ..., "status": "invalid_cursor"}` **without**
+  calling the backend.
+- **No endless loops** -- if a single item can never fit the byte budget
+  (e.g. one huge blob), the response is marked `"resumable": false` with a
+  `resumable_reason` instead of emitting a cursor that would just re-fetch
+  the same oversized item forever.
+
+## Router automation planning
+
+Two additional read-only, plan-only tools (outside `minimal` mode) support
+NOC dependency planning and recurring reconciliation without ever executing
+a tool themselves.
+
+### `plan_tool_workflow`
+
+Builds a deterministic dependency/order plan across the enabled backend
+catalog. Steps reference an exact `tool` name (resolved only via an exact
+catalog match -- never guessed) or a free-text `hint` resolved through the
+same bounded keyword search `find_tool` uses (no semantic/embedding
+guessing). Unresolved or ambiguous references are reported explicitly, never
+silently dropped or inferred.
+
+```text
+plan_tool_workflow([
+  {"id": "discover", "hint": "list devices"},
+  {"id": "inspect", "hint": "find a specific device", "depends_on": ["discover"]},
+])
+```
+
+Returns resolved step metadata, a topological `order` (only when every step
+resolved cleanly and the dependency graph is acyclic -- `null` otherwise,
+alongside explicit `cycles`/`unresolved_step_ids`/`unresolved_dependencies`),
+and an `artifact` payload (`router_dependency_plan`, see
+[artifact-contracts.md](artifact-contracts.md)) ready for
+`pipeline.artifact_contracts.write_artifact` -- this tool never writes to
+disk itself. `plan_tool_workflow` never calls `invoke_tool`/
+`invoke_read_tool`; it only discovers and orders.
+
+### `plan_reconciliation_schedule`
+
+Builds a bounded, read-only recurring-check specification: a validated
+cadence (`"hourly"`/`"daily"`/`"weekly"`, an `interval_minutes` object, or a
+structurally-validated 5-field `cron` object) plus a bounded set of
+currently enabled read/diagnostic tools. Write and destructive tools are
+always excluded from the schedulable `entries` list (reported in `excluded`
+with a reason), regardless of whether they were explicitly requested.
+
+```text
+plan_reconciliation_schedule("daily", platforms=["central"], max_entries=25)
+```
+
+`dry_run` is always `true` in both the response and the resulting
+`router_reconciliation_plan` artifact. This tool never creates an OS timer,
+cron job, or GitHub Actions schedule, and never dispatches a tool -- it only
+produces a plan specification.
+
+### Generating versioned report artifacts
+
+`scripts/generate_router_automation_report.py` runs a small fixed example
+through both planners against the currently enabled catalog and writes their
+artifact payloads to `outputs/router-automation-dependency-plan.json` and
+`outputs/router-automation-reconciliation-plan.json` via
+`pipeline.artifact_contracts.write_artifact` (redacted, bounded, atomically
+written, SHA-256-manifested). It never calls a live backend API.
 
 ## Why `invoke_tool` is destructive
 

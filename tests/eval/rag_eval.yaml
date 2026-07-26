@@ -1,11 +1,23 @@
 # RAG evaluation set for centralmcp — run before/after any backend or retrieval change.
-# type: api-lookup  -> expects an exact field/enum/endpoint (ideally via lookup_api over the specs)
-#       howto       -> expects a relevant prose chunk (via search_docs)
-#       advisory    -> exact structured lookup via lookup_advisory
-#       lifecycle   -> exact structured lookup via check_product_lifecycle
-# expect_sources    -> substrings; at least one must appear in a top-k result's file_path/source
+# type: api-lookup      -> expects an exact field/enum/endpoint (ideally via lookup_api over the specs)
+#       howto           -> expects a relevant prose chunk (via search_docs)
+#       advisory        -> exact structured lookup via lookup_advisory
+#       lifecycle       -> exact structured lookup via check_product_lifecycle
+#       list-advisories -> bounded/paginated exact filtering via list_advisories
+#       list-lifecycle  -> bounded/paginated exact filtering via list_lifecycle_events
+#       correlate       -> exact-only advisory<->lifecycle linking via correlate_advisory_lifecycle
+#       diagnostics     -> bounded RAG index diagnostics via rag_diagnostics
+# expect_sources    -> substrings; at least one must appear in a top-k result's file_path/source.
+#                       For the four structured types above, the whole returned
+#                       dict is treated as one hit, so this may match any
+#                       nested field (e.g. a pagination or correlation key),
+#                       not just file_path/source.
 # expect_keywords   -> substrings; at least one must appear in the returned text (case-insensitive)
-# See docs/architecture/RAG-ARCHITECTURE.md.
+# expect_empty      -> true asserts the tool correctly found *nothing* in these
+#                       official sources (negative query / documented
+#                       coverage gap) — a non-empty fabricated answer would be
+#                       scored as a failure, not a fabricated pass.
+# See docs/architecture/RAG-ARCHITECTURE.md and docs/source-lifecycle-coverage.md.
 
 questions:
   - id: dot1x-auth-type
@@ -159,3 +171,64 @@ questions:
       product: "HP 7500 Switch Chassis"
     expect_sources: ["lifecycle_notices"]
     expect_keywords: ["HP 7500", "Product SKU"]
+
+  - id: negative-advisory-bogus-cve
+    type: advisory
+    query: "Look up advisory for a CVE that does not exist"
+    arguments:
+      cve: "CVE-1999-00001"
+    expect_empty: true
+
+  - id: negative-lifecycle-bogus-sku
+    type: lifecycle
+    query: "Find lifecycle records for a SKU that was never issued"
+    arguments:
+      product: "ZZZ-NONEXISTENT-SKU-000"
+    expect_empty: true
+
+  - id: lifecycle-current-aruba-coverage-gap
+    type: lifecycle
+    query: "Show the lifecycle record for the Aruba AP-635 access point"
+    arguments:
+      product: "AP-635"
+    # AP-635 is a current (post-2020) Aruba-branded AP. There is no
+    # reliable official machine-readable current-Aruba-lifecycle source
+    # (docs/source-lifecycle-coverage.md); an empty result here is the
+    # correct, honest answer -- not "still supported".
+    expect_empty: true
+
+  - id: list-advisories-critical-security-family
+    type: list-advisories
+    query: "List critical HPE Aruba Networking security advisories"
+    arguments:
+      source_family: "security_advisories"
+      min_severity: "critical"
+      limit: 5
+    expect_sources: ["security_advisories"]
+    expect_keywords: ["Critical", "total_matched"]
+
+  - id: list-lifecycle-switches-category
+    type: list-lifecycle
+    query: "List lifecycle notices in the Switches category"
+    arguments:
+      category: "Switches"
+      source_family: "lifecycle_notices"
+      limit: 3
+    expect_sources: ["lifecycle_notices"]
+    expect_keywords: ["Switches"]
+
+  - id: correlate-apstra-cve-exact-labeling
+    type: correlate
+    query: "Correlate the Apstra SSH host-key CVE with any lifecycle records"
+    arguments:
+      cve: "CVE-2025-13914"
+    expect_sources: ["not a fuzzy or semantic match"]
+    expect_keywords: ["match_basis", "unresolved_products"]
+
+  - id: diagnostics-citation-completeness
+    type: diagnostics
+    query: "Report RAG advisory/lifecycle citation completeness"
+    arguments:
+      include_ingestion_delta: false
+    expect_sources: ["citation_completeness"]
+    expect_keywords: ["security_advisories", "lifecycle_events"]

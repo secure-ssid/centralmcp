@@ -14,12 +14,12 @@ The ArubaOS 8-to-Classic/New Central migration rows below are gated by the autho
 
 | Surface | Tool count |
 |---|---:|
-| Central generated + curated configuration, monitoring, NAC, and operations | 1,573 |
-| GreenLake Platform | 966 |
-| RAG/OpenAPI | 3 |
-| Optional products, read-only annotated | 1,711 |
-| Optional products, guarded writes included | 3,620 |
-| **Complete backend catalog** | **6,545** |
+| Central generated + curated configuration, monitoring, NAC, and operations | 1,924 |
+| GreenLake Platform | 1,009 |
+| RAG/OpenAPI | 9 |
+| Optional products, read-only annotated | 1,773 |
+| Optional products, guarded writes included | 3,757 |
+| **Complete backend catalog** | **6,699** |
 
 ## Promotion rule
 
@@ -47,6 +47,12 @@ Promote a generic GET pattern to a typed tool when it is:
 | Events, webhooks, and deliveries | `list_glp_event_webhooks` / `get_glp_event_webhook` / `list_glp_event_subscriptions` / `list_glp_webhook_deliveries` | Bounded event subscription, webhook, and delivery-history reads |
 | Locations and tags | `list_glp_locations` / `get_glp_location` / `reverse_geocode_glp_location` / `list_glp_location_tags` / `get_glp_location_tags` / `list_glp_tags` / `list_glp_tag_resources` | Location inventory, reverse geocoding, and tag/resource association reads |
 | SCIM users, groups, and membership | `list_glp_scim_users` / `get_glp_scim_user` / `list_glp_scim_groups` / `get_glp_scim_group` / `list_glp_scim_group_users` / `list_glp_scim_user_groups` | Bounded SCIM identity reads for users, groups, and group/user membership |
+| Compute Ops Management inventory and jobs | `list_glp_compute_servers` / `get_glp_compute_server` / `list_glp_compute_server_alerts` / `list_glp_compute_groups` / `list_glp_compute_jobs` | Region-aware (`GLP_GENERATED_REGION`); iLO-managed server inventory, per-server alerts, groups, and firmware/config job status |
+| Storage Fleet and Block Storage inventory | `list_glp_storage_systems` / `get_glp_storage_system` / `list_glp_storage_system_types` / `list_glp_block_storage_volumes` / `get_glp_block_storage_volume` / `list_glp_block_storage_hosts` | Region-aware (data.cloud.hpe.com hosts); cross-device-type storage system, volume, and host-initiator inventory |
+| Virtualization inventory and guarded VM power | `list_glp_virtual_machines` / `get_glp_virtual_machine` / `list_glp_hypervisor_managers` / `list_glp_hypervisor_clusters` / `list_glp_datastores` / `set_glp_virtual_machine_power` / `set_glp_virtual_machines_power_bulk` | VM/hypervisor/datastore inventory; guarded power-on/off with dry-run/confirm, plus a bounded (max 20) bulk composite with per-VM partial-failure reporting |
+| Backup & Recovery status and guarded run-now | `list_glp_backup_protection_jobs` / `get_glp_backup_protection_job` / `list_glp_backup_protection_stores` / `list_glp_backup_storeonces` / `list_glp_backup_vm_protection_groups` / `run_glp_backup_protection_job` | Protection job/store/StoreOnce/VM-protection-group status; guarded run-protection-job-now with dry-run/confirm |
+| Data Services issues and async operations | `list_glp_data_services_issues` / `get_glp_data_services_issue` / `list_glp_data_services_async_operations` / `list_glp_data_services_storage_locations` | Cross-resource health/status feed, async-operation job tracking, and storage-location inventory |
+| Read-only cross-resource reconciliation | `plan_glp_reconciliation` | Bounded, read-only planning composite over devices/subscriptions/users/RBAC role assignments/scope groups/audit logs/reporting statuses; flags likely drift, never writes |
 
 ## ClearPass implemented starters
 
@@ -58,6 +64,13 @@ Promote a generic GET pattern to a typed tool when it is:
 | Find guest by email/name | `clearpass_find_guest` | Read-only lookup only |
 | Insight endpoint data | `clearpass_get_insight_endpoint` | Documented `/api/insight/endpoint/mac/{mac}` lookup |
 | OnGuard activity | `clearpass_list_onguard_activity` / `clearpass_get_onguard_activity_by_mac` | Documented activity inventory and per-MAC lookup |
+| Access Tracker session search | `clearpass_list_access_tracker_sessions` / `clearpass_get_access_tracker_session` | General bounded `/api/session` search by any `auth_status` (or none) plus by-ID lookup; complements the FAILED-only `clearpass_list_auth_failures` |
+| Endpoint inventory | `clearpass_list_endpoints` | Bounded `/api/endpoint` list |
+| Guest inventory | `clearpass_list_guests` | Bounded `/api/guest` list |
+| Policy elements | `clearpass_list_roles` / `clearpass_list_enforcement_policies` / `clearpass_get_enforcement_policy` | Read-only `/api/role` and `/api/enforcement-policy` views |
+| Service management | `clearpass_list_services` / `clearpass_get_service` | Read-only `/api/config/service` views |
+| Syslog export | `clearpass_list_syslog_targets` / `clearpass_list_syslog_export_filters` | Read-only `/api/syslog-target` and `/api/syslog-export-filter` views |
+| Diagnostics | `clearpass_get_server_version` / `clearpass_list_cluster_servers` | Read-only `/api/server/version` and `/api/cluster/server` views |
 
 ## Mist implemented starters
 
@@ -72,12 +85,16 @@ Promote a generic GET pattern to a typed tool when it is:
 | Wired and WAN Assurance | `mist_list_switches` / `mist_list_switch_ports` / `mist_list_gateways` / `mist_get_gateway` | Unified device-stat workflows |
 | Org inventory | `mist_list_org_inventory` | Omits claim secrets from output |
 | Diagnostic result collection | `mist_collect_diagnostic_results` | Bounded authenticated regional WebSocket collection from `/api-ws/v1/stream`, correlated by `session_id` and capped by event count, byte size, and elapsed time; requires the `websockets>=14.0` dependency |
+| Org/site SLE assurance summary | `mist_get_org_sle_overview` / `mist_get_site_sle_metric_summary` | Bounded typed reads of the confirmed `/insights/{metric}` and `/sle/{scope}/{scope_id}/metric/{metric}/summary` endpoints |
 
 ## ClearPass implemented lab writes
 
 | Workflow | Tool | Notes |
 |---|---|---|
 | Generic lab write | `clearpass_write` | Guarded POST/PUT/PATCH/DELETE to `/api/*`; dry-run default |
+| Access Tracker disconnect | `clearpass_disconnect_session` | Destructive `/api/session/{id}/disconnect`; dry-run default |
+| Guest create | `clearpass_create_guest` | Guarded `/api/guest` create; password redacted in previews |
+| Service enable/disable | `clearpass_set_service_enabled` | Guarded PATCH to the confirmed enable/disable endpoints |
 | Endpoint attributes | `clearpass_update_endpoint_attributes` | Patch endpoint attributes by MAC; optional CoA query flag |
 | Delete endpoint | `clearpass_delete_endpoint` | Destructive endpoint delete by MAC |
 | Enable/disable guest | `clearpass_set_guest_enabled` | Patch guest enabled state by username or ID |
@@ -116,6 +133,16 @@ Promote a generic GET pattern to a typed tool when it is:
 | Connectivity-template lifecycle | `apstra_get_connectivity_template` / `apstra_create_connectivity_template` / `apstra_delete_connectivity_template` | Current `endpoint-policies` and `obj-policy-import` paths from official SDK 6.1.2 |
 | Application-point assignment | `apstra_set_application_point_assignment` | Guarded `/obj-policy-batch-apply` workflow |
 | Async task monitoring | `apstra_get_task` / `apstra_wait_for_task` | Poll blueprint tasks through `/tasks/{task_id}` to succeeded, failed, or timeout |
+
+(v0.7) Top-level resource pools, device/rack profiles, system agents,
+telemetry, and blueprint-scoped IBA are exposed as generated tools
+(`apstra_list_ip_pools`/`apstra_create_ip_pool`/..., `apstra_list_device_profiles`/...,
+`apstra_list_system_agents`/..., `apstra_list_telemetry_service_registry_entries`/...,
+`apstra_list_blueprint_iba_dashboards`/...) from the same pinned `aos-sdk-api`
+6.1.2.post1 SDK; see `scripts/_apstra_operations.py` and
+`mcp_servers/openapi_gen/provenance/apstra.json`'s `coverage_gaps` for the
+handful of verbs (rack-type create, telemetry-collector delete, device-profile
+digest writes, IBA widgets/import/export) the pinned SDK does not model.
 
 ## ArubaOS 8 implemented starters
 
@@ -197,6 +224,26 @@ Promote a generic GET pattern to a typed tool when it is:
 | Persist appliance changes | `edgeconnect_save_changes` | Guarded lab write to `/gms/rest/appliance/saveChanges`, dry-run default and `confirm=True` required |
 | Generic lab write | `edgeconnect_write` | Guarded POST/PUT/PATCH/DELETE to Orchestrator REST paths; dry-run default |
 | API compatibility diagnosis | `edgeconnect_doctor` | Probes live Orchestrator API/Swagger metadata and reports legacy-gate status |
+| Alarm acknowledge/clear | `edgeconnect_acknowledge_alarm` / `edgeconnect_clear_alarm` | Guarded confirmed `/alarm/acknowledgement/gms` and `/alarm/clearance/gms` workflows |
+| Alarm summary | `edgeconnect_alarm_summary` | Read-only confirmed `/alarm/summary` |
+| Flow visibility | `edgeconnect_list_flows` / `edgeconnect_get_flow_stats` | Bounded confirmed `/flow` and `/stats/aggregate/flow` reads |
+
+## Axis implemented starters
+
+| Workflow | Tool | Notes |
+|---|---|---|
+| Split CRUD per entity | `axis_get_applications` / `axis_create_application` / `axis_update_application` / `axis_delete_application` (and 9 more top-level entities: application groups, connectors, connector zones, groups, locations, SSL exclusions, tunnels, users, web categories) | Generated from the reviewed 47-operation manifest; each verb is a distinct tool with exact write/destructive annotations, splitting the upstream fused `manage_entity` action |
+| Staged commit | `axis_commit_changes` | Applies staged create/update/delete changes |
+| Connector actions | `axis_regenerate_connector` | Guarded connector credential regeneration |
+| Sub-locations | `axis_get_sub_locations` / `axis_create_sub_location` / `axis_update_sub_location` / `axis_delete_sub_location` | Nested-location split CRUD |
+| Status | `axis_get_status` | Read-only backend status |
+
+(v0.7) `scripts/evaluate_axis_lab.py` adds an always-on, offline split-CRUD
+contract check (confirms all 10 entities have a complete
+query/create/update/delete set), a bounded opt-in read-only live check
+(`CENTRALMCP_LIVE_TEST_AXIS_READ=1`), and a disposable-write **plan** (opt-in,
+requires the read gate too) that is only ever generated and SHA-256-hashed —
+never executed.
 
 ## UXI implemented starters
 
@@ -221,10 +268,16 @@ Promote a generic GET pattern to a typed tool when it is:
 ## Remaining optional typed candidates
 
 EdgeConnect production use remains dependent on the target Orchestrator's live
-`gmsApiInfo.json` / `vxoaApiInfo.json`. Apstra's 48-operation generated set is
-SDK-derived rather than a full appliance OpenAPI export. Continue promoting
-curated tools only after the vendor source or target instance confirms the
-request shape.
+`gmsApiInfo.json` / `vxoaApiInfo.json`. Apstra's 135-operation generated set
+(v0.7) is SDK-derived rather than a full appliance OpenAPI export; its
+`coverage_gaps` provenance field records the specific verbs the pinned SDK
+does not model (rack-type create, telemetry-collector delete, device-profile
+digest writes, IBA widgets/import/export, and the binary
+streaming-telemetry-schema endpoint). UXI service tests have no
+create/update/delete API at all (only list, and only their group assignment
+is writable) — a permanent upstream omission, not a missing curated wrapper.
+Continue promoting curated tools only after the vendor source or target
+instance confirms the request shape.
 
 ## Design constraints
 

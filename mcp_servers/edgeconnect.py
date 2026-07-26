@@ -1,4 +1,4 @@
-"""MCP server — EdgeConnect (49 curated + 1216 generated OpenAPI tools).
+"""MCP server — EdgeConnect (54 curated + 1216 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=edgeconnect
@@ -33,6 +33,7 @@ from mcp_servers.openapi_gen.http_exec import build_multipart_files
 from mcp_servers.shared import (
     DESTRUCTIVE,
     DIAGNOSTIC,
+    IDEMPOTENT_WRITE,
     READ_ONLY,
     bound_collection_response,
     bounded_response_payload,
@@ -2506,6 +2507,151 @@ async def edgeconnect_write(
         }
     except httpx.HTTPError as exc:
         return {"error": str(exc), "url": url}
+
+
+# ---------------------------------------------------------------------------
+# Alarm / flow operational wrappers (generated manifest surface)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def edgeconnect_acknowledge_alarm(
+    alarm_id: str,
+    acknowledge: bool = True,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Acknowledge or unacknowledge a GMS-level EdgeConnect alarm.
+
+    Uses `POST /alarm/acknowledgement/gms` (generated manifest surface).
+    Pass `alarm_id` as the alarm identifier string and `acknowledge=True`
+    (default) to acknowledge or `False` to unacknowledge. Defaults to
+    `dry_run=True`; execution requires `dry_run=False` and `confirm=True`.
+    """
+    body: dict[str, Any] = {"acknowledge": acknowledge, "ids": [alarm_id]}
+    return await _edgeconnect_generated_write(
+        "edgeconnect_acknowledge_alarm",
+        "POST",
+        "/alarm/acknowledgement/gms",
+        query={},
+        headers={},
+        body=body,
+        content_type="application/json",
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=IDEMPOTENT_WRITE)
+async def edgeconnect_clear_alarm(
+    alarm_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Clear a GMS-level EdgeConnect alarm.
+
+    Uses `POST /alarm/clearance/gms` (generated manifest surface). Defaults
+    to `dry_run=True`; execution requires `dry_run=False` and `confirm=True`.
+    """
+    body: dict[str, Any] = {"ids": [alarm_id]}
+    return await _edgeconnect_generated_write(
+        "edgeconnect_clear_alarm",
+        "POST",
+        "/alarm/clearance/gms",
+        query={},
+        headers={},
+        body=body,
+        content_type="application/json",
+        dry_run=dry_run,
+        confirm=confirm,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_alarm_summary(
+    alarm_type: str | None = None,
+) -> dict[str, Any]:
+    """Get EdgeConnect alarm summary counts from Orchestrator.
+
+    Uses `GET /alarm/summary` (generated manifest surface). Pass `alarm_type`
+    as ``gms`` or ``appliance`` to filter by source; omit to return combined
+    totals from both Orchestrator and all accessible appliances.
+    """
+    query: dict[str, Any] = {}
+    if alarm_type is not None:
+        query["type"] = alarm_type
+    out = await _edgeconnect_generated_request("GET", "/alarm/summary", query=query, headers={})
+    if "data" in out:
+        out["alarm_summary"] = out.pop("data")
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_list_flows(
+    ne_pk: str,
+    limit: int = 50,
+    offset: int = 0,
+    ip1: str | None = None,
+    ip2: str | None = None,
+    uptime: str | None = None,
+) -> dict[str, Any]:
+    """List EdgeConnect flows for one appliance with bounded output.
+
+    Uses `GET /flow` (generated manifest surface). `ne_pk` is the Network
+    Element Primary Key (e.g. ``0.NE``). Optionally filter with `ip1`/`ip2`
+    for endpoint IP matching or `uptime` (e.g. ``last1hr``, ``anytime``).
+    Results are bounded by `limit`/`offset`.
+    """
+    safe_limit = clamp_limit(limit, default=50)
+    query: dict[str, Any] = {
+        "nePk": ne_pk,
+        "maxFlows": 10000,
+    }
+    if ip1 is not None:
+        query["ip1"] = ip1
+    if ip2 is not None:
+        query["ip2"] = ip2
+    if uptime is not None:
+        query["uptime"] = uptime
+    out = await _edgeconnect_generated_request("GET", "/flow", query=query, headers={})
+    if "data" in out:
+        out["flows"] = bound_collection_response(
+            out.pop("data"),
+            limit=safe_limit,
+            offset=offset,
+        )
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def edgeconnect_get_flow_stats(
+    granularity: str,
+    start_time: int,
+    end_time: int,
+    appliance_id: str | None = None,
+) -> dict[str, Any]:
+    """Get EdgeConnect aggregated flow statistics over a time window.
+
+    Uses `GET /stats/aggregate/flow` (generated manifest surface).
+    `granularity` must be ``minute``, ``hour``, or ``day``. `start_time`
+    and `end_time` are Unix timestamps in milliseconds. Optionally scope to
+    one appliance with `appliance_id` (nePk format, e.g. ``0.NE``).
+    """
+    if granularity not in ("minute", "hour", "day"):
+        return {"error": "granularity must be one of: minute, hour, day."}
+    query: dict[str, Any] = {
+        "granularity": granularity,
+        "startTime": start_time,
+        "endTime": end_time,
+    }
+    if appliance_id is not None:
+        query["nePk"] = appliance_id
+    out = await _edgeconnect_generated_request(
+        "GET", "/stats/aggregate/flow", query=query, headers={}
+    )
+    if "data" in out:
+        out["flow_stats"] = out.pop("data")
+    return out
 
 
 # ---------------------------------------------------------------------------

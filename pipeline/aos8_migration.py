@@ -19,15 +19,21 @@ from pipeline.aos8_schema import (
     AOS8ApGroup,
     AOS8AuthProfile,
     AOS8AuthServer,
+    AOS8CaptivePortalAuthProfile,
     AOS8Controller,
     AOS8EthernetACL,
+    AOS8KerberosAuthProfile,
     AOS8NetworkDestination,
+    AOS8NTLMAuthProfile,
     AOS8Policy,
     AOS8Role,
     AOS8Route,
     AOS8ServerGroup,
+    AOS8StatefulDot1xAuthProfile,
     AOS8Vlan,
     AOS8WhitelistRule,
+    AOS8WiredAuthProfile,
+    AOS8WisprAuthProfile,
     AOS8Wlan,
     ClassicCentralCandidate,
     NewCentralCandidate,
@@ -44,7 +50,18 @@ APPLY_ORDER = {
     "policy": 20,
     "ethernet_acl": 20,
     "role": 30,
+    # Wired/captive-portal/WISPr/Kerberos/stateful-dot1x authentication
+    # profiles reference `role`/`server_group` (never `aaa_profile`), so
+    # they sort after roles but before aaa_profile.
+    "stateful_dot1x_auth_profile": 35,
+    "wispr_auth_profile": 35,
+    "cp_auth_profile": 35,
+    "krb_auth_profile": 35,
+    "ntlm_auth_profile": 35,
     "aaa_profile": 40,
+    # The wired AAA attach point references `aaa_profile` itself, so it
+    # sorts after aaa_profile.
+    "wired_auth_profile": 45,
     "wlan": 50,
     "ap_group": 60,
     "route": 70,
@@ -1022,6 +1039,196 @@ def build_migration_plan(export: dict[str, Any]) -> dict[str, Any]:
         diff[f"{object_type}:{profile.profile_name}"] = _diff_entry(
             profile.to_dict(), payload
         )
+
+    for index, profile in enumerate(parsed["wired_auth_profiles"]):
+        assert isinstance(profile, AOS8WiredAuthProfile)
+        identifier = "global" if index == 0 else f"global-{index}"
+        payload = {
+            "aaa_profile": profile.aaa_profile,
+            "blacklist_time": profile.blacklist_time,
+        }
+        dependencies = _dependencies(_dependency("aaa_profile", profile.aaa_profile))
+        local_warnings = [
+            _REFERENCE_ONLY_WARNING.format(
+                object_type="wired_auth_profile", identifier=identifier
+            )
+        ]
+        warnings.extend(
+            _append_for_both(
+                classic,
+                new,
+                "wired_auth_profile",
+                identifier,
+                payload,
+                warnings=local_warnings,
+                dependencies=dependencies,
+                unsupported_fields=profile.settings,
+            )
+        )
+        diff[f"wired_auth_profile:{identifier}"] = _diff_entry(profile.to_dict(), payload)
+
+    for index, profile in enumerate(parsed["stateful_dot1x_auth_profiles"]):
+        assert isinstance(profile, AOS8StatefulDot1xAuthProfile)
+        identifier = "global" if index == 0 else f"global-{index}"
+        payload = {
+            "mode": profile.mode,
+            "server_group": profile.server_group,
+            "default_role": profile.default_role,
+            "timeout": profile.timeout,
+        }
+        dependencies = _dependencies(
+            _dependency("server_group", profile.server_group),
+            _dependency("role", profile.default_role),
+        )
+        local_warnings = [
+            _REFERENCE_ONLY_WARNING.format(
+                object_type="stateful_dot1x_auth_profile", identifier=identifier
+            )
+        ]
+        warnings.extend(
+            _append_for_both(
+                classic,
+                new,
+                "stateful_dot1x_auth_profile",
+                identifier,
+                payload,
+                warnings=local_warnings,
+                dependencies=dependencies,
+                unsupported_fields=profile.settings,
+            )
+        )
+        diff[f"stateful_dot1x_auth_profile:{identifier}"] = _diff_entry(
+            profile.to_dict(), payload
+        )
+
+    for profile in parsed["wispr_auth_profiles"]:
+        assert isinstance(profile, AOS8WisprAuthProfile)
+        identifier = profile.profile_name
+        payload = {
+            "name": profile.profile_name,
+            "default_role": profile.default_role,
+            "server_group": profile.server_group,
+        }
+        dependencies = _dependencies(
+            _dependency("role", profile.default_role),
+            _dependency("server_group", profile.server_group),
+        )
+        local_warnings = [
+            _REFERENCE_ONLY_WARNING.format(
+                object_type="wispr_auth_profile", identifier=identifier
+            )
+        ]
+        warnings.extend(
+            _append_for_both(
+                classic,
+                new,
+                "wispr_auth_profile",
+                identifier,
+                payload,
+                warnings=local_warnings,
+                dependencies=dependencies,
+                unsupported_fields=profile.settings,
+            )
+        )
+        diff[f"wispr_auth_profile:{identifier}"] = _diff_entry(profile.to_dict(), payload)
+
+    for profile in parsed["cp_auth_profiles"]:
+        assert isinstance(profile, AOS8CaptivePortalAuthProfile)
+        identifier = profile.profile_name
+        payload = {
+            "name": profile.profile_name,
+            "default_role": profile.default_role,
+            "default_guest_role": profile.default_guest_role,
+            "server_group": profile.server_group,
+        }
+        dependencies = _dependencies(
+            _dependency("role", profile.default_role),
+            _dependency("role", profile.default_guest_role),
+            _dependency("server_group", profile.server_group),
+        )
+        local_warnings = [
+            _REFERENCE_ONLY_WARNING.format(
+                object_type="cp_auth_profile", identifier=identifier
+            )
+        ]
+        warnings.extend(
+            _append_for_both(
+                classic,
+                new,
+                "cp_auth_profile",
+                identifier,
+                payload,
+                warnings=local_warnings,
+                dependencies=dependencies,
+                unsupported_fields=profile.settings,
+            )
+        )
+        diff[f"cp_auth_profile:{identifier}"] = _diff_entry(profile.to_dict(), payload)
+
+    for profile in parsed["krb_auth_profiles"]:
+        assert isinstance(profile, AOS8KerberosAuthProfile)
+        identifier = profile.profile_name
+        payload = {
+            "name": profile.profile_name,
+            "default_role": profile.default_role,
+            "server_group": profile.server_group,
+            "timeout": profile.timeout,
+        }
+        dependencies = _dependencies(
+            _dependency("role", profile.default_role),
+            _dependency("server_group", profile.server_group),
+        )
+        local_warnings = [
+            _REFERENCE_ONLY_WARNING.format(
+                object_type="krb_auth_profile", identifier=identifier
+            )
+        ]
+        warnings.extend(
+            _append_for_both(
+                classic,
+                new,
+                "krb_auth_profile",
+                identifier,
+                payload,
+                warnings=local_warnings,
+                dependencies=dependencies,
+                unsupported_fields=profile.settings,
+            )
+        )
+        diff[f"krb_auth_profile:{identifier}"] = _diff_entry(profile.to_dict(), payload)
+
+    for profile in parsed["ntlm_auth_profiles"]:
+        assert isinstance(profile, AOS8NTLMAuthProfile)
+        identifier = profile.profile_name
+        payload = {
+            "name": profile.profile_name,
+            "default_role": profile.default_role,
+            "server_group": profile.server_group,
+            "enabled": profile.enabled,
+            "timeout": profile.timeout,
+        }
+        dependencies = _dependencies(
+            _dependency("role", profile.default_role),
+            _dependency("server_group", profile.server_group),
+        )
+        local_warnings = [
+            _REFERENCE_ONLY_WARNING.format(
+                object_type="ntlm_auth_profile", identifier=identifier
+            )
+        ]
+        warnings.extend(
+            _append_for_both(
+                classic,
+                new,
+                "ntlm_auth_profile",
+                identifier,
+                payload,
+                warnings=local_warnings,
+                dependencies=dependencies,
+                unsupported_fields=profile.settings,
+            )
+        )
+        diff[f"ntlm_auth_profile:{identifier}"] = _diff_entry(profile.to_dict(), payload)
 
     for group in parsed["server_groups"]:
         assert isinstance(group, AOS8ServerGroup)

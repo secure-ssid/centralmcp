@@ -113,7 +113,7 @@
       "https://asp-documents.arubanetworks.com/portals/0/el/Aruba-Hardware-End-of-Sale-List.pdf"
     ],
     "output_dir": "ingestion/sources/lifecycle_notices",
-    "notes": "Refresh with ingestion/scrape_security_lifecycle.py. The XML feed is the data source behind HPE's historical all-product End of Sale archive; the official hardware PDF adds SKU-level dates and replacements. HPE does not publish a current crawlable index for every individual modern notice, so answers must cite the notice date and avoid implying the archive is exhaustive beyond its published entries."
+    "notes": "Refresh with ingestion/scrape_security_lifecycle.py. The XML feed is the data source behind HPE's historical all-product End of Sale archive (no current Aruba-branded entries; nothing published after 2020); the official hardware PDF adds SKU-level dates and replacements but is a static 2020-05-06 snapshot. HPE does not publish a current crawlable index for every individual modern notice, so answers must cite the notice date and avoid implying the archive is exhaustive beyond its published entries. See docs/source-lifecycle-coverage.md and ingestion.scrape_security_lifecycle.HPE_ARUBA_CURRENT_LIFECYCLE_COVERAGE_GAP for the full evidenced coverage-gap boundary for current Aruba-branded lifecycle notices."
   },
   {
     "source": "juniper_lifecycle",
@@ -122,10 +122,11 @@
     "seed_urls": [
       "https://support.juniper.net/support/eol/product/juniper_ap_series/",
       "https://support.juniper.net/support/eol/product/apstra/",
-      "https://support.juniper.net/support/eol/software/apstra/"
+      "https://support.juniper.net/support/eol/software/apstra/",
+      "https://support.juniper.net/support/eol/"
     ],
     "output_dir": "ingestion/sources/juniper_lifecycle",
-    "notes": "Refresh with ingestion/scrape_security_lifecycle.py. Juniper publishes these as server-rendered lifecycle tables rather than a public structured feed."
+    "notes": "Refresh with ingestion/scrape_security_lifecycle.py. Juniper publishes these as server-rendered lifecycle tables rather than a public structured feed. discover_juniper_lifecycle_urls() additionally re-derives this same reviewed set (and any future officially-added Mist/Apstra page) from the official EOL index nav at the last seed_urls entry, deduplicated by absolute URL."
   },
   {
     "source": "juniper_security_advisories",

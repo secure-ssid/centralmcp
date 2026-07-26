@@ -1,4 +1,4 @@
-"""ArubaOS 8 MCP server (50 curated + 258 generated OpenAPI tools).
+"""ArubaOS 8 MCP server (53 curated + 258 generated OpenAPI tools).
 
 Enabled via tool router env:
   CENTRALMCP_PRODUCTS=aos8
@@ -1848,11 +1848,15 @@ async def aos8_export_all(
 
     Fans out to WLANs, roles, VLANs, AP groups, controllers, session ACLs,
     AAA/authentication profiles and servers, destination aliases, Ethernet
-    ACLs, whitelist rules, IPv4/IPv6 routes, and VRRP. A failed or malformed
-    response for any single object type is collected in `warnings` instead of
-    aborting the whole export, so a partial export is still usable. Feed the result to
-    `aos8_migration_plan()` (or `pipeline.aos8_migration.build_migration_plan`
-    directly) for a deterministic migration plan.
+    ACLs, whitelist rules, IPv4/IPv6 routes, VRRP, and the
+    wired/WISPr/captive-portal/Kerberos/NTLM/stateful-802.1X authentication
+    profile families (reference-only -- see
+    `pipeline.aos8_schema.REFERENCE_ONLY_OBJECT_TYPES`). A failed or
+    malformed response for any single object type is collected in
+    `warnings` instead of aborting the whole export, so a partial export is
+    still usable. Feed the result to `aos8_migration_plan()` (or
+    `pipeline.aos8_migration.build_migration_plan` directly) for a
+    deterministic migration plan.
     """
     warnings: list[str] = []
 
@@ -1922,6 +1926,17 @@ async def aos8_export_all(
         "netdst6": "netdst6",
         "acl_eth": "acl_eth",
         "whitelist_rule": "whitelist_rule",
+        # Wired/WISPr/captive-portal/Kerberos/NTLM/stateful-802.1X
+        # authentication-profile families (reference-only -- see
+        # pipeline.aos8_schema.REFERENCE_ONLY_OBJECT_TYPES). Nested into
+        # the "aaa" export section below, alongside the existing
+        # dot1x/mac-auth device profiles.
+        "wired_auth_profiles": "wired_auth_profile",
+        "stateful_dot1x_auth_profiles": "stateful_dot1x_auth_profile",
+        "wispr_auth_profiles": "wispr_auth_profile",
+        "cp_auth_profiles": "cp_auth_profile",
+        "krb_auth_profiles": "krb_auth_profile",
+        "ntlm_auth_profiles": "ntlm_auth_profile",
     }
     extended: dict[str, list[Any]] = {}
     for label, object_name in object_names.items():
@@ -1955,6 +1970,12 @@ async def aos8_export_all(
                 "radius_servers",
                 "ldap_servers",
                 "tacacs_servers",
+                "wired_auth_profiles",
+                "stateful_dot1x_auth_profiles",
+                "wispr_auth_profiles",
+                "cp_auth_profiles",
+                "krb_auth_profiles",
+                "ntlm_auth_profiles",
             )
         },
         "routing": {
@@ -2112,6 +2133,123 @@ def aos8_migration_dependency_plan(
             "blocked": blocked,
             "reference_only": reference_only,
             "requires_secret_input": requires_secret_input,
+        },
+        "limit": page_size,
+        "offset": offset,
+    }
+
+
+@mcp.tool(annotations=READ_ONLY)
+def aos8_migration_batch_plan(
+    target_type: str = "new_central",
+    migration_plan: dict[str, Any] | None = None,
+    candidates: list[dict[str, Any]] | None = None,
+    batch_size: int = 10,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Chunk a migration plan's apply-order stages into fixed-size apply batches, read-only.
+
+    Builds on `aos8_migration_dependency_plan`'s existing per-`apply_order`
+    stage grouping by further splitting each stage into ordered batches of
+    at most `batch_size` candidates -- a staged/incremental rollout unit an
+    operator (or a future batch-aware `aos8_apply_migration_run` caller) can
+    review and apply one batch at a time. This tool only groups and reports
+    metadata about an already-built plan; it never calls
+    `aos8_apply_migration_run` itself and never changes what that tool
+    executes or in what order -- candidates within one stage are still
+    applied individually, in the same deterministic
+    `(apply_order, object_type, identifier)` order
+    `build_migration_plan`/`aos8_migration_dependency_plan` already produce.
+
+    Args:
+        target_type: "classic_central" or "new_central" -- selects which
+            candidate list to summarize when `migration_plan` is supplied.
+        migration_plan: a full `aos8_migration_plan()`/
+            `build_migration_plan()` result. Mutually exclusive with
+            `candidates`.
+        candidates: a raw candidate list. Mutually exclusive with
+            `migration_plan`.
+        batch_size: maximum candidates per batch within one apply-order
+            stage (bounded to 1-100); a stage with more candidates than
+            this becomes multiple sequential batches, never a single
+            oversized one.
+        limit/offset: bounds the flattened `batches` entries returned;
+            `summary` always reflects the complete candidate list.
+
+    Never calls a target account or another MCP tool -- pure, bounded
+    summarization of an existing plan, exactly like
+    `aos8_migration_dependency_plan`.
+    """
+    try:
+        selected = _aos8_migration_candidates(
+            target_type, migration_plan=migration_plan, candidates=candidates
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    from pipeline.aos8_schema import REFERENCE_ONLY_OBJECT_TYPES
+
+    bounded_batch_size = max(1, min(int(batch_size), 100))
+    page_size = clamp_limit(limit, default=100)
+    offset = max(0, offset)
+
+    def sort_key(candidate: dict[str, Any]) -> tuple[int, str, str]:
+        return (
+            int(candidate.get("apply_order", 100)),
+            str(candidate.get("object_type")),
+            str(candidate.get("identifier")),
+        )
+
+    ordered = sorted(selected, key=sort_key)
+    batches: list[dict[str, Any]] = []
+    current_stage: int | None = None
+    current_batch: list[dict[str, Any]] = []
+    batch_index = 0
+
+    def _flush() -> None:
+        nonlocal current_batch, batch_index
+        if not current_batch:
+            return
+        batches.append(
+            {
+                "apply_order": current_stage,
+                "batch_index": batch_index,
+                "candidate_keys": [
+                    f"{c.get('object_type')}:{c.get('identifier')}" for c in current_batch
+                ],
+                "reference_only_count": sum(
+                    1
+                    for c in current_batch
+                    if c.get("object_type") in REFERENCE_ONLY_OBJECT_TYPES
+                ),
+                "requires_secret_input_count": sum(
+                    1 for c in current_batch if c.get("requires_secret_input")
+                ),
+            }
+        )
+        current_batch = []
+        batch_index += 1
+
+    for candidate in ordered:
+        apply_order = int(candidate.get("apply_order", 100))
+        if apply_order != current_stage:
+            _flush()
+            current_stage = apply_order
+            batch_index = 0
+        current_batch.append(candidate)
+        if len(current_batch) >= bounded_batch_size:
+            _flush()
+    _flush()
+
+    return {
+        "target_type": target_type,
+        "batch_size": bounded_batch_size,
+        "batches": batches[offset : offset + page_size],
+        "summary": {
+            "total_candidates": len(ordered),
+            "total_batches": len(batches),
+            "stages": len({int(c.get("apply_order", 100)) for c in ordered}),
         },
         "limit": page_size,
         "offset": offset,
@@ -2666,6 +2804,85 @@ def aos8_verify_migration_run(
     try:
         return _aos8_migration_orchestrator().verify(
             run_id,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:
+        return _aos8_migration_error(exc)
+
+
+@mcp.tool(annotations=READ_ONLY)
+def aos8_plan_migration_rollback(
+    run_id: str,
+    target_secrets: dict[str, dict[str, str]] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Build a reverse-dependency-order rollback plan for one run's applied candidates.
+
+    Read-only and stateless -- never writes to the run's persisted state.
+    Every step is either backed by the target adapter's own verified
+    inverse (delete operations for New Central, rollback operations for
+    Classic) or explicitly reported `"supported": false` with a specific
+    reason (e.g. `vlan` candidates have no verified inverse in this
+    repository yet and are always refused, never guessed at). Use
+    `aos8_execute_migration_rollback` to dry-run or actually execute this
+    plan.
+
+    Args:
+        target_secrets: only used transiently to re-derive a candidate's
+            target-adapter mapping (some mappings need a caller-supplied
+            secret to map at all); never persisted.
+    """
+    try:
+        return _aos8_migration_orchestrator().rollback_plan(
+            run_id,
+            target_secrets=target_secrets,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:
+        return _aos8_migration_error(exc)
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+def aos8_execute_migration_rollback(
+    run_id: str,
+    dry_run: bool = True,
+    confirm: bool = False,
+    conflict_policy: str = "abort",
+    target_secrets: dict[str, dict[str, str]] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Dry-run or execute a rollback of one run's applied candidates; real writes need extra gates.
+
+    Real (non-dry-run) execution requires `confirm=True`, the ordinary
+    per-target write gate (e.g. `CENTRALMCP_CENTRAL_WRITES`), *and* the
+    separate, dedicated `CENTRALMCP_AOS8_ROLLBACK_WRITES=1` gate -- neither
+    gate alone is sufficient. Every refused step (no verified inverse
+    operation exists for its object type) is never attempted regardless of
+    these flags. Resumable: a prior partial rollback's completed steps are
+    persisted on the run and automatically skipped
+    (`"already_applied"`) on a later call, so retrying after a partial
+    failure never re-issues a delete against an object already confirmed
+    gone.
+
+    Args:
+        conflict_policy: `"abort"` (default) stops at the first
+            failed/refused step and marks every later step
+            `"not_attempted"`; `"continue"` attempts every remaining step
+            regardless of an earlier failure.
+        target_secrets: never persisted; must be resupplied on every call
+            that needs it (same contract as `aos8_apply_migration_run`).
+    """
+    try:
+        return _aos8_migration_orchestrator().execute_rollback(
+            run_id,
+            dry_run=dry_run,
+            confirmation=confirm,
+            target_secrets=target_secrets,
+            conflict_policy=conflict_policy,
             limit=limit,
             offset=offset,
         )

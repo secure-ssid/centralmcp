@@ -1,11 +1,14 @@
-"""MCP server — Aruba Central ops: troubleshooting and device actions (40 tools).
+"""MCP server — Aruba Central ops: troubleshooting and device actions (41 tools).
 
 Covers: CX/AOS-S/Gateway/AP ping/traceroute/show, PoE bounce, port bounce, cable test,
 reboot, disconnect client, acknowledge alert, LLDP neighbors, ARP table, MAC table,
 speed test, find MAC on switch, port error counters, spanning tree, interface counters,
 device notes update/delete, gateway iperf/ping-sweep/halt, AP tcp/nslookup/http/https,
 show-command catalog validation, locate operations (AP/CX/AOS-S), destructive AP-swarm
-reboot, and best-effort CX stack-conductor serial resolution.
+reboot, best-effort CX stack-conductor serial resolution, and a bounded
+CX/AOS-S troubleshooting orchestration bundle (run_troubleshooting_bundle:
+LLDP/ARP/ping/show composed from the existing per-op tools, partial-failure
+safe).
 """
 from typing import Any
 from urllib.parse import quote
@@ -609,6 +612,109 @@ async def run_speed_test(serial_number: str) -> dict[str, Any]:
         {},
         errors,
     )
+
+
+# ── Troubleshooting Orchestration (v0.7 bounded workflow) ────────────────────
+#
+# Composes the existing, individually-confirmed CX/AOS-S troubleshooting
+# tools above (get_lldp_neighbors, get_cx_arp_table, aos_s_arp, cx_ping/
+# aos_s_ping, cx_show/aos_s_show) into one bounded diagnostic bundle. No new
+# endpoint is introduced — every step below reuses an already-implemented,
+# manifest-backed tool call. Each step runs independently and its own
+# failure is captured rather than aborting the remaining steps (partial
+# failure never surfaces as a whole-bundle exception). Read-only/diagnostic
+# by nature (ping/traceroute/show/LLDP/ARP queries), so — consistent with
+# the individual tools it composes — this does not gate behind dry_run or
+# the Central write gate.
+
+_TROUBLESHOOTING_BUNDLE_DEVICE_TYPES = ("cx", "aos-s")
+_MAX_BUNDLE_SHOW_COMMANDS = 5
+
+
+@mcp.tool(annotations=DIAGNOSTIC)
+async def run_troubleshooting_bundle(
+    serial_number: str,
+    device_type: str,
+    destination: str | None = None,
+    commands: list[str] | None = None,
+) -> dict[str, Any]:
+    """Run a bounded LLDP/ARP/ping/show diagnostic bundle against one CX or AOS-S switch.
+
+    device_type must be "cx" or "aos-s". Always runs an ARP-table step
+    (CX: 'show arp' via get_cx_arp_table; AOS-S: aos_s_arp); CX additionally
+    runs an LLDP-neighbors step (get_lldp_neighbors). destination is
+    optional — when given, adds a ping step (cx_ping/aos_s_ping). commands
+    is optional — when given (each must start with 'show ', max 5), adds a
+    show-command step (cx_show/aos_s_show). Every step is independent: one
+    step's failure is captured in that step's "error" and does not stop the
+    remaining steps from running (result["steps"] always has one entry per
+    attempted step; check result["failed_steps"] for a bounded failure
+    count).
+    """
+    dtype = device_type.strip().lower()
+    if dtype not in _TROUBLESHOOTING_BUNDLE_DEVICE_TYPES:
+        raise ValueError(
+            f"device_type must be one of {_TROUBLESHOOTING_BUNDLE_DEVICE_TYPES}"
+        )
+    if commands is not None:
+        if len(commands) > _MAX_BUNDLE_SHOW_COMMANDS:
+            raise ValueError(
+                f"commands cannot exceed {_MAX_BUNDLE_SHOW_COMMANDS} entries (got {len(commands)})"
+            )
+        for i, cmd in enumerate(commands):
+            if not cmd.strip().lower().startswith("show "):
+                raise ValueError(f"commands[{i}] must start with 'show ': '{cmd}'")
+
+    steps: list[dict[str, Any]] = []
+
+    async def _run_step(name: str, coro: Any) -> None:
+        try:
+            data = await coro
+            error: str | None = None
+            if isinstance(data, dict):
+                result_status = str(data.get("status") or "").upper()
+                if result_status in {"ERROR", "FAILED", "FAILURE"}:
+                    error = str(data.get("error") or f"backend status {result_status}")
+                elif data.get("errors"):
+                    error = str(data["errors"])
+                elif data.get("error"):
+                    error = str(data["error"])
+            if error:
+                steps.append(
+                    {
+                        "name": name,
+                        "status": "error",
+                        "error": error[:1000],
+                        "result": data,
+                    }
+                )
+            else:
+                steps.append({"name": name, "status": "ok", "result": data})
+        except Exception as exc:
+            steps.append({"name": name, "status": "error", "error": str(exc)[:1000]})
+
+    if dtype == "cx":
+        await _run_step("lldp_neighbors", get_lldp_neighbors(serial_number))
+        await _run_step("arp_table", get_cx_arp_table(serial_number))
+        if destination:
+            await _run_step("ping", cx_ping(serial_number, destination))
+        if commands:
+            await _run_step("show", cx_show(serial_number, commands))
+    else:
+        await _run_step("arp_table", aos_s_arp(serial_number))
+        if destination:
+            await _run_step("ping", aos_s_ping(serial_number, destination))
+        if commands:
+            await _run_step("show", aos_s_show(serial_number, commands))
+
+    failed = [s["name"] for s in steps if s["status"] == "error"]
+    return {
+        "serial_number": serial_number,
+        "device_type": dtype,
+        "steps": steps,
+        "step_count": len(steps),
+        "failed_steps": failed,
+    }
 
 
 # ── Device Notes ──────────────────────────────────────────────────────────────

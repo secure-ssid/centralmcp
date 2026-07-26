@@ -217,17 +217,23 @@ def test_build_migration_plan_source_object_counts_match_input():
         "ap_groups": 1,
         "auth_servers": 3,
         "controllers": 1,
+        "cp_auth_profiles": 0,
         "dot1x_auth_profiles": 1,
         "ethernet_acls": 0,
+        "krb_auth_profiles": 0,
         "mac_auth_profiles": 1,
         "network_destinations": 0,
+        "ntlm_auth_profiles": 0,
         "policies": 1,
         "roles": 1,
         "routes": 2,
         "server_groups": 1,
+        "stateful_dot1x_auth_profiles": 0,
         "vlans": 1,
         "vrrp": 1,
         "whitelist_rules": 0,
+        "wired_auth_profiles": 0,
+        "wispr_auth_profiles": 0,
         "wlans": 1,
     }
 
@@ -514,17 +520,23 @@ def test_build_migration_plan_handles_empty_export():
         "ap_groups": 0,
         "auth_servers": 0,
         "controllers": 0,
+        "cp_auth_profiles": 0,
         "dot1x_auth_profiles": 0,
         "ethernet_acls": 0,
+        "krb_auth_profiles": 0,
         "mac_auth_profiles": 0,
         "network_destinations": 0,
+        "ntlm_auth_profiles": 0,
         "policies": 0,
         "roles": 0,
         "routes": 0,
         "server_groups": 0,
+        "stateful_dot1x_auth_profiles": 0,
         "vlans": 0,
         "vrrp": 0,
         "whitelist_rules": 0,
+        "wired_auth_profiles": 0,
+        "wispr_auth_profiles": 0,
         "wlans": 0,
     }
 
@@ -1197,6 +1209,57 @@ _NEW_FAMILIES_EXPORT = {
 }
 
 
+_AUTH_PROFILE_FAMILIES_EXPORT = {
+    "config_path": "/md/lab",
+    "aaa": {
+        "wired_auth_profiles": [
+            {"wired_aaa_profile": "corp-aaa", "wired_blacklist_time": 3600}
+        ],
+        "stateful_dot1x_auth_profiles": [
+            {
+                "stateful_dot1x_server_group": "corp-sg",
+                "statefuldot1x_default_role": "guest",
+                "timeout": 300,
+            }
+        ],
+        "wispr_auth_profiles": [
+            {
+                "profile-name": "wispr1",
+                "wispr_default_role": "guest",
+                "wispr_server_group": "corp-sg",
+                "wispr_max_delay": 5,
+            }
+        ],
+        "cp_auth_profiles": [
+            {
+                "profile-name": "cp1",
+                "cp_default_role": "guest",
+                "cp_default_guest_role": "guest2",
+                "cp_server_group": "corp-sg",
+                "cp_redirect_url": "http://example.com",
+            }
+        ],
+        "krb_auth_profiles": [
+            {
+                "profile-name": "krb1",
+                "krb_default_role": "guest",
+                "krb_server_group": "corp-sg",
+                "krb_timeout": 30,
+            }
+        ],
+        "ntlm_auth_profiles": [
+            {
+                "profile-name": "ntlm1",
+                "ntlm_default_role": "guest",
+                "ntlm_server_group": "corp-sg",
+                "ntlm_enable": True,
+                "ntlm_timeout": 60,
+            }
+        ],
+    },
+}
+
+
 def _candidate(plan, target_type, object_type, identifier):
     return next(
         c
@@ -1312,3 +1375,163 @@ def test_new_families_never_carry_secrets_and_remain_deterministic():
     assert first == second
     serialized = json.dumps(first)
     assert "10.0.0.1" in serialized  # non-secret data still visible
+
+
+# ---------------------------------------------------------------------------
+# Wired / captive-portal / WISPr / Kerberos / NTLM / stateful-802.1X
+# authentication-profile families (reference-only; see
+# `pipeline.aos8_schema.REFERENCE_ONLY_OBJECT_TYPES`).
+# ---------------------------------------------------------------------------
+
+_NEW_AUTH_PROFILE_FAMILY_OBJECT_TYPES = (
+    "wired_auth_profile",
+    "stateful_dot1x_auth_profile",
+    "wispr_auth_profile",
+    "cp_auth_profile",
+    "krb_auth_profile",
+    "ntlm_auth_profile",
+)
+
+
+def test_new_auth_profile_families_are_reference_only():
+    from pipeline.aos8_schema import REFERENCE_ONLY_OBJECT_TYPES
+
+    assert REFERENCE_ONLY_OBJECT_TYPES >= set(_NEW_AUTH_PROFILE_FAMILY_OBJECT_TYPES)
+
+
+def test_new_auth_profile_families_emit_candidates_for_both_targets_with_reference_only_warning():
+    plan = build_migration_plan(_AUTH_PROFILE_FAMILIES_EXPORT)
+    identifiers = {
+        "wired_auth_profile": "global",
+        "stateful_dot1x_auth_profile": "global",
+        "wispr_auth_profile": "wispr1",
+        "cp_auth_profile": "cp1",
+        "krb_auth_profile": "krb1",
+        "ntlm_auth_profile": "ntlm1",
+    }
+    for object_type in _NEW_AUTH_PROFILE_FAMILY_OBJECT_TYPES:
+        for target_type in ("classic_central", "new_central"):
+            candidate = _candidate(
+                plan, target_type, object_type, identifiers[object_type]
+            )
+            assert any(
+                "no deterministic Classic/New Central adapter mapping" in warning
+                for warning in candidate["warnings"]
+            )
+            # Serialization: every candidate is a plain, JSON-safe dict (no
+            # dataclass/tuple/set leaking through `to_dict()`).
+            json.dumps(candidate)
+
+
+def test_wired_auth_profile_candidate_carries_aaa_profile_dependency():
+    plan = build_migration_plan(_AUTH_PROFILE_FAMILIES_EXPORT)
+    candidate = _candidate(plan, "new_central", "wired_auth_profile", "global")
+    assert candidate["payload"] == {
+        "aaa_profile": "corp-aaa",
+        "blacklist_time": 3600,
+    }
+    assert candidate["dependencies"] == ["aaa_profile:corp-aaa"]
+    assert candidate["apply_order"] == 45
+
+
+def test_stateful_dot1x_auth_profile_candidate_carries_role_and_server_group_dependencies():
+    plan = build_migration_plan(_AUTH_PROFILE_FAMILIES_EXPORT)
+    candidate = _candidate(plan, "new_central", "stateful_dot1x_auth_profile", "global")
+    assert candidate["payload"] == {
+        "mode": None,
+        "server_group": "corp-sg",
+        "default_role": "guest",
+        "timeout": 300,
+    }
+    assert candidate["dependencies"] == ["role:guest", "server_group:corp-sg"]
+    assert candidate["apply_order"] == 35
+
+
+def test_wispr_auth_profile_candidate_flags_unsupported_field_and_dependencies():
+    plan = build_migration_plan(_AUTH_PROFILE_FAMILIES_EXPORT)
+    candidate = _candidate(plan, "new_central", "wispr_auth_profile", "wispr1")
+    assert candidate["payload"] == {
+        "name": "wispr1",
+        "default_role": "guest",
+        "server_group": "corp-sg",
+    }
+    assert candidate["dependencies"] == ["role:guest", "server_group:corp-sg"]
+    assert candidate["unsupported_fields"] == {"wispr_max_delay": 5}
+    assert any(
+        "wispr_max_delay" in warning and "not mapped" in warning
+        for warning in candidate["warnings"]
+    )
+
+
+def test_cp_auth_profile_candidate_carries_two_role_dependencies():
+    plan = build_migration_plan(_AUTH_PROFILE_FAMILIES_EXPORT)
+    candidate = _candidate(plan, "new_central", "cp_auth_profile", "cp1")
+    assert candidate["payload"] == {
+        "name": "cp1",
+        "default_role": "guest",
+        "default_guest_role": "guest2",
+        "server_group": "corp-sg",
+    }
+    assert candidate["dependencies"] == [
+        "role:guest",
+        "role:guest2",
+        "server_group:corp-sg",
+    ]
+
+
+def test_krb_auth_profile_candidate_payload_and_dependencies():
+    plan = build_migration_plan(_AUTH_PROFILE_FAMILIES_EXPORT)
+    candidate = _candidate(plan, "new_central", "krb_auth_profile", "krb1")
+    assert candidate["payload"] == {
+        "name": "krb1",
+        "default_role": "guest",
+        "server_group": "corp-sg",
+        "timeout": 30,
+    }
+    assert candidate["dependencies"] == ["role:guest", "server_group:corp-sg"]
+
+
+def test_ntlm_auth_profile_candidate_payload_and_dependencies():
+    plan = build_migration_plan(_AUTH_PROFILE_FAMILIES_EXPORT)
+    candidate = _candidate(plan, "new_central", "ntlm_auth_profile", "ntlm1")
+    assert candidate["payload"] == {
+        "name": "ntlm1",
+        "default_role": "guest",
+        "server_group": "corp-sg",
+        "enabled": True,
+        "timeout": 60,
+    }
+    assert candidate["dependencies"] == ["role:guest", "server_group:corp-sg"]
+
+
+def test_wired_auth_profile_second_singleton_instance_gets_distinct_identifier():
+    export = {
+        "aaa": {
+            "wired_auth_profiles": [
+                {"wired_aaa_profile": "corp-aaa"},
+                {"wired_aaa_profile": "guest-aaa"},
+            ]
+        }
+    }
+    plan = build_migration_plan(export)
+    first = _candidate(plan, "new_central", "wired_auth_profile", "global")
+    second = _candidate(plan, "new_central", "wired_auth_profile", "global-1")
+    assert first["payload"]["aaa_profile"] == "corp-aaa"
+    assert second["payload"]["aaa_profile"] == "guest-aaa"
+
+
+def test_new_auth_profile_family_dependencies_report_missing_role_and_server_group():
+    """These families' role/server_group dependencies are tracked even
+    when the referenced object is absent from the export -- the generic
+    end-of-plan dependency check must still fire (fail-closed, never
+    invented)."""
+    plan = build_migration_plan(_AUTH_PROFILE_FAMILIES_EXPORT)
+    candidate = _candidate(plan, "new_central", "krb_auth_profile", "krb1")
+    assert any(
+        "dependency 'role:guest' is not present in this export" in warning
+        for warning in candidate["warnings"]
+    )
+    assert any(
+        "dependency 'server_group:corp-sg' is not present in this export" in warning
+        for warning in candidate["warnings"]
+    )

@@ -1047,10 +1047,26 @@ def test_run_summary_and_entry_summary_have_no_rollback_fields(tmp_path):
         assert not forbidden_entry_keys & set(entry.keys())
 
 
-def test_no_mcp_rollback_tool_is_registered():
-    """Finding #4: rollback must not be exposed as an MCP tool."""
+def test_mcp_rollback_tools_are_registered_but_dual_gated():
+    """Superseding Finding #4 (`aos8-migration-contract-matrix.md` §2.1/§5,
+    "0.5: there is no rollback execution path"): rollback is now an
+    intentional, explicitly-scoped capability (`v07-aos8-promotion`) built
+    on `pipeline.aos8_rollback`, exposed as two MCP tools --
+    `aos8_plan_migration_rollback` (read-only planning) and
+    `aos8_execute_migration_rollback` (destructive, dry-run by default).
+    The safety invariant Finding #4 protected -- rollback is never silently
+    auto-invoked -- is preserved by construction: `aos8_execute_migration_rollback`
+    defaults to `dry_run=True`, and real execution requires `confirm=True`
+    *and* the separate `CENTRALMCP_AOS8_ROLLBACK_WRITES=1` gate *and* the
+    ordinary per-target write gate, verified end to end by the tests
+    immediately following this one.
+    """
     tool_names = {name for name in dir(aos8) if name.startswith("aos8_")}
-    assert not any("rollback" in name for name in tool_names)
+    rollback_tools = {name for name in tool_names if "rollback" in name}
+    assert rollback_tools == {
+        "aos8_plan_migration_rollback",
+        "aos8_execute_migration_rollback",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -4024,3 +4040,183 @@ def test_create_migration_run_040_positional_call_still_binds_run_id_limit_offse
     # `run_id="positional-040-run"` must have bound to `run_id`, not to a
     # runtime-context dict (which would raise/behave differently).
     assert result["run_id"] == "positional-040-run"
+
+
+# ---------------------------------------------------------------------------
+# Rollback/compensation: `AOS8MigrationOrchestrator.rollback_plan` /
+# `.execute_rollback`, and the MCP `aos8_plan_migration_rollback` /
+# `aos8_execute_migration_rollback` tools built on them.
+# ---------------------------------------------------------------------------
+
+
+def _applied_run(tmp_path, backend=None):
+    """Create and fully apply a two-candidate run: `vlan:20` (no verified
+    inverse) and `role:employee` (verified `delete_operations`, depends on
+    the vlan)."""
+    backend = backend or FakeBackend()
+    service, _ = orchestrator(tmp_path, backend)
+    vlan = candidate("vlan", "20", payload={"description": "Corp"})
+    role = candidate(
+        "role",
+        "employee",
+        payload={"policies": ["allowall"]},
+        dependencies=["vlan:20"],
+        apply_order=30,
+    )
+    service.create_run([vlan, role], target(), run_id="rollback-run")
+    service.apply("rollback-run", dry_run=True, confirmation=False)
+    applied = service.apply("rollback-run", dry_run=False, confirmation=True)
+    assert {item["status"] for item in applied["candidates"]} == {"applied"}
+    return service, backend
+
+
+def test_rollback_plan_refuses_vlan_and_supports_role_in_reverse_order(tmp_path):
+    service, _ = _applied_run(tmp_path)
+    plan = service.rollback_plan("rollback-run")
+    steps = plan["steps"]
+    assert [step["candidate"] for step in steps] == ["role:employee", "vlan:20"]
+    assert steps[0]["supported"] is True
+    assert steps[0]["source"] == "delete_operations"
+    assert steps[1]["supported"] is False
+    assert "no verified inverse" in steps[1]["reason"]
+    assert plan["summary"] == {"total": 2, "supported": 1, "refused": 1}
+
+
+def test_rollback_plan_is_read_only_and_does_not_touch_run_state(tmp_path):
+    service, _ = _applied_run(tmp_path)
+    before = service.get_run("rollback-run")
+    service.rollback_plan("rollback-run")
+    after = service.get_run("rollback-run")
+    assert before == after
+
+
+def test_execute_rollback_dry_run_never_requires_gates(tmp_path):
+    service, _ = _applied_run(tmp_path)
+    result = service.execute_rollback("rollback-run", dry_run=True, confirmation=False)
+    statuses = {item["candidate"]: item["status"] for item in result["results"]}
+    assert statuses["role:employee"] == "dry-run"
+    assert statuses["vlan:20"] == "refused"
+
+
+def test_execute_rollback_real_execution_requires_rollback_write_gate(
+    tmp_path, monkeypatch
+):
+    from pipeline.aos8_rollback import ROLLBACK_WRITE_GATE_ENV_VAR
+
+    monkeypatch.delenv(ROLLBACK_WRITE_GATE_ENV_VAR, raising=False)
+    service, _ = _applied_run(tmp_path)
+    with pytest.raises(WriteGateError, match=ROLLBACK_WRITE_GATE_ENV_VAR):
+        service.execute_rollback("rollback-run", dry_run=False, confirmation=True)
+
+
+def test_execute_rollback_real_execution_requires_platform_write_gate(
+    tmp_path, monkeypatch
+):
+    from pipeline.aos8_rollback import ROLLBACK_WRITE_GATE_ENV_VAR
+
+    monkeypatch.setenv(ROLLBACK_WRITE_GATE_ENV_VAR, "1")
+    backend = FakeBackend()
+    service, _ = orchestrator(tmp_path, backend, writes=False)
+    vlan = candidate("vlan", "20")
+    role = candidate(
+        "role",
+        "employee",
+        payload={"policies": ["allowall"]},
+        dependencies=["vlan:20"],
+        apply_order=30,
+    )
+    # `writes=False` blocks even the initial dry-run/apply lifecycle, so
+    # build the run through a writes-enabled service, then reopen the same
+    # on-disk state through a writes-disabled one to exercise the platform
+    # write gate specifically at rollback-execution time.
+    writable_service, store = orchestrator(tmp_path, backend, writes=True)
+    writable_service.create_run([vlan, role], target(), run_id="gated-run")
+    writable_service.apply("gated-run", dry_run=True, confirmation=False)
+    writable_service.apply("gated-run", dry_run=False, confirmation=True)
+
+    with pytest.raises(WriteGateError, match="writes are disabled"):
+        service.execute_rollback("gated-run", dry_run=False, confirmation=True)
+
+
+def test_execute_rollback_real_execution_succeeds_and_persists_resume_state(
+    tmp_path, monkeypatch
+):
+    from pipeline.aos8_rollback import ROLLBACK_WRITE_GATE_ENV_VAR
+
+    monkeypatch.setenv(ROLLBACK_WRITE_GATE_ENV_VAR, "1")
+    service, backend = _applied_run(tmp_path)
+    result = service.execute_rollback(
+        "rollback-run", dry_run=False, confirmation=True
+    )
+    statuses = {item["candidate"]: item["status"] for item in result["results"]}
+    assert statuses["role:employee"] == "applied"
+    assert statuses["vlan:20"] == "refused"
+    assert any(
+        call[0].name == "delete_role" for call in backend.write_calls
+    )
+
+    # Resume: a second call must not re-issue the delete.
+    calls_before = len(backend.write_calls)
+    resumed = service.execute_rollback(
+        "rollback-run", dry_run=False, confirmation=True
+    )
+    resumed_statuses = {item["candidate"]: item["status"] for item in resumed["results"]}
+    assert resumed_statuses["role:employee"] == "already_applied"
+    assert len(backend.write_calls) == calls_before
+
+
+def test_execute_rollback_rejects_unknown_conflict_policy(tmp_path, monkeypatch):
+    from pipeline.aos8_rollback import ROLLBACK_WRITE_GATE_ENV_VAR
+
+    monkeypatch.setenv(ROLLBACK_WRITE_GATE_ENV_VAR, "1")
+    service, _ = _applied_run(tmp_path)
+    with pytest.raises(MigrationRunError, match="conflict_policy"):
+        service.execute_rollback(
+            "rollback-run",
+            dry_run=False,
+            confirmation=True,
+            conflict_policy="not-a-real-policy",
+        )
+
+
+def test_mcp_aos8_plan_migration_rollback_tool_wraps_orchestrator(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        aos8,
+        "_aos8_migration_orchestrator",
+        lambda: _applied_run(tmp_path)[0],
+    )
+    result = aos8.aos8_plan_migration_rollback(run_id="rollback-run")
+    assert result["run_id"] == "rollback-run"
+    assert result["summary"]["supported"] == 1
+
+
+def test_mcp_aos8_execute_migration_rollback_tool_defaults_to_dry_run(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        aos8,
+        "_aos8_migration_orchestrator",
+        lambda: _applied_run(tmp_path)[0],
+    )
+    result = aos8.aos8_execute_migration_rollback(run_id="rollback-run")
+    assert result["dry_run"] is True
+    statuses = {item["candidate"]: item["status"] for item in result["results"]}
+    assert statuses["role:employee"] == "dry-run"
+
+
+def test_mcp_aos8_execute_migration_rollback_tool_reports_blocked_error_envelope(
+    tmp_path, monkeypatch
+):
+    from pipeline.aos8_rollback import ROLLBACK_WRITE_GATE_ENV_VAR
+
+    monkeypatch.delenv(ROLLBACK_WRITE_GATE_ENV_VAR, raising=False)
+    monkeypatch.setattr(
+        aos8,
+        "_aos8_migration_orchestrator",
+        lambda: _applied_run(tmp_path)[0],
+    )
+    result = aos8.aos8_execute_migration_rollback(
+        run_id="rollback-run", dry_run=False, confirm=True
+    )
+    assert result["status"] == "blocked"
+    assert ROLLBACK_WRITE_GATE_ENV_VAR in result["error"]

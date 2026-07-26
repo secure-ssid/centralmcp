@@ -46,3 +46,9 @@ def test_registry_set_drift_is_rejected():
 
     with pytest.raises(optional_manifests.SourcePinError, match="registry_ids"):
         optional_manifests.validate_source_pin(platform, manifest, rendered, pin)
+
+
+def test_apstra_embedded_provenance_matches_manifest_source():
+    manifest = optional_manifests.build_apstra()
+
+    assert manifest["provenance"]["source_sha256"] == manifest["source"]["sha256"]

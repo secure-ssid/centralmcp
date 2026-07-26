@@ -3,7 +3,7 @@
 The core router catalog is quick to build locally. The full docs/API RAG index is
 larger, so public releases can include a prebuilt archive.
 
-## Current 0.5.0 snapshot
+## Current 0.7.0 snapshot
 
 | Artifact content | Count |
 |---|---:|
@@ -14,8 +14,8 @@ larger, so public releases can include a prebuilt archive.
 | Fields | 60,568 |
 | Security advisories | 102 |
 | Lifecycle records | 346 |
-| Generated operation manifests | 6,056 |
-| Complete backend tool catalog | 6,545 |
+| Generated operation manifests | 6,143 |
+| Complete backend tool catalog | 6,699 |
 
 OpenAPI documents are parsed only into SQLite exact lookup. They are not
 embedded into LanceDB, which keeps prose retrieval smaller and avoids lossy

@@ -28,6 +28,12 @@
     <loc>https://secure-ssid.github.io/centralmcp/release-indexes.html</loc>
   </url>
   <url>
+    <loc>https://secure-ssid.github.io/centralmcp/release-notes-0.7.0.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/central-v07-workflows.html</loc>
+  </url>
+  <url>
     <loc>https://secure-ssid.github.io/centralmcp/release-notes-0.6.0.html</loc>
   </url>
   <url>
@@ -44,6 +50,15 @@
   </url>
   <url>
     <loc>https://secure-ssid.github.io/centralmcp/aos8-live-dryrun-evaluation.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/artifact-contracts.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/release-artifact-automation.html</loc>
+  </url>
+  <url>
+    <loc>https://secure-ssid.github.io/centralmcp/source-lifecycle-coverage.html</loc>
   </url>
   <url>
     <loc>https://secure-ssid.github.io/centralmcp/troubleshooting.html</loc>

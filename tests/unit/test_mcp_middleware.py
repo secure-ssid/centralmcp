@@ -31,14 +31,13 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 from mcp_servers._middleware import (
-    NullStripMiddleware,
     MacNormalizeMiddleware,
+    NullStripMiddleware,
     RateLimitMiddleware,
     ResponseEnvelopeMiddleware,
     UnknownToolSuggestMiddleware,
     install_middleware,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -202,6 +201,36 @@ class TestRateLimit:
         with pytest.raises(ValueError):
             RateLimitMiddleware(rate=-1)
 
+    def test_on_wait_observer_called_with_actual_wait_seconds(self):
+        """v0.7: an injected observer records real observed wait durations
+        -- never fabricated, never called when no wait occurred."""
+        waits: list[float] = []
+        mw = RateLimitMiddleware(rate=20.0, burst=1, on_wait=waits.append)
+
+        self._acquire_many(mw, 1)  # drains the single token, no wait
+        assert waits == []
+
+        self._acquire_many(mw, 3)  # forces 3 waits at rate=20/s
+        assert len(waits) == 3
+        assert all(w > 0 for w in waits)
+
+    def test_on_wait_observer_exception_does_not_break_rate_limiting(self):
+        """A broken observer must not take down rate limiting itself."""
+
+        def bad_observer(_seconds: float) -> None:
+            raise RuntimeError("observer boom")
+
+        mw = RateLimitMiddleware(rate=50.0, burst=1, on_wait=bad_observer)
+        # First drains the token, second forces a wait + a raising observer
+        # call; must not raise out of _acquire.
+        self._acquire_many(mw, 3)
+
+    def test_on_wait_defaults_to_none_and_is_unused_by_default(self):
+        mw = RateLimitMiddleware(rate=20.0, burst=1)
+        assert mw._on_wait is None
+        # No observer wired in -- calls beyond burst still just wait, no crash.
+        self._acquire_many(mw, 3)
+
 
 # ---------------------------------------------------------------------------
 # install_middleware
@@ -364,7 +393,14 @@ class TestResponseEnvelope:
     def test_wraps_cancelled_status(self):
         mw = ResponseEnvelopeMiddleware()
 
-        result = mw.after_call("reboot_device", {}, {"status": "CANCELLED", "detail": "user declined confirmation"})
+        result = mw.after_call(
+            "reboot_device",
+            {},
+            {
+                "status": "CANCELLED",
+                "detail": "user declined confirmation",
+            },
+        )
 
         assert result is not None
         assert result["ok"] is False

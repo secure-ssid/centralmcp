@@ -6,6 +6,7 @@ Design notes for core system behavior, data stores, and retrieval strategy.
 |---|---|
 | [system-overview.md](system-overview.md) | End-to-end MCP architecture, runtime flow, router dispatch, and file map |
 | [RAG-ARCHITECTURE.md](RAG-ARCHITECTURE.md) | Embedded LanceDB + SQLite RAG/API lookup design, migration rationale, and eval results |
+| [0.7.0 release notes](../release-notes-0.7.0.md) | Artifact/live-test gates, source lifecycle provenance, RAG structured intelligence, Central/GLP/AOS8/optional-product depth, observability, and router automation |
 | [0.6.0 release notes](../release-notes-0.6.0.md) | Security/lifecycle RAG, expanded platform workflows, provenance, auditing, and reporting |
 | [0.5.0 release notes](../release-notes-0.5.0.md) | Verified AOS8 migration expansion, verification taxonomy, and read-only live/dry-run evaluation |
 | [0.4.0 release notes (historical)](../release-notes-0.4.0.md) | Migration execution, Mist diagnostics, EdgeConnect compatibility, GLP, and Axis changes |

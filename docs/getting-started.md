@@ -141,7 +141,7 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 ```
 
 This exposes only the router discovery/dispatch surface and keeps tool-list token cost low.
-The router can search 6,545 backend tools when all platforms and guarded writes
+The router can search 6,699 backend tools when all platforms and guarded writes
 are indexed, while minimal mode exposes only three client-visible tools.
 
 ### Streamable HTTP instead of stdio
@@ -196,7 +196,7 @@ Include optional product starters:
 uv run python scripts/ingest_tools.py --products all
 ```
 
-The safe default hides optional write tools. Build all 6,545 backend tools only
+The safe default hides optional write tools. Build all 6,699 backend tools only
 for an intentional lab read/write profile:
 
 ```bash
@@ -312,3 +312,7 @@ records exactly which surfaces were confirmed live versus fixture-backed only.
   contacting Central, GreenLake, or optional products.
 - Use `invoke_read_tool` for read-only router dispatch.
 - Use `invoke_tool` only for intentional writes/destructive actions.
+- Audit logging (`CENTRALMCP_AUDIT_LOG`) and in-process metrics
+  (`CENTRALMCP_METRICS`, plus `CENTRALMCP_METRICS_HTTP` for the optional
+  `GET /metrics` snapshot route) are both opt-in and off by default -- see
+  [tool-router.md's Observability section](tool-router.md#observability-audit-log-and-metrics).

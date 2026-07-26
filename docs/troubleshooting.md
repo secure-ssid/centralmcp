@@ -77,6 +77,7 @@ uv run python ingestion/ingest_docs.py
 | Drift checker exits 1 | Vendor specs or page pointers changed; refresh sources, rebuild indexes, and rerun the checker. |
 | `lookup_api` returns an older path/version | Rebuild `data/specs.sqlite` after refreshing the registry specs. |
 | `ask_docs` misses a security advisory or end-of-sale notice | Run `ingestion/scrape_security_lifecycle.py`, then rebuild `data/docs.lance`. Aruba advisories refresh incrementally from the official CSAF `changes.csv`; HPE lifecycle notices come from the all-product End of Sale XML feed. |
+| `check_security_lifecycle_drift.py` reports `stale`/`unavailable`/`changed` | See [Source lifecycle coverage](source-lifecycle-coverage.md). `stale` means a count regressed below its committed minimum; `unavailable` means the source could not be fetched (network/HTTP); `changed` means the source no longer matches its reviewed provenance pin (`ingestion/provenance/*.json`) and needs review before regenerating the pin. `coverage_gap` (e.g. current Aruba-branded lifecycle) is expected and does not fail the check. |
 | macOS docs rebuild stalls in fastembed multiprocessing | Current `ingest_docs.py` automatically disables subprocess parallelism on macOS. Stop any older stale rebuild by exact PID, update the checkout, and rerun the command. |
 | Docs index is larger because OpenAPI JSON was embedded | Rebuild with the current ingestion path. OpenAPI records now remain in SQLite only; the current prose corpus contains 51,737 chunks. |
 
@@ -116,7 +117,7 @@ If `find_tool` cannot locate expected optional product tools, confirm
 `CENTRALMCP_PRODUCTS` and the catalog were built with the same selected
 products.
 
-The complete read-write backend catalog contains 6,545 tools. If release
+The complete read-write backend catalog contains 6,699 tools. If release
 validation expects that full catalog, rebuild with:
 
 ```bash
