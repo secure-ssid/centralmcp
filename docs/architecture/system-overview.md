@@ -1,37 +1,27 @@
 # centralmcp system overview
 
-This page shows how the repo fits together for MCP users, contributors, and people evaluating the project from GitHub.
+centralmcp places a small MCP router in front of Aruba Central, GreenLake,
+documentation indexes, and opt-in product backends. Users discover a capability
+first, then dispatch the selected tool through a read-only or guarded write
+path.
 
-## Runtime architecture
+<figure class="docs-figure">
+  <img src="../assets/diagrams/runtime-overview.svg" alt="centralmcp runtime from an MCP client through the router and backend services">
+  <figcaption>The client sees a compact router surface while the router reaches the larger backend catalog only when needed.</figcaption>
+</figure>
 
-```mermaid
-flowchart LR
-    client["MCP clients<br/>Cursor, VS Code, Claude, local agents<br/>any MCP-capable model"]
-    router["mcp_servers/tool_router.py<br/>aruba-tool-router"]
-    catalog["data/tools.lance<br/>semantic tool catalog"]
-    rag["mcp_servers/rag.py<br/>search_docs, ask_docs, lookup_api"]
-    docs["data/docs.lance<br/>hybrid docs index"]
-    specs["data/specs.sqlite<br/>exact OpenAPI lookup"]
-    core["Core Aruba servers<br/>monitoring, config, ops, nac, glp"]
-    optional["Optional product starters<br/>clearpass, mist, apstra,<br/>aos8, edgeconnect, uxi"]
-    middleware["Safety middleware<br/>write gates, response bounds,<br/>secret tokenization, rate metadata"]
-    sources["Tracked API sources<br/>Aruba ReadMe registries<br/>official Mist OpenAPI"]
-    apis["External APIs<br/>Aruba Central, GreenLake,<br/>optional products"]
+## Runtime in one screen
 
-    client -->|"stdio or streamable HTTP"| router
-    router -->|"find_tool"| catalog
-    router -->|"invoke_read_tool / invoke_tool"| core
-    router -->|"opt-in"| optional
-    router --> middleware
-    router -->|"RAG toolset"| rag
-    rag --> docs
-    rag --> specs
-    sources --> specs
-    core -->|"async httpx REST"| apis
-    optional -->|"async httpx REST"| apis
-```
+| Layer | Responsibility |
+|---|---|
+| MCP client | Sends natural-language tasks and tool calls over stdio or streamable HTTP |
+| `aruba-tool-router` | Discovers tools, validates dispatch, applies safety rules, and bounds responses |
+| Core backends | Central monitoring/config/ops/NAC, GreenLake Platform, and RAG |
+| Optional backends | ClearPass, Mist, Apstra, ArubaOS 8, EdgeConnect, UXI, and Axis when enabled |
+| Local indexes | Hybrid documentation retrieval, exact OpenAPI lookup, and semantic tool discovery |
+| Vendor APIs | External systems reached by async HTTP clients |
 
-The default MCP client profile should stay small:
+The normal MCP profile keeps the client-visible surface small:
 
 ```env
 CENTRALMCP_ROUTER_MODE=minimal
@@ -44,72 +34,65 @@ Optional products are disabled until explicitly enabled:
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 ```
 
-The current catalog contains 6,143 generated operations and 6,699 backend tools
-when every platform and guarded write is indexed. Minimal
-router mode exposes only the compact discovery/dispatch surface to the client.
+The full catalog contains 6,143 generated operations and 6,699 backend tools
+when every platform and guarded write is indexed. Minimal mode exposes only
+`find_tool`, `invoke_read_tool`, and `invoke_tool` to the MCP client.
 
 ![centralmcp platform and tool coverage](../assets/platform-coverage.svg)
 
 ## Tool discovery and dispatch
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Client as MCP client
-    participant Router as aruba-tool-router
-    participant Catalog as Tool catalog
-    participant Backend as Backend MCP server
-    participant API as External API
-
-    User->>Client: "show critical Central alerts"
-    Client->>Router: find_tool("critical alerts")
-    Router->>Catalog: semantic or keyword lookup
-    Catalog-->>Router: list_active_alerts, read_only=true
-    Router-->>Client: compact tool result with params
-    Client->>Router: invoke_read_tool("list_active_alerts", args)
-    Router->>Backend: dispatch read-only backend tool
-    Backend->>API: async httpx GET
-    API-->>Backend: JSON
-    Backend-->>Router: bounded response
-    Router-->>Client: result
-```
+<figure class="docs-figure">
+  <img src="../assets/diagrams/discovery-dispatch.svg" alt="Sequence showing tool discovery followed by a bounded backend API call">
+  <figcaption>Discovery returns the tool schema and safety metadata before any backend operation runs.</figcaption>
+</figure>
 
 Use `invoke_read_tool` for normal investigations. Use `invoke_tool` only when the user intentionally asks for a write or destructive action; it is marked destructive because it can dispatch any enabled backend tool.
 
-## Local setup flow
+## Write-safety enforcement
 
-```mermaid
-flowchart TD
-    clone["git clone"]
-    wizard["scripts/setup_wizard.py<br/>install, region, credentials"]
-    products{"Enable optional<br/>product starters?"}
-    selected["Select products<br/>clearpass, mist, apstra,<br/>aos8, edgeconnect, uxi, or all"]
-    access{"Product access mode"}
-    ro["read-only default<br/>hide/block optional writes"]
-    rw["read-write lab mode<br/>writes visible, dry-run default,<br/>dry_run=False + confirm=True required"]
-    catalog["uv run python scripts/ingest_tools.py"]
-    doctor["uv run python scripts/doctor.py"]
-    creds["config/credentials.yaml<br/>.env or environment variables"]
-    stdio["stdio client<br/>.mcp.json"]
-    http["HTTP client<br/>.mcp.http.json + scripts/run_http_router.sh"]
-    ready["MCP client connected to aruba-tool-router"]
+<figure class="docs-figure">
+  <img src="../assets/diagrams/router-safety-flow.svg" alt="Decision flow separating read, diagnostic, write, and destructive operations">
+  <figcaption>Writes require the correct dispatcher and platform gates; destructive operations also require an explicit preview and confirmation.</figcaption>
+</figure>
 
-    clone --> wizard
-    wizard --> products
-    products -->|"yes / --products / --with-products"| selected
-    products -->|"no"| catalog
-    selected --> access
-    access -->|"default"| ro
-    access -->|"--product-access read-write"| rw
-    ro --> catalog
-    rw --> catalog
-    catalog --> doctor
-    doctor --> creds
-    creds --> stdio
-    creds --> http
-    stdio --> ready
-    http --> ready
-```
+<div class="docs-callout docs-callout--safe" markdown="1">
+**Fail-safe default:** optional products start read-only. Set
+`CENTRALMCP_READONLY=1` to hide and block writes globally, regardless of an
+individual platform's write setting.
+</div>
+
+## Documentation and index flow
+
+<figure class="docs-figure">
+  <img src="../assets/diagrams/data-index-flow.svg" alt="Official sources flowing into documentation, API specification, and tool indexes">
+  <figcaption>Prose retrieval, exact API lookup, and tool discovery use separate stores so each query follows the most reliable path.</figcaption>
+</figure>
+
+- `ask_docs` and `search_docs` use the hybrid documentation index.
+- `lookup_api` reads parsed OpenAPI data from SQLite without lossy embedding.
+- `find_tool` searches the tool catalog and returns compact schemas and safety
+  metadata.
+- Ingestion commands rebuild local artifacts under `data/`; those generated
+  files are intentionally git-ignored.
+
+## Transport and deployment
+
+<figure class="docs-figure">
+  <img src="../assets/diagrams/transport-deployment.svg" alt="stdio, local HTTP, and protected remote HTTP deployment choices">
+  <figcaption>stdio is simplest for desktop clients. Streamable HTTP supports shared processes, but non-loopback listeners must be protected.</figcaption>
+</figure>
+
+| Deployment | Configuration | Security boundary |
+|---|---|---|
+| stdio | Client launches `mcp_servers/tool_router.py` | Local child process |
+| Local HTTP | `MCP_TRANSPORT=streamable-http`, loopback listener | Same-host clients |
+| Non-loopback HTTP | Streamable HTTP plus allowed hosts and bearer token | Explicit network and authentication controls |
+
+See [MCP client recipes](../mcp-client-recipes.md) for copy/paste
+configurations.
+
+## Local setup and validation
 
 `scripts/setup_wizard.py` can run install, offer common Central API gateway
 choices, fill credentials without echoing secrets, and enable only the optional
@@ -118,7 +101,7 @@ not call Central, GLP, or optional product APIs. It checks local dependencies,
 credentials/config paths, indexes, RAG source-manifest drift, router profile
 drift, HTTP URL/transport mismatches, optional product env, and listener status.
 
-## Tracked file structure
+## Repository map
 
 ```text
 .claude/                 Optional launch profiles and repo agent notes
@@ -159,7 +142,7 @@ The optional Redis/Ollama Docker helper uses Docker named volumes for service
 state, so it does not create repo-local `redis_data/` or `ollama_data/`
 directories on new setups.
 
-## Migration and API provenance
+## Migration and source provenance
 
 The AOS8 migration path is separate from the generic eight-stage CSV pipeline.
 It establishes UIDARUBA/X-CSRF sessions, exports WLANs, roles, VLANs, AP groups,
@@ -176,3 +159,11 @@ OpenAPI inputs are reproducible:
 - Weekly CI checks detect registry hash or Mist upstream drift.
 - Structured OpenAPI records are stored only in `data/specs.sqlite`; the
   51,737-row LanceDB table remains a prose retrieval corpus.
+
+<div class="docs-next" markdown="1">
+### Continue
+
+- [Set up centralmcp](../getting-started.md)
+- [Understand the router](../tool-router.md)
+- [Explore optional products](../optional-products.md)
+</div>

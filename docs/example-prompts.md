@@ -1,298 +1,241 @@
 # Example prompts
 
-These examples are written for the default low-token router profile:
+These scenarios are written for the default low-token router profile:
 
 ```env
 CENTRALMCP_ROUTER_MODE=minimal
 CENTRALMCP_TOOLSETS=central,glp,rag
 ```
 
-In this profile, ask your MCP client to use `find_tool` first, then call `invoke_read_tool` for read-only work. That keeps the tool list small while still reaching the backend catalog.
+In this profile, ask your MCP client to use `find_tool` first, then dispatch
+with `invoke_read_tool` (read), `invoke_tool` (diagnostic/write/destructive).
+That keeps the tool list small while still reaching the full backend catalog.
+See [tool-router.md](tool-router.md) for how discovery and dispatch work and
+what each safety classification means.
 
-## First smoke test
+<p>
+<span class="docs-badge docs-badge--read">read</span>
+<span class="docs-badge docs-badge--diagnostic">diagnostic</span>
+<span class="docs-badge docs-badge--write">write</span>
+<span class="docs-badge docs-badge--destructive">destructive</span>
+label each scenario below by its normalized <code>capability</code>.
+</p>
 
-Natural-language prompt:
+<div class="example-grid" markdown="1">
 
-```text
-Use centralmcp to find the tool for listing Aruba Central sites, then call it with limit 10.
-```
-
-Router flow:
+<div class="example-card" markdown="1">
+<h3>1. First read</h3>
+<p><span class="docs-badge docs-badge--read">read</span></p>
+<p><strong>Prompt:</strong> "Use centralmcp to find the tool for listing
+Aruba Central sites, then call it with a limit of 10."</p>
 
 ```text
 find_tool("list Aruba Central sites")
 invoke_read_tool("list_sites", {"limit": 10, "offset": 0})
 ```
 
-## Check active alerts
+<p><strong>Expected shape:</strong> a JSON array of site records (id, name,
+location fields), or a <code>{"items": [...], "_pagination": {...}}</code>
+wrapper only if the result needed clipping.</p>
+<p><strong>Variation:</strong> swap in <code>list_devices</code> with
+<code>device_type</code>/<code>site_id</code> filters to inventory APs or
+switches instead of sites.</p>
+</div>
 
-Natural-language prompt:
-
-```text
-Show me the active critical alerts in Aruba Central. Keep the result short.
-```
-
-Router flow:
-
-```text
-find_tool("active critical alerts")
-invoke_read_tool("list_active_alerts", {"severity": "CRITICAL", "limit": 20, "offset": 0})
-```
-
-## Search clients without flooding context
-
-Natural-language prompt:
-
-```text
-Find connected clients whose hostname contains "printer". Return only the first 25.
-```
-
-Router flow:
-
-```text
-find_tool("connected clients hostname contains")
-invoke_read_tool("list_clients", {"hostname_contains": "printer", "limit": 25, "offset": 0})
-```
-
-## Ask documentation questions
-
-Natural-language prompt:
-
-```text
-Use the Aruba docs index to explain how WPA3 SAE transition mode is represented. Include citations.
-```
-
-Router flow:
-
-```text
-find_tool("ask Aruba docs with citations")
-invoke_read_tool("ask_docs", {"question": "WPA3 SAE transition mode", "top_k": 5})
-```
-
-## Look up exact API details
-
-Natural-language prompt:
-
-```text
-Look up the exact OpenAPI endpoint or schema for Central client alerts. Do not guess from prose.
-```
-
-Router flow:
+<div class="example-card" markdown="1">
+<h3>2. Exact API lookup</h3>
+<p><span class="docs-badge docs-badge--read">read</span></p>
+<p><strong>Prompt:</strong> "Look up the exact OpenAPI endpoint or schema for
+Central client alerts. Do not guess from prose."</p>
 
 ```text
 find_tool("exact OpenAPI lookup")
 invoke_read_tool("lookup_api", {"query": "Central client alerts", "top_k": 10})
 ```
 
-## Inspect device inventory
+<p><strong>Expected shape:</strong> a JSON array of matched OpenAPI
+operations/schema fields, authoritative and lossless from the parsed specs;
+an empty array means no confident match -- fall back to <code>ask_docs</code>
+or <code>search_docs</code>.</p>
+<p><strong>Variation:</strong> ask for exact enum values, e.g.
+<code>lookup_api("wlan-ssids opmode enum values")</code>.</p>
+</div>
 
-Natural-language prompt:
-
-```text
-List the first 25 access points at a site, then tell me which tool can get device health for one serial number.
-```
-
-Router flow:
-
-```text
-find_tool("list devices by site")
-invoke_read_tool("list_devices", {"device_type": "AP", "site_id": "SITE_ID", "limit": 25, "offset": 0})
-find_tool("device health by serial number")
-```
-
-## Review configuration checkpoint behavior
-
-New Central exposes checkpoint policy and automatic rollback status guidance,
-not an API for selecting and restoring an arbitrary historical checkpoint.
+<div class="example-card" markdown="1">
+<h3>3. RAG answer</h3>
+<p><span class="docs-badge docs-badge--read">read</span></p>
+<p><strong>Prompt:</strong> "Explain how WPA3 SAE transition mode is
+represented in Central config. Include citations."</p>
 
 ```text
-Explain Central checkpoint and rollback behavior, then preview a checkpoint
-policy for my gateway scope without applying it.
+find_tool("ask Aruba docs with citations")
+invoke_read_tool("ask_docs", {"question": "WPA3 SAE transition mode", "top_k": 5})
 ```
+
+<p><strong>Expected shape:</strong> a compact extractive answer plus a
+bounded list of citations (<code>file_path</code> and matched chunk),
+instead of several long raw chunks.</p>
+<p><strong>Variation:</strong> call <code>search_docs</code> directly for
+raw retrieval when you want to see every matched chunk yourself.</p>
+</div>
+
+<div class="example-card" markdown="1">
+<h3>4. Bounded batch</h3>
+<p><span class="docs-badge docs-badge--read">read</span></p>
+<p><strong>Prompt:</strong> "Show me the active critical alerts and the
+first 25 sites in one round trip."</p>
 
 ```text
-find_tool("configuration rollback status")
-invoke_read_tool("get_config_rollback_status", {})
-find_tool("build configuration checkpoint policy")
-invoke_tool("build_config_checkpoint_policy", {"name": "gateway-checkpoints", "scope_id": "SCOPE_ID", "device_function": "GATEWAY", "dry_run": true})
+find_tool("active critical alerts")
+invoke_read_tool_batch({
+  "calls": [
+    {"id": "alerts", "name": "list_active_alerts", "arguments": {"severity": "CRITICAL"}},
+    {"id": "sites",  "name": "list_sites",         "arguments": {"limit": 25}}
+  ]
+})
 ```
 
-## Plan an AOS8 migration
+<p><strong>Expected shape:</strong>
+<code>{"ok": bool, "results": [{"id": ..., "tool": ..., "status": "ok"|"blocked"|..., "result": {...}}], "counts": {"total": 2, "succeeded": ..., "failed": ...}, "failed_ids": [...], "truncated": bool}</code>.
+<code>ok</code> is only <code>true</code> when every entry succeeded; one
+failed entry never aborts the rest.</p>
+<p><strong>Variation:</strong> outside a batch, resume one oversized single
+read by passing the previous response's <code>next_cursor</code> back as
+<code>cursor</code>: <code>invoke_read_tool("list_devices", {"site_id": "SITE_ID"}, cursor="eyJ2IjoxLCJl...")</code>.
+<code>invoke_read_tool_batch</code> is available outside <code>minimal</code>
+mode.</p>
+</div>
+
+<div class="example-card" markdown="1">
+<h3>5. Diagnostic call</h3>
+<p><span class="docs-badge docs-badge--diagnostic">diagnostic</span></p>
+<p><strong>Prompt:</strong> "Ping 10.0.0.1 from CX switch CN12ABC456 and show
+me the result."</p>
 
 ```text
-Export the AOS8 configuration at /md, normalize the migration objects, and
-build separate Classic Central and New Central plans. Show warnings and diffs;
-do not write to either target.
+find_tool("ping from a CX switch")
+invoke_tool("cx_ping", {"serial_number": "CN12ABC456", "destination": "10.0.0.1"})
 ```
+
+<p><strong>Expected shape:</strong> an async result dict (the call polls for
+roughly 60s) with the ping output and an <code>errors</code> list. Diagnostic
+tools dispatch through <code>invoke_tool</code>, not
+<code>invoke_read_tool</code>, because they are intentionally not annotated
+read-only even though they change no device state.</p>
+<p><strong>Variation:</strong> <code>cx_traceroute</code> for a path trace, or
+<code>cx_show</code> with a <code>commands</code> list for raw CLI output.</p>
+</div>
+
+<div class="example-card" markdown="1">
+<h3>6. Dry-run write</h3>
+<p><span class="docs-badge docs-badge--write">write</span></p>
+<p><strong>Prompt:</strong> "Build a MAC-auth guest SSID on scope SCOPE_ID.
+Show me the dry-run payload only -- do not apply it yet."</p>
 
 ```text
-find_tool("AOS8 Classic New Central migration plan")
-invoke_read_tool("aos8_migration_plan", {"config_path": "/md", "limit": 200})
+find_tool("build an SSID")
+invoke_tool("build_underlay_ssid", {"ssid_name": "guest-wifi", "scope_id": "SCOPE_ID", "opmode": "OPEN", "dry_run": true})
 ```
 
-The plan covers WLANs, roles, VLANs, AP groups, controllers, and policies and
-preserves export or malformed-section warnings.
+<p><strong>Expected shape:</strong> the preview payload describing what
+would be created, plus an <code>execution_contract</code> whose
+<code>dry_run.state</code> reports <code>preview</code>. Nothing is written
+while <code>dry_run</code> is <code>true</code>.</p>
+<p><strong>Variation:</strong> after the user reviews the preview and asks
+for the change, repeat the same call with <code>"dry_run": false</code>.</p>
+</div>
 
-## Group GLP devices by model
+<div class="example-card" markdown="1">
+<h3>7. Confirmation-gated destructive change</h3>
+<p><span class="docs-badge docs-badge--destructive">destructive</span></p>
+<p><strong>Prompt:</strong> "I reviewed the dry-run output for migration run
+RUN_ID -- apply it for real now."</p>
 
 ```text
-Group GreenLake Platform devices by model using the v2beta1 API and keep the
-output to the first 25 values.
+find_tool("AOS8 apply migration run")
+invoke_tool("aos8_apply_migration_run", {"run_id": "RUN_ID", "dry_run": false, "confirm": true})
 ```
+
+<p><strong>Expected shape:</strong> per-candidate apply/resume results. This
+tool takes an explicit <code>confirm: bool</code> argument alongside
+<code>dry_run</code> and refuses a real write without both a prior dry run
+and <code>confirm=true</code>.</p>
+<p><strong>Variation:</strong> some destructive ops tools
+(<code>reboot_device</code>, <code>port_bounce</code>, <code>poe_bounce</code>,
+<code>disconnect_client</code>) have no <code>confirm</code> argument at all
+-- they confirm interactively through MCP elicitation instead. Check the
+tool's schema before assuming either shape.</p>
+</div>
+
+<div class="example-card" markdown="1">
+<h3>8. Blocked by a write gate</h3>
+<p><span class="docs-badge docs-badge--write">write</span></p>
+<p><strong>Prompt:</strong> "Invite jane@example.com to the GreenLake
+workspace."</p>
 
 ```text
-find_tool("GLP group devices by model")
-invoke_read_tool("group_glp_devices", {"group_by": "model", "limit": 25, "offset": 0})
+find_tool("invite a GLP user")
+invoke_tool("invite_glp_user", {"email": "jane@example.com"})
 ```
 
-## Optional products
+<p><strong>Expected shape (default install):</strong> GLP writes default to
+disabled, so this returns a blocked response before any backend call --
+<code>{"error": "... glp writes are not enabled ...", "tool": "invite_glp_user", "status": "blocked", "platform": "glp", "execution_contract": {...}}</code>.
+See <a href="tool-router.md#safety-gates">the router safety-gates section</a>
+for the full shape.</p>
+<p><strong>Variation:</strong> set <code>CENTRALMCP_GLP_V2BETA1_WRITES=1</code>
+and repeat the identical call to actually send the invite.</p>
+</div>
 
-Optional product starters are disabled unless you enable them:
+<div class="example-card" markdown="1">
+<h3>9. Optional-product example</h3>
+<p><span class="docs-badge docs-badge--read">read</span></p>
+<p><strong>Prompt:</strong> "Check whether the Mist optional backend is
+configured, then list the first 10 Apstra blueprints."</p>
 
 ```env
-CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
+CENTRALMCP_PRODUCTS=mist,apstra
 CENTRALMCP_PRODUCT_ACCESS=read-only
 ```
-
-Example prompt:
-
-```text
-Check whether the Mist optional backend is configured, then find the guarded read-only Mist GET tool.
-```
-
-Router flow:
 
 ```text
 find_tool("Mist backend status")
 invoke_read_tool("mist_status", {})
-find_tool("Mist read-only GET")
-```
-
-Typed optional read prompt:
-
-```text
-List the first 10 Apstra blueprints and show only their IDs, labels, and status.
-```
-
-Router flow:
-
-```text
 find_tool("Apstra list blueprints")
 invoke_read_tool("apstra_list_blueprints", {"limit": 10})
 ```
 
-UXI read prompt:
+<p><strong>Expected shape:</strong> <code>mist_status</code> returns
+<code>{"configured": bool, "host": ..., "has_token": bool}</code>;
+<code>apstra_list_blueprints</code> returns a limit/offset-paginated list of
+blueprint records. Optional products stay disabled unless
+<code>CENTRALMCP_PRODUCTS</code>/<code>CENTRALMCP_TOOLSETS</code> enables
+them, and their write tools stay hidden while
+<code>CENTRALMCP_PRODUCT_ACCESS=read-only</code> (the default).</p>
+<p><strong>Variation:</strong> swap in UXI --
+<code>invoke_read_tool("uxi_list_sensors", {"page_size": 10})</code> then
+<code>invoke_read_tool("uxi_get_sensor_status", {"sensor_id": "SENSOR_ID"})</code>.</p>
+</div>
 
-```text
-List the first 10 UXI sensors, then get online/testing status for one sensor ID.
-```
+</div>
 
-Router flow:
+<div class="docs-callout docs-callout--warning" markdown="1">
+<strong>Write or destructive work.</strong> Confirm scope, device type, and
+(for SSIDs) security mode and VLANs before calling a write tool -- never
+assume. Prefer <code>dry_run=true</code> first when the tool supports it,
+and use <code>invoke_tool</code> only after the user has given explicit
+intent for a write or destructive action.
+</div>
 
-```text
-find_tool("UXI list sensors")
-invoke_read_tool("uxi_list_sensors", {"page_size": 10})
-find_tool("UXI sensor status")
-invoke_read_tool("uxi_get_sensor_status", {"sensor_id": "SENSOR_ID"})
-```
+<div class="docs-next" markdown="1">
 
-EdgeConnect compatibility prompt:
+### Next
 
-```text
-Run the EdgeConnect API compatibility doctor. Do not enable legacy endpoints
-or run operational calls.
-```
+- [tool-router.md](tool-router.md) -- discovery/dispatch flow, pagination and
+  bounded responses, and every safety gate in detail.
+- [optional-products.md](optional-products.md) -- the full ClearPass, Mist,
+  Apstra, AOS8, EdgeConnect, UXI, and Axis workflow matrix.
+- [mcp-client-recipes.md](mcp-client-recipes.md) -- stdio and streamable HTTP
+  client setup recipes.
 
-```text
-find_tool("EdgeConnect Swagger compatibility doctor")
-invoke_read_tool("edgeconnect_doctor", {})
-```
-
-Lab write dry-run prompt:
-
-```env
-CENTRALMCP_PRODUCT_ACCESS=read-write
-```
-
-```text
-Find the Mist alarm acknowledgement tool and show the dry-run payload for alarm ALARM_ID at site SITE_ID. Do not execute it.
-```
-
-Router flow:
-
-```text
-find_tool("Mist acknowledge alarm")
-invoke_tool("mist_ack_alarm", {"site_id": "SITE_ID", "alarm_id": "ALARM_ID", "note": "lab verified", "dry_run": true})
-```
-
-## Preview a resumable AOS8 migration run
-
-```text
-Preview a resumable AOS8 migration run to New Central for the Branch APs
-scope using the migration plan I already exported. Do not create or apply
-it yet.
-```
-
-Router flow:
-
-```text
-find_tool("AOS8 preview migration run")
-invoke_read_tool("aos8_preview_migration_run", {"target_type": "new_central", "migration_plan": {"wlans": []}, "scope_name": "Branch APs", "persona": "CAMPUS_AP", "limit": 50, "offset": 0})
-```
-
-Once the preview looks right, create the run and apply it dry-run first:
-
-```text
-find_tool("AOS8 create migration run")
-invoke_tool("aos8_create_migration_run", {"target_type": "new_central", "migration_plan": {"wlans": []}, "scope_name": "Branch APs", "persona": "CAMPUS_AP", "conflict_policy": "fail"})
-find_tool("AOS8 apply migration run")
-invoke_tool("aos8_apply_migration_run", {"run_id": "RUN_ID", "dry_run": true})
-```
-
-Only pass `dry_run=false` with `confirm=true` and any required target secrets
-after reviewing the dry-run output. New Central rollback guidance is limited
-to its post-change checkpoint policy and automatic device rollback.
-
-## Collect Mist device diagnostic results
-
-```text
-Collect the results for a diagnostic session I already started on a Mist
-device, bounded to 30 seconds and 50 events.
-```
-
-Router flow:
-
-```text
-find_tool("Mist collect diagnostic results")
-invoke_read_tool("mist_collect_diagnostic_results", {"site_id": "SITE_ID", "device_id": "DEVICE_ID", "session_id": "SESSION_ID", "timeout_seconds": 30, "max_events": 50})
-```
-
-This requires `MIST_API_TOKEN` (or `MIST_SESSION_COOKIE` + `MIST_CSRF_TOKEN`)
-and the `websockets` dependency; it only connects to the documented regional
-`WS /api-ws/v1/stream` endpoint derived from `MIST_HOST`.
-
-## Look up GreenLake Platform RBAC and SCIM details
-
-```text
-List the first 10 GreenLake Platform RBAC role assignments, then look up SCIM
-group membership for one group ID.
-```
-
-Router flow:
-
-```text
-find_tool("GLP RBAC role assignments")
-invoke_read_tool("list_glp_role_assignments", {"limit": 10, "offset": 0})
-find_tool("GLP SCIM group users")
-invoke_read_tool("list_glp_scim_group_users", {"group_id": "GROUP_ID"})
-```
-
-## Write or destructive work
-
-For writes, make intent explicit and dry-run first when the selected tool supports it:
-
-```text
-Find the tool to build an SSID, show me the dry-run payload only, and do not apply changes yet.
-```
-
-Use `invoke_tool` only after the user intentionally asks for a write/destructive action. The router marks it destructive because it can dispatch write-capable backend tools.
+</div>

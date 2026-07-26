@@ -13,7 +13,168 @@ Use every starter only when you intentionally want the broader catalog:
 python3 scripts/setup_wizard.py --with-products
 ```
 
+<figure class="docs-figure" markdown="1">
+
+![Map from common network automation goals to the ClearPass, Mist, Apstra, ArubaOS 8, EdgeConnect, UXI, and Axis backends](assets/diagrams/optional-products-map.svg)
+
+<figcaption>Match the goal to a backend, then jump to its card below for the
+required environment variables and a safe first call.</figcaption>
+</figure>
+
+## Read-only vs. write-safety, at a glance
+
+<div class="docs-callout docs-callout--safe" markdown="1">
+**Read-only and diagnostic tools are always discoverable.** Once a backend is
+enabled, call read-only tools through `invoke_read_tool`; call diagnostics
+through `invoke_tool`. Neither category needs optional-product write access.
+</div>
+
+<div class="docs-callout docs-callout--danger" markdown="1">
+**Write and destructive tools are opt-in twice over.** `CENTRALMCP_PRODUCT_ACCESS`
+defaults to `read-only`, which hides every optional-product write tool from
+`find_tool` and blocks direct execution through `invoke_tool`. Even after
+access is opened, each write tool still defaults to `dry_run=True` and
+requires an explicit `dry_run=False` **and** `confirm=True` on the same call
+before it touches a real vendor API.
+</div>
+
+<div class="docs-compact-table" markdown="1">
+
+| | Read-only / diagnostic tools | Write / destructive tools |
+|---|---|---|
+| Discovery | Always listed by `find_tool` | Hidden while `CENTRALMCP_PRODUCT_ACCESS=read-only` (default) |
+| Dispatch | Reads use `invoke_read_tool`; diagnostics use `invoke_tool` | `invoke_tool` returns a `blocked` error until access is opened |
+| To open | Nothing to do | `CENTRALMCP_PRODUCT_ACCESS=read-write`, or a single platform's `CENTRALMCP_<PLATFORM>_WRITES=1` |
+| Per-call guardrail | Server-side pagination/byte bounds | Also requires `dry_run=False` **and** `confirm=True` in the same call |
+| Blast radius | Bounded reads or non-mutating diagnostics | Real vendor mutation once both gates above are satisfied |
+
+</div>
+
+A platform-specific override (`CENTRALMCP_MIST_WRITES=1`,
+`CENTRALMCP_UXI_WRITES=1`, `CENTRALMCP_AXIS_WRITES=1`, `CENTRALMCP_APSTRA_WRITES=1`,
+`CENTRALMCP_CLEARPASS_WRITES=1`, `CENTRALMCP_AOS8_WRITES=1`,
+`CENTRALMCP_EDGECONNECT_WRITES=1`) always takes precedence over
+`CENTRALMCP_PRODUCT_ACCESS`, so you can open one lab backend for writes without
+exposing every optional product. Unrecognized values fail closed to read-only.
+
+## Try one safely
+
+Each card shows the environment variables that turn a backend on, how to
+enable it for the router/catalog, and one real read-only call you can run
+immediately after setup — no write flags involved.
+
+<div class="example-grid" markdown="1">
+
+<div class="example-card" markdown="1">
+
+### <span class="docs-badge">ClearPass</span> <span class="docs-badge">Access control / NAC</span>
+
+- **Env:** `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN`
+- **Enable:** `CENTRALMCP_PRODUCTS=clearpass`
+- **Write gate:** `CENTRALMCP_CLEARPASS_WRITES`
+
+```text
+invoke_read_tool("clearpass_list_endpoints", {"limit": 5, "status": "Known"})
+```
+
+</div>
+
+<div class="example-card" markdown="1">
+
+### <span class="docs-badge">Juniper Mist</span> <span class="docs-badge">Wireless / WAN assurance</span>
+
+- **Env:** `MIST_HOST`, `MIST_API_TOKEN` (optional session cookie/CSRF)
+- **Enable:** `CENTRALMCP_PRODUCTS=mist`
+- **Write gate:** `CENTRALMCP_MIST_WRITES`
+
+```text
+invoke_read_tool("mist_list_sites", {"org_id": "11111111-2222-3333-4444-555555555555", "limit": 5})
+```
+
+</div>
+
+<div class="example-card" markdown="1">
+
+### <span class="docs-badge">Apstra</span> <span class="docs-badge">Data-center fabric</span>
+
+- **Env:** `APSTRA_BASE_URL`, `APSTRA_USERNAME`/`APSTRA_PASSWORD` (or `APSTRA_API_TOKEN`)
+- **Enable:** `CENTRALMCP_PRODUCTS=apstra`
+- **Write gate:** `CENTRALMCP_APSTRA_WRITES`
+
+```text
+invoke_read_tool("apstra_list_blueprints", {"limit": 5})
+```
+
+</div>
+
+<div class="example-card" markdown="1">
+
+### <span class="docs-badge">ArubaOS 8</span> <span class="docs-badge">Controller migration</span>
+
+- **Env:** `AOS8_BASE_URL`, `AOS8_USERNAME`/`AOS8_PASSWORD` (or legacy `AOS8_API_TOKEN`)
+- **Enable:** `CENTRALMCP_PRODUCTS=aos8`
+- **Write gate:** `CENTRALMCP_AOS8_WRITES`
+
+```text
+invoke_read_tool("aos8_list_aps", {"config_path": "/md", "limit": 5})
+```
+
+</div>
+
+<div class="example-card" markdown="1">
+
+### <span class="docs-badge">EdgeConnect</span> <span class="docs-badge">SD-WAN operations</span>
+
+- **Env:** `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN` (optional `EDGECONNECT_AUTH_HEADER`)
+- **Enable:** `CENTRALMCP_PRODUCTS=edgeconnect`
+- **Write gate:** `CENTRALMCP_EDGECONNECT_WRITES`
+
+```text
+invoke_read_tool("edgeconnect_list_appliances", {"limit": 5})
+```
+
+</div>
+
+<div class="example-card" markdown="1">
+
+### <span class="docs-badge">HPE Aruba UXI</span> <span class="docs-badge">Synthetic experience</span>
+
+- **Env:** `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET` (optional `UXI_BASE_URL`, `UXI_TOKEN_URL`)
+- **Enable:** `CENTRALMCP_PRODUCTS=uxi`
+- **Write gate:** `CENTRALMCP_UXI_WRITES`
+
+```text
+invoke_read_tool("uxi_list_sensors", {"page_size": 5})
+```
+
+</div>
+
+<div class="example-card" markdown="1">
+
+### <span class="docs-badge">Axis Atmos Cloud</span> <span class="docs-badge">Cloud access policy</span>
+
+- **Env:** `AXIS_BASE_URL`, `AXIS_API_TOKEN`
+- **Enable:** `CENTRALMCP_PRODUCTS=axis`
+- **Write gate:** `CENTRALMCP_AXIS_WRITES`
+
+```text
+invoke_read_tool("axis_get_applications", {"page_size": 5})
+```
+
+</div>
+
+</div>
+
+`CENTRALMCP_PRODUCTS` (comma-separated) is what the setup wizard and
+`scripts/ingest_tools.py --products ...` use to build the catalog.
+`CENTRALMCP_TOOLSETS` (comma-separated, e.g. `CENTRALMCP_TOOLSETS=central,glp,rag`)
+additionally narrows which backends the running router loads — include a
+platform name there too (e.g. `mist`) if you want the router itself scoped
+to just that optional backend.
+
 ## Product matrix
+
+<div class="docs-compact-table" markdown="1">
 
 | Product | Read-only annotated / total | Enables | Required settings | Safety surface |
 |---|---:|---|---|---|
@@ -26,6 +187,8 @@ python3 scripts/setup_wizard.py --with-products
 | Axis Atmos Cloud | 12 / 47 | Reviewed application, connector, tunnel, location, policy, status, and commit workflows from the deterministic SHA-pinned manifest generator, plus (v0.7) a read-only split-CRUD contract verification harness and a gated, plan-only disposable-write harness | `AXIS_BASE_URL`, `AXIS_API_TOKEN` | Writes dry-run by default |
 | **Optional subtotal** | **1,773 / 3,757** | Seven opt-in product backends | Product-specific | Hidden and blocked unless enabled |
 
+</div>
+
 Combined with the Central/GLP/RAG surfaces, the backend catalog contains 3,147
 read-only-annotated tools and 6,699 registered tools. Diagnostic tools are
 available in optional read-only mode but are not included in the read-only
@@ -34,19 +197,6 @@ annotation count.
 The generic GET tools reject absolute URLs and stay bounded to the configured
 product host. List-like responses are paged with `limit` and `offset` when
 possible so broad API calls do not flood the MCP context.
-
-Write-capable optional product tools are intended for lab and controlled
-operations. They are annotated as write/destructive, default to `dry_run=True`,
-and require `dry_run=False` plus `confirm=True` before sending API changes.
-Optional product access defaults to `read-only`, which hides optional write
-tools from router discovery and blocks direct write-tool execution. Set
-`CENTRALMCP_PRODUCT_ACCESS=read-write` or run the setup wizard with
-`--product-access read-write` only for trusted lab workflows where confirmed
-writes are expected. Per-platform overrides such as
-`CENTRALMCP_MIST_WRITES=1`, `CENTRALMCP_UXI_WRITES=1`, and
-`CENTRALMCP_AXIS_WRITES=1` can enable one product without opening every
-optional backend. A platform-specific setting takes precedence over
-`CENTRALMCP_PRODUCT_ACCESS`; unrecognized values fail closed.
 
 For ArubaOS 8 typed configuration-object writes, the manage tools return
 `requires_write_memory_for` with each affected `config_path`. Run

@@ -2,129 +2,198 @@
 
 Low-token Model Context Protocol tooling for HPE Aruba Central, HPE GreenLake
 Platform, embedded docs/API lookup, and optional ClearPass, Mist, Apstra,
-ArubaOS 8, EdgeConnect, UXI, and Axis backends.
+ArubaOS 8, EdgeConnect, UXI, and Axis backends. This page is a task-based
+front door for three audiences: people trying MCP for the first time, Aruba
+network operators, and centralmcp developers.
 
-![centralmcp 0.7.0](assets/centralmcp-hero.svg)
+![centralmcp banner showing 6,143 generated operations, 6,699 backend tools, 3 minimal router tools, and nine platform surfaces with embedded RAG](assets/centralmcp-hero.svg)
 
-## Version 0.7.0 project snapshot
+Whatever backend does the work, an MCP client sees only three router tools
+under the recommended `minimal` profile — the banner's "3 minimal router
+tools" figure is the number that matters most for context budget.
 
-| Area | Current snapshot |
-|---|---|
-| Tool catalog | 6,143 generated operations (6,126 active) / 573 curated / 6,699 backend tools / 6,705 direct-all |
-| Capability totals | 3,147 read, 165 diagnostic, 2,544 write, 843 destructive |
-| RAG | 51,737 prose chunks in LanceDB |
-| Structured lookup | 244 specs, 3,796 endpoints, 11,293 schemas, 60,568 fields, 102 advisories, 346 lifecycle records |
-| API provenance | Aruba ReadMe registries, official Mist/Apstra sources, pinned GLP and EdgeConnect snapshots, SHA-pinned Axis generator |
-| Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis Atmos Cloud |
-| Safety | Per-platform gates, dry-run writes, confirmation, HTTP host/origin and bearer controls, credential-gated live-test config, versioned/redacted artifact contracts |
+## Who it's for
 
-Read the [0.7.0 release notes](release-notes-0.7.0.md) for artifact/live-test
-gates, source lifecycle provenance, structured RAG intelligence (advisory/
-lifecycle listing and correlation), Central/GLP/AOS8/optional-product depth,
-observability/security hardening, router automation with opaque cursors, and
-release artifact automation. Earlier release notes remain available for
-historical context.
+<div class="audience-grid" markdown="1">
 
-See the [capability gap matrix](capability-gap-matrix.md) for reproducible
-executable-tool, generated-operation, benchmark, and practical-gap comparisons.
+<div class="audience-card" markdown="1">
 
-## Search keywords
+### First-time MCP users
 
-HPE Networking MCP server, HPE Aruba Networking MCP server, HPE Aruba Central
-MCP server, HPE Aruba Networking Central MCP server, Aruba Central AI tools,
-AI network automation, HPE GreenLake Platform MCP, GreenLake
-Platform automation, GreenLake Platform MCP, GreenLake service catalog MCP,
-GreenLake reporting status MCP, FastMCP network automation, Model Context
-Protocol networking, network configuration MCP, Aruba API RAG, Aruba Central
-OpenAPI lookup, ClearPass MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP,
-ArubaOS 8 migration MCP, ArubaOS 8 migration automation, AOS8 automation,
-Classic Central migration, New Central migration, guarded dry-run migration,
-HPE Aruba EdgeConnect MCP,
-EdgeConnect SD-WAN MCP, HPE Aruba UXI MCP, UXI sensor status MCP, Axis Atmos
-Cloud MCP, guarded read/write lab automation, EdgeConnect zones, EdgeConnect
-interface labels, zone-based firewall MCP, Python `httpx` network automation,
-EdgeConnect ACL object groups, EdgeConnect services, EdgeConnect bypass mode,
-EdgeConnect link integrity diagnostics, low-token MCP router.
+New to centralmcp or to MCP itself. Start with the
+[five-minute credential-free quickstart](#five-minute-credential-free-quickstart)
+below, then [Getting started](getting-started.md) for credentials and a
+real MCP client connection.
 
-## Start fast
+</div>
+
+<div class="audience-card" markdown="1">
+
+### Aruba network operators
+
+Already run Aruba Central or GreenLake Platform day to day. Jump to
+[Example prompts](example-prompts.md) for ready-made call patterns, or the
+[typed product workflow roadmap](product-workflows.md) for ClearPass, Mist,
+Apstra, AOS8, EdgeConnect, and UXI tasks.
+
+</div>
+
+<div class="audience-card" markdown="1">
+
+### centralmcp developers
+
+Extending a backend, adding a tool, or reviewing the router internals. Start
+with [System overview](architecture/system-overview.md) and
+[Tool router](tool-router.md).
+
+</div>
+
+</div>
+
+## Five-minute credential-free quickstart
+
+You can verify the install, build the router catalog, and start the MCP HTTP
+server before adding any Aruba Central or GreenLake Platform credentials.
+API-backed tools need credentials later, but this path is safe to try first
+with fake or no account details at all.
+
+<figure class="docs-figure">
+  <img src="assets/diagrams/quickstart-journey.svg" alt="Six steps from cloning centralmcp through setup, doctor checks, MCP connection, tool discovery, and a safe read-only call">
+  <figcaption>The same six steps — clone, run the wizard, check the doctor, connect, discover, and call safely — are the checkpoints below.</figcaption>
+</figure>
+
+<div class="docs-checkpoint">
+  <div class="docs-checkpoint__number">1</div>
+  <div class="docs-checkpoint__body" markdown="1">
+
+**Clone centralmcp.**
 
 ```bash
 git clone https://github.com/secure-ssid/centralmcp.git
 cd centralmcp
-python3 scripts/setup_wizard.py
 ```
 
-The wizard can install dependencies, create local MCP configs, choose a Central
-API gateway region, fill credentials without echoing secrets, enable selected
-optional products, build the router catalog, and run the local doctor.
+Expected outcome: a local `centralmcp/` working copy with no network calls beyond the clone itself.
 
-![Setup wizard preview](assets/setup-wizard-preview.svg)
+  </div>
+</div>
 
-## Setup flow
+<div class="docs-checkpoint">
+  <div class="docs-checkpoint__number">2</div>
+  <div class="docs-checkpoint__body" markdown="1">
 
-```mermaid
-flowchart TD
-    clone["git clone centralmcp"]
-    wizard["scripts/setup_wizard.py"]
-    credentials["Central / GLP credentials<br/>config/credentials.yaml"]
-    products["Optional products<br/>ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis"]
-    access{"Product access"}
-    readonly["read-only<br/>write tools hidden/blocked"]
-    readwrite["read-write lab mode<br/>dry-run previews<br/>confirm=True to execute"]
-    config["Local MCP config<br/>stdio or streamable HTTP"]
-    catalog["Router tool catalog"]
-    doctor["scripts/doctor.py"]
-    ready["MCP client connected<br/>to aruba-tool-router"]
+**Run the wizard without credentials.**
 
-    clone --> wizard
-    wizard --> credentials
-    wizard --> products
-    products --> access
-    access --> readonly
-    access --> readwrite
-    readonly --> config
-    readwrite --> config
-    credentials --> catalog
-    config --> catalog
-    catalog --> doctor
-    doctor --> ready
+```bash
+python3 scripts/setup_wizard.py --yes --skip-credentials
 ```
 
-## Pick your path
+Expected outcome: dependencies install, local git-ignored config files are created, and the wizard reports each completed phase without contacting Central or GLP.
 
-| Goal | Guide |
-|---|---|
-| Install and connect an MCP client | [Getting started](getting-started.md) |
-| Copy/paste stdio or HTTP client config | [MCP client recipes](mcp-client-recipes.md) |
-| Enable ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, or Axis | [Optional product starters](optional-products.md) |
-| Plan typed product-specific workflows | [Typed product workflow roadmap](product-workflows.md) |
-| Fix setup, credentials, HTTP, or catalog issues | [Troubleshooting](troubleshooting.md) |
-| Download or package prebuilt RAG/OpenAPI indexes | [Prebuilt RAG/OpenAPI indexes](release-indexes.md) |
-| Review the complete 0.7.0 expansion | [0.7.0 release notes](release-notes-0.7.0.md) |
-| Review Central v0.7 depth workflows (templates, bulk delete, firmware campaigns, config-health remediation, troubleshooting bundles) | [Central v0.7 workflows](central-v07-workflows.md) |
-| Review the prior 0.6.0 expansion (historical) | [0.6.0 release notes](release-notes-0.6.0.md) |
-| Review the prior 0.5.0 AOS8 migration expansion | [0.5.0 release notes](release-notes-0.5.0.md) |
-| Review the AOS8 migration contract matrix and live evaluation | [Contract matrix](aos8-migration-contract-matrix.md), [live/dry-run evaluation](aos8-live-dryrun-evaluation.md) |
-| Reuse v0.7 artifact schemas and credential-gated live-test config | [Artifact contracts and live-test configuration](artifact-contracts.md) |
-| Build, restore, and smoke-test release artifact bundles (SBOM, checksums, provenance) | [Release artifact automation](release-artifact-automation.md) |
-| Understand security/lifecycle source freshness, provenance, and coverage boundaries | [Source lifecycle coverage](source-lifecycle-coverage.md) |
-| Review the prior 0.4.0 expansion (historical) | [0.4.0 release notes](release-notes-0.4.0.md) |
-| Review the prior 0.3.0 expansion (historical) | [0.3.0 release notes](release-notes-0.3.0.md) |
-| Understand the low-token router | [Tool router](tool-router.md) |
-| Browse all backend counts and coverage | [Tool catalog](tool-catalog.md) |
-| Try useful prompts | [Example prompts](example-prompts.md) |
-| See architecture and flow diagrams | [System overview](architecture/system-overview.md) |
-| Review RAG/OpenAPI lookup design | [RAG architecture](architecture/RAG-ARCHITECTURE.md) |
+  </div>
+</div>
 
-## Default low-token profile
+<div class="docs-checkpoint">
+  <div class="docs-checkpoint__number">3</div>
+  <div class="docs-checkpoint__body" markdown="1">
 
-```env
-CENTRALMCP_ROUTER_MODE=minimal
-CENTRALMCP_TOOLSETS=central,glp,rag
+**Check the doctor.**
+
+```bash
+uv run python scripts/doctor.py
 ```
 
-This exposes only `find_tool`, `invoke_read_tool`, and `invoke_tool` to the MCP
-client while the router finds and dispatches backend tools on demand.
+Expected outcome: a non-mutating local report — dependencies, config paths, and index status each print `OK` or a specific fix, with no vendor API calls.
+
+  </div>
+</div>
+
+<div class="docs-checkpoint">
+  <div class="docs-checkpoint__number">4</div>
+  <div class="docs-checkpoint__body" markdown="1">
+
+**Connect over streamable HTTP.**
+
+```bash
+MCP_PORT=8010 bash scripts/run_http_router.sh
+```
+
+Expected outcome: a `Uvicorn running on http://127.0.0.1:8010` line. Point any MCP-capable client at `http://127.0.0.1:8010/mcp`.
+
+  </div>
+</div>
+
+<div class="docs-checkpoint">
+  <div class="docs-checkpoint__number">5</div>
+  <div class="docs-checkpoint__body" markdown="1">
+
+**Discover a tool.**
+
+```text
+find_tool("ask Aruba docs with citations")
+```
+
+Expected outcome: a compact match list that includes `ask_docs`, which only reaches the local embedded RAG index — no credentials required.
+
+  </div>
+</div>
+
+<div class="docs-checkpoint">
+  <div class="docs-checkpoint__number">6</div>
+  <div class="docs-checkpoint__body" markdown="1">
+
+**Call it safely.**
+
+```text
+invoke_read_tool("ask_docs", {"question": "WPA3 SAE transition mode", "top_k": 5})
+```
+
+Expected outcome: a short, cited answer from the embedded docs index. `invoke_read_tool` refuses any tool that is not annotated read-only, so this step cannot reach a write path by accident.
+
+  </div>
+</div>
+
+For the full guided path with credentials, region selection, and optional
+products, see [Getting started](getting-started.md) and
+[MCP client recipes](mcp-client-recipes.md).
+
+## Write safety at a glance
+
+<figure class="docs-figure">
+  <img src="assets/diagrams/router-safety-flow.svg" alt="Decision flow from find_tool through read, diagnostic, write, and destructive dispatch with dry-run, confirmation, and write gates">
+  <figcaption>Discovery never touches a vendor API. Dispatch checks the tool's safety annotation before a read, diagnostic, write, or destructive call is allowed through.</figcaption>
+</figure>
+
+<span class="docs-badge docs-badge--read">READ</span>
+<span class="docs-badge docs-badge--diagnostic">DIAGNOSTIC</span>
+<span class="docs-badge docs-badge--write">WRITE</span>
+<span class="docs-badge docs-badge--destructive">DESTRUCTIVE</span>
+
+Every backend tool carries one of these annotations, and the router enforces
+them before dispatch:
+
+<div class="docs-callout docs-callout--safe" markdown="1">
+**Default-safe:** `invoke_read_tool` only dispatches tools annotated READ.
+DIAGNOSTIC tools use `invoke_tool`, while optional product writes stay blocked until
+`CENTRALMCP_PRODUCT_ACCESS=read-write` or a narrower
+`CENTRALMCP_<PLATFORM>_WRITES=1` override is set.
+</div>
+
+<div class="docs-callout docs-callout--warning" markdown="1">
+**Guarded writes:** use `dry_run=True` first when the tool supports it. Real
+execution then requires the tool's explicit confirmation mechanism: a
+`confirm=True` argument or MCP elicitation, depending on the schema.
+</div>
+
+<div class="docs-callout docs-callout--danger" markdown="1">
+**`invoke_tool` is destructive:** it is the only dispatcher that can reach
+WRITE and DESTRUCTIVE tools, so it is annotated destructive even for a
+read-only call. Use `invoke_read_tool` unless a write is intended.
+</div>
+
+See [Tool router](tool-router.md) for the complete discovery/dispatch model
+and [Optional product starters](optional-products.md) for the per-platform
+write-gating matrix.
 
 ## Optional products
 
@@ -146,42 +215,101 @@ Available starters:
 | HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
 | Axis Atmos Cloud | `AXIS_BASE_URL`, `AXIS_API_TOKEN` |
 
-See the [optional product matrix](optional-products.md) for the full setup and
-safety model.
-
-![centralmcp platform and tool coverage](assets/platform-coverage.svg)
-
-Optional product writes default to blocked. Use the global
+See the [optional product matrix](optional-products.md) for the full setup
+and safety model. Optional product writes default to blocked; use the global
 `CENTRALMCP_PRODUCT_ACCESS=read-write` lab mode or a narrower
-`CENTRALMCP_<PLATFORM>_WRITES=1` override. AOS8 resumable migration execution,
-Mist NAC/Marvis/Wired/WAN and WebSocket diagnostics, ClearPass Insight/OnGuard,
-and UXI guarded writes remain hidden from the MCP client until their backend
-is enabled.
+`CENTRALMCP_<PLATFORM>_WRITES=1` override.
 
-## Streamable HTTP
+## Project snapshot
 
-```bash
-MCP_PORT=8010 bash scripts/run_http_router.sh
-```
+<div class="docs-compact-table" markdown="1">
 
-Then point an MCP-capable client to:
+| Area | Current snapshot |
+|---|---|
+| Tool catalog | 6,143 generated operations (6,126 active) / 573 curated / 6,699 backend tools / 6,706 direct-all |
+| Capability totals | 3,147 read, 165 diagnostic, 2,544 write, 843 destructive |
+| RAG | 51,737 prose chunks in LanceDB |
+| Structured lookup | 244 specs, 3,796 endpoints, 11,293 schemas, 60,568 fields, 102 advisories, 346 lifecycle records |
+| API provenance | Aruba ReadMe registries, official Mist/Apstra sources, pinned GLP and EdgeConnect snapshots, SHA-pinned Axis generator |
+| Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis Atmos Cloud |
+| Safety | Per-platform gates, dry-run writes, confirmation, HTTP host/origin and bearer controls, credential-gated live-test config, versioned/redacted artifact contracts |
 
-```text
-http://127.0.0.1:8010/mcp
-```
+</div>
 
-The HTTP server also exposes `/livez`, `/readyz`, and `/healthz`. Non-loopback
-binds require explicit host/origin allow-lists and can be protected with
-`MCP_HTTP_BEARER_TOKEN`.
+<figure class="docs-figure">
+  <img src="assets/platform-coverage.svg" alt="The low-token router searches 6,699 backend tools and 6,143 generated operations across nine HPE Networking, Juniper, and Axis platforms">
+  <figcaption>Every platform is opt-in except Central, GLP, and RAG, which load by default under the minimal router profile.</figcaption>
+</figure>
 
-## Prebuilt docs/API search
+Read the [0.7.0 release notes](release-notes-0.7.0.md) for artifact/live-test
+gates, source lifecycle provenance, structured RAG intelligence (advisory/
+lifecycle listing and correlation), Central/GLP/AOS8/optional-product depth,
+observability/security hardening, router automation with opaque cursors, and
+release artifact automation. See the
+[capability gap matrix](capability-gap-matrix.md) for reproducible
+executable-tool, generated-operation, benchmark, and practical-gap
+comparisons.
 
-For full docs/API search without local scraping, download the prebuilt release
-indexes:
+## Task-oriented guides
 
-```bash
-uv run python scripts/download_indexes.py
-```
+### Set up and connect
+
+| Goal | Guide |
+|---|---|
+| Install, configure credentials, and connect an MCP client | [Getting started](getting-started.md) |
+| Copy/paste stdio or streamable HTTP client config | [MCP client recipes](mcp-client-recipes.md) |
+| Understand the low-token router's modes and safety model | [Tool router](tool-router.md) |
+| Try realistic prompts with expected call shapes | [Example prompts](example-prompts.md) |
+| Enable ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, or Axis | [Optional product starters](optional-products.md) |
+| Plan typed product-specific workflows | [Typed product workflow roadmap](product-workflows.md) |
+| Fix setup, credentials, HTTP, or catalog issues | [Troubleshooting](troubleshooting.md) |
+| Download or package prebuilt RAG/OpenAPI indexes | [Prebuilt RAG/OpenAPI indexes](release-indexes.md) |
+| Browse all backend counts and coverage | [Tool catalog](tool-catalog.md) |
+| See architecture, data, and safety diagrams | [System overview](architecture/system-overview.md) |
+| Review RAG/OpenAPI lookup design | [RAG architecture](architecture/RAG-ARCHITECTURE.md) |
+
+### Releases, provenance, and migration depth
+
+| Goal | Guide |
+|---|---|
+| Review the complete 0.7.0 expansion | [0.7.0 release notes](release-notes-0.7.0.md) |
+| Review Central v0.7 depth workflows (templates, bulk delete, firmware campaigns, config-health remediation, troubleshooting bundles) | [Central v0.7 workflows](central-v07-workflows.md) |
+| Reuse v0.7 artifact schemas and credential-gated live-test config | [Artifact contracts and live-test configuration](artifact-contracts.md) |
+| Build, restore, and smoke-test release artifact bundles (SBOM, checksums, provenance) | [Release artifact automation](release-artifact-automation.md) |
+| Understand security/lifecycle source freshness, provenance, and coverage boundaries | [Source lifecycle coverage](source-lifecycle-coverage.md) |
+| Review the AOS8 migration contract matrix and live evaluation | [Contract matrix](aos8-migration-contract-matrix.md), [live/dry-run evaluation](aos8-live-dryrun-evaluation.md) |
+| Review the prior 0.6.0 expansion (historical) | [0.6.0 release notes](release-notes-0.6.0.md) |
+| Review the prior 0.5.0 AOS8 migration expansion (historical) | [0.5.0 release notes](release-notes-0.5.0.md) |
+| Review the prior 0.4.0 expansion (historical) | [0.4.0 release notes](release-notes-0.4.0.md) |
+| Review the prior 0.3.0 expansion (historical) | [0.3.0 release notes](release-notes-0.3.0.md) |
+
+<div class="docs-next" markdown="1">
+
+### Continue
+
+- New to centralmcp: [Getting started](getting-started.md)
+- Running Aruba/GLP tasks today: [Example prompts](example-prompts.md)
+- Building or reviewing a backend: [Tool router](tool-router.md)
+
+</div>
+
+## Search keywords
+
+HPE Networking MCP server, HPE Aruba Networking MCP server, HPE Aruba Central
+MCP server, HPE Aruba Networking Central MCP server, Aruba Central AI tools,
+AI network automation, HPE GreenLake Platform MCP, GreenLake
+Platform automation, GreenLake Platform MCP, GreenLake service catalog MCP,
+GreenLake reporting status MCP, FastMCP network automation, Model Context
+Protocol networking, network configuration MCP, Aruba API RAG, Aruba Central
+OpenAPI lookup, ClearPass MCP, Juniper Mist MCP, Apstra MCP, ArubaOS 8 MCP,
+ArubaOS 8 migration MCP, ArubaOS 8 migration automation, AOS8 automation,
+Classic Central migration, New Central migration, guarded dry-run migration,
+HPE Aruba EdgeConnect MCP,
+EdgeConnect SD-WAN MCP, HPE Aruba UXI MCP, UXI sensor status MCP, Axis Atmos
+Cloud MCP, guarded read/write lab automation, EdgeConnect zones, EdgeConnect
+interface labels, zone-based firewall MCP, Python `httpx` network automation,
+EdgeConnect ACL object groups, EdgeConnect services, EdgeConnect bypass mode,
+EdgeConnect link integrity diagnostics, low-token MCP router.
 
 ## Project links
 

@@ -1,24 +1,59 @@
 # Troubleshooting
 
-Use the local doctor first. It does not call Central, GLP, or optional product
-APIs.
+Start with the local doctor. It never calls Central, GLP, or optional product
+APIs, so it is always safe to run first and re-run after every fix.
 
 ```bash
 uv run python scripts/doctor.py
 ```
 
-## Setup wizard
+<div class="docs-callout docs-callout--safe" markdown="1">
+`doctor.py` only reads local files and environment variables. If a symptom
+below could be caused by local setup, config, or credentials, run the
+doctor before anything else — its `[OK]` / `[WARN]` / `[FAIL]` lines usually
+point straight at the next step.
+</div>
 
-| Symptom | Fix |
-|---|---|
-| `uv` is missing | Install `uv`, or rerun the wizard after installing it. |
-| Existing local config was not overwritten | Re-run with `--force` if you want to replace `.mcp.json`, `.mcp.http.json`, or `config/credentials.yaml`. Existing `.env` files are merged by default so selected products/access mode update while non-placeholder token values are preserved. |
-| You only want a no-credentials trial | Run `python3 scripts/setup_wizard.py --yes --skip-credentials` and skip API-backed tools until credentials are added. |
-| You picked the wrong products | Re-run with `--products clearpass,mist` to merge the selector/access mode into `.env`, or use `--force` if you intentionally want to replace generated local config files. |
+<figure class="docs-figure" markdown="1">
 
-## Credentials and Central regions
+![centralmcp troubleshooting decision tree: from the local doctor through setup, authentication, transport, catalog, and RAG index checks](assets/diagrams/troubleshooting-tree.svg)
 
-The wizard offers common Central API gateway choices:
+<figcaption>Follow the tree top to bottom: local setup, then auth, then
+transport, then the tool catalog, then RAG/index freshness. Jump straight to
+the matching section below.</figcaption>
+</figure>
+
+- [Setup and doctor](#setup-and-doctor) — local setup fails
+- [Credentials and auth](#credentials-and-auth) — 401 / 403
+- [HTTP transport](#http-transport) — connection, 406, or port problems
+- [Router and catalog](#router-and-catalog) — expected tool is missing
+- [RAG and indexes](#rag-and-indexes) — docs or API answer looks stale
+- [Vendor compatibility](#vendor-compatibility) — backend-specific auth/API quirks
+
+Every table below reads the same way: **Symptom** is what you saw, **Check**
+is what to look at, **Command** is what to run, **Expected outcome** is what
+a successful fix looks like.
+
+## Setup and doctor
+
+| Symptom | Check | Command | Expected outcome |
+|---|---|---|---|
+| Not sure where to start | Run the local doctor (no network calls) | `uv run python scripts/doctor.py` | Prints one `[OK]`/`[WARN]`/`[FAIL]` line per check — config files, `uv`, Python version, credentials, and index freshness |
+| `uv` is missing | `[WARN] uv` in doctor output | Install `uv`, then re-run the doctor | The `uv` line changes to `[OK]` |
+| Existing local config was not overwritten | `.mcp.json`, `.mcp.http.json`, or `config/credentials.yaml` already exist | `python3 scripts/setup_wizard.py --force` | Wizard replaces those files; without `--force` it only merges `.env` and preserves non-placeholder token values |
+| Want a no-credentials trial | — | `python3 scripts/setup_wizard.py --yes --skip-credentials` | Wizard completes without prompting; API-backed tools stay blocked until credentials are added |
+| Picked the wrong optional products | `CENTRALMCP_PRODUCTS` in `.env` | `python3 scripts/setup_wizard.py --products clearpass,mist` | Merges the product selector and access mode into `.env`; add `--force` instead if you want to replace generated config files outright |
+
+## Credentials and auth
+
+| Symptom | Check | Command | Expected outcome |
+|---|---|---|---|
+| Central/GLP calls return `401`/`403` | Env vars override YAML — confirm which value actually loaded | `uv run python scripts/doctor.py` | `Credentials` reports `[OK]` with no placeholder-value `[WARN]`; if it does, the gateway/base URL below is the next thing to check |
+| Wrong Central region/gateway | Base URL for your tenant | See gateway table below | `base_url` in `config/credentials.yaml` (or the matching env var) matches your tenant's region |
+| AOS8 session authentication fails | `AOS8_USERNAME`/`AOS8_PASSWORD` set | Use `invoke_read_tool` with tool `aos8_status` and `{}` | `auth_mode` reports `session` (not `unconfigured`); the backend retries once after an unauthorized response before failing |
+| Apstra session authentication fails | `APSTRA_USERNAME`/`APSTRA_PASSWORD`, or `APSTRA_API_TOKEN` | Use `invoke_read_tool` with tool `apstra_status` and `{}` | `auth_mode` reports `session` or `static_token`, not `unconfigured` |
+
+The setup wizard offers common Central API gateway choices:
 
 | Gateway | Base URL |
 |---|---|
@@ -27,39 +62,69 @@ The wizard offers common Central API gateway choices:
 | APAC | `https://apigw-apac.central.arubanetworks.com` |
 | Legacy/internal gateway | `https://internal.api.central.arubanetworks.com` |
 
-If your tenant uses a different host, choose the custom URL option. Environment
-variables override YAML values, so check both shell variables and
-`config/credentials.yaml` when troubleshooting auth.
+If your tenant uses a different host, choose the custom URL option during the
+wizard, or set the base URL directly in `config/credentials.yaml`.
 
-## HTTP MCP mode
+## HTTP transport
 
-Start the local HTTP router:
+Start the local HTTP router, then point the client at it:
 
 ```bash
 MCP_PORT=8010 bash scripts/run_http_router.sh
 ```
 
-Connect the MCP client to:
-
 ```text
 http://127.0.0.1:8010/mcp
 ```
 
-| Symptom | Fix |
-|---|---|
-| Port already in use | The helper prints listener details. Stop the old process with `kill <PID>` or choose another `MCP_PORT`. |
-| `curl` returns `406` | Expected for plain curl. Real MCP clients send streaming headers such as `Accept: text/event-stream`. |
-| Optional products work in stdio but not HTTP | Confirm local `.env` exists next to the repo root; the HTTP helper safely loads assignments from it before starting. |
-| Client URL does not match the server | Update `.mcp.http.json` if you changed `MCP_HOST` or `MCP_PORT`. |
-| Non-loopback HTTP startup is refused | Set explicit non-wildcard `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`. Add `MCP_HTTP_BEARER_TOKEN` when the listener is reachable outside the local host. |
-| Health probe needed without MCP negotiation | Request `/livez`, `/readyz`, or `/healthz`; these do not call vendor APIs. |
-| HTTP client receives `401` | Include `Authorization: Bearer <token>` when the shared HTTP token is enabled. |
-| SSE startup is refused when a bearer token is set | Static bearer enforcement is supported only by `streamable-http`; switch `MCP_TRANSPORT` or unset the token. The server fails closed rather than starting an apparently protected SSE listener. |
+| Symptom | Check | Command | Expected outcome |
+|---|---|---|---|
+| Port already in use | Listener details printed by the helper | `kill <PID>` on the old process, or set a different `MCP_PORT` | Router starts and prints its listening URL |
+| `curl` returns `406` | Plain `curl` does not send streaming headers | Use a real MCP client, or add `Accept: text/event-stream` | Expected behavior for plain `curl` — not a bug |
+| Optional products work in stdio but not HTTP | Local `.env` exists next to the repo root | `MCP_PORT=8010 bash scripts/run_http_router.sh` | Helper loads `.env` assignments before starting; optional product tools become available over HTTP too |
+| Client URL does not match the server | `MCP_HOST` / `MCP_PORT` values | Update `.mcp.http.json` | Client URL matches the router's actual host/port |
+| Non-loopback HTTP startup is refused | `MCP_ALLOWED_HOSTS` / `MCP_ALLOWED_ORIGINS` | Set explicit non-wildcard allow-lists; add `MCP_HTTP_BEARER_TOKEN` if reachable outside localhost | Router starts and enforces the allow-list/bearer token |
+| Health probe needed without MCP negotiation | — | `curl http://127.0.0.1:8010/livez` (or `/readyz`, `/healthz`) | `200` response; these probes never call vendor APIs |
+| HTTP client receives `401` | Shared HTTP bearer token enabled | Send `Authorization: Bearer <token>` | Request succeeds once the header matches `MCP_HTTP_BEARER_TOKEN` |
+| SSE startup is refused when a bearer token is set | `MCP_TRANSPORT` value | Switch to `streamable-http`, or unset the bearer token | Server starts; static bearer enforcement is only supported by `streamable-http`, so it fails closed rather than starting an apparently protected SSE listener |
 
-## API source and RAG freshness
+<div class="docs-callout docs-callout--warning" markdown="1">
+Only enable non-loopback HTTP with explicit `MCP_ALLOWED_HOSTS`,
+`MCP_ALLOWED_ORIGINS`, and `MCP_HTTP_BEARER_TOKEN`. The router refuses to
+start otherwise.
+</div>
 
-Aruba's July 2026 developer-portal migration retired the old internal-UI
-OpenAPI JSON URLs. Refresh through the ReadMe registry flow:
+## Router and catalog
+
+Recommended low-token profile:
+
+```env
+CENTRALMCP_ROUTER_MODE=minimal
+CENTRALMCP_TOOLSETS=central,glp,rag
+```
+
+| Symptom | Check | Command | Expected outcome |
+|---|---|---|---|
+| Need to rebuild the tool catalog | — | `uv run python scripts/ingest_tools.py` | Router catalog reflects the currently enabled toolsets/products |
+| Need optional products in the catalog | `CENTRALMCP_PRODUCTS` | `uv run python scripts/ingest_tools.py --products clearpass,mist` | `find_tool` can locate the selected optional product tools |
+| `find_tool` cannot locate an expected optional product tool | `CENTRALMCP_PRODUCTS` matches the products the catalog was built with | Rebuild the catalog with the same `--products` list | `find_tool` returns the expected tool |
+| Release validation expects the full read-write catalog (6,699 tools) | `CENTRALMCP_PRODUCT_ACCESS` and `CENTRALMCP_GLP_GENERATED_TOOLS` | `CENTRALMCP_PRODUCT_ACCESS=read-write CENTRALMCP_GLP_GENERATED_TOOLS=1 uv run python scripts/ingest_tools.py --products all` | Catalog rebuilds at the full read-write tool count |
+
+First useful call, once the catalog is built:
+
+```text
+find_tool("show active critical alerts")
+invoke_read_tool("list_active_alerts", {"severity": "CRITICAL", "limit": 20})
+```
+
+Use `invoke_read_tool` for investigations. Use `invoke_tool` only when you
+intend to run a write/destructive backend tool, and only after explicit user
+intent.
+
+## RAG and indexes
+
+Aruba's developer-portal migration retired the old internal-UI OpenAPI JSON
+URLs. Refresh through the ReadMe registry flow:
 
 ```bash
 uv run python ingestion/scrape_openapi.py
@@ -71,73 +136,28 @@ uv run python scripts/check_mist_openapi_drift.py
 uv run python ingestion/ingest_docs.py
 ```
 
-| Symptom | Fix |
-|---|---|
-| Drift checker exits 2 | No `ingestion/openapi_registry_manifest.json` exists yet; run the OpenAPI scrapers first. |
-| Drift checker exits 1 | Vendor specs or page pointers changed; refresh sources, rebuild indexes, and rerun the checker. |
-| `lookup_api` returns an older path/version | Rebuild `data/specs.sqlite` after refreshing the registry specs. |
-| `ask_docs` misses a security advisory or end-of-sale notice | Run `ingestion/scrape_security_lifecycle.py`, then rebuild `data/docs.lance`. Aruba advisories refresh incrementally from the official CSAF `changes.csv`; HPE lifecycle notices come from the all-product End of Sale XML feed. |
-| `check_security_lifecycle_drift.py` reports `stale`/`unavailable`/`changed` | See [Source lifecycle coverage](source-lifecycle-coverage.md). `stale` means a count regressed below its committed minimum; `unavailable` means the source could not be fetched (network/HTTP); `changed` means the source no longer matches its reviewed provenance pin (`ingestion/provenance/*.json`) and needs review before regenerating the pin. `coverage_gap` (e.g. current Aruba-branded lifecycle) is expected and does not fail the check. |
-| macOS docs rebuild stalls in fastembed multiprocessing | Current `ingest_docs.py` automatically disables subprocess parallelism on macOS. Stop any older stale rebuild by exact PID, update the checkout, and rerun the command. |
-| Docs index is larger because OpenAPI JSON was embedded | Rebuild with the current ingestion path. OpenAPI records now remain in SQLite only; the current prose corpus contains 51,737 chunks. |
+| Symptom | Check | Command | Expected outcome |
+|---|---|---|---|
+| Drift checker exits `2` | `ingestion/openapi_registry_manifest.json` missing | Run the OpenAPI scrapers first | Manifest exists; drift checker can run |
+| Drift checker exits `1` | Vendor specs or page pointers changed | Refresh sources, rebuild indexes, re-run the checker | Checker exits `0` |
+| `lookup_api` returns an older path/version | `data/specs.sqlite` freshness | `uv run python ingestion/ingest_docs.py` | `lookup_api` returns the current path/version |
+| `ask_docs` misses a security advisory or end-of-sale notice | Security lifecycle sources | `uv run python ingestion/scrape_security_lifecycle.py`, then rebuild `data/docs.lance` | `ask_docs` cites the advisory/notice; see [Source lifecycle coverage](source-lifecycle-coverage.md) for `stale`/`unavailable`/`changed`/`coverage_gap` meanings |
+| macOS docs rebuild stalls in fastembed multiprocessing | A stale rebuild process from an older checkout | Stop the stale process by exact PID, update the checkout, re-run | Current `ingest_docs.py` auto-disables subprocess parallelism on macOS, so the rebuild completes |
+| Docs index is larger than expected | Whether OpenAPI JSON was embedded into the docs index | Rebuild with the current ingestion path | OpenAPI records stay in SQLite only; the prose corpus is 51,737 chunks |
 
-## Optional product compatibility
+## Vendor compatibility
 
-| Symptom | Fix |
-|---|---|
-| AOS8 session authentication fails | Configure `AOS8_USERNAME` and `AOS8_PASSWORD`; the backend establishes a UIDARUBA/X-CSRF session and retries once after an unauthorized response. |
-| Apstra session authentication fails | Configure `APSTRA_USERNAME` and `APSTRA_PASSWORD`, or supply a pre-issued `APSTRA_API_TOKEN`; requests use the `AuthToken` header. |
-| EdgeConnect operational tool reports `blocked` | Run `edgeconnect_doctor`. The bundled pre-9.3 endpoint map is disabled unless `EDGECONNECT_ALLOW_LEGACY_API=1` is explicitly set for a validated older/lab instance; production 9.3+ use requires the target Swagger spec. |
-| Central troubleshooting endpoint returns 404 | The client tries `/network-troubleshooting/v1` first and falls back to `v1alpha1` only on 404. Set `CENTRALMCP_TROUBLESHOOTING_API_VERSION=v1alpha1` only for a tenant that still requires the legacy path. |
-| `mist_collect_diagnostic_results` times out or reports `configuration_error` | Confirm `MIST_API_TOKEN` (or the full `MIST_SESSION_COOKIE` + `MIST_CSRF_TOKEN` pair) is set and that `websockets>=14.0` is installed; the tool only connects to the documented regional `WS /api-ws/v1/stream` endpoint derived from `MIST_HOST`. |
-| EdgeConnect compatibility check fails closed | Expected for malformed input, unsupported Swagger/OpenAPI versions, digest mismatch, endpoint drift, unsupported auth, or a non-root server base path; export a fresh Swagger/OpenAPI document from the target 9.3+ Orchestrator and re-run `scripts/generate_edgeconnect_tools.py`. |
-
-## Router and catalog
-
-Recommended low-token profile:
-
-```env
-CENTRALMCP_ROUTER_MODE=minimal
-CENTRALMCP_TOOLSETS=central,glp,rag
-```
-
-Rebuild the tool catalog:
-
-```bash
-uv run python scripts/ingest_tools.py
-```
-
-Include selected optional products:
-
-```bash
-uv run python scripts/ingest_tools.py --products clearpass,mist
-```
-
-If `find_tool` cannot locate expected optional product tools, confirm
-`CENTRALMCP_PRODUCTS` and the catalog were built with the same selected
-products.
-
-The complete read-write backend catalog contains 6,699 tools. If release
-validation expects that full catalog, rebuild with:
-
-```bash
-CENTRALMCP_PRODUCT_ACCESS=read-write CENTRALMCP_GLP_GENERATED_TOOLS=1 uv run python scripts/ingest_tools.py --products all
-```
-
-## First useful call flow
-
-```text
-find_tool("show active critical alerts")
-invoke_read_tool("list_active_alerts", {"severity": "CRITICAL", "limit": 20})
-```
-
-Use `invoke_read_tool` for investigations. Use `invoke_tool` only when you
-intend to run a write/destructive backend tool.
+| Symptom | Check | Command | Expected outcome |
+|---|---|---|---|
+| EdgeConnect operational tool reports `blocked` | Orchestrator API generation | Use `invoke_read_tool` with tool `edgeconnect_doctor` and `{}` | Reports whether the target is pre-9.3 (needs `EDGECONNECT_ALLOW_LEGACY_API=1` on a validated lab instance) or 9.3+ (needs the target Swagger spec) |
+| Central troubleshooting endpoint returns `404` | Tenant API version | Set `CENTRALMCP_TROUBLESHOOTING_API_VERSION=v1alpha1` | Only needed for a tenant that still requires the legacy path; the client otherwise tries `/network-troubleshooting/v1` first and falls back to `v1alpha1` automatically |
+| `mist_collect_diagnostic_results` times out or reports `configuration_error` | `MIST_API_TOKEN` (or `MIST_SESSION_COOKIE` + `MIST_CSRF_TOKEN`) and `websockets>=14.0` | Use `invoke_read_tool` with tool `mist_status` and `{}` | `configured: true`; the tool only connects to the documented regional `WS /api-ws/v1/stream` endpoint derived from `MIST_HOST` |
+| EdgeConnect compatibility check fails closed | Swagger/OpenAPI export from the target Orchestrator | `uv run python scripts/generate_edgeconnect_tools.py --source <exported-spec.json>` | Fails closed (by design) on malformed input, unsupported Swagger/OpenAPI versions, digest mismatch, endpoint drift, unsupported auth, or a non-root server base path; export a fresh document and re-run |
 
 ## GitHub Pages deployment
 
-| Symptom | Fix |
-|---|---|
-| Pages build succeeds but deploy fails with `due to in progress deployment` | Wait for the earlier Pages deployment to complete and confirm the Pages API is no longer `building`, then rerun the failed workflow or push a follow-up commit. This is a transient GitHub Pages deployment queue race, not a docs/Jekyll build failure. |
-| A rerun stays `queued` with no jobs after the live site is `built` | Cancel that exact stuck rerun before pushing again so a stale Pages queue entry does not stack another deployment race. |
-| Push is rejected while changing `.github/workflows/ci.yml` | The active GitHub token needs repository write access and the OAuth `workflow` scope. Run `gh auth refresh --hostname github.com --scopes workflow`, complete the device authorization, then retry `git push origin main`. |
+| Symptom | Check | Command | Expected outcome |
+|---|---|---|---|
+| Pages build succeeds but deploy fails with `due to in progress deployment` | Whether an earlier Pages deployment is still `building` | Wait, then rerun the failed workflow or push a follow-up commit | Deployment succeeds once the Pages API is no longer `building` — this is a transient queue race, not a Jekyll build failure |
+| A rerun stays `queued` with no jobs after the live site is `built` | Stale queue entries | Cancel the stuck rerun before pushing again | No stale entry stacks another deployment race |
+| Push is rejected while changing `.github/workflows/ci.yml` | Active token scope | `gh auth refresh --hostname github.com --scopes workflow`, then `git push origin main` | Push succeeds once the token has repository write access and the OAuth `workflow` scope |
