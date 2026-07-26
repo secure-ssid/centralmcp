@@ -108,7 +108,7 @@ CENTRALMCP_TOOLSETS=central,glp,rag
 | Need to rebuild the tool catalog | — | `uv run python scripts/ingest_tools.py` | Router catalog reflects the currently enabled toolsets/products |
 | Need optional products in the catalog | `CENTRALMCP_PRODUCTS` | `uv run python scripts/ingest_tools.py --products clearpass,mist` | `find_tool` can locate the selected optional product tools |
 | `find_tool` cannot locate an expected optional product tool | `CENTRALMCP_PRODUCTS` matches the products the catalog was built with | Rebuild the catalog with the same `--products` list | `find_tool` returns the expected tool |
-| Release validation expects the full read-write catalog (6,699 tools) | `CENTRALMCP_PRODUCT_ACCESS` and `CENTRALMCP_GLP_GENERATED_TOOLS` | `CENTRALMCP_PRODUCT_ACCESS=read-write CENTRALMCP_GLP_GENERATED_TOOLS=1 uv run python scripts/ingest_tools.py --products all` | Catalog rebuilds at the full read-write tool count |
+| Release validation expects the full read-write catalog (6,700 tools) | `CENTRALMCP_PRODUCT_ACCESS` and `CENTRALMCP_GLP_GENERATED_TOOLS` | `CENTRALMCP_PRODUCT_ACCESS=read-write CENTRALMCP_GLP_GENERATED_TOOLS=1 uv run python scripts/ingest_tools.py --products all` | Catalog rebuilds at the full read-write tool count |
 
 First useful call, once the catalog is built:
 

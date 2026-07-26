@@ -34,7 +34,7 @@ Optional products are disabled until explicitly enabled:
 CENTRALMCP_PRODUCTS=clearpass,mist,apstra,aos8,edgeconnect,uxi,axis
 ```
 
-The full catalog contains 6,143 generated operations and 6,699 backend tools
+The full catalog contains 6,143 generated operations and 6,700 backend tools
 when every platform and guarded write is indexed. Minimal mode exposes only
 `find_tool`, `invoke_read_tool`, and `invoke_tool` to the MCP client.
 

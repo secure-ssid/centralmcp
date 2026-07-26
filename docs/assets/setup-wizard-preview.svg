@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820" role="img" aria-labelledby="title desc">
   <title id="title">centralmcp guided setup preview</title>
-  <desc id="desc">The setup wizard installs dependencies, configures Central and GreenLake, selects optional products and write access, builds up to 6,699 backend tools, writes MCP client configs, and runs the local doctor.</desc>
+  <desc id="desc">The setup wizard installs dependencies, configures Central and GreenLake, selects optional products and write access, builds up to 6,700 backend tools, writes MCP client configs, and runs the local doctor.</desc>
   <defs>
     <style>
       .title { font: 700 54px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #eaf6ff; }
@@ -27,7 +27,7 @@
   <text x="112" y="491" class="ok">+ Enable ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis</text>
   <text x="112" y="533" class="ok">+ Choose read-only or guarded read-write product access</text>
   <text x="112" y="575" class="ok">+ Create stdio and streamable HTTP MCP client configs</text>
-  <text x="112" y="617" class="ok">+ Build up to 6,699 backend catalog tools</text>
+  <text x="112" y="617" class="ok">+ Build up to 6,700 backend catalog tools</text>
   <text x="112" y="659" class="ok">+ Run doctor checks for paths, indexes, HTTP, and products</text>
   <text x="112" y="705" class="info">HTTP endpoint: http://127.0.0.1:8010/mcp</text>
 </svg>

@@ -6,7 +6,7 @@ ArubaOS 8, EdgeConnect, UXI, and Axis backends. This page is a task-based
 front door for three audiences: people trying MCP for the first time, Aruba
 network operators, and centralmcp developers.
 
-![centralmcp banner showing 6,143 generated operations, 6,699 backend tools, 3 minimal router tools, and nine platform surfaces with embedded RAG](assets/centralmcp-hero.svg)
+![centralmcp banner showing 6,143 generated operations, 6,700 backend tools, 3 minimal router tools, and nine platform surfaces with embedded RAG](assets/centralmcp-hero.svg)
 
 Whatever backend does the work, an MCP client sees only three router tools
 under the recommended `minimal` profile — the banner's "3 minimal router
@@ -226,8 +226,8 @@ and safety model. Optional product writes default to blocked; use the global
 
 | Area | Current snapshot |
 |---|---|
-| Tool catalog | 6,143 generated operations (6,126 active) / 573 curated / 6,699 backend tools / 6,706 direct-all |
-| Capability totals | 3,147 read, 165 diagnostic, 2,544 write, 843 destructive |
+| Tool catalog | 6,143 generated operations (6,126 active) / 574 curated / 6,700 backend tools / 6,707 direct-all |
+| Capability totals | 3,148 read, 165 diagnostic, 2,544 write, 843 destructive |
 | RAG | 51,737 prose chunks in LanceDB |
 | Structured lookup | 244 specs, 3,796 endpoints, 11,293 schemas, 60,568 fields, 102 advisories, 346 lifecycle records |
 | API provenance | Aruba ReadMe registries, official Mist/Apstra sources, pinned GLP and EdgeConnect snapshots, SHA-pinned Axis generator |
@@ -237,7 +237,7 @@ and safety model. Optional product writes default to blocked; use the global
 </div>
 
 <figure class="docs-figure">
-  <img src="assets/platform-coverage.svg" alt="The low-token router searches 6,699 backend tools and 6,143 generated operations across nine HPE Networking, Juniper, and Axis platforms">
+  <img src="assets/platform-coverage.svg" alt="The low-token router searches 6,700 backend tools and 6,143 generated operations across nine HPE Networking, Juniper, and Axis platforms">
   <figcaption>Every platform is opt-in except Central, GLP, and RAG, which load by default under the minimal router profile.</figcaption>
 </figure>
 

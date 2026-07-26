@@ -14,7 +14,7 @@ Counts below describe the full read-write backend registration. Optional product
 
 | Platform | Manifest operations | Active generated tools | Curated tools | Executable total | Read | Diagnostic | Write | Destructive | Source / provenance |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| Aruba Central | 1,678 | 1,678 | 246 | **1,924** | 795 | 31 | 817 | 281 | official OpenAPI + curated; Official HPE APIs; OAuth token manager ready |
+| Aruba Central | 1,678 | 1,678 | 247 | **1,925** | 796 | 31 | 817 | 281 | official OpenAPI + curated; Official HPE APIs; OAuth token manager ready |
 | GreenLake Platform | 918 | 904 | 105 | **1,009** | 570 | 0 | 351 | 88 | official OpenAPI + curated; Official HPE APIs; Workspace OAuth ready |
 | RAG / API lookup | 0 | 0 | 9 | **9** | 9 | 0 | 0 | 0 | committed application code; Local indexes over cited sources; No platform auth |
 | ClearPass | 816 | 815 | 30 | **845** | 285 | 0 | 412 | 148 | official OpenAPI + curated; Official HPE API; API credential ready |
@@ -24,9 +24,9 @@ Counts below describe the full read-write backend registration. Optional product
 | EdgeConnect | 1,216 | 1,216 | 54 | **1,270** | 687 | 121 | 359 | 103 | instance artifact + curated; Target Orchestrator Swagger; Token/session and doctor ready |
 | HPE Aruba UXI | 25 | 25 | 24 | **49** | 24 | 0 | 16 | 9 | official OpenAPI + curated; Official HPE API; OAuth client credentials ready |
 | Axis Atmos Cloud | 47 | 47 | 0 | **47** | 12 | 0 | 23 | 12 | reviewed benchmark-derived registry; Benchmark only; verify with Axis; Static bearer token ready |
-| **Total** | **6,143** | **6,126** | **573** | **6,699** | **3,147** | **165** | **2,544** | **843** | |
+| **Total** | **6,143** | **6,126** | **574** | **6,700** | **3,148** | **165** | **2,544** | **843** | |
 
-The 6,143 manifest records are provenance-bearing generated operations. Only 6,126 register as executable generated tools because 17 are intentionally excluded. Adding 573 curated tools yields 6,699 executable backend tools. The three minimal-router tools are a separate client-visible dispatch surface, not three additional backend capabilities.
+The 6,143 manifest records are provenance-bearing generated operations. Only 6,126 register as executable generated tools because 17 are intentionally excluded. Adding 574 curated tools yields 6,700 executable backend tools. The three minimal-router tools are a separate client-visible dispatch surface, not three additional backend capabilities.
 
 ### Intentional exclusions
 
@@ -72,7 +72,7 @@ The benchmark's 5,960 endpoint count was reproduced from the pinned tree with it
 
 ### Why the headline totals are non-equivalent
 
-- **6,699 vs. 4,109** compares executable backend registries, but generation strategy and curated overlap differ; it does not prove practical superiority.
+- **6,700 vs. 4,109** compares executable backend registries, but generation strategy and curated overlap differ; it does not prove practical superiority.
 - **6,143 vs. 5,960** compares centralmcp generated operation records with the benchmark's documentation index. The latter includes endpoints that may have no callable tool, so this is not a tool-count comparison.
 - Router/code/dynamic surfaces intentionally expose only discovery and dispatch tools. A smaller top-level surface can still reach a much larger backend.
 - Capability quality depends on authentication, bounded responses, safe writes, async-result handling, and verified workflows—not raw endpoint quantity.

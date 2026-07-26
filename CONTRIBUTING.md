@@ -40,7 +40,7 @@ For a complete release/index change, use:
 
 ```bash
 CENTRALMCP_PRODUCT_ACCESS=read-write uv run python scripts/ingest_tools.py --products all
-uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6699
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6700
 uv run python scripts/check_openapi_drift.py
 uv run python scripts/check_mist_openapi_drift.py
 ```

@@ -7,7 +7,7 @@
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-0969da)](https://secure-ssid.github.io/centralmcp/)
 [![Release](https://img.shields.io/github/v/release/secure-ssid/centralmcp?display_name=tag)](https://github.com/secure-ssid/centralmcp/releases)
 
-![centralmcp banner showing 6,143 generated operations, 6,699 backend tools, 3 minimal router tools, and nine platform surfaces with embedded RAG](docs/assets/centralmcp-hero.svg)
+![centralmcp banner showing 6,143 generated operations, 6,700 backend tools, 3 minimal router tools, and nine platform surfaces with embedded RAG](docs/assets/centralmcp-hero.svg)
 
 The banner tracks the current backend catalog: a large tool surface stays
 available on demand, while the MCP client itself only ever sees three router
@@ -87,7 +87,7 @@ See [Tool router](docs/tool-router.md) for the complete discovery/dispatch/write
 
 | Area | Current snapshot |
 |---|---|
-| Tool catalog | Non-additive profiles: 360 core tools / 2813 read-only optional starters / 5795 read-write optional starters; complete backend index: 6,699 |
+| Tool catalog | Non-additive profiles: 361 core tools / 2814 read-only optional starters / 5796 read-write optional starters; complete backend index: 6,700 |
 | RAG | 51,737 prose chunks; 244 specs, 3,796 endpoints, 11,293 schemas, 60,568 fields, 102 advisories, 346 lifecycle records |
 | Optional platforms | ClearPass, Mist, Apstra, AOS8, EdgeConnect, UXI, Axis Atmos Cloud |
 | Safety | Per-platform write gates, dry-run + confirmation, HTTP host/origin and bearer controls, credential-gated live-test config |
@@ -188,7 +188,7 @@ The full repository map, including generated/git-ignored paths, lives in
 
 ```bash
 uv run pytest tests/unit -q
-uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6699
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6700
 ```
 
 The release helper runs unit tests, optional RAG/API eval when indexes exist, tool catalog floor checks, and local tool-index freshness checks. Unit tests also include static guards for the active MCP/pipeline code, committed low-token MCP config examples, local-only config files, router product/toolset docs, bounded generic read-only GET tools, MCP list default bounds, RAG/search top_k bounds, public tool-count claims, tool-count docstrings, tracked Markdown local links and images, Pages sitemap and robots metadata, documented router example arguments, product workflow tool-name tables, and wizard optional-product env tables.

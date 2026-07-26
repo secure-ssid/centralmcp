@@ -14,12 +14,12 @@ The ArubaOS 8-to-Classic/New Central migration rows below are gated by the autho
 
 | Surface | Tool count |
 |---|---:|
-| Central generated + curated configuration, monitoring, NAC, and operations | 1,924 |
+| Central generated + curated configuration, monitoring, NAC, and operations | 1,925 |
 | GreenLake Platform | 1,009 |
 | RAG/OpenAPI | 9 |
 | Optional products, read-only annotated | 1,773 |
 | Optional products, guarded writes included | 3,757 |
-| **Complete backend catalog** | **6,699** |
+| **Complete backend catalog** | **6,700** |
 
 ## Promotion rule
 

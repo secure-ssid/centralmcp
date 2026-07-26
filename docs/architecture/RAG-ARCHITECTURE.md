@@ -177,12 +177,12 @@ released documentation sources. The 5,419 OpenAPI vector records from the
 previous build were intentionally removed because structured API lookup is
 authoritative. The rebuilt SQLite index contains 244 specs, 3,796 endpoints,
 11,293 schemas, 60,568 fields, 102 advisories, and 346 lifecycle records. The
-rebuilt router index contains 6,699 backend tools. Minimal mode keeps this
+rebuilt router index contains 6,700 backend tools. Minimal mode keeps this
 catalog behind the three-tool discovery/dispatch surface; direct-all mode
-exposes 6,706 tools including the router itself. The v0.7 31-question eval set
+exposes 6,707 tools including the router itself. The v0.7 31-question eval set
 (expanded from 24 to add structured list/correlate/diagnostics and negative
 coverage-gap questions) hits rank 1 on all 31 questions. Standard catalog
-profiles contain 360 core tools / 2813 read-only optional starters / 5795 read-write optional starters; the complete index also enables generated GLP.
+profiles contain 361 core tools / 2814 read-only optional starters / 5796 read-write optional starters; the complete index also enables generated GLP.
 
 Tracked RAG refresh targets live in `ingestion/source_manifest.json`. The
 current manifest covers 13 rebuild sources, including DevHub, Switching Feature

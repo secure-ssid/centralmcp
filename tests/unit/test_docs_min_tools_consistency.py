@@ -5,7 +5,7 @@
 (README, CONTRIBUTING, getting-started) copy/pastes as the "validate the
 complete backend catalog" example. ``<N>`` must track the complete backend
 tool catalog total documented in ``docs/capability-gap-matrix.md`` and
-``docs/tool-catalog.md`` (currently 6,699) -- not the CLI's low unit-test
+``docs/tool-catalog.md`` (currently 6,700) -- not the CLI's low unit-test
 default (``scripts.validate_release._DEFAULT_MIN_TOOLS``, currently 204).
 
 Dated release-notes snapshots (``docs/release-notes-*.md``) are historical
@@ -21,9 +21,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # The complete backend tool catalog total -- see docs/capability-gap-matrix.md
-# ("Adding 573 curated tools yields 6,699 executable backend tools") and
-# docs/tool-catalog.md ("centralmcp registers 6,699 backend tools").
-EXPECTED_COMPLETE_CATALOG_MIN_TOOLS = 6699
+# ("Adding 574 curated tools yields 6,700 executable backend tools") and
+# docs/tool-catalog.md ("centralmcp registers 6,700 backend tools").
+EXPECTED_COMPLETE_CATALOG_MIN_TOOLS = 6700
 
 _COMMAND_PATTERN = re.compile(
     r"--catalog-products all --strict-rag --strict-tool-index --min-tools (\d+)"
