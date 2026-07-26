@@ -22,7 +22,7 @@ from mcp_servers.openapi_gen.manifest import (
     sha256_bytes,
 )
 from mcp_servers.openapi_gen.naming import DuplicateNameError, NameAllocator, base_name, snake
-from mcp_servers.openapi_gen.runtime import register_generated_tools
+from mcp_servers.openapi_gen.runtime import _py_type, register_generated_tools
 from mcp_servers.shared import bound_collection_response, bounded_response_payload
 
 # ---------------------------------------------------------------------------
@@ -71,6 +71,11 @@ SPEC = {
                         "in": "query",
                         "schema": {"$ref": "#/components/schemas/mode"},
                     },
+                    {
+                        "name": "site_ids",
+                        "in": "query",
+                        "schema": {"type": "array", "items": {"type": "string"}},
+                    },
                     {"name": "X-Trace", "in": "header", "schema": {"type": "string"}},
                     {"name": "Authorization", "in": "header", "schema": {"type": "string"}},
                 ],
@@ -118,6 +123,8 @@ def test_parser_resolves_refs_params_and_bodies():
     assert params["org_id"].location == "path" and params["org_id"].required
     assert params["verbose"].schema_type == "boolean" and params["verbose"].default is False
     assert params["mode"].enum == ["fast", "slow"]
+    assert params["site_ids"].schema_type == "array"
+    assert params["site_ids"].item_type == "string"
     # allOf request body resolves to an object
     post = ops[1]
     assert post.request_body.schema_type == "object"
@@ -362,7 +369,12 @@ def test_registration_exposes_typed_params_without_auth(monkeypatch):
     get_tool = tools["demo_list_widgets"]
     props = (get_tool.parameters.get("properties") or {})
     # Typed named params exposed, not an opaque kwargs blob.
-    assert "org_id" in props and "verbose" in props and "mode" in props
+    assert {"org_id", "verbose", "mode", "site_ids"} <= set(props)
+    site_id_variants = props["site_ids"].get("anyOf", [props["site_ids"]])
+    site_ids_schema = next(
+        variant for variant in site_id_variants if variant.get("type") == "array"
+    )
+    assert site_ids_schema["items"] == {"type": "string"}
     # Non-auth header param exposed; auth header stripped.
     assert "x_trace" in props
     assert "authorization" not in props
@@ -377,11 +389,31 @@ def test_registration_exposes_typed_params_without_auth(monkeypatch):
 def test_direct_read_dispatch(monkeypatch):
     server, _, read_cap, _ = _register_demo(monkeypatch)
     fn = server._tool_manager._tools["demo_list_widgets"].fn
-    out = asyncio.run(fn(org_id="o1", verbose=False, mode="fast"))
+    out = asyncio.run(
+        fn(
+            org_id="o1",
+            verbose=False,
+            mode="fast",
+            site_ids=["site-1", "site-2"],
+        )
+    )
     assert out["status_code"] == 200
     assert read_cap["path"] == "/api/v1/orgs/o1/widgets"
     # False preserved (not dropped), None omitted.
-    assert read_cap["query"] == {"verbose": False, "mode": "fast"}
+    assert read_cap["query"] == {
+        "verbose": False,
+        "mode": "fast",
+        "site_ids": ["site-1", "site-2"],
+    }
+
+
+def test_array_python_type_preserves_known_item_types():
+    assert _py_type("array", "string") == list[str]
+    assert _py_type("array", "integer") == list[int]
+    assert _py_type("array", "number") == list[float]
+    assert _py_type("array", "boolean") == list[bool]
+    assert _py_type("array", None) is list
+    assert _py_type("array", "any") is list
 
 
 def test_read_post_exposes_required_body_without_write_controls(monkeypatch):
