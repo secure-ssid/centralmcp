@@ -9,7 +9,20 @@ from urllib.parse import unquote
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
 MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+HTML_LINK_RE = re.compile(r'<a\b[^>]*\bhref="([^"]+)"', re.IGNORECASE)
+HTML_IMAGE_RE = re.compile(r'<img\b[^>]*\bsrc="([^"]+)"', re.IGNORECASE)
 ROUTER_INVOKE_RE = re.compile(r"\binvoke_(?:read_)?tool\((.+)\)")
+CORE_VISUAL_DOCS = {
+    "README.md",
+    "docs/index.md",
+    "docs/getting-started.md",
+    "docs/mcp-client-recipes.md",
+    "docs/tool-router.md",
+    "docs/example-prompts.md",
+    "docs/troubleshooting.md",
+    "docs/optional-products.md",
+    "docs/architecture/system-overview.md",
+}
 BACKEND_MODULES = [
     "mcp_servers.config",
     "mcp_servers.monitoring",
@@ -41,7 +54,11 @@ def test_tracked_markdown_local_links_and_images_resolve():
 
     for path in _tracked_markdown_files():
         markdown = path.read_text(errors="replace")
-        matches = list(MARKDOWN_LINK_RE.finditer(markdown)) + list(MARKDOWN_IMAGE_RE.finditer(markdown))
+        matches = (
+            list(MARKDOWN_LINK_RE.finditer(markdown))
+            + list(MARKDOWN_IMAGE_RE.finditer(markdown))
+            + list(HTML_IMAGE_RE.finditer(markdown))
+        )
         for match in matches:
             target = match.group(1).split("#", 1)[0].strip()
             if not target or target.startswith(("http://", "https://", "mailto:", "#")):
@@ -52,6 +69,43 @@ def test_tracked_markdown_local_links_and_images_resolve():
             candidate = (path.parent / unquote(target)).resolve()
             if not candidate.exists():
                 missing.append(f"{path.relative_to(REPO_ROOT)} -> {target}")
+
+    assert missing == []
+
+
+def _heading_ids(markdown: str) -> set[str]:
+    ids: set[str] = set()
+    duplicates: dict[str, int] = {}
+    for line in markdown.splitlines():
+        match = re.match(r"^#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if match is None:
+            continue
+        heading = re.sub(r"<[^>]+>", "", match.group(1))
+        heading = heading.replace("`", "").lower()
+        slug = re.sub(r"[^\w\s-]", "", heading)
+        slug = re.sub(r"[\s-]+", "-", slug).strip("-")
+        duplicate = duplicates.get(slug, 0)
+        duplicates[slug] = duplicate + 1
+        ids.add(slug if duplicate == 0 else f"{slug}-{duplicate}")
+    return ids
+
+
+def test_core_visual_documentation_local_anchors_resolve():
+    missing = []
+    for relative_path in CORE_VISUAL_DOCS:
+        path = REPO_ROOT / relative_path
+        markdown = path.read_text(errors="replace")
+        matches = list(MARKDOWN_LINK_RE.finditer(markdown)) + list(HTML_LINK_RE.finditer(markdown))
+        for match in matches:
+            target = match.group(1).strip()
+            if "#" not in target or target.startswith(("http://", "https://", "mailto:")):
+                continue
+            target_path, anchor = target.split("#", 1)
+            candidate = path if not target_path else (path.parent / unquote(target_path)).resolve()
+            if candidate.suffix != ".md" or not candidate.exists() or not anchor:
+                continue
+            if unquote(anchor) not in _heading_ids(candidate.read_text(errors="replace")):
+                missing.append(f"{relative_path} -> {target}")
 
     assert missing == []
 

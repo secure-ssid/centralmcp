@@ -1,6 +1,114 @@
 # Getting started
 
-This guide gets a local clone running as an MCP server with the low-token router profile.
+By the end of this guide you will have a local centralmcp clone, a verified
+local setup, a low-token MCP router running, an MCP client connected to it,
+and one confirmed successful tool call. Every step below tells you exactly
+what to expect before you move on.
+
+<figure class="docs-figure">
+  <img src="assets/diagrams/quickstart-journey.svg"
+       alt="Six steps from cloning centralmcp through setup, doctor checks, MCP connection, tool discovery, and a safe read-only call.">
+  <figcaption>The quickstart journey: clone, run the setup wizard, check the
+  local doctor, connect an MCP client over stdio or HTTP, discover a tool
+  with <code>find_tool</code>, and call it safely with
+  <code>invoke_read_tool</code>.</figcaption>
+</figure>
+
+<div class="journey-grid">
+  <div class="journey-card" markdown="1">
+
+### 1. Clone
+
+Get the repository and its dependencies locally. See [Step 1](#1-install).
+
+  </div>
+  <div class="journey-card" markdown="1">
+
+### 2. Run the wizard
+
+`scripts/setup_wizard.py` installs, configures, and checks itself. See
+[Step 2](#2-try-it-credential-free).
+
+  </div>
+  <div class="journey-card" markdown="1">
+
+### 3. Check the doctor
+
+`scripts/doctor.py` verifies local setup without calling any API. First run
+it in [Step 2](#2-try-it-credential-free); re-run it any time, including
+[Step 7](#7-validate-locally).
+
+  </div>
+  <div class="journey-card" markdown="1">
+
+### 4. Connect a client
+
+Point stdio or streamable HTTP at `aruba-tool-router`. See
+[Step 4](#4-connect-your-mcp-client).
+
+  </div>
+  <div class="journey-card" markdown="1">
+
+### 5. Discover a tool
+
+Ask `find_tool` for the operation you need. See
+[Step 6](#6-make-your-first-successful-call).
+
+  </div>
+  <div class="journey-card" markdown="1">
+
+### 6. Call it safely
+
+Dispatch with `invoke_read_tool` and read the response. See
+[Step 6](#6-make-your-first-successful-call).
+
+  </div>
+</div>
+
+## Prerequisites
+
+<div class="step-grid">
+  <div class="step-card" markdown="1">
+
+### Python 3.10+
+
+centralmcp requires Python 3.10 or newer. `scripts/doctor.py` checks this for
+you starting in [Step 2](#2-try-it-credential-free).
+
+  </div>
+  <div class="step-card" markdown="1">
+
+### `uv` (recommended)
+
+The lockfile is maintained for `uv`. It can install dependencies and run
+scripts (`uv sync`, `uv run python ...`).
+
+  </div>
+  <div class="step-card" markdown="1">
+
+### git
+
+Used to clone the repository in [Step 1](#1-install).
+
+  </div>
+  <div class="step-card" markdown="1">
+
+### An MCP-capable client
+
+Cursor, VS Code, Claude, or any client that supports stdio or streamable HTTP
+MCP servers. See [mcp-client-recipes.md](mcp-client-recipes.md).
+
+  </div>
+  <div class="step-card" markdown="1">
+
+### Central / GLP credentials (optional at first)
+
+Not required for [Step 2](#2-try-it-credential-free). Needed before any tool
+call that reaches a live Aruba Central or GreenLake Platform API — see
+[Step 3](#3-add-credentials).
+
+  </div>
+</div>
 
 ## 1. Install
 
@@ -10,46 +118,10 @@ cd centralmcp
 python3 scripts/setup_wizard.py
 ```
 
-Python 3.10+ is required. `uv` is recommended because the lockfile is maintained for this repo.
-
 The guided setup wizard can run `uv sync`, create local git-ignored config
 files, replace MCP path placeholders, choose a Central API gateway region, fill
 credentials without echoing secrets, enable optional products, build the router
 tool catalog, and run the local doctor.
-
-```mermaid
-flowchart TD
-    start["Run scripts/setup_wizard.py"]
-    install{"Install or sync dependencies?"}
-    creds{"Configure Central / GLP credentials?"}
-    products{"Enable optional products?"}
-    access{"Product access mode"}
-    transport{"MCP transport"}
-    catalog["Build router catalog<br/>scripts/ingest_tools.py"]
-    doctor["Run local doctor<br/>scripts/doctor.py"]
-    env[".env<br/>CENTRALMCP_PRODUCTS<br/>CENTRALMCP_PRODUCT_ACCESS<br/>product URLs/tokens"]
-    yaml["config/credentials.yaml<br/>Central / GLP credentials"]
-    stdio[".mcp.json<br/>stdio MCP client config"]
-    http[".mcp.http.json<br/>streamable HTTP client config"]
-    ready["MCP client connects to<br/>aruba-tool-router"]
-
-    start --> install
-    install --> creds
-    creds --> yaml
-    creds --> products
-    products --> env
-    products --> access
-    access -->|"read-only or read-write"| env
-    access --> transport
-    transport --> stdio
-    transport --> http
-    env --> catalog
-    yaml --> catalog
-    stdio --> catalog
-    http --> catalog
-    catalog --> doctor
-    doctor --> ready
-```
 
 If dependencies are already installed, or you want to skip any wizard phase:
 
@@ -57,21 +129,145 @@ If dependencies are already installed, or you want to skip any wizard phase:
 python3 scripts/setup_wizard.py --skip-install
 ```
 
-### Try without API credentials
+<div class="docs-checkpoint">
+  <span class="docs-checkpoint__number">1</span>
+  <div class="docs-checkpoint__body" markdown="1">
 
-You can verify dependencies, build the local router catalog, and start the HTTP
-MCP server before adding Central or GLP credentials:
+**Checkpoint:** the wizard prints a `[status] label: detail` line for each
+phase it runs, ending with a summary count. If any phase fails, re-run with
+`--skip-install` after resolving the printed detail, or continue to Step 2 to
+verify setup independently with the local doctor.
+
+  </div>
+</div>
+
+<figure class="docs-figure">
+  <img src="assets/diagrams/terminal-setup-wizard-completion.svg"
+       alt="Example terminal output showing the centralmcp setup wizard completing successfully">
+  <figcaption>The generated terminal example shows the completion pattern. Keep using the copyable command above; exact phase counts can vary by selected options.</figcaption>
+</figure>
+
+## 2. Try it credential-free
+
+You can verify dependencies, build the local router catalog, and start the
+HTTP MCP server before adding Central or GLP credentials:
 
 ```bash
 python3 scripts/setup_wizard.py --yes --skip-credentials
 uv run python scripts/doctor.py
+```
+
+Expect output similar to this (exact counts vary by local setup):
+
+```text
+centralmcp local doctor
+
+[OK] Python version: 3.11.6 detected; centralmcp requires >=3.10
+[OK] uv: uv is available
+[OK] Python module httpx: httpx import spec found
+[OK] Python module mcp: mcp import spec found
+[WARN] Credentials: config/credentials.yaml missing; copy
+  config/credentials.yaml.example to config/credentials.yaml and fill in
+  credentials
+[OK] stdio MCP example: .mcp.json.example exists
+[WARN] Local stdio MCP config: copy .mcp.json.example to .mcp.json for local
+  stdio clients
+[OK] Router tool index: data/tools.lance exists
+
+... additional local checks passed
+
+Summary: 0 fail, 2 warn, 23 ok
+```
+
+`WARN` lines are expected before you add credentials or copy the local client
+configs — they turn into `OK` in later steps. A `FAIL` line means something
+needs fixing before you continue.
+
+<figure class="docs-figure">
+  <img src="assets/diagrams/terminal-doctor-success.svg"
+       alt="Example terminal output showing successful local centralmcp doctor checks">
+  <figcaption>The doctor remains local and non-mutating. The text block above is copyable and explains why credential warnings are expected during this trial.</figcaption>
+</figure>
+
+Now start the router itself:
+
+```bash
 MCP_PORT=8010 bash scripts/run_http_router.sh
 ```
 
-API-backed tools need credentials later, but this confirms the MCP server and
-local catalog path first.
+Expect a startup banner like:
 
-## 2. Configure credentials
+```text
+Starting centralmcp HTTP router
+  endpoint: http://127.0.0.1:8010/mcp
+  health:   http://127.0.0.1:8010/livez, /readyz, /healthz (no auth, no MCP negotiation)
+  mode:     minimal
+  toolsets: central,glp,rag
+  products: none
+  access:   read-only
+  bearer:   disabled (set MCP_HTTP_BEARER_TOKEN to require a shared secret)
+  metrics:  0 (http snapshot: 0)
+  audit:    0
+
+Foreground stop: Ctrl-C
+Background stop:
+  lsof -nP -iTCP:8010 -sTCP:LISTEN
+  kill <PID>
+```
+
+<figure class="docs-figure">
+  <img src="assets/diagrams/terminal-http-router-startup.svg"
+       alt="Example terminal output showing the local streamable HTTP router startup banner">
+  <figcaption>The startup banner makes the endpoint, enabled toolsets, product access mode, and stop procedure visible before a client connects.</figcaption>
+</figure>
+
+<div class="docs-callout docs-callout--info" markdown="1">
+
+**Expected result:** the health routes never touch Central or GLP, so they
+work even without credentials. `/readyz` reports `not_ready` until credentials
+exist — that is the correct signal at this point, not a bug:
+
+```bash
+curl -s http://127.0.0.1:8010/readyz
+```
+
+```json
+{"status": "not_ready", "detail": {"creds_path": "config/credentials.yaml", "creds_path_exists": false}}
+```
+
+</div>
+
+<div class="docs-callout docs-callout--warning" markdown="1">
+
+Plain `curl` requests to `/mcp` are expected to fail — MCP over streamable
+HTTP requires session negotiation and `Accept: text/event-stream`:
+
+```bash
+curl -s -i -X POST http://127.0.0.1:8010/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"ping"}'
+```
+
+```text
+HTTP/1.1 406 Not Acceptable
+{"jsonrpc":"2.0","id":"server-error","error":{"code":-32600,"message":"Not Acceptable: Client must accept both application/json and text/event-stream"}}
+```
+
+That 406 confirms the router is listening. Use a real MCP client (Step 4) for
+actual tool calls — see [mcp-client-recipes.md](mcp-client-recipes.md) for
+transport details.
+
+</div>
+
+Stop the foreground server with `Ctrl-C`. If you started it in the background
+and need to stop it:
+
+```bash
+lsof -nP -iTCP:8010 -sTCP:LISTEN
+kill <PID>
+```
+
+## 3. Add credentials
 
 The wizard creates `config/credentials.yaml` when it is missing and offers common
 Central API gateway choices:
@@ -90,7 +286,7 @@ To create the template manually:
 cp config/credentials.yaml.example config/credentials.yaml
 ```
 
-Fill in the preferred sections:
+Fill in the preferred sections with your own (fake values shown here):
 
 ```yaml
 central_account:
@@ -106,7 +302,11 @@ glp_account:
   glp_workspace_id: YOUR_GLP_WORKSPACE_ID
 ```
 
-Environment variables override YAML values. Common overrides:
+<div class="docs-callout docs-callout--danger" markdown="1">
+
+`config/credentials.yaml` is git-ignored — never commit real credentials.
+Environment variables override YAML values, so a stray exported variable can
+silently win over the file. Common overrides:
 
 | Variable | Purpose |
 |---|---|
@@ -116,75 +316,59 @@ Environment variables override YAML values. Common overrides:
 | `GLP_TOKEN_URL`, `GLP_BASE_URL` | GLP endpoint overrides |
 | `TOKEN_CACHE_DIR` | Token cache directory |
 
-## 3. Configure your MCP client
+</div>
+
+<div class="docs-checkpoint">
+  <span class="docs-checkpoint__number">2</span>
+  <div class="docs-checkpoint__body" markdown="1">
+
+**Checkpoint:** re-run the doctor and the readiness probe. `Credentials`
+should now read `OK`, and `/readyz` should flip to `ok`:
+
+```bash
+uv run python scripts/doctor.py
+curl -s http://127.0.0.1:8010/readyz
+```
+
+```json
+{"status": "ok", "detail": {"creds_path": "config/credentials.yaml", "creds_path_exists": true}}
+```
+
+  </div>
+</div>
+
+## 4. Connect your MCP client
 
 ```bash
 cp .mcp.json.example .mcp.json
 ```
 
 The wizard does this and replaces `/path/to/centralmcp` with your local clone
-path. If configuring manually, edit `.mcp.json` yourself.
-For VS Code, copy `.vscode/mcp.json.example` to `.vscode/mcp.json`.
-For included `.claude` launch profiles, use `.claude/launch.json`; the first profile is the
-same minimal `aruba-tool-router` setup and the remaining profiles are direct
-debug servers.
-For clients that connect to an already-running HTTP MCP server, copy
-`.mcp.http.json.example` to `.mcp.http.json` and edit the URL if you use a
-different host or port. The copied file is local-only and git-ignored.
-For client-specific examples, see [mcp-client-recipes.md](mcp-client-recipes.md).
-
-Recommended default:
+path. If configuring manually, edit `.mcp.json` yourself. Recommended default
+in that file:
 
 ```env
 CENTRALMCP_ROUTER_MODE=minimal
 CENTRALMCP_TOOLSETS=central,glp,rag
 ```
 
-This exposes only the router discovery/dispatch surface and keeps tool-list token cost low.
-The router can search 6,699 backend tools when all platforms and guarded writes
-are indexed, while minimal mode exposes only three client-visible tools.
+This exposes only the router discovery/dispatch surface and keeps tool-list
+token cost low. The router can search 6,699 backend tools when all platforms
+and guarded writes are indexed, while minimal mode exposes only three
+client-visible tools: `find_tool`, `invoke_read_tool`, and `invoke_tool`.
 
-### Streamable HTTP instead of stdio
+Your client can either launch the router itself (stdio) or connect to one
+already running (streamable HTTP, from [Step 2](#2-try-it-credential-free)).
+[mcp-client-recipes.md](mcp-client-recipes.md) has the full decision guide and
+copy/paste blocks for generic clients, Cursor, VS Code, and the included
+`.claude/launch.json` launch profiles — including the accessible
+transport-choice diagram used to make that call. The first profile in
+`.claude/launch.json` is the same `minimal` `aruba-tool-router` setup shown
+above; the rest are direct debug servers.
 
-Any MCP-capable AI client/model can connect over streamable HTTP if the client
-supports remote MCP servers.
+## 5. Build the tool catalog
 
-Start the minimal router. The helper defaults to port `8010`, matching
-`.mcp.http.json.example`:
-
-```bash
-MCP_PORT=8010 bash scripts/run_http_router.sh
-```
-
-Connect your client to:
-
-```text
-http://127.0.0.1:8010/mcp
-```
-
-The HTTP example in `.mcp.http.json.example` points at that local endpoint.
-The helper safely loads expected local `.env` assignments first, so optional
-product settings created by the wizard are available in HTTP mode.
-If the port is already in use, `scripts/run_http_router.sh` exits before
-starting another router and prints the listener details. Stop the foreground
-server with `Ctrl-C`. If you launched it in the background, find the listener
-and stop that PID:
-
-```bash
-lsof -nP -iTCP:8010 -sTCP:LISTEN
-kill <PID>
-```
-
-Plain `curl` requests are expected to fail unless they send MCP streaming
-headers such as `Accept: text/event-stream`; use an MCP client for actual tool
-calls.
-
-For a listener outside loopback, configure explicit `MCP_ALLOWED_HOSTS` and
-`MCP_ALLOWED_ORIGINS`. Set `MCP_HTTP_BEARER_TOKEN` only with
-`MCP_TRANSPORT=streamable-http`; clients must send
-`Authorization: Bearer <token>`. Bearer configuration with SSE fails closed.
-
-## 4. Build the tool catalog
+The router needs a local tool index before `find_tool` can search it:
 
 ```bash
 uv run python scripts/ingest_tools.py
@@ -213,7 +397,87 @@ Optional products default to read-only. Explicit read/write mode is lab-friendly
 write tools are exposed, but they dry-run by default and require `confirm=True`
 to execute.
 
-## 5. Optional: build the docs/API RAG indexes
+## 6. Make your first successful call
+
+With a client connected (Step 4) and a catalog built (Step 5), ask your client
+to find and call a low-risk, read-only tool:
+
+```text
+find_tool("list Aruba Central sites")
+```
+
+```json
+[
+  {
+    "name": "list_sites",
+    "server": "aruba-monitoring",
+    "description": "Return sites with IDs, names, and location fields (paginated).",
+    "params": ["limit", "offset"],
+    "read_only": true,
+    "destructive": false
+  }
+]
+```
+
+Then dispatch it with `invoke_read_tool`:
+
+```text
+invoke_read_tool("list_sites", {"limit": 10, "offset": 0})
+```
+
+<div class="docs-callout docs-callout--safe" markdown="1">
+
+**Expected result:** a bounded page of sites with `_pagination` metadata (real
+tenants return real site names — this is fake sample data):
+
+```json
+{
+  "items": [
+    {
+      "id": "11111111-2222-3333-4444-555555555555",
+      "name": "hq-branch-01",
+      "address": {"city": "Fort Collins", "state": "CO", "country": "US"}
+    }
+  ],
+  "_pagination": {"offset": 0, "limit": 10, "total": 1, "truncated": false}
+}
+```
+
+If this comes back, your client, router, credentials, and catalog are all
+working together end to end.
+
+</div>
+
+<div class="docs-checkpoint">
+  <span class="docs-checkpoint__number">3</span>
+  <div class="docs-checkpoint__body" markdown="1">
+
+**Checkpoint:** if `invoke_read_tool` instead returns an `error` or a blocked
+`status`, the response envelope will include a `message` describing why —
+check [troubleshooting.md](troubleshooting.md) for the matching fix.
+
+  </div>
+</div>
+
+## 7. Validate locally
+
+```bash
+python3 scripts/setup_wizard.py --yes --skip-credentials --skip-catalog
+uv run python scripts/doctor.py
+uv run pytest tests/unit -q
+uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6699
+```
+
+`scripts/doctor.py` is a non-mutating local setup diagnostic. It checks Python
+modules, credentials/config paths, local stdio/HTTP MCP config copies, local
+stdio placeholder paths, local low-token router profile drift, local HTTP URL
+or transport mismatches, indexes, RAG source-manifest drift, low-token router
+env, optional product names and required product env vars, and the HTTP router
+port without calling Central or GLP APIs.
+
+The unit suite includes static guards that keep async MCP tools off sync HTTP calls, prevent direct `CentralClient.session` bypasses, keep direct runtime dependencies on `httpx` instead of sync SDKs or `requests`, and protect the committed low-token MCP config examples.
+
+## Optional: build the docs/API RAG indexes
 
 The router tool catalog is quick. The full docs/API index is larger. Fresh clones need either a prebuilt release index or locally populated
 `ingestion/sources/` input files before rebuilding docs/API search. Structured
@@ -236,24 +500,6 @@ The current rebuilt snapshot contains 51,737 prose chunks and a structured
 index with 244 specs, 3,796 endpoints, 11,293 schemas, 60,568 fields,
 102 security advisories, and 346 lifecycle records.
 
-## 6. Validate
-
-```bash
-python3 scripts/setup_wizard.py --yes --skip-credentials --skip-catalog
-uv run python scripts/doctor.py
-uv run pytest tests/unit -q
-uv run python scripts/validate_release.py --catalog-products all --strict-rag --strict-tool-index --min-tools 6699
-```
-
-`scripts/doctor.py` is a non-mutating local setup diagnostic. It checks Python
-modules, credentials/config paths, local stdio/HTTP MCP config copies, local
-stdio placeholder paths, local low-token router profile drift, local HTTP URL
-or transport mismatches, indexes, RAG source-manifest drift, low-token router
-env, optional product names and required product env vars, and the HTTP router
-port without calling Central or GLP APIs.
-
-The unit suite includes static guards that keep async MCP tools off sync HTTP calls, prevent direct `CentralClient.session` bypasses, keep direct runtime dependencies on `httpx` instead of sync SDKs or `requests`, and protect the committed low-token MCP config examples.
-
 ## Optional product starters
 
 Optional product backends are disabled by default.
@@ -272,6 +518,8 @@ a subset when you only want ClearPass, Mist, or another specific starter:
 python3 scripts/setup_wizard.py --products clearpass
 ```
 
+<div class="docs-compact-table" markdown="1">
+
 | Product | Variables |
 |---|---|
 | ClearPass | `CLEARPASS_BASE_URL`, `CLEARPASS_API_TOKEN` |
@@ -281,6 +529,8 @@ python3 scripts/setup_wizard.py --products clearpass
 | EdgeConnect | `EDGECONNECT_BASE_URL`, `EDGECONNECT_API_TOKEN`, optional `EDGECONNECT_AUTH_HEADER`, legacy-only `EDGECONNECT_ALLOW_LEGACY_API=1`, endpoint-specific `EDGECONNECT_AI_SESSION_AUTHORIZATION` |
 | HPE Aruba UXI | `UXI_CLIENT_ID`, `UXI_CLIENT_SECRET`, optional `UXI_BASE_URL`, optional `UXI_TOKEN_URL` |
 | Axis Atmos Cloud | `AXIS_BASE_URL`, `AXIS_API_TOKEN` |
+
+</div>
 
 Set `CENTRALMCP_PRODUCT_ACCESS=read-write` only for trusted lab writes, or
 enable a single platform with `CENTRALMCP_<PLATFORM>_WRITES=1`.
@@ -302,17 +552,52 @@ records exactly which surfaces were confirmed live versus fixture-backed only.
 
 ## Safety defaults
 
+<span class="docs-badge docs-badge--read">read</span>
+<span class="docs-badge docs-badge--diagnostic">diagnostic</span>
+<span class="docs-badge docs-badge--write">write</span>
+<span class="docs-badge docs-badge--destructive">destructive</span>
+
+Every backend tool carries one of these four capability annotations, and the
+router enforces them at dispatch time, not just in documentation:
+
+<div class="docs-callout docs-callout--safe" markdown="1">
+
+- Use `invoke_read_tool` for read-only dispatch. Diagnostic tools use
+  `invoke_tool` because they are not annotated read-only.
 - GLP writes are disabled unless `CENTRALMCP_GLP_V2BETA1_WRITES=1`.
 - Central and optional writes can be independently disabled/enabled with the
   per-platform `CENTRALMCP_<PLATFORM>_WRITES` variables.
 - Token caches are stored in `~/.cache/centralmcp/` by default with `0600` permissions.
+
+</div>
+
+<div class="docs-callout docs-callout--warning" markdown="1">
+
+- Use `invoke_tool` only for intentional write/destructive actions — it is a
+  generic dispatcher and can reach destructive backend tools.
 - Non-loopback HTTP binds require explicit `MCP_ALLOWED_HOSTS` and
   `MCP_ALLOWED_ORIGINS`; set `MCP_HTTP_BEARER_TOKEN` to protect HTTP routes.
 - `/livez`, `/readyz`, and `/healthz` report local server health without
   contacting Central, GreenLake, or optional products.
-- Use `invoke_read_tool` for read-only router dispatch.
-- Use `invoke_tool` only for intentional writes/destructive actions.
 - Audit logging (`CENTRALMCP_AUDIT_LOG`) and in-process metrics
   (`CENTRALMCP_METRICS`, plus `CENTRALMCP_METRICS_HTTP` for the optional
   `GET /metrics` snapshot route) are both opt-in and off by default -- see
   [tool-router.md's Observability section](tool-router.md#observability-audit-log-and-metrics).
+
+</div>
+
+<div class="docs-next" markdown="1">
+
+## Next steps
+
+- [mcp-client-recipes.md](mcp-client-recipes.md) — stdio vs streamable HTTP,
+  plus copy/paste configs for generic clients, Cursor, VS Code, and `.claude`.
+- [example-prompts.md](example-prompts.md) — more `find_tool` /
+  `invoke_read_tool` flows to copy.
+- [troubleshooting.md](troubleshooting.md) — fixes mapped to doctor output.
+- [tool-router.md](tool-router.md) — router modes, safety gates, and
+  observability in depth.
+- [optional-products.md](optional-products.md) — ClearPass, Mist, Apstra,
+  AOS8, EdgeConnect, UXI, and Axis starter prerequisites.
+
+</div>

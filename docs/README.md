@@ -1,18 +1,22 @@
 # centralmcp documentation
 
-Use this directory as the organized documentation hub for setup, architecture,
-router usage, optional products, troubleshooting, and release artifacts.
-
-This folder can also be served as a GitHub Pages site from `main` / `docs`.
+The GitHub Pages site is published from `main/docs` with Jekyll and the Cayman
+theme. User journeys are written in Markdown; diagrams are authored in Mermaid
+and committed as accessible SVG files so they render without browser-side
+JavaScript.
 
 ## Start here
 
 | Doc | Use it for |
 |---|---|
-| [index.md](index.md) | GitHub Pages landing page with quick setup, router, optional product, and HTTP paths |
+| [index.md](index.md) | Task-based front door for new users, network operators, and contributors |
 | [getting-started.md](getting-started.md) | Wizard install, credentials, optional products, MCP client setup, and indexes |
 | [mcp-client-recipes.md](mcp-client-recipes.md) | Copy/paste stdio and streamable HTTP MCP client setup recipes |
+| [tool-router.md](tool-router.md) | Low-token discovery, dispatch, and write-safety behavior |
+| [example-prompts.md](example-prompts.md) | Complete scenarios with calls, expected shapes, and safety labels |
+| [troubleshooting.md](troubleshooting.md) | Outcome-driven setup, authentication, transport, catalog, and RAG fixes |
 | [optional-products.md](optional-products.md) | Optional product matrix, wizard behavior, env vars, and safety surface |
+| [architecture/system-overview.md](architecture/system-overview.md) | Runtime, data, transport, and safety architecture |
 | [product-workflows.md](product-workflows.md) | Typed ClearPass/Mist/Apstra/AOS8/EdgeConnect/UXI workflow roadmap |
 | [aos8-migration-contract-matrix.md](aos8-migration-contract-matrix.md) | Authoritative AOS8-to-Classic/New Central migration contract matrix gating 0.5.0 implementation |
 | [aos8-live-dryrun-evaluation.md](aos8-live-dryrun-evaluation.md) | Read-only live/fixture-backed evaluation record of the AOS8 migration pipeline against the contract matrix |
@@ -27,18 +31,33 @@ This folder can also be served as a GitHub Pages site from `main` / `docs`.
 | [release-notes-0.4.0.md](release-notes-0.4.0.md) | Complete 0.4.0 migration execution, Mist diagnostics, EdgeConnect compatibility, GLP, and Axis changes |
 | [release-notes-0.3.0.md](release-notes-0.3.0.md) | Prior 0.3.0 platform, migration, safety, and API-source changes (historical) |
 | [capability-gap-matrix.md](capability-gap-matrix.md) | Reproducible executable-tool, generated-operation, and pinned-benchmark comparison plus ranked practical gaps |
-| [troubleshooting.md](troubleshooting.md) | Setup wizard, credentials, HTTP mode, router catalog, GitHub Pages deploys, and first-call fixes |
-| [example-prompts.md](example-prompts.md) | Practical low-token prompt examples and router call patterns |
-| [tool-router.md](tool-router.md) | Low-token router modes, toolsets, optional products, and safe dispatch |
 | [tool-catalog.md](tool-catalog.md) | Per-backend counts, capability families, build modes, and safety notes |
-| [architecture/system-overview.md](architecture/system-overview.md) | End-to-end MCP architecture diagrams and runtime flow |
 | [architecture/RAG-ARCHITECTURE.md](architecture/RAG-ARCHITECTURE.md) | Embedded RAG design, eval results, and migration rationale |
 
-## Documentation sections
+## Visual asset workflow
 
-| Section | Contents |
-|---|---|
-| [architecture/](architecture/) | System design, RAG architecture, data stores, eval rationale |
+Mermaid source files live in `docs/diagrams/`; generated SVGs live in
+`docs/assets/diagrams/`.
+
+```bash
+# Render all diagrams and attach accessibility/source metadata
+uv run python scripts/render_docs_diagrams.py
+
+# Verify committed SVGs match their sources
+uv run python scripts/render_docs_diagrams.py --check
+
+# Run documentation regression tests
+uv run pytest tests/unit/test_docs_visual_assets.py tests/unit/test_markdown_links.py -q
+```
+
+Every generated diagram or terminal SVG must include a title, description,
+responsive dimensions, and source digest. Pair each image with explanatory
+prose and keep commands or expected output copyable in Markdown. Use fake
+identifiers and credentials; do not put customer data or secrets in diagrams,
+alt text, or metadata.
+
+Shared responsive cards, callouts, figures, badges, checkpoints, and next-step
+panels are defined in `assets/css/style.scss`.
 
 ## Repo map
 
