@@ -11,6 +11,7 @@ import os
 from typing import Any
 
 from pipeline.models import AccountContext, DeviceRecord, StageResult
+from pipeline.scope_ids import normalize_scope_id
 from pipeline.state_store import StateStore
 from pipeline.stages.base import Stage
 
@@ -93,17 +94,10 @@ def _fetch_global_scope_id(central_client: Any) -> str:
     if not isinstance(result, dict):
         raise RuntimeError(f"{endpoint} returned a non-object response")
     for key in ("scopeId", "id"):
-        scope_id = result.get(key)
-        if isinstance(scope_id, bool):
+        try:
+            return normalize_scope_id(result.get(key), field_name=key)
+        except ValueError:
             continue
-        if isinstance(scope_id, int):
-            if scope_id >= 0:
-                return str(scope_id)
-            continue
-        if isinstance(scope_id, str):
-            scope_id = scope_id.strip()
-            if scope_id.isascii() and scope_id.isdigit():
-                return scope_id
     raise RuntimeError(f"{endpoint} response omitted a valid numeric scopeId")
 
 
@@ -158,17 +152,20 @@ def _profile_scope_ids(central_client: Any, target_ctx: Any) -> list[str]:
     be determined — every scope-map below would otherwise be pointed at a
     guessed ID.
     """
-    global_scope_id = target_ctx.global_scope_id or _fetch_global_scope_id(central_client)
-    if not global_scope_id:
-        raise RuntimeError(
-            "could not resolve the org-level global scope-id from "
-            "/network-config/v1/scope-maps"
-        )
-    target_ctx.global_scope_id = str(global_scope_id)
+    global_scope_id = normalize_scope_id(
+        target_ctx.global_scope_id or _fetch_global_scope_id(central_client),
+        field_name="global_scope_id",
+    )
+    target_ctx.global_scope_id = global_scope_id
 
-    scope_ids = [str(global_scope_id)]
+    scope_ids = [global_scope_id]
     group_name = _switch_group_name(target_ctx)
     group_scope_id = _resolve_device_group_scope_id(central_client, group_name)
+    if group_scope_id:
+        group_scope_id = normalize_scope_id(
+            group_scope_id,
+            field_name=f"device group {group_name!r} scope_id",
+        )
     if group_scope_id and group_scope_id not in scope_ids:
         scope_ids.append(group_scope_id)
     elif group_scope_id is None:
@@ -192,6 +189,7 @@ def _post_scope_map(
 
     Raises on HTTP error. Caller wraps in try/except.
     """
+    scope_id = normalize_scope_id(scope_id)
     central_client.post(
         "/network-config/v1/scope-maps",
         data={

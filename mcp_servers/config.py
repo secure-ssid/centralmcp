@@ -837,6 +837,7 @@ def build_underlay_ssid(
         wpa3_transition=wpa3_transition,
         dry_run=dry_run,
     )
+    scope_id = str(result.get("scope_id", scope_id))
     if dry_run:
         if mac_auth_server_group:
             result["will_also_create"] = [
