@@ -417,6 +417,108 @@ def test_direct_read_dispatch(monkeypatch):
     }
 
 
+def test_form_nonexploded_query_array_is_comma_separated(monkeypatch):
+    manifest = _manifest()
+    read = manifest["operations"][0]
+    site_ids = next(
+        parameter
+        for parameter in read["parameters"]
+        if parameter["name"] == "site_ids"
+    )
+    site_ids.update(style="form", explode=False)
+    server = FastMCP("demo-form-array")
+    captured: dict = {}
+    monkeypatch.setenv("CENTRALMCP_DEMO_GENERATED_TOOLS", "1")
+    register_generated_tools(
+        server,
+        "demo",
+        read_executor=_fake_read_executor(captured),
+        write_executor=_fake_write_executor({}),
+        manifest=manifest,
+    )
+
+    out = asyncio.run(
+        server._tool_manager._tools["demo_list_widgets"].fn(
+            org_id="o1",
+            verbose=False,
+            site_ids=["site-1", "site-2"],
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert captured["query"] == {
+        "verbose": False,
+        "site_ids": "site-1,site-2",
+    }
+
+
+def test_form_nonexploded_boolean_array_uses_openapi_casing(monkeypatch):
+    manifest = _manifest()
+    read = manifest["operations"][0]
+    read["parameters"].append(
+        {
+            "name": "flags",
+            "in": "query",
+            "required": False,
+            "type": "array",
+            "item_type": "boolean",
+            "style": "form",
+            "explode": False,
+        }
+    )
+    server = FastMCP("demo-form-boolean-array")
+    captured: dict = {}
+    monkeypatch.setenv("CENTRALMCP_DEMO_GENERATED_TOOLS", "1")
+    register_generated_tools(
+        server,
+        "demo",
+        read_executor=_fake_read_executor(captured),
+        write_executor=_fake_write_executor({}),
+        manifest=manifest,
+    )
+
+    out = asyncio.run(
+        server._tool_manager._tools["demo_list_widgets"].fn(
+            org_id="o1",
+            flags=[False, True],
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert captured["query"]["flags"] == "false,true"
+
+
+def test_form_exploded_query_array_retains_repeated_key_values(monkeypatch):
+    manifest = _manifest()
+    read = manifest["operations"][0]
+    site_ids = next(
+        parameter
+        for parameter in read["parameters"]
+        if parameter["name"] == "site_ids"
+    )
+    site_ids.update(style="form", explode=True)
+    server = FastMCP("demo-exploded-array")
+    captured: dict = {}
+    monkeypatch.setenv("CENTRALMCP_DEMO_GENERATED_TOOLS", "1")
+    register_generated_tools(
+        server,
+        "demo",
+        read_executor=_fake_read_executor(captured),
+        write_executor=_fake_write_executor({}),
+        manifest=manifest,
+    )
+
+    out = asyncio.run(
+        server._tool_manager._tools["demo_list_widgets"].fn(
+            org_id="o1",
+            site_ids=["site-1", "site-2"],
+        )
+    )
+
+    assert out["status_code"] == 200
+    assert captured["query"]["site_ids"] == ["site-1", "site-2"]
+
+
 def test_array_python_type_preserves_known_item_types():
     assert _py_type("array", "string") == list[str]
     assert _py_type("array", "integer") == list[int]
