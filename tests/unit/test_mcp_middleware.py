@@ -38,6 +38,7 @@ from mcp_servers._middleware import (
     UnknownToolSuggestMiddleware,
     install_middleware,
 )
+from mcp_servers._middleware._outcome import classify_outcome
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -412,6 +413,34 @@ class TestResponseEnvelope:
 
         assert mw.after_call("list_devices", {}, {"items": []}) is None
 
+    @pytest.mark.parametrize(
+        "status",
+        [None, "COMPLETED", "partial_success", "RUNNING", 200, "200"],
+    )
+    def test_nonempty_errors_wrap_regardless_of_neutral_status(self, status):
+        mw = ResponseEnvelopeMiddleware()
+        payload = {"status": status, "errors": ["one sub-operation failed"]}
+
+        result = mw.after_call("batch_operation", {}, payload)
+
+        assert result is not None
+        assert result["ok"] is False
+        assert result["status"] == 500
+        assert result["message"] == "one sub-operation failed"
+        assert result["data"] is payload
+
+    @pytest.mark.parametrize("status", [None, "COMPLETED", 200])
+    def test_empty_errors_pass_through(self, status):
+        mw = ResponseEnvelopeMiddleware()
+
+        result = mw.after_call(
+            "batch_operation",
+            {},
+            {"status": status, "errors": []},
+        )
+
+        assert result is None
+
     def test_already_enveloped_passes_through(self):
         mw = ResponseEnvelopeMiddleware()
         result = {"ok": False, "data": {}, "tool": "x"}
@@ -430,6 +459,47 @@ class TestResponseEnvelope:
         rendered = str(result)
         assert '"ok": false' in rendered
         assert '"tool": "bad"' in rendered
+
+
+class TestOutcomeClassification:
+    @pytest.mark.parametrize(
+        "result",
+        [
+            {"errors": ["failed"]},
+            {"status": "COMPLETED", "errors": ["failed"]},
+            {"status": "partial_success", "errors": ["failed"]},
+            {"status": 200, "errors": ["failed"]},
+        ],
+    )
+    def test_nonempty_errors_are_classified_as_error(self, result):
+        assert classify_outcome(result) == "error"
+
+    def test_raw_blocked_status_precedes_errors_fallback(self):
+        assert classify_outcome(
+            {"status": "blocked", "errors": ["write gate is closed"]}
+        ) == "blocked"
+
+    def test_enveloped_neutral_status_errors_classify_as_error(self):
+        raw = {"status": "COMPLETED", "errors": ["one sub-operation failed"]}
+        enveloped = ResponseEnvelopeMiddleware().after_call(
+            "batch_operation",
+            {},
+            raw,
+        )
+
+        assert enveloped is not None
+        assert classify_outcome(enveloped) == "error"
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            {"status": "COMPLETED", "errors": []},
+            {"status": 200, "errors": []},
+            {"items": []},
+        ],
+    )
+    def test_empty_or_absent_errors_remain_success(self, result):
+        assert classify_outcome(result) == "success"
 
 
 class TestMacNormalize:
