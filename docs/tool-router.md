@@ -148,6 +148,17 @@ not annotated read-only, before the backend is ever called.
 invoke_read_tool("list_active_alerts", {"severity": "CRITICAL"})
 ```
 
+Scope discovery uses Central's official v1 scope-management endpoints and
+returns normalized global, site, and device-group records:
+
+```text
+invoke_read_tool("list_scopes", {"limit": 100, "offset": 0})
+```
+
+If one scope source is unavailable, the usable records are preserved with a
+bounded `warnings` list. If all three sources fail, the tool returns an
+explicit failed result rather than an empty success.
+
 <div class="docs-callout docs-callout--danger" markdown="1">
 
 Calling a write tool through `invoke_read_tool` is refused, not silently

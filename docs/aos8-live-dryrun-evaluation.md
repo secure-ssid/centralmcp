@@ -43,7 +43,7 @@ All calls below were made by importing the router's underlying Python functions 
 ```python
 from mcp_servers.monitoring import get_global_scope_id, list_scopes
 get_global_scope_id()                 # GET (via _fetch_global_scope_id) -- org-wide scope id
-list_scopes(full_list=True)           # GET /network-config/v1/{scopes,sites,scope-maps} (fallback chain)
+list_scopes(full_list=True)           # GET /network-config/v1/{global,sites,device-groups}
 
 from mcp_servers.aos8 import aos8_preview_migration_run
 aos8_preview_migration_run(
