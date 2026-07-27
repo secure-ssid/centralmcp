@@ -263,6 +263,10 @@ explicit `confirm: bool` argument alongside `dry_run`. Check the tool's own
 schema (`find_tool(..., include_schema=true)`) rather than assuming either
 shape.
 
+SSID, role, and profile scope-map workflows validate every scope ID before
+their first write. Invalid, nonnumeric, or overlong IDs fail the preflight
+instead of leaving a partially created resource.
+
 ## Safety gates
 
 <div class="docs-callout docs-callout--danger" markdown="1">

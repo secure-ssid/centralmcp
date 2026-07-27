@@ -22,6 +22,8 @@ import threading
 from typing import Any
 from urllib.parse import quote
 
+from pipeline.scope_ids import normalize_scope_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -270,6 +272,12 @@ def build_underlay_ssid(
         "errors": [],
         "warnings": warnings,
     }
+    try:
+        scope_id = normalize_scope_id(scope_id)
+        result["scope_id"] = scope_id
+    except ValueError as exc:
+        result["errors"].append(f"validate_scope_id: {exc}")
+        return result
 
     body = _build_ssid_body(
         ssid_name,
@@ -415,6 +423,16 @@ def build_overlay_ssid(
         "errors": [],
         "warnings": warnings,
     }
+    try:
+        scope_id = normalize_scope_id(scope_id)
+        cluster_scope_id = normalize_scope_id(
+            cluster_scope_id,
+            field_name="cluster_scope_id",
+        )
+        result["scope_id"] = scope_id
+    except ValueError as exc:
+        result["errors"].append(f"validate_scope_id: {exc}")
+        return result
 
     # ------------------------------------------------------------------
     # Step 0: Resolve the org-level global scope-id exactly once
@@ -869,6 +887,11 @@ def create_allow_all_role(
         "scope_mapped": False,
         "errors": [],
     }
+    try:
+        scope_id = normalize_scope_id(scope_id)
+    except ValueError as exc:
+        result["errors"].append(f"validate_scope_id: {exc}")
+        return result
 
     role_body = {
         "name": role_name,

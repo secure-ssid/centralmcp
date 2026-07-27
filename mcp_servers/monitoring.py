@@ -29,6 +29,7 @@ from urllib.parse import quote
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel
 
+from pipeline.scope_ids import normalize_scope_id
 from mcp_servers.shared import (
     DESTRUCTIVE,
     IDEMPOTENT_WRITE,
@@ -66,17 +67,10 @@ def _scope_field(raw: dict[str, Any], *keys: str) -> str | None:
 
 def _global_scope_field(raw: dict[str, Any]) -> str | None:
     for key in ("scopeId", "id"):
-        value = raw.get(key)
-        if isinstance(value, bool):
+        try:
+            return normalize_scope_id(raw.get(key), field_name=key)
+        except ValueError:
             continue
-        if isinstance(value, int):
-            if value >= 0:
-                return str(value)
-            continue
-        if isinstance(value, str):
-            value = value.strip()
-            if value.isascii() and value.isdigit():
-                return value
     return None
 
 
