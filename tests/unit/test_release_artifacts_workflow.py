@@ -113,8 +113,10 @@ class TestActionPinning:
 
     def test_node_runtime_actions_use_node24_major(self):
         expected = {
+            "actions/attest-build-provenance": "v4",
             "actions/checkout": "v7",
             "actions/upload-artifact": "v7",
+            "astral-sh/setup-uv": "v9.0.0",
         }
         for workflow_path in (WORKFLOW_PATH, CI_WORKFLOW_PATH):
             doc = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
@@ -125,6 +127,16 @@ class TestActionPinning:
                         f"{workflow_path.name} uses {step['uses']}; expected "
                         f"{action}@{expected[action]} for the Node 24 runtime"
                     )
+
+    def test_setup_uv_preserves_cache_pruning_when_cache_is_not_disabled(self):
+        for workflow_path in (WORKFLOW_PATH, CI_WORKFLOW_PATH):
+            doc = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+            for _job, step in _iter_uses_steps(doc):
+                if not step["uses"].startswith("astral-sh/setup-uv@"):
+                    continue
+                inputs = step.get("with", {})
+                if inputs.get("enable-cache", "auto") is not False:
+                    assert inputs.get("prune-cache") is True
 
     def test_attest_build_provenance_action_present(self):
         doc = _load_workflow()
