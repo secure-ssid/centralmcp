@@ -4,7 +4,7 @@ Each manifest operation becomes one FastMCP tool with a *typed* signature
 derived from its path/query/header parameters (plus ``body`` when declared,
 and ``dry_run``/``confirm`` for writes). The runtime:
 
-* keeps auth headers/cookies out of the model-visible arguments;
+* keeps auth and transport-owned headers/cookies out of model-visible arguments;
 * URL-escapes path values and rejects traversal-style values;
 * preserves ``False`` / ``0`` query values, dropping only unset (``None``)
   ones, and honors explicit OpenAPI array serialization metadata;
@@ -58,6 +58,26 @@ _AUTH_PARAM_NAMES = {
     "token",
     "x-auth-token",
 }
+
+# OpenAPI declares Accept and Content-Type implicit rather than header
+# parameters. HTTP clients and trusted proxies must also own framing, routing,
+# and source-identity headers so model arguments cannot spoof them.
+_TRANSPORT_HEADER_NAMES = {
+    "accept",
+    "content-type",
+    "content-length",
+    "host",
+    "connection",
+    "keep-alive",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "forwarded",
+    "via",
+    "x-real-ip",
+}
+_TRANSPORT_HEADER_PREFIXES = ("proxy-", "x-forwarded-", "x-envoy-")
 
 # Argument names the write-tool signature injects (body/dry_run/confirm). A
 # spec parameter that snake-cases to one of these (e.g. a real ``dry-run`` query
@@ -124,6 +144,13 @@ class _ParamSpec:
 
 def is_auth_param(name: str) -> bool:
     return name.strip().lower() in _AUTH_PARAM_NAMES
+
+
+def is_transport_header(name: str) -> bool:
+    normalized = name.strip().lower()
+    return normalized in _TRANSPORT_HEADER_NAMES or normalized.startswith(
+        _TRANSPORT_HEADER_PREFIXES
+    )
 
 
 def _safe_arg_name(name: str, taken: set[str]) -> str:
@@ -222,8 +249,13 @@ def _param_specs(op: dict[str, Any], reserved: frozenset[str] = frozenset()) -> 
         if location not in ("path", "query", "header", "cookie"):
             continue
         name = raw.get("name", "")
-        if location in ("header", "cookie") and is_auth_param(name):
-            # Auth carried out-of-band by the executor.
+        if location == "cookie" and is_auth_param(name):
+            # Auth cookies are carried out-of-band by the executor.
+            continue
+        if location == "header" and (
+            is_auth_param(name) or is_transport_header(name)
+        ):
+            # Trusted auth, HTTP clients, and proxies own these headers.
             continue
         arg = _safe_arg_name(name, taken)
         required = bool(raw.get("required", location == "path"))
@@ -279,6 +311,8 @@ def _build_headers(specs: list[_ParamSpec], kwargs: dict[str, Any]) -> dict[str,
     headers: dict[str, str] = {}
     for spec in specs:
         if spec.location != "header":
+            continue
+        if is_auth_param(spec.api) or is_transport_header(spec.api):
             continue
         value = kwargs.get(spec.arg)
         if value is None:
