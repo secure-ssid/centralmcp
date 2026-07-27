@@ -52,10 +52,10 @@ def classify_outcome(result: Any) -> str:
     """Classify a completed tool call's result into a bounded outcome bucket.
 
     Never inspects argument or result *values* beyond the small, known
-    ``status``/``ok``/``error`` control fields already used by
-    ``ResponseEnvelopeMiddleware`` -- this must stay safe to call on a
-    result that may still contain secret-shaped or identifier-shaped data
-    elsewhere in the payload.
+    ``status``/``ok``/``error`` control fields and the presence of entries in
+    the ``errors`` list already used by ``ResponseEnvelopeMiddleware``. It
+    never reads error-list contents, so this stays safe to call on results
+    that may contain secret-shaped or identifier-shaped data.
     """
     if not isinstance(result, dict):
         return "success"
@@ -64,6 +64,9 @@ def classify_outcome(result: Any) -> str:
     status = str(result.get("status") or "").strip().lower()
     if status in _BLOCKED_LIKE_STATUSES:
         return status
+    errors = result.get("errors")
+    if isinstance(errors, list) and errors:
+        return "error"
     return "success"
 
 

@@ -417,6 +417,10 @@ default 512 distinct `(tool, backend)` pairs; anything beyond folds into one
 overflow bucket). Metrics never read argument values, result values, or
 exception messages.
 
+Outcome classification treats a non-empty top-level `errors` list as a failed
+call even when a backend also reports a neutral status such as `COMPLETED` or
+HTTP `200`; an empty `errors` list remains successful.
+
 Set `CENTRALMCP_METRICS_HTTP=1` (in addition to `CENTRALMCP_METRICS=1`, and
 only on the streamable-HTTP transport -- see
 [credential-free HTTP quickstart](getting-started.md#2-try-it-credential-free))

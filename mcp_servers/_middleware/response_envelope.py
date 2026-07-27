@@ -62,7 +62,7 @@ def _blocked_status(result: dict[str, Any]) -> tuple[bool, int | None]:
         if normalized in _BLOCKED_STATUS_HTTP:
             return True, _BLOCKED_STATUS_HTTP[normalized]
     errors = result.get("errors")
-    if status is None and isinstance(errors, list) and errors:
+    if isinstance(errors, list) and errors:
         return True, 500
     return False, None
 
