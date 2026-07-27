@@ -26,7 +26,7 @@ import keyword
 import os
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import quote
 
 from mcp_servers.openapi_gen.manifest import load_manifest, manifest_exists
@@ -77,6 +77,8 @@ _PY_TYPES: dict[str, Any] = {
 }
 
 _MAX_DESC = 200
+_MAX_ENUM_ERROR_CHOICES = 20
+_MAX_ENUM_LITERAL_VALUES = 20
 
 
 class _ParamSpec:
@@ -129,6 +131,70 @@ def _py_type(schema_type: str, item_type: str | None = None) -> Any:
         elem = _PY_TYPES.get(item_type or "any", Any)
         return list if elem is Any else list[elem]
     return _PY_TYPES.get(schema_type, Any)
+
+
+def _compatible_enum_values(spec: _ParamSpec) -> tuple[Any, ...]:
+    values = tuple(spec.enum or ())
+    if not values:
+        return ()
+    if spec.py_type is str:
+        compatible = all(type(value) is str for value in values)
+    elif spec.py_type is bool:
+        compatible = all(type(value) is bool for value in values)
+    elif spec.py_type is int:
+        compatible = all(type(value) is int for value in values)
+    elif spec.py_type is float:
+        compatible = all(type(value) in {int, float} for value in values)
+    elif spec.py_type is Any:
+        compatible = all(
+            value is None or type(value) in {str, bool, int, float}
+            for value in values
+        )
+    else:
+        compatible = False
+    return values if compatible else ()
+
+
+def _parameter_type(spec: _ParamSpec) -> Any:
+    enum_values = _compatible_enum_values(spec)
+    if enum_values and len(enum_values) <= _MAX_ENUM_LITERAL_VALUES:
+        return Literal[enum_values]
+    return spec.py_type
+
+
+def _enum_value_allowed(
+    spec: _ParamSpec, value: Any, enum_values: tuple[Any, ...]
+) -> bool:
+    if spec.py_type is str:
+        return type(value) is str and value in enum_values
+    if spec.py_type is bool:
+        return type(value) is bool and value in enum_values
+    if spec.py_type is int:
+        return type(value) is int and value in enum_values
+    if spec.py_type is float:
+        return type(value) in {int, float} and value in enum_values
+    return any(type(value) is type(choice) and value == choice for choice in enum_values)
+
+
+def _validate_enum_params(
+    specs: list[_ParamSpec], kwargs: dict[str, Any]
+) -> str | None:
+    for spec in specs:
+        value = kwargs.get(spec.arg)
+        enum_values = _compatible_enum_values(spec)
+        if (
+            value is None
+            or not enum_values
+            or _enum_value_allowed(spec, value, enum_values)
+        ):
+            continue
+        shown = ", ".join(
+            repr(choice) for choice in enum_values[:_MAX_ENUM_ERROR_CHOICES]
+        )
+        if len(enum_values) > _MAX_ENUM_ERROR_CHOICES:
+            shown += f", ... ({len(enum_values)} total)"
+        return f"parameter {spec.api!r} must be one of: {shown}"
+    return None
 
 
 def _param_specs(op: dict[str, Any], reserved: frozenset[str] = frozenset()) -> list[_ParamSpec]:
@@ -215,11 +281,12 @@ def _build_signature(
     # Required first (path + required query/header), then optionals.
     ordered = sorted(specs, key=lambda s: (not s.required, s.location != "path"))
     for spec in ordered:
+        param_type = _parameter_type(spec)
         if spec.required:
-            annotation = spec.py_type
+            annotation = param_type
             default = inspect.Parameter.empty
         else:
-            annotation = Optional[spec.py_type] if spec.py_type is not Any else Any
+            annotation = Optional[param_type] if param_type is not Any else Any
             default = None
         annotations[spec.arg] = annotation
         parameters.append(
@@ -305,6 +372,9 @@ def _make_read_tool(op: dict[str, Any], read_executor: ReadExecutor) -> Callable
     body_required = bool(rb.get("required", False))
 
     async def _tool(**kwargs: Any) -> dict[str, Any]:
+        enum_error = _validate_enum_params(specs, kwargs)
+        if enum_error is not None:
+            return {"error": enum_error}
         try:
             path = _substitute_path(template, _path_values(specs, kwargs))
         except ValueError as exc:
@@ -347,6 +417,9 @@ def _make_write_tool(op: dict[str, Any], write_executor: WriteExecutor) -> Calla
     name = op["name"]
 
     async def _tool(**kwargs: Any) -> dict[str, Any]:
+        enum_error = _validate_enum_params(specs, kwargs)
+        if enum_error is not None:
+            return {"error": enum_error}
         try:
             path = _substitute_path(template, _path_values(specs, kwargs))
         except ValueError as exc:
@@ -386,6 +459,9 @@ def _make_diagnostic_tool(
     name = op["name"]
 
     async def _tool(**kwargs: Any) -> dict[str, Any]:
+        enum_error = _validate_enum_params(specs, kwargs)
+        if enum_error is not None:
+            return {"error": enum_error}
         try:
             path = _substitute_path(template, _path_values(specs, kwargs))
         except ValueError as exc:
