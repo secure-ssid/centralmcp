@@ -374,6 +374,10 @@ it searches the catalog on demand.
 Generated requests preserve OpenAPI query-array serialization metadata:
 explicit `style: form` plus `explode: false` arrays are sent as comma-separated
 values, while default and exploded arrays retain repeated-key encoding.
+Generated schemas also hide authentication, content negotiation, HTTP framing,
+host/routing, and proxy-derived identity headers. Executors and HTTP clients
+own those values; API-level business headers such as `If-Match`,
+`Idempotency-Key`, `Tenant-Acid`, and `Hpe-workspace-id` remain available.
 
 <div class="docs-compact-table" markdown="1">
 

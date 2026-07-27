@@ -22,7 +22,11 @@ from mcp_servers.openapi_gen.manifest import (
     sha256_bytes,
 )
 from mcp_servers.openapi_gen.naming import DuplicateNameError, NameAllocator, base_name, snake
-from mcp_servers.openapi_gen.runtime import _py_type, register_generated_tools
+from mcp_servers.openapi_gen.runtime import (
+    _py_type,
+    is_transport_header,
+    register_generated_tools,
+)
 from mcp_servers.shared import bound_collection_response, bounded_response_payload
 
 # ---------------------------------------------------------------------------
@@ -78,6 +82,30 @@ SPEC = {
                     },
                     {"name": "X-Trace", "in": "header", "schema": {"type": "string"}},
                     {"name": "Authorization", "in": "header", "schema": {"type": "string"}},
+                    {
+                        "name": "Content-Type",
+                        "in": "header",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    },
+                    {
+                        "name": "X-Forwarded-For",
+                        "in": "header",
+                        "schema": {"type": "string"},
+                    },
+                    {
+                        "name": "X-Envoy-External-Address",
+                        "in": "header",
+                        "schema": {"type": "string"},
+                    },
+                    {"name": "Host", "in": "header", "schema": {"type": "string"}},
+                    {"name": "If-Match", "in": "header", "schema": {"type": "string"}},
+                    {"name": "Tenant-Acid", "in": "header", "schema": {"type": "string"}},
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "schema": {"type": "string"},
+                    },
                 ],
             },
             "post": {
@@ -385,15 +413,61 @@ def test_registration_exposes_typed_params_without_auth(monkeypatch):
     mode_variants = props["mode"].get("anyOf", [props["mode"]])
     mode_schema = next(variant for variant in mode_variants if "enum" in variant)
     assert mode_schema == {"enum": ["fast", "slow"], "type": "string"}
-    # Non-auth header param exposed; auth header stripped.
-    assert "x_trace" in props
-    assert "authorization" not in props
+    # Business headers stay exposed; auth and transport headers are stripped.
+    assert {"x_trace", "if_match", "tenant_acid", "idempotency_key"} <= set(props)
+    assert {
+        "authorization",
+        "content_type",
+        "x_forwarded_for",
+        "x_envoy_external_address",
+        "host",
+    }.isdisjoint(props)
     assert get_tool.annotations.readOnlyHint is True
     # Write tool exposes body/dry_run/confirm.
     post_tool = tools["demo_create_widget"]
     post_props = (post_tool.parameters.get("properties") or {})
     assert {"org_id", "mode", "body", "dry_run", "confirm"} <= set(post_props)
     assert post_tool.annotations.readOnlyHint is not True
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Accept",
+        "Content-Type",
+        "Content-Length",
+        "Host",
+        "Connection",
+        "Keep-Alive",
+        "TE",
+        "Trailer",
+        "Transfer-Encoding",
+        "Upgrade",
+        "Forwarded",
+        "Via",
+        "X-Real-IP",
+        "Proxy-Authorization",
+        "X-Forwarded-For",
+        "X-Envoy-External-Address",
+    ],
+)
+def test_transport_headers_are_recognized_case_insensitively(name):
+    assert is_transport_header(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Accept-Language",
+        "If-Match",
+        "Idempotency-Key",
+        "Tenant-Acid",
+        "Hpe-workspace-id",
+        "X-Trace",
+    ],
+)
+def test_business_headers_are_not_treated_as_transport_headers(name):
+    assert not is_transport_header(name)
 
 
 def test_direct_read_dispatch(monkeypatch):
@@ -405,6 +479,9 @@ def test_direct_read_dispatch(monkeypatch):
             verbose=False,
             mode="fast",
             site_ids=["site-1", "site-2"],
+            if_match='"version-1"',
+            tenant_acid="tenant-1",
+            idempotency_key="request-1",
         )
     )
     assert out["status_code"] == 200
@@ -414,6 +491,11 @@ def test_direct_read_dispatch(monkeypatch):
         "verbose": False,
         "mode": "fast",
         "site_ids": ["site-1", "site-2"],
+    }
+    assert read_cap["headers"] == {
+        "If-Match": '"version-1"',
+        "Tenant-Acid": "tenant-1",
+        "Idempotency-Key": "request-1",
     }
 
 

@@ -28,6 +28,9 @@ POST_JSON = "glp_create_role_assignment_v1beta1"
 MULTIPART = "glp_create_location_csv"
 DELETE_TOOL = "glp_delete_role_assignment_v1beta1"
 DRYRUN_COLLIDER = "glp_post_devices_v1"
+CONTENT_TYPE_HEADER = "glp_create_v1_group"
+PROXY_HEADERS = "glp_add_secret_v1"
+BUSINESS_HEADER = "glp_get_v1_alerts"
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -121,6 +124,22 @@ def _fn(name):
 def test_committed_manifest_count_and_registration():
     assert manifest_operation_count("glp") == EXPECTED_OPERATION_COUNT
     assert len(glp.GENERATED_GLP_TOOLS) == EXPECTED_REGISTERED_OPERATION_COUNT
+
+
+def test_generated_glp_schemas_hide_transport_headers_only():
+    content_props = glp.mcp._tool_manager._tools[
+        CONTENT_TYPE_HEADER
+    ].parameters["properties"]
+    proxy_props = glp.mcp._tool_manager._tools[
+        PROXY_HEADERS
+    ].parameters["properties"]
+    business_props = glp.mcp._tool_manager._tools[
+        BUSINESS_HEADER
+    ].parameters["properties"]
+
+    assert "content_type" not in content_props
+    assert {"x_forwarded_for", "x_envoy_external_address"}.isdisjoint(proxy_props)
+    assert "tenant_acid" in business_props
 
 
 def test_manifest_provenance_and_digests():
