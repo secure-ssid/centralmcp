@@ -51,6 +51,35 @@ mcp = FastMCP("aruba-monitoring")
 _SCOPE_PAGE_SIZE = 100
 _SCOPE_MAX_PAGES = 50
 
+
+def _scope_field(raw: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = raw.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def _global_scope_field(raw: dict[str, Any]) -> str | None:
+    for key in ("scopeId", "id"):
+        value = raw.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            if value >= 0:
+                return str(value)
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if value.isascii() and value.isdigit():
+                return value
+    return None
+
+
 # ---------------------------------------------------------------------------
 # AP reboot reason translation
 # ---------------------------------------------------------------------------
@@ -931,25 +960,25 @@ def list_scopes(
     def normalize(raw: Any, scope_type: str) -> dict[str, Any] | None:
         if not isinstance(raw, dict):
             return None
-        scope_id = raw.get("scopeId") or raw.get("scope_id") or raw.get("id")
-        scope_name = raw.get("scopeName") or raw.get("scope_name") or raw.get("name")
-        if scope_id in (None, "") or scope_name in (None, ""):
+        scope_id = _scope_field(raw, "scopeId", "scope_id", "id")
+        scope_name = _scope_field(raw, "scopeName", "scope_name", "name")
+        if scope_id is None or scope_name is None:
             return None
         return {
-            "scope_id": str(scope_id),
-            "scope_name": str(scope_name),
+            "scope_id": scope_id,
+            "scope_name": scope_name,
             "scope_type": scope_type,
         }
 
     global_endpoint = "/network-config/v1/global"
     try:
         global_data = client.get(global_endpoint)
-        global_id = global_data.get("scopeId") or global_data.get("id")
-        if global_id in (None, ""):
-            raise RuntimeError("response omitted scopeId")
+        global_id = _global_scope_field(global_data) if isinstance(global_data, dict) else None
+        if global_id is None:
+            raise RuntimeError("response omitted a valid numeric scopeId")
         items.append(
             {
-                "scope_id": str(global_id),
+                "scope_id": global_id,
                 "scope_name": "Global",
                 "scope_type": "GLOBAL",
             }
@@ -1109,10 +1138,10 @@ def get_global_scope_id() -> dict[str, Any]:
     endpoint = "/network-config/v1/global"
     try:
         data = get_client().get(endpoint)
-        scope_id = data.get("scopeId") or data.get("id")
-        if scope_id in (None, ""):
-            raise RuntimeError("response omitted scopeId")
-        return {"global_scope_id": str(scope_id), "errors": []}
+        scope_id = _global_scope_field(data) if isinstance(data, dict) else None
+        if scope_id is None:
+            raise RuntimeError("response omitted a valid numeric scopeId")
+        return {"global_scope_id": scope_id, "errors": []}
     except Exception as exc:
         detail = str(exc).strip().replace("\n", " ")
         if len(detail) > 240:

@@ -42,6 +42,7 @@ from pipeline.stages.s2_validate import (
 from pipeline.stages.s6_configure import (
     DEFAULT_SWITCH_GROUP_NAME,
     SWITCH_GROUP_NAME_ENV,
+    _fetch_global_scope_id,
     _profile_scope_ids,
     _resolve_device_group_scope_id,
 )
@@ -292,6 +293,40 @@ class TestScopeResolution:
         ctx.switch_group_name = None
         return ctx
 
+    def test_global_scope_uses_authoritative_endpoint(self):
+        client = MagicMock()
+        client.get.return_value = {"scopeId": 12345}
+
+        assert _fetch_global_scope_id(client) == "12345"
+        client.get.assert_called_once_with("/network-config/v1/global")
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"scopeId": ""},
+            {"scopeId": "   "},
+            {"scopeId": "global-2"},
+            {"scopeId": False},
+            {"scopeId": []},
+            {"scopeId": -1},
+            [],
+            None,
+        ],
+    )
+    def test_global_scope_rejects_malformed_response(self, payload):
+        client = MagicMock()
+        client.get.return_value = payload
+
+        with pytest.raises(RuntimeError, match="/network-config/v1/global"):
+            _fetch_global_scope_id(client)
+
+    def test_global_scope_falls_back_to_compatible_id_field(self):
+        client = MagicMock()
+        client.get.return_value = {"scopeId": "   ", "id": " 67890 "}
+
+        assert _fetch_global_scope_id(client) == "67890"
+
     def test_resolves_group_scope_id_by_name(self):
         client = _paging_client(
             {
@@ -358,11 +393,11 @@ class TestScopeResolution:
         monkeypatch.setattr(
             s6_configure,
             "_fetch_global_scope_id",
-            lambda client: (_ for _ in ()).throw(RuntimeError("no scope-maps")),
+            lambda client: (_ for _ in ()).throw(RuntimeError("no global scope")),
         )
         ctx = self._ctx(global_scope_id=None)
 
-        with pytest.raises(RuntimeError, match="no scope-maps"):
+        with pytest.raises(RuntimeError, match="no global scope"):
             _profile_scope_ids(MagicMock(), ctx)
 
     def test_scope_resolution_failure_fails_the_stage(

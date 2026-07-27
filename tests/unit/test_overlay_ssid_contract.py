@@ -7,9 +7,8 @@ Reproduced defects:
   unguarded, so a tenant where scope discovery fails made the function *raise*
   — including under ``dry_run=True``, whose documented contract is "log
   actions, never write, always return the result dict".
-- A second, identical global-scope lookup ran later for the policy
-  scope-maps, doubling the API calls and letting the two halves of one build
-  disagree.
+- A second, identical global-scope lookup ran later for policy scope mapping,
+  doubling the API calls and letting the two halves of one build disagree.
 - ``_normalize_opmode`` claimed to warn "the first time" a stale alias was
   seen but logged on every call, so a bulk build emitted one warning per SSID.
 
@@ -34,11 +33,9 @@ from pipeline.create_ssid import (
 def _client(global_scope_id="900", scope_maps_ok=True):
     client = MagicMock()
     if global_scope_id is None:
-        client.get.side_effect = RuntimeError("Could not determine global scope-id from scope-maps")
+        client.get.side_effect = RuntimeError("global scope unavailable")
     else:
-        client.get.return_value = {
-            "scope-map": [{"persona": "SERVICE_PERSONA", "scope-id": global_scope_id}]
-        }
+        client.get.return_value = {"scopeId": global_scope_id}
     if not scope_maps_ok:
         client.post.side_effect = RuntimeError("boom")
     else:
@@ -114,6 +111,26 @@ class TestDryRunContract:
         client.put.assert_not_called()
         client.patch.assert_not_called()
 
+    def test_whitespace_global_scope_fails_before_any_write(self):
+        client = _client(global_scope_id="   ")
+
+        result = _build(client)
+
+        assert any("resolve_global_scope" in e for e in result["errors"])
+        client.post.assert_not_called()
+        client.put.assert_not_called()
+        client.patch.assert_not_called()
+
+    def test_nonnumeric_global_scope_fails_before_any_write(self):
+        client = _client(global_scope_id="global-2")
+
+        result = _build(client)
+
+        assert any("resolve_global_scope" in e for e in result["errors"])
+        client.post.assert_not_called()
+        client.put.assert_not_called()
+        client.patch.assert_not_called()
+
     def test_dry_run_still_reports_opmode_deprecation_in_warnings(self):
         reset_opmode_deprecation_warnings()
 
@@ -124,16 +141,16 @@ class TestDryRunContract:
 
 class TestSingleGlobalScopeLookup:
     def test_global_scope_is_resolved_exactly_once(self):
-        """Regression: a second late lookup ran for the policy scope-maps."""
+        """Regression: a second late lookup ran for policy scope mapping."""
         client = _client()
 
         _build(client)
 
-        scope_map_gets = [
+        global_gets = [
             call for call in client.get.call_args_list
-            if call.args and "scope-maps" in str(call.args[0])
+            if call.args and call.args[0] == "/network-config/v1/global"
         ]
-        assert len(scope_map_gets) == 1, f"expected 1 lookup, got {len(scope_map_gets)}"
+        assert len(global_gets) == 1, f"expected 1 lookup, got {len(global_gets)}"
 
     def test_policy_scope_maps_use_the_resolved_id(self):
         client = _client(global_scope_id="4242")
@@ -155,11 +172,11 @@ class TestSingleGlobalScopeLookup:
 
         _build(client, dry_run=True)
 
-        scope_map_gets = [
+        global_gets = [
             call for call in client.get.call_args_list
-            if call.args and "scope-maps" in str(call.args[0])
+            if call.args and call.args[0] == "/network-config/v1/global"
         ]
-        assert len(scope_map_gets) <= 1
+        assert len(global_gets) <= 1
 
 
 class TestOpmodeDeprecationDeduplication:

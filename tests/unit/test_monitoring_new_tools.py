@@ -490,7 +490,7 @@ def test_list_scopes_uses_official_scope_management_endpoints(monkeypatch):
     def get(endpoint, params=None):
         if endpoint == "/network-config/v1/global":
             assert params is None
-            return {"scopeId": "global-1"}
+            return {"scopeId": "1000"}
         if endpoint == "/network-config/v1/sites":
             assert params == {"limit": 100, "offset": 0}
             return {
@@ -511,7 +511,7 @@ def test_list_scopes_uses_official_scope_management_endpoints(monkeypatch):
 
     assert result == {
         "items": [
-            {"scope_id": "global-1", "scope_name": "Global", "scope_type": "GLOBAL"},
+            {"scope_id": "1000", "scope_name": "Global", "scope_type": "GLOBAL"},
             {"scope_id": "site-1", "scope_name": "Austin", "scope_type": "SITE"},
             {"scope_id": "site-2", "scope_name": "Boston", "scope_type": "SITE"},
             {
@@ -535,7 +535,7 @@ def test_list_scopes_preserves_partial_results_with_warnings(monkeypatch):
 
     def get(endpoint, params=None):
         if endpoint == "/network-config/v1/global":
-            return {"scopeId": "global-1"}
+            return {"scopeId": "1000"}
         if endpoint == "/network-config/v1/sites":
             raise RuntimeError("site API unavailable")
         if endpoint == "/network-config/v1/device-groups":
@@ -547,7 +547,7 @@ def test_list_scopes_preserves_partial_results_with_warnings(monkeypatch):
 
     result = monitoring.list_scopes(full_list=True)
 
-    assert [item["scope_id"] for item in result["items"]] == ["global-1", "group-1"]
+    assert [item["scope_id"] for item in result["items"]] == ["1000", "group-1"]
     assert result["warnings"] == [
         "/network-config/v1/sites: site API unavailable"
     ]
@@ -610,7 +610,7 @@ def test_list_scopes_pages_each_collection_and_bounds_output(monkeypatch):
 
     def get(endpoint, params=None):
         if endpoint == "/network-config/v1/global":
-            return {"scopeId": "global-1"}
+            return {"scopeId": "1000"}
         if endpoint == "/network-config/v1/sites":
             if params["offset"] == 0:
                 return {"items": first_site_page}
@@ -643,7 +643,7 @@ def test_list_scopes_follows_short_page_continuation_offset(monkeypatch):
 
     def get(endpoint, params=None):
         if endpoint == "/network-config/v1/global":
-            return {"scopeId": "global-1"}
+            return {"scopeId": "1000"}
         if endpoint == "/network-config/v1/sites":
             if params["offset"] == 0:
                 return {"items": first_page, "offset": "50", "total": 51}
@@ -676,7 +676,7 @@ def test_list_scopes_marks_missing_continuation_with_remaining_total_partial(mon
 
     def get(endpoint, params=None):
         if endpoint == "/network-config/v1/global":
-            return {"scopeId": "global-1"}
+            return {"scopeId": "1000"}
         if endpoint == "/network-config/v1/sites":
             return {
                 "items": [{"scopeId": "site-0", "scopeName": "Site 0"}],
@@ -700,7 +700,7 @@ def test_list_scopes_validates_total_on_terminal_page(monkeypatch):
 
     def get(endpoint, params=None):
         if endpoint == "/network-config/v1/global":
-            return {"scopeId": "global-1"}
+            return {"scopeId": "1000"}
         if endpoint == "/network-config/v1/sites":
             return {
                 "items": [{"scopeId": "site-0", "scopeName": "Site 0"}],
@@ -725,7 +725,7 @@ def test_list_scopes_rejects_regressing_continuation_and_marks_partial(monkeypat
 
     def get(endpoint, params=None):
         if endpoint == "/network-config/v1/global":
-            return {"scopeId": "global-1"}
+            return {"scopeId": "1000"}
         if endpoint == "/network-config/v1/sites":
             if params["offset"] == 0:
                 return {
@@ -762,7 +762,7 @@ def test_list_scopes_marks_later_page_failure_as_partial(monkeypatch):
 
     def get(endpoint, params=None):
         if endpoint == "/network-config/v1/global":
-            return {"scopeId": "global-1"}
+            return {"scopeId": "1000"}
         if endpoint == "/network-config/v1/sites":
             if params["offset"] == 0:
                 return {
@@ -781,7 +781,7 @@ def test_list_scopes_marks_later_page_failure_as_partial(monkeypatch):
     result = monitoring.list_scopes(full_list=True)
 
     assert result["_pagination"]["truncated"] is True
-    assert [item["scope_id"] for item in result["items"]] == ["global-1", "site-0"]
+    assert [item["scope_id"] for item in result["items"]] == ["1000", "site-0"]
 
 
 def test_get_global_scope_id_uses_official_endpoint(monkeypatch):
@@ -795,16 +795,31 @@ def test_get_global_scope_id_uses_official_endpoint(monkeypatch):
     client.get.assert_called_once_with("/network-config/v1/global")
 
 
-def test_get_global_scope_id_surfaces_malformed_response(monkeypatch):
+def test_get_global_scope_id_strips_and_falls_back_to_id(monkeypatch):
     client = MagicMock()
-    client.get.return_value = {}
+    client.get.return_value = {"scopeId": "global-2", "id": " 67890 "}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    assert monitoring.get_global_scope_id() == {
+        "global_scope_id": "67890",
+        "errors": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"scopeId": "   "}, {"scopeId": "global-2"}, {"scopeId": []}, {"scopeId": False}],
+)
+def test_get_global_scope_id_surfaces_malformed_response(monkeypatch, payload):
+    client = MagicMock()
+    client.get.return_value = payload
     monkeypatch.setattr(monitoring, "get_client", lambda: client)
 
     result = monitoring.get_global_scope_id()
 
     assert result["global_scope_id"] is None
     assert result["errors"] == [
-        "/network-config/v1/global: response omitted scopeId"
+        "/network-config/v1/global: response omitted a valid numeric scopeId"
     ]
 
 
