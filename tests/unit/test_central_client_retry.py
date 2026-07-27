@@ -53,6 +53,8 @@ class TestParseRetryAfter:
     def test_unparseable_returns_none(self):
         assert _parse_retry_after("tomorrow") is None
         assert _parse_retry_after("") is None
+        assert _parse_retry_after("nan") is None
+        assert _parse_retry_after("inf") is None
 
 
 # ---------------------------------------------------------------------------

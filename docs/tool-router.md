@@ -378,6 +378,10 @@ Generated schemas also hide authentication, content negotiation, HTTP framing,
 host/routing, and proxy-derived identity headers. Executors and HTTP clients
 own those values; API-level business headers such as `If-Match`,
 `Idempotency-Key`, `Tenant-Acid`, and `Hpe-workspace-id` remain available.
+Generated safe-method and idempotent `PUT` retries parse both numeric and
+HTTP-date `Retry-After` hints. Hints within the five-second retry budget are
+honored; longer hints return the rate-limit/transient response without retrying
+early or blocking an MCP call for the full server window.
 
 <div class="docs-compact-table" markdown="1">
 

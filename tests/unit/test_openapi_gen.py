@@ -1218,3 +1218,167 @@ def test_generated_write_retry_does_not_replay_post(monkeypatch):
 
     assert result["status_code"] == 503
     assert calls == ["POST"]
+
+
+def test_generated_write_auth_refresh_does_not_replay_post(monkeypatch):
+    calls: list[str] = []
+    refreshes: list[bool] = []
+
+    class Response:
+        status_code = 401
+        headers = {"content-type": "application/json"}
+        content = b"{}"
+        text = "{}"
+
+        def json(self):
+            return {"error": "unauthorized"}
+
+    class Client:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            calls.append(method)
+            return Response()
+
+    async def resolve(path, headers):
+        return "https://api.example.com", headers
+
+    async def refresh_auth():
+        refreshes.append(True)
+
+    monkeypatch.setattr(http_exec.httpx, "AsyncClient", Client)
+    execute = http_exec.make_write_executor(
+        resolve=resolve,
+        allowed_prefixes=lambda: ("/api/",),
+        writes_allowed=lambda: True,
+        blocked_response=lambda name: {"status": "blocked"},
+        execute_hint="confirm",
+        refresh_auth=refresh_auth,
+    )
+
+    result = asyncio.run(
+        execute(
+            "create_item",
+            "POST",
+            "/api/items",
+            {},
+            {},
+            {"name": "one"},
+            "application/json",
+            False,
+            True,
+        )
+    )
+
+    assert result["status_code"] == 401
+    assert calls == ["POST"]
+    assert refreshes == []
+
+
+def test_generated_read_retry_honors_short_retry_after(monkeypatch):
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    class Response:
+        content = b"{}"
+        text = "{}"
+
+        def __init__(self, status_code, headers):
+            self.status_code = status_code
+            self.headers = headers
+
+        def json(self):
+            return {"ok": self.status_code == 200}
+
+    responses = [
+        Response(429, {"Retry-After": "2"}),
+        Response(200, {"content-type": "application/json"}),
+    ]
+
+    class Client:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            calls.append(method)
+            return responses.pop(0)
+
+    async def resolve(path, headers):
+        return "https://api.example.com", headers
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(http_exec.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(http_exec.asyncio, "sleep", sleep)
+    execute = make_read_executor(
+        resolve=resolve,
+        allowed_prefixes=lambda: ("/api/",),
+    )
+
+    result = asyncio.run(execute("GET", "/api/items", {}, {}))
+
+    assert result["status_code"] == 200
+    assert calls == ["GET", "GET"]
+    assert sleeps == [2.0]
+
+
+def test_generated_read_does_not_retry_before_long_retry_after(monkeypatch):
+    calls: list[str] = []
+
+    class Response:
+        status_code = 429
+        headers = {
+            "Retry-After": "60",
+            "content-type": "application/json",
+        }
+        content = b"{}"
+        text = "{}"
+
+        def json(self):
+            return {"error": "rate limited"}
+
+    class Client:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            calls.append(method)
+            return Response()
+
+    async def resolve(path, headers):
+        return "https://api.example.com", headers
+
+    async def unexpected_sleep(delay):
+        raise AssertionError(f"must not sleep for long Retry-After hint: {delay}")
+
+    monkeypatch.setattr(http_exec.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(http_exec.asyncio, "sleep", unexpected_sleep)
+    execute = make_read_executor(
+        resolve=resolve,
+        allowed_prefixes=lambda: ("/api/",),
+    )
+
+    result = asyncio.run(execute("GET", "/api/items", {}, {}))
+
+    assert result["status_code"] == 429
+    assert calls == ["GET"]
