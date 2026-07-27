@@ -32,6 +32,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release-artifacts.yml"
+CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 _PINNED_VERSION_TAG = re.compile(r"@v\d+(\.\d+){0,2}$")
 
@@ -109,6 +110,21 @@ class TestActionPinning:
             assert not uses.endswith("@main")
             assert not uses.endswith("@master")
             assert not uses.endswith("@latest")
+
+    def test_node_runtime_actions_use_node24_major(self):
+        expected = {
+            "actions/checkout": "v7",
+            "actions/upload-artifact": "v7",
+        }
+        for workflow_path in (WORKFLOW_PATH, CI_WORKFLOW_PATH):
+            doc = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+            for _job, step in _iter_uses_steps(doc):
+                action, _, version = step["uses"].partition("@")
+                if action in expected:
+                    assert version == expected[action], (
+                        f"{workflow_path.name} uses {step['uses']}; expected "
+                        f"{action}@{expected[action]} for the Node 24 runtime"
+                    )
 
     def test_attest_build_provenance_action_present(self):
         doc = _load_workflow()

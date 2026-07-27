@@ -26,7 +26,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -51,7 +51,7 @@ jobs:
         run: uv run python scripts/restore_release_bundle.py "${{ steps.build.outputs.archive }}"
 
       - name: Upload release-artifacts bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-artifacts
           path: |
