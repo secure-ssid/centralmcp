@@ -408,6 +408,52 @@ class TestResponseEnvelope:
         assert result["status"] == 409
         assert result["message"] == "user declined confirmation"
 
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            ("blocked", 403),
+            ("forbidden", 403),
+            ("cancelled", 409),
+            ("confirmation_required", 409),
+            ("not_found", 404),
+            ("failed", 500),
+        ],
+    )
+    def test_named_status_precedes_generic_error_fallback(self, status, expected):
+        mw = ResponseEnvelopeMiddleware()
+
+        result = mw.after_call(
+            "write_tool",
+            {},
+            {"status": status, "error": "operation did not run"},
+        )
+
+        assert result is not None
+        assert result["ok"] is False
+        assert result["status"] == expected
+
+    def test_bare_blocked_status_is_enveloped_as_forbidden(self):
+        result = ResponseEnvelopeMiddleware().after_call(
+            "write_tool",
+            {},
+            {"status": "blocked"},
+        )
+
+        assert result is not None
+        assert result["ok"] is False
+        assert result["status"] == 403
+
+    def test_generic_error_with_success_status_uses_500(self):
+        result = ResponseEnvelopeMiddleware().after_call(
+            "read_tool",
+            {},
+            {"status": 200, "error": "response parsing failed"},
+        )
+
+        assert result is not None
+        assert result["ok"] is False
+        assert result["status"] == 500
+
     def test_success_dict_passes_through(self):
         mw = ResponseEnvelopeMiddleware()
 

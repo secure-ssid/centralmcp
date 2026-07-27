@@ -11,6 +11,7 @@ from typing import Any
 
 
 _BLOCKED_STATUS_HTTP = {
+    "blocked": 403,
     "cancelled": 409,
     "declined": 409,
     "confirmation_unavailable": 409,
@@ -55,12 +56,12 @@ def _blocked_status(result: dict[str, Any]) -> tuple[bool, int | None]:
     status_code = _status_code(status)
     if status_code is not None and status_code >= 400:
         return True, status_code
-    if "error" in result:
-        return True, status_code or 500
     if isinstance(status, str):
         normalized = status.strip().lower()
         if normalized in _BLOCKED_STATUS_HTTP:
             return True, _BLOCKED_STATUS_HTTP[normalized]
+    if "error" in result:
+        return True, 500
     errors = result.get("errors")
     if isinstance(errors, list) and errors:
         return True, 500
