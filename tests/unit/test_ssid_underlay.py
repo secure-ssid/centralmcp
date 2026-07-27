@@ -377,9 +377,7 @@ def test_list_underlay_ssids_empty_on_error():
 
 def _overlay_client(patch_side_effect=None) -> MagicMock:
     client = MagicMock()
-    client.get.return_value = {
-        "scope-map": [{"persona": "SERVICE_PERSONA", "scope-id": 1}]
-    }
+    client.get.return_value = {"scopeId": "1"}
     client.post.return_value = {"errorCode": "SUCC_001"}
     if patch_side_effect is not None:
         client.patch.side_effect = patch_side_effect

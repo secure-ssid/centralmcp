@@ -87,29 +87,24 @@ ARUBA_DEVICE_PROFILES: list[dict] = [
 
 
 def _fetch_global_scope_id(central_client: Any) -> str:
-    """Discover the account-root global scope-id.
-
-    Reads existing scope-maps and returns the scope-id that appears on
-    SERVICE_PERSONA entries — these are always at the org/global level.
-    Falls back to the site's parent scope-id if no SERVICE_PERSONA entries exist.
-    """
-    result = central_client.get("/network-config/v1/scope-maps")
-    scope_maps = result.get("scope-map", [])
-
-    # SERVICE_PERSONA entries are always scoped to the org/global level
-    for entry in scope_maps:
-        if entry.get("persona") == "SERVICE_PERSONA":
-            return str(entry["scope-id"])
-
-    # Fallback: collect all scope-ids that are NOT device-level (device scopes
-    # appear paired with a non-SERVICE_PERSONA persona like ACCESS_SWITCH).
-    # The global scope-id is the one that appears most frequently.
-    from collections import Counter
-    counts: Counter = Counter(str(e["scope-id"]) for e in scope_maps)
-    if counts:
-        return counts.most_common(1)[0][0]
-
-    raise RuntimeError("Could not determine global scope-id from scope-maps")
+    """Return the account-root scope ID from Central's authoritative endpoint."""
+    endpoint = "/network-config/v1/global"
+    result = central_client.get(endpoint)
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{endpoint} returned a non-object response")
+    for key in ("scopeId", "id"):
+        scope_id = result.get(key)
+        if isinstance(scope_id, bool):
+            continue
+        if isinstance(scope_id, int):
+            if scope_id >= 0:
+                return str(scope_id)
+            continue
+        if isinstance(scope_id, str):
+            scope_id = scope_id.strip()
+            if scope_id.isascii() and scope_id.isdigit():
+                return scope_id
+    raise RuntimeError(f"{endpoint} response omitted a valid numeric scopeId")
 
 
 # Device profiles / port profiles are library-level objects that must be
