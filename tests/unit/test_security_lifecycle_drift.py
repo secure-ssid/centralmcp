@@ -419,10 +419,16 @@ def test_evaluate_hpe_aruba_coverage_gap_never_reports_fresh():
 
 def _patch_all_fresh(monkeypatch):
     monkeypatch.setattr(sources, "fetch_text", lambda url: "content")
+    monkeypatch.setattr(sources, "fetch_bytes", lambda url: b"pdf")
     monkeypatch.setattr(
         sources, "parse_changes_csv", lambda text: [object()] * drift.MIN_ARUBA_ADVISORIES
     )
     monkeypatch.setattr(provenance, "validate_markers", lambda family, text: None)
+    monkeypatch.setattr(
+        sources,
+        "extract_aruba_hardware_eos_text",
+        lambda value: "hardware",
+    )
     monkeypatch.setattr(
         sources,
         "parse_hpe_lifecycle_xml",
