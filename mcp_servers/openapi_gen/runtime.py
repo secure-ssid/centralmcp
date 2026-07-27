@@ -6,8 +6,8 @@ and ``dry_run``/``confirm`` for writes). The runtime:
 
 * keeps auth headers/cookies out of the model-visible arguments;
 * URL-escapes path values and rejects traversal-style values;
-* preserves ``False`` / ``0`` / list query values, dropping only unset (``None``)
-  ones;
+* preserves ``False`` / ``0`` query values, dropping only unset (``None``)
+  ones, and honors explicit OpenAPI array serialization metadata;
 * dispatches through platform-supplied executors (which inject trusted auth
   last and apply response bounding);
 * classifies reads as read-only (executed directly) and writes/destructive
@@ -84,7 +84,18 @@ _MAX_ENUM_LITERAL_VALUES = 20
 class _ParamSpec:
     """Resolved binding between a model argument and an API parameter."""
 
-    __slots__ = ("arg", "api", "location", "py_type", "required", "default", "description", "enum")
+    __slots__ = (
+        "arg",
+        "api",
+        "location",
+        "py_type",
+        "required",
+        "default",
+        "description",
+        "enum",
+        "style",
+        "explode",
+    )
 
     def __init__(
         self,
@@ -96,6 +107,8 @@ class _ParamSpec:
         default: Any,
         description: str,
         enum: list[Any] | None,
+        style: str | None,
+        explode: bool | None,
     ) -> None:
         self.arg = arg
         self.api = api
@@ -105,6 +118,8 @@ class _ParamSpec:
         self.default = default
         self.description = description
         self.enum = enum
+        self.style = style
+        self.explode = explode
 
 
 def is_auth_param(name: str) -> bool:
@@ -222,6 +237,8 @@ def _param_specs(op: dict[str, Any], reserved: frozenset[str] = frozenset()) -> 
                 default=raw.get("default"),
                 description=str(raw.get("description", "")),
                 enum=raw.get("enum"),
+                style=raw.get("style"),
+                explode=raw.get("explode"),
             )
         )
     return specs
@@ -248,7 +265,13 @@ def _build_query(specs: list[_ParamSpec], kwargs: dict[str, Any]) -> dict[str, A
         value = kwargs.get(spec.arg)
         if value is None:  # unset -> omit; False/0/[] are preserved
             continue
-        query[spec.api] = value
+        if spec.style == "form" and spec.explode is False and isinstance(value, list):
+            query[spec.api] = ",".join(
+                str(item).lower() if isinstance(item, bool) else str(item)
+                for item in value
+            )
+        else:
+            query[spec.api] = value
     return query
 
 

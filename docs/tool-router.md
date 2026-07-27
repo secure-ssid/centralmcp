@@ -371,6 +371,10 @@ generated tools; 574 curated tools bring the executable backend total to
 6,700). Minimal mode does not expose that schema surface to the MCP client --
 it searches the catalog on demand.
 
+Generated requests preserve OpenAPI query-array serialization metadata:
+explicit `style: form` plus `explode: false` arrays are sent as comma-separated
+values, while default and exploded arrays retain repeated-key encoding.
+
 <div class="docs-compact-table" markdown="1">
 
 | Toolset | Enables |
