@@ -450,6 +450,364 @@ def test_find_scope_matches_name_and_type(monkeypatch):
     ]
 
 
+def test_find_scope_propagates_scope_discovery_failure(monkeypatch):
+    failure = {
+        "status": 403,
+        "error": "Central scope discovery failed",
+        "warnings": ["access denied"],
+    }
+    monkeypatch.setattr(
+        monitoring,
+        "list_scopes",
+        lambda full_list=False: failure,
+    )
+
+    assert monitoring.find_scope("austin") is failure
+
+
+def test_find_scope_preserves_partial_discovery_warnings(monkeypatch):
+    monkeypatch.setattr(
+        monitoring,
+        "list_scopes",
+        lambda full_list=False: {
+            "items": [
+                {"scope_id": "site-1", "scope_name": "Austin Lab", "scope_type": "SITE"}
+            ],
+            "warnings": ["device groups unavailable"],
+            "_pagination": {"truncated": True},
+        },
+    )
+
+    result = monitoring.find_scope("austin")
+
+    assert result["warnings"] == ["device groups unavailable"]
+    assert result["_pagination"]["truncated"] is True
+
+
+def test_list_scopes_uses_official_scope_management_endpoints(monkeypatch):
+    client = MagicMock()
+
+    def get(endpoint, params=None):
+        if endpoint == "/network-config/v1/global":
+            assert params is None
+            return {"scopeId": "global-1"}
+        if endpoint == "/network-config/v1/sites":
+            assert params == {"limit": 100, "offset": 0}
+            return {
+                "items": [
+                    {"scopeId": "site-1", "scopeName": "Austin"},
+                    {"id": "site-2", "name": "Boston"},
+                ]
+            }
+        if endpoint == "/network-config/v1/device-groups":
+            assert params == {"limit": 100, "offset": 0}
+            return {"items": [{"scopeId": "group-1", "scopeName": "Branch APs"}]}
+        raise AssertionError(endpoint)
+
+    client.get.side_effect = get
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes(full_list=True)
+
+    assert result == {
+        "items": [
+            {"scope_id": "global-1", "scope_name": "Global", "scope_type": "GLOBAL"},
+            {"scope_id": "site-1", "scope_name": "Austin", "scope_type": "SITE"},
+            {"scope_id": "site-2", "scope_name": "Boston", "scope_type": "SITE"},
+            {
+                "scope_id": "group-1",
+                "scope_name": "Branch APs",
+                "scope_type": "DEVICE_GROUP",
+            },
+        ],
+        "_pagination": {
+            "offset": 0,
+            "limit": 4,
+            "total": 4,
+            "truncated": False,
+            "list_key": "items",
+        },
+    }
+
+
+def test_list_scopes_preserves_partial_results_with_warnings(monkeypatch):
+    client = MagicMock()
+
+    def get(endpoint, params=None):
+        if endpoint == "/network-config/v1/global":
+            return {"scopeId": "global-1"}
+        if endpoint == "/network-config/v1/sites":
+            raise RuntimeError("site API unavailable")
+        if endpoint == "/network-config/v1/device-groups":
+            return {"items": [{"scopeId": "group-1", "scopeName": "Branch APs"}]}
+        raise AssertionError(endpoint)
+
+    client.get.side_effect = get
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes(full_list=True)
+
+    assert [item["scope_id"] for item in result["items"]] == ["global-1", "group-1"]
+    assert result["warnings"] == [
+        "/network-config/v1/sites: site API unavailable"
+    ]
+
+
+def test_list_scopes_fails_closed_when_every_source_fails(monkeypatch):
+    client = MagicMock()
+    client.get.side_effect = RuntimeError("Central unavailable")
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes()
+
+    assert result["status"] == "failed"
+    assert "no authoritative source returned data" in result["error"]
+    assert len(result["warnings"]) == 3
+    assert {call.args[0] for call in client.get.call_args_list} == {
+        "/network-config/v1/global",
+        "/network-config/v1/sites",
+        "/network-config/v1/device-groups",
+    }
+
+
+def test_list_scopes_preserves_authorization_status_when_all_sources_refuse(monkeypatch):
+    client = MagicMock()
+    forbidden = RuntimeError("access denied")
+    forbidden.response = SimpleNamespace(status_code=403)
+    client.get.side_effect = forbidden
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes()
+
+    assert result["status"] == 403
+    assert "no authoritative source returned data" in result["error"]
+
+
+def test_list_scopes_does_not_report_partial_authorization_as_global_refusal(monkeypatch):
+    client = MagicMock()
+    forbidden = RuntimeError("access denied")
+    forbidden.response = SimpleNamespace(status_code=403)
+
+    def get(endpoint, params=None):
+        if endpoint == "/network-config/v1/global":
+            raise forbidden
+        return {"items": []}
+
+    client.get.side_effect = get
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes()
+
+    assert result["status"] == "failed"
+
+
+def test_list_scopes_pages_each_collection_and_bounds_output(monkeypatch):
+    client = MagicMock()
+    first_site_page = [
+        {"scopeId": f"site-{index}", "scopeName": f"Site {index}"}
+        for index in range(100)
+    ]
+
+    def get(endpoint, params=None):
+        if endpoint == "/network-config/v1/global":
+            return {"scopeId": "global-1"}
+        if endpoint == "/network-config/v1/sites":
+            if params["offset"] == 0:
+                return {"items": first_site_page}
+            return {"items": [{"scopeId": "site-100", "scopeName": "Site 100"}]}
+        if endpoint == "/network-config/v1/device-groups":
+            return {"items": []}
+        raise AssertionError(endpoint)
+
+    client.get.side_effect = get
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes(limit=2, offset=100)
+
+    assert [item["scope_id"] for item in result["items"]] == ["site-99", "site-100"]
+    assert result["_pagination"] == {
+        "offset": 100,
+        "limit": 2,
+        "total": 102,
+        "truncated": False,
+        "list_key": "items",
+    }
+
+
+def test_list_scopes_follows_short_page_continuation_offset(monkeypatch):
+    client = MagicMock()
+    first_page = [
+        {"scopeId": f"site-{index}", "scopeName": f"Site {index}"}
+        for index in range(50)
+    ]
+
+    def get(endpoint, params=None):
+        if endpoint == "/network-config/v1/global":
+            return {"scopeId": "global-1"}
+        if endpoint == "/network-config/v1/sites":
+            if params["offset"] == 0:
+                return {"items": first_page, "offset": "50", "total": 51}
+            return {
+                "items": [{"scopeId": "site-50", "scopeName": "Site 50"}],
+                "offset": None,
+                "total": 51,
+            }
+        if endpoint == "/network-config/v1/device-groups":
+            return {"items": [], "offset": None, "total": 0}
+        raise AssertionError(endpoint)
+
+    client.get.side_effect = get
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes(full_list=True)
+
+    assert len(result["items"]) == 52
+    assert result["items"][-1]["scope_id"] == "site-50"
+    site_calls = [
+        call
+        for call in client.get.call_args_list
+        if call.args[0] == "/network-config/v1/sites"
+    ]
+    assert [call.kwargs["params"]["offset"] for call in site_calls] == [0, 50]
+
+
+def test_list_scopes_marks_missing_continuation_with_remaining_total_partial(monkeypatch):
+    client = MagicMock()
+
+    def get(endpoint, params=None):
+        if endpoint == "/network-config/v1/global":
+            return {"scopeId": "global-1"}
+        if endpoint == "/network-config/v1/sites":
+            return {
+                "items": [{"scopeId": "site-0", "scopeName": "Site 0"}],
+                "total": 2,
+            }
+        if endpoint == "/network-config/v1/device-groups":
+            return {"items": [], "offset": None, "total": 0}
+        raise AssertionError(endpoint)
+
+    client.get.side_effect = get
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes(full_list=True)
+
+    assert result["_pagination"]["truncated"] is True
+    assert any("omitted continuation offset" in item for item in result["warnings"])
+
+
+def test_list_scopes_validates_total_on_terminal_page(monkeypatch):
+    client = MagicMock()
+
+    def get(endpoint, params=None):
+        if endpoint == "/network-config/v1/global":
+            return {"scopeId": "global-1"}
+        if endpoint == "/network-config/v1/sites":
+            return {
+                "items": [{"scopeId": "site-0", "scopeName": "Site 0"}],
+                "offset": None,
+                "total": 2,
+            }
+        if endpoint == "/network-config/v1/device-groups":
+            return {"items": [], "offset": None, "total": 0}
+        raise AssertionError(endpoint)
+
+    client.get.side_effect = get
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes(full_list=True)
+
+    assert result["_pagination"]["truncated"] is True
+    assert any("terminal page reported total 2 after 1 records" in item for item in result["warnings"])
+
+
+def test_list_scopes_rejects_regressing_continuation_and_marks_partial(monkeypatch):
+    client = MagicMock()
+
+    def get(endpoint, params=None):
+        if endpoint == "/network-config/v1/global":
+            return {"scopeId": "global-1"}
+        if endpoint == "/network-config/v1/sites":
+            if params["offset"] == 0:
+                return {
+                    "items": [{"scopeId": "site-0", "scopeName": "Site 0"}],
+                    "offset": "100",
+                    "total": 3,
+                }
+            return {
+                "items": [{"scopeId": "site-1", "scopeName": "Site 1"}],
+                "offset": "50",
+                "total": 3,
+            }
+        if endpoint == "/network-config/v1/device-groups":
+            return {"items": [], "offset": None, "total": 0}
+        raise AssertionError(endpoint)
+
+    client.get.side_effect = get
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes(full_list=True)
+
+    assert result["_pagination"]["truncated"] is True
+    assert any("non-increasing continuation offset 50" in item for item in result["warnings"])
+    site_calls = [
+        call
+        for call in client.get.call_args_list
+        if call.args[0] == "/network-config/v1/sites"
+    ]
+    assert [call.kwargs["params"]["offset"] for call in site_calls] == [0, 100]
+
+
+def test_list_scopes_marks_later_page_failure_as_partial(monkeypatch):
+    client = MagicMock()
+
+    def get(endpoint, params=None):
+        if endpoint == "/network-config/v1/global":
+            return {"scopeId": "global-1"}
+        if endpoint == "/network-config/v1/sites":
+            if params["offset"] == 0:
+                return {
+                    "items": [{"scopeId": "site-0", "scopeName": "Site 0"}],
+                    "offset": "1",
+                    "total": 2,
+                }
+            raise RuntimeError("second page unavailable")
+        if endpoint == "/network-config/v1/device-groups":
+            return {"items": [], "offset": None, "total": 0}
+        raise AssertionError(endpoint)
+
+    client.get.side_effect = get
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.list_scopes(full_list=True)
+
+    assert result["_pagination"]["truncated"] is True
+    assert [item["scope_id"] for item in result["items"]] == ["global-1", "site-0"]
+
+
+def test_get_global_scope_id_uses_official_endpoint(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {"scopeId": 12345}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.get_global_scope_id()
+
+    assert result == {"global_scope_id": "12345", "errors": []}
+    client.get.assert_called_once_with("/network-config/v1/global")
+
+
+def test_get_global_scope_id_surfaces_malformed_response(monkeypatch):
+    client = MagicMock()
+    client.get.return_value = {}
+    monkeypatch.setattr(monitoring, "get_client", lambda: client)
+
+    result = monitoring.get_global_scope_id()
+
+    assert result["global_scope_id"] is None
+    assert result["errors"] == [
+        "/network-config/v1/global: response omitted scopeId"
+    ]
+
+
 def test_list_scope_devices_filters_known_scope_fields(monkeypatch):
     mcp_client = MagicMock()
     mcp_client.get_devices_page.return_value = (

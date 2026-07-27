@@ -48,6 +48,9 @@ from mcp_servers.shared import (
 
 mcp = FastMCP("aruba-monitoring")
 
+_SCOPE_PAGE_SIZE = 100
+_SCOPE_MAX_PAGES = 50
+
 # ---------------------------------------------------------------------------
 # AP reboot reason translation
 # ---------------------------------------------------------------------------
@@ -902,115 +905,222 @@ def list_scopes(
     offset: int = 0,
     full_list: bool = False,
 ) -> dict[str, Any]:
-    """List scopes (org, sites, device groups) with scope_id and scope_name (bounded by default)."""
+    """List global, site, and device-group scopes from the official v1 APIs.
+
+    Results are normalized to ``scope_id``, ``scope_name``, and ``scope_type``.
+    Site and device-group APIs are paged up to 5,000 records each. Partial
+    source failures are returned as warnings; if every source fails, the tool
+    returns an explicit failed result instead of an empty success.
+    """
     client = get_client()
     items: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    source_outcomes: list[tuple[bool, int | None]] = []
+    source_truncated = False
 
-    for endpoint in [
-        "/network-config/v1/scopes",
-        "/network-config/v1alpha1/scopes",
-    ]:
-        try:
-            response = client._request("GET", endpoint)
-            if response.status_code in (400, 404):
-                continue
-            if response.status_code not in (200, 201, 202):
-                continue
-            data = response.json()
-            if isinstance(data, list):
-                items = data
-            elif isinstance(data, dict):
-                items = data.get("items", data.get("scopes", []))
-            if isinstance(items, list) and items:
-                if full_list:
-                    return {
-                        "items": items,
-                        "_pagination": {
-                            "offset": 0,
-                            "limit": len(items),
-                            "total": len(items),
-                            "truncated": False,
-                        },
-                    }
-                return bound_collection_response(items, limit=limit, offset=offset)
-        except Exception:
-            continue
+    def warning(endpoint: str, exc: Exception | str) -> str:
+        detail = str(exc).strip().replace("\n", " ")
+        if len(detail) > 240:
+            detail = f"{detail[:237]}..."
+        return f"{endpoint}: {detail or 'unknown failure'}"
 
-    # Fallback for tenants where /scopes endpoints return 400.
-    # Surface site scopes (plus global scope when available) so callers still get usable scope IDs.
-    site_scopes: list[dict[str, Any]] = []
-    page_size = 100
-    off = 0
-    for _ in range(50):
-        page = get_mcp_client().get_sites(limit=page_size, offset=off)
-        if not page:
-            break
-        site_scopes.extend(page)
-        if len(page) < page_size:
-            break
-        off += page_size
-    normalized: list[dict[str, Any]] = []
-    for site in site_scopes:
-        scope_id = (
-            site.get("scopeId") or site.get("scope_id") or site.get("siteId") or site.get("id")
-        )
-        scope_name = (
-            site.get("scopeName")
-            or site.get("scope_name")
-            or site.get("siteName")
-            or site.get("name")
-        )
-        if scope_id and scope_name:
-            normalized.append(
-                {
-                    "scope_id": str(scope_id),
-                    "scope_name": str(scope_name),
-                    "scope_type": "SITE",
-                }
-            )
+    def failure_status(exc: Exception) -> int | None:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        return status_code if isinstance(status_code, int) and status_code >= 400 else None
 
+    def normalize(raw: Any, scope_type: str) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        scope_id = raw.get("scopeId") or raw.get("scope_id") or raw.get("id")
+        scope_name = raw.get("scopeName") or raw.get("scope_name") or raw.get("name")
+        if scope_id in (None, "") or scope_name in (None, ""):
+            return None
+        return {
+            "scope_id": str(scope_id),
+            "scope_name": str(scope_name),
+            "scope_type": scope_type,
+        }
+
+    global_endpoint = "/network-config/v1/global"
     try:
-        from pipeline.stages.s6_configure import _fetch_global_scope_id
+        global_data = client.get(global_endpoint)
+        global_id = global_data.get("scopeId") or global_data.get("id")
+        if global_id in (None, ""):
+            raise RuntimeError("response omitted scopeId")
+        items.append(
+            {
+                "scope_id": str(global_id),
+                "scope_name": "Global",
+                "scope_type": "GLOBAL",
+            }
+        )
+        source_outcomes.append((True, None))
+    except Exception as exc:
+        warnings.append(warning(global_endpoint, exc))
+        source_outcomes.append((False, failure_status(exc)))
+        source_truncated = True
 
-        global_scope_id = _fetch_global_scope_id(client)
-        if global_scope_id:
-            normalized.insert(
-                0,
-                {
-                    "scope_id": str(global_scope_id),
-                    "scope_name": "Global",
-                    "scope_type": "GLOBAL",
-                },
+    for endpoint, scope_type in (
+        ("/network-config/v1/sites", "SITE"),
+        ("/network-config/v1/device-groups", "DEVICE_GROUP"),
+    ):
+        source_items: list[dict[str, Any]] = []
+        invalid_items = 0
+        raw_items_seen = 0
+        source_succeeded = False
+        source_status: int | None = None
+        page_offset = 0
+        seen_offsets = {page_offset}
+        for _ in range(_SCOPE_MAX_PAGES):
+            try:
+                data = client.get(
+                    endpoint,
+                    params={"limit": _SCOPE_PAGE_SIZE, "offset": page_offset},
+                )
+            except Exception as exc:
+                warnings.append(warning(endpoint, exc))
+                source_status = failure_status(exc)
+                source_truncated = True
+                break
+
+            page = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(page, list):
+                warnings.append(warning(endpoint, "response omitted the items list"))
+                source_truncated = True
+                break
+            source_succeeded = True
+            raw_items_seen += len(page)
+
+            for raw in page:
+                normalized = normalize(raw, scope_type)
+                if normalized is None:
+                    invalid_items += 1
+                else:
+                    source_items.append(normalized)
+
+            if isinstance(data, dict) and "offset" in data:
+                continuation = data.get("offset")
+                if continuation is None:
+                    total = data.get("total")
+                    if isinstance(total, int) and total != raw_items_seen:
+                        warnings.append(
+                            warning(
+                                endpoint,
+                                f"terminal page reported total {total} after {raw_items_seen} records",
+                            )
+                        )
+                        source_truncated = True
+                    break
+                if continuation == "":
+                    warnings.append(warning(endpoint, "empty continuation offset"))
+                    source_truncated = True
+                    break
+                try:
+                    next_offset = int(continuation)
+                except (TypeError, ValueError):
+                    warnings.append(
+                        warning(endpoint, f"invalid continuation offset {continuation!r}")
+                    )
+                    source_truncated = True
+                    break
+                if next_offset <= page_offset or next_offset in seen_offsets:
+                    warnings.append(
+                        warning(endpoint, f"non-increasing continuation offset {next_offset}")
+                    )
+                    source_truncated = True
+                    break
+                page_offset = next_offset
+                seen_offsets.add(page_offset)
+                continue
+
+            total = data.get("total") if isinstance(data, dict) else None
+            if isinstance(total, int):
+                if total > raw_items_seen:
+                    warnings.append(
+                        warning(
+                            endpoint,
+                            f"response omitted continuation offset with {total - raw_items_seen} records remaining",
+                        )
+                    )
+                    source_truncated = True
+                elif total < raw_items_seen:
+                    warnings.append(
+                        warning(
+                            endpoint,
+                            f"response total {total} is smaller than {raw_items_seen} records received",
+                        )
+                    )
+                    source_truncated = True
+                break
+
+            if len(page) < _SCOPE_PAGE_SIZE:
+                break
+            page_offset += _SCOPE_PAGE_SIZE
+            seen_offsets.add(page_offset)
+        else:
+            source_truncated = True
+            warnings.append(
+                f"{endpoint}: stopped after {_SCOPE_MAX_PAGES * _SCOPE_PAGE_SIZE} records"
             )
-    except Exception:
-        pass
+
+        if invalid_items:
+            warnings.append(f"{endpoint}: skipped {invalid_items} malformed scope records")
+            source_truncated = True
+        items.extend(source_items)
+        source_outcomes.append((source_succeeded, source_status))
+
+    if not items and warnings:
+        all_sources_refused = len(source_outcomes) == 3 and all(
+            not succeeded and status in {401, 403}
+            for succeeded, status in source_outcomes
+        )
+        status = (
+            next(status for _, status in source_outcomes if status in {401, 403})
+            if all_sources_refused
+            else "failed"
+        )
+        return {
+            "status": status,
+            "error": "Central scope discovery failed; no authoritative source returned data.",
+            "warnings": warnings,
+        }
+
+    result: dict[str, Any] = {
+        "items": items,
+        "_pagination": {
+            "offset": 0,
+            "limit": len(items),
+            "total": len(items),
+            "truncated": source_truncated,
+            "list_key": "items",
+        },
+    }
+    if warnings:
+        result["warnings"] = warnings
 
     if full_list:
-        return {
-            "items": normalized,
-            "_pagination": {
-                "offset": 0,
-                "limit": len(normalized),
-                "total": len(normalized),
-                "truncated": False,
-            },
-        }
-    return bound_collection_response(normalized, limit=limit, offset=offset)
+        return result
+    return bound_collection_response(result, limit=limit, offset=offset, list_key="items")
 
 
 @mcp.tool(annotations=READ_ONLY)
 def get_global_scope_id() -> dict[str, Any]:
-    """Return the org-wide global scope_id — use this for 'everywhere'/'all APs' config."""
-    from pipeline.stages.s6_configure import _fetch_global_scope_id
-
-    client = get_client()
-    errors: list[str] = []
+    """Return the org-wide scope ID from ``GET /network-config/v1/global``."""
+    endpoint = "/network-config/v1/global"
     try:
-        scope_id = _fetch_global_scope_id(client)
-        return {"global_scope_id": scope_id, "errors": errors}
+        data = get_client().get(endpoint)
+        scope_id = data.get("scopeId") or data.get("id")
+        if scope_id in (None, ""):
+            raise RuntimeError("response omitted scopeId")
+        return {"global_scope_id": str(scope_id), "errors": []}
     except Exception as exc:
-        errors.append(str(exc))
-        return {"global_scope_id": None, "errors": errors}
+        detail = str(exc).strip().replace("\n", " ")
+        if len(detail) > 240:
+            detail = f"{detail[:237]}..."
+        return {
+            "global_scope_id": None,
+            "errors": [f"{endpoint}: {detail or 'unknown failure'}"],
+        }
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -1024,7 +1134,10 @@ def find_scope(
     if not needle:
         raise ValueError("query must be a non-empty string")
     wanted_type = scope_type.strip().upper() if scope_type else None
-    scopes = _items_from_collection(list_scopes(full_list=True))
+    scope_result = list_scopes(full_list=True)
+    if isinstance(scope_result, dict) and scope_result.get("error"):
+        return scope_result
+    scopes = _items_from_collection(scope_result)
     matches: list[dict[str, Any]] = []
     for scope in scopes:
         sid = str(
@@ -1053,7 +1166,22 @@ def find_scope(
                     "raw": scope,
                 }
             )
-    return bound_collection_response(matches, limit=limit, offset=0)
+    result = bound_collection_response(matches, limit=limit, offset=0)
+    if (
+        isinstance(result, dict)
+        and isinstance(scope_result, dict)
+        and isinstance(scope_result.get("warnings"), list)
+    ):
+        result["warnings"] = scope_result["warnings"]
+    if (
+        isinstance(result, dict)
+        and isinstance(result.get("_pagination"), dict)
+        and isinstance(scope_result, dict)
+        and isinstance(scope_result.get("_pagination"), dict)
+        and scope_result["_pagination"].get("truncated")
+    ):
+        result["_pagination"]["truncated"] = True
+    return result
 
 
 @mcp.tool(annotations=READ_ONLY)
