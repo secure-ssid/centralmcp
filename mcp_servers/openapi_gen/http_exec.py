@@ -34,6 +34,7 @@ from mcp_servers.shared import (
     clamp_limit,
     redact_sensitive,
 )
+from pipeline.clients.http_retry import parse_retry_after
 
 # resolve(path, extra_headers) -> (base_url, headers-with-auth-last). May raise on
 # missing configuration; the executor converts that into an {"error": ...} dict.
@@ -56,14 +57,16 @@ _TIMEOUT = 30.0
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 _RETRYABLE_STATUS = {429, 502, 503, 504}
 _MAX_RETRIES = 3
+_MAX_RETRY_SLEEP = 5.0
 
 
-def _retry_delay(resp: Any, attempt: int) -> float:
+def _retry_delay(resp: Any, attempt: int) -> float | None:
+    """Return a bounded delay, or None when the server's hint exceeds it."""
     raw = str((getattr(resp, "headers", {}) or {}).get("Retry-After", "")).strip()
-    try:
-        return min(5.0, max(0.0, float(raw)))
-    except ValueError:
-        return min(5.0, float(2**attempt))
+    hint = parse_retry_after(raw)
+    if raw and hint is not None:
+        return hint if hint <= _MAX_RETRY_SLEEP else None
+    return min(_MAX_RETRY_SLEEP, float(2**attempt))
 
 
 def _clean_params(query: dict[str, Any]) -> dict[str, Any]:
@@ -195,7 +198,10 @@ def make_read_executor(
                         and resp.status_code in _RETRYABLE_STATUS
                         and attempt < _MAX_RETRIES
                     ):
-                        await asyncio.sleep(_retry_delay(resp, attempt))
+                        delay = _retry_delay(resp, attempt)
+                        if delay is None:
+                            break
+                        await asyncio.sleep(delay)
                         continue
                     break
             payload = redact_sensitive(bound_collection_response(
@@ -273,7 +279,8 @@ def make_write_executor(
                         return body_error
                     resp = await client.request(method, url, **kwargs)
                     if (
-                        resp.status_code == 401
+                        method == "PUT"
+                        and resp.status_code == 401
                         and refresh_auth is not None
                         and attempt < _MAX_RETRIES
                     ):
@@ -284,7 +291,10 @@ def make_write_executor(
                         and resp.status_code in _RETRYABLE_STATUS
                         and attempt < _MAX_RETRIES
                     ):
-                        await asyncio.sleep(_retry_delay(resp, attempt))
+                        delay = _retry_delay(resp, attempt)
+                        if delay is None:
+                            break
+                        await asyncio.sleep(delay)
                         continue
                     break
             return {

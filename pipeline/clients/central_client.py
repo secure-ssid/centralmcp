@@ -8,7 +8,6 @@ Ported from aruba-central-portal/utils/central_api_client.py.
 from __future__ import annotations
 
 import asyncio
-import email.utils
 import logging
 import random
 import threading
@@ -18,6 +17,7 @@ from typing import Any, Optional
 
 import httpx
 
+from pipeline.clients.http_retry import parse_retry_after as _parse_retry_after
 from pipeline.clients.token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
@@ -94,32 +94,6 @@ def reset_deprecation_warning_cache() -> None:
     """Clear the process-wide deprecation-warning dedup cache (tests only)."""
     with _deprecation_warned_lock:
         _deprecation_warned.clear()
-
-
-def _parse_retry_after(value: str) -> Optional[float]:
-    """Parse an HTTP ``Retry-After`` header value.
-
-    The header may be either an integer number of seconds or an HTTP-date
-    (RFC 7231 §7.1.3). Returns the wait time in seconds, or ``None`` if
-    the value is unparseable.
-    """
-    if not value:
-        return None
-    value = value.strip()
-    try:
-        seconds = float(value)
-        return max(0.0, seconds)
-    except ValueError:
-        pass
-    try:
-        target = email.utils.parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    if target is None:
-        return None
-    now = time.time()
-    target_ts = target.timestamp()
-    return max(0.0, target_ts - now)
 
 
 # ``RateLimit-Reset`` (IETF draft) is delta-seconds, but the older
