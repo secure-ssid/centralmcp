@@ -83,7 +83,14 @@ SPEC = {
             "post": {
                 "operationId": "createWidget",
                 "summary": "Create widget",
-                "parameters": [{"$ref": "#/components/parameters/org_id"}],
+                "parameters": [
+                    {"$ref": "#/components/parameters/org_id"},
+                    {
+                        "name": "mode",
+                        "in": "query",
+                        "schema": {"$ref": "#/components/schemas/mode"},
+                    },
+                ],
                 "requestBody": {
                     "required": True,
                     "content": {
@@ -375,6 +382,9 @@ def test_registration_exposes_typed_params_without_auth(monkeypatch):
         variant for variant in site_id_variants if variant.get("type") == "array"
     )
     assert site_ids_schema["items"] == {"type": "string"}
+    mode_variants = props["mode"].get("anyOf", [props["mode"]])
+    mode_schema = next(variant for variant in mode_variants if "enum" in variant)
+    assert mode_schema == {"enum": ["fast", "slow"], "type": "string"}
     # Non-auth header param exposed; auth header stripped.
     assert "x_trace" in props
     assert "authorization" not in props
@@ -382,7 +392,7 @@ def test_registration_exposes_typed_params_without_auth(monkeypatch):
     # Write tool exposes body/dry_run/confirm.
     post_tool = tools["demo_create_widget"]
     post_props = (post_tool.parameters.get("properties") or {})
-    assert {"org_id", "body", "dry_run", "confirm"} <= set(post_props)
+    assert {"org_id", "mode", "body", "dry_run", "confirm"} <= set(post_props)
     assert post_tool.annotations.readOnlyHint is not True
 
 
@@ -414,6 +424,138 @@ def test_array_python_type_preserves_known_item_types():
     assert _py_type("array", "boolean") == list[bool]
     assert _py_type("array", None) is list
     assert _py_type("array", "any") is list
+
+
+def test_invalid_read_enum_is_rejected_before_dispatch(monkeypatch):
+    server, _, read_cap, _ = _register_demo(monkeypatch)
+    fn = server._tool_manager._tools["demo_list_widgets"].fn
+
+    out = asyncio.run(fn(org_id="o1", mode="turbo"))
+
+    assert out == {"error": "parameter 'mode' must be one of: 'fast', 'slow'"}
+    assert read_cap == {}
+
+
+def test_invalid_write_enum_is_rejected_before_dispatch(monkeypatch):
+    server, _, _, write_cap = _register_demo(monkeypatch)
+    fn = server._tool_manager._tools["demo_create_widget"].fn
+
+    out = asyncio.run(fn(org_id="o1", mode="turbo", body={"a": "x"}))
+
+    assert out == {"error": "parameter 'mode' must be one of: 'fast', 'slow'"}
+    assert write_cap == {}
+
+
+def test_invalid_diagnostic_enum_is_rejected_before_dispatch(monkeypatch):
+    manifest = _manifest()
+    diagnostic = dict(manifest["operations"][0])
+    diagnostic.update(
+        name="demo_probe_widgets",
+        key="POST /api/v1/orgs/{org_id}/widgets/probe",
+        method="POST",
+        path="/api/v1/orgs/{org_id}/widgets/probe",
+        operation_id="probeWidgets",
+        capability="diagnostic",
+        summary="Probe widgets",
+    )
+    manifest["operations"] = [diagnostic]
+    server = FastMCP("demo-diagnostic-enum")
+    captured: dict = {}
+    monkeypatch.setenv("CENTRALMCP_DEMO_GENERATED_TOOLS", "1")
+    register_generated_tools(
+        server,
+        "demo",
+        read_executor=_fake_read_executor({}),
+        write_executor=_fake_write_executor(captured),
+        manifest=manifest,
+    )
+
+    out = asyncio.run(
+        server._tool_manager._tools["demo_probe_widgets"].fn(
+            org_id="o1",
+            mode="turbo",
+        )
+    )
+
+    assert out == {"error": "parameter 'mode' must be one of: 'fast', 'slow'"}
+    assert captured == {}
+
+
+def test_incompatible_enum_metadata_keeps_declared_parameter_type(monkeypatch):
+    manifest = _manifest()
+    read = manifest["operations"][0]
+    read["parameters"] = [
+        *read["parameters"],
+        {
+            "name": "legacy-flag",
+            "in": "query",
+            "required": False,
+            "type": "boolean",
+            "enum": ["false", "true"],
+            "default": False,
+        },
+    ]
+    server = FastMCP("demo-incompatible-enum")
+    captured: dict = {}
+    monkeypatch.setenv("CENTRALMCP_DEMO_GENERATED_TOOLS", "1")
+    register_generated_tools(
+        server,
+        "demo",
+        read_executor=_fake_read_executor(captured),
+        write_executor=_fake_write_executor({}),
+        manifest=manifest,
+    )
+
+    tool = server._tool_manager._tools["demo_list_widgets"]
+    schema = (tool.parameters.get("properties") or {})["legacy_flag"]
+    variants = schema.get("anyOf", [schema])
+    assert any(variant.get("type") == "boolean" for variant in variants)
+    assert not any("enum" in variant for variant in variants)
+
+    out = asyncio.run(tool.fn(org_id="o1", legacy_flag=False))
+
+    assert out["status_code"] == 200
+    assert captured["query"]["legacy-flag"] is False
+
+
+def test_large_enum_is_enforced_without_expanding_tool_schema(monkeypatch):
+    manifest = _manifest()
+    read = manifest["operations"][0]
+    choices = [f"choice-{index}" for index in range(21)]
+    read["parameters"] = [
+        *read["parameters"],
+        {
+            "name": "large-mode",
+            "in": "query",
+            "required": False,
+            "type": "string",
+            "enum": choices,
+        },
+    ]
+    server = FastMCP("demo-large-enum")
+    captured: dict = {}
+    monkeypatch.setenv("CENTRALMCP_DEMO_GENERATED_TOOLS", "1")
+    register_generated_tools(
+        server,
+        "demo",
+        read_executor=_fake_read_executor(captured),
+        write_executor=_fake_write_executor({}),
+        manifest=manifest,
+    )
+
+    tool = server._tool_manager._tools["demo_list_widgets"]
+    schema = (tool.parameters.get("properties") or {})["large_mode"]
+    variants = schema.get("anyOf", [schema])
+    assert any(variant.get("type") == "string" for variant in variants)
+    assert not any("enum" in variant for variant in variants)
+
+    out = asyncio.run(tool.fn(org_id="o1", large_mode="invalid"))
+
+    assert out["error"].startswith(
+        "parameter 'large-mode' must be one of: 'choice-0', 'choice-1'"
+    )
+    assert out["error"].endswith(", ... (21 total)")
+    assert captured == {}
 
 
 def test_read_post_exposes_required_body_without_write_controls(monkeypatch):

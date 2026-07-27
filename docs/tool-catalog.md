@@ -12,6 +12,12 @@ totals across the full catalog are 3,148 read, 165 diagnostic, 2,544 write, and
 843 destructive. See [`docs/capability-gap-matrix.md`](capability-gap-matrix.md)
 for the full, reproducible breakdown and the pinned benchmark comparison.
 
+Generated manifests also drive parameter constraints. Compatible OpenAPI enums
+with up to 20 choices are published exactly; larger enums stay compact in tool
+schemas but are still enforced before dispatch with bounded errors.
+Contradictory vendor metadata is ignored in favor of the declared parameter
+type rather than breaking valid defaults.
+
 ## Counts by backend
 
 | Server | Read-only annotated | Registered total | Main coverage |
