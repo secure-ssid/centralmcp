@@ -298,7 +298,7 @@ def test_blocked_write_envelope_survives_the_wire():
     assert result.isError is False  # envelope, not a transport-level error
     payload = _text_payload(result)
     assert payload["ok"] is False
-    assert payload["status"] == 500  # ResponseEnvelopeMiddleware's generic error code
+    assert payload["status"] == 403  # write-gate policy refusal
     assert payload["data"]["status"] == "blocked"
     assert payload["tool"] == "reboot_device"
     assert "CENTRALMCP_MIST_WRITES" in payload["message"]

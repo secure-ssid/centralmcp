@@ -420,6 +420,8 @@ exception messages.
 Outcome classification treats a non-empty top-level `errors` list as a failed
 call even when a backend also reports a neutral status such as `COMPLETED` or
 HTTP `200`; an empty `errors` list remains successful.
+Client-facing envelopes use `403` for write-gate `blocked`/`forbidden` policy
+refusals and `409` for confirmation or cancellation conflicts.
 
 Set `CENTRALMCP_METRICS_HTTP=1` (in addition to `CENTRALMCP_METRICS=1`, and
 only on the streamable-HTTP transport -- see
