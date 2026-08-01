@@ -88,7 +88,7 @@ Issues = "https://github.com/secure-ssid/centralmcp/issues"
 Changelog = "https://secure-ssid.github.io/centralmcp/release-notes-0.7.0.html"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "ruff>=0.8.0"]
+dev = ["pytest>=9.1.1", "ruff>=0.8.0"]
 
 [tool.setuptools]
 py-modules = ["run_pipeline", "run_ssid"]
